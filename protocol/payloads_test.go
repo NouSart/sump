@@ -80,6 +80,8 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 		{"setSetting", SetSettingPayload{Service: "svc-a", Key: "k", Value: "v"}, &SetSettingPayload{}},
 		{"resetSetting", ResetSettingPayload{Service: "svc-a", Key: "k"}, &ResetSettingPayload{}},
 		{"configure", ConfigurePayload{Key: "tool.notify_mode", Value: "batch", Default: "each", Overridden: true}, &ConfigurePayload{}},
+		{"report", ReportPayload{Kind: "fire", Message: "跳转失败"}, &ReportPayload{}},
+		{"reportNoKind", ReportPayload{Message: "boom"}, &ReportPayload{}},
 		{"settingsResult", SettingsResult{Services: []ServiceSettings{{
 			Service: "svc-a",
 			Settings: []SettingView{{

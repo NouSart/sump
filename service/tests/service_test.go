@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -38,10 +39,17 @@ type stubCenter struct {
 	ln  net.Listener
 	srv *http.Server
 
-	mu    sync.Mutex
-	regs  []protocol.RegisterPayload
-	byes  int
-	conns map[*stubConn]struct{}
+	mu      sync.Mutex
+	regs    []protocol.RegisterPayload
+	byes    int
+	conns   map[*stubConn]struct{}
+	reports []reportRecord
+}
+
+// reportRecord 是中心收到的一条错误上报。
+type reportRecord struct {
+	From string
+	P    protocol.ReportPayload
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -112,6 +120,21 @@ func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 				sc.byes++
 				sc.mu.Unlock()
 			}
+		case protocol.TypeJump:
+			var jp protocol.JumpPayload
+			if err := env.DecodePayload(&jp); err != nil {
+				continue
+			}
+			if jp.Action == "report" {
+				var p protocol.ReportPayload
+				if err := protocol.DecodeRaw(jp.Input, &p); err == nil {
+					sc.mu.Lock()
+					sc.reports = append(sc.reports, reportRecord{From: env.From, P: p})
+					sc.mu.Unlock()
+				}
+				resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true})
+				c.send(resp)
+			}
 		}
 	}
 }
@@ -130,6 +153,29 @@ func (sc *stubCenter) Byes() int {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	return sc.byes
+}
+
+// Reports 返回已收到的上报快照。
+func (sc *stubCenter) Reports() []reportRecord {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	out := make([]reportRecord, len(sc.reports))
+	copy(out, sc.reports)
+	return out
+}
+
+// waitReports 等待至少 n 条上报（超时失败）。
+func (sc *stubCenter) waitReports(t *testing.T, n int, timeout time.Duration) []reportRecord {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if got := sc.Reports(); len(got) >= n {
+			return got
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("等待 %d 条上报超时（实际 %d）", n, len(sc.Reports()))
+	return nil
 }
 
 // DropConnections 模拟链路断开（如设置中心侧关闭全部连接）。
@@ -194,5 +240,57 @@ func TestRegisterReconnectBye(t *testing.T) {
 	}
 	if sc.Byes() == 0 {
 		t.Fatal("关停时应发送 bye 心跳")
+	}
+}
+
+// TestErrorReport 验证错误上报通道：Fire 未送达 → 骨架自动上报（kind=fire）；
+// 连发被退避节流（1s 档）；退避窗口过后再次放行。
+func TestErrorReport(t *testing.T) {
+	sc := startStubCenter(t)
+	logger := log.New(os.Stdout, "[svc-test] ", log.LstdFlags)
+
+	s := service.New(service.Config{
+		Name:              "svc-r",
+		Listen:            "127.0.0.1:0",
+		Center:            sc.URL(),
+		HeartbeatInterval: 100 * time.Millisecond,
+		Logger:            logger,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Shutdown)
+
+	// Fire 到未知服务 → "未送达" → 骨架自动上报。
+	s.Fire("no-such-svc", "act", map[string]any{"x": 1}, "", "")
+	got := sc.waitReports(t, 1, 5*time.Second)
+	if got[0].From != "svc-r" || got[0].P.Kind != "fire" || !strings.Contains(got[0].P.Message, "no-such-svc") {
+		t.Fatalf("上报内容不符: %+v", got[0])
+	}
+
+	// 防刷：紧跟着的连发应被退避节流（1s 档窗口内）。
+	for i := 0; i < 3; i++ {
+		s.Report("direct", "连发")
+	}
+	time.Sleep(400 * time.Millisecond)
+	if n := len(sc.Reports()); n != 1 {
+		t.Fatalf("退避应节流连发（期望仍 1 条，实际 %d）", n)
+	}
+
+	// 退避窗口过后（1s 档 → 2s 档），再次放行。
+	deadline := time.Now().Add(3 * time.Second)
+	sent := false
+	for time.Now().Before(deadline) {
+		s.Report("direct", "重试")
+		if len(sc.Reports()) >= 2 {
+			sent = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !sent {
+		t.Fatal("退避窗口过后应再次放行上报")
 	}
 }

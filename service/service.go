@@ -50,6 +50,9 @@ type Service struct {
 	closed  bool             // Shutdown 后为真（阻止继续重连）
 	regs    int64            // 注册成功次数（日志用）
 
+	repMu       sync.Mutex     // 错误上报退避锁
+	repThrottle reportThrottle // 错误上报防刷（见 report.go）
+
 	httpSrv *http.Server
 }
 
@@ -479,12 +482,16 @@ func (s *Service) callOnce(ctx context.Context, name, addr, action string, raw m
 }
 
 // Fire 后台发起一跳（发出即完；完成与否仅记日志）。
+// 失败时向设置中心上报一条（kind=fire）——链路跳转未送达属于值得集中可见的错误。
 func (s *Service) Fire(to, action string, payload any, trace, boss string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if _, err := s.Call(ctx, to, action, payload, trace, boss); err != nil {
 			s.logger.Printf("跳转 %s(%s) 未确认送达: %v", to, action, err)
+			if to != "settings-center" {
+				s.Report("fire", fmt.Sprintf("跳转 %s(%s) 未送达: %v", to, action, err))
+			}
 		}
 	}()
 }

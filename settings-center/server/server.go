@@ -21,6 +21,10 @@ type Config struct {
 	SettingsPath string        // 设置覆盖值文件路径（空 = 不落盘）
 	Heartbeat    time.Duration // 心跳间隔预期（默认 15s；服务未声明心跳时用于离线判定）
 	Sweep        time.Duration // 离线扫描间隔（默认 5s）
+
+	// OnReport 是错误上报的消费挂点（可选）：每收到一条 report 调用一次。
+	// nil = 只记日志；未来前端 / 落盘 / 富日志由此接入。
+	OnReport func(from string, r protocol.ReportPayload)
 }
 
 // Server 是设置中心服务实例。
@@ -65,6 +69,7 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 		Provides: []protocol.Provide{
 			{Action: "ping", Output: "pong（连通性测试）"},
 			{Action: "roster", Output: "最新全量服务清单（DNS 式拉取）"},
+			{Action: "report", Input: "{kind?, message}", Output: "回执（中心记日志并交给消费挂点）"},
 		},
 	})
 	s := &Server{cfg: cfg, hub: h, settings: st, ln: ln, logger: logger, done: make(chan struct{})}
@@ -259,9 +264,34 @@ func (c *serverConn) handleJump(env protocol.Envelope) {
 		c.handleSetSetting(env, jp)
 	case "reset_setting":
 		c.handleResetSetting(env, jp)
+	case "report":
+		c.handleReport(env, jp)
 	default:
 		c.replyError(env, "unknown action: "+jp.Action)
 	}
+}
+
+// handleReport 处理错误上报（服务 → 中心）：记一条日志，并交给消费挂点（OnReport）。
+// 防刷由上报方退避负责；中心视为永远在线，不排队、不回补、不落盘（挂点未来接前端 / 落盘）。
+func (c *serverConn) handleReport(env protocol.Envelope, jp protocol.JumpPayload) {
+	var p protocol.ReportPayload
+	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
+		c.replyError(env, "bad report payload")
+		return
+	}
+	if p.Message == "" {
+		c.replyError(env, "report: message 必填")
+		return
+	}
+	kind := p.Kind
+	if kind == "" {
+		kind = "-"
+	}
+	c.logger.Printf("上报 %s [%s]: %s", env.From, kind, p.Message)
+	if fn := c.srv.cfg.OnReport; fn != nil {
+		fn(env.From, p)
+	}
+	c.replyData(env, map[string]any{"status": "ok"})
 }
 
 // handleListSettings 返回设置清单（可选按服务过滤）。

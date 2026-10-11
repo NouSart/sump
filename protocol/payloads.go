@@ -218,3 +218,12 @@ type ForgetPayload struct {
 type ForgetResult struct {
 	ID int64 `msgpack:"id"`
 }
+
+// ---------- 错误上报（服务 → 设置中心） ----------
+
+// ReportPayload 是 report 的 payload：一条错误上报。
+// 不含链路编号（当前没有链路记录者，记了也无处可查）；时间以中心收到为准。
+type ReportPayload struct {
+	Kind    string `msgpack:"kind,omitempty"` // 错误类别（上报方自定，如 fire / deliver / tool）
+	Message string `msgpack:"message"`        // 错误简述
+}
