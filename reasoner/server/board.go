@@ -8,6 +8,17 @@ package server
 //   - 窗口 = 任务在跑期：交付 / 被取代即释放（不落盘、不跨重启——见 SPEC §6）。
 //
 // 轮次衔接仍走自跳 step（发出即完；上下文在黑板里，信纸只带会话号）。
+//
+// 状态机（taskState 四态 + 水位；除 closed 的读取外均由本文件维护，st.mu 保护）：
+//   - gen     消息链变化水位：派发回执 / 结果入账 / 拒绝收尾各自 +1；
+//   - seen    已交给某轮 LLM 的水位：轮开始时对齐 gen；gen != seen ⇒ 存在“未处理的进展”，必须最终被一轮消化；
+//   - running 每会话同时至多一轮 LLM（boardKick 互斥，防重入）；
+//   - closed  已交付（boardClose）/ 被取代（boardOpen）：此后一切写入与唤醒直接丢弃。
+//
+// 唤醒契约（保证 gen != seen 终被消化；开轮统一经 boardKick）：
+//   - 结果入账：each 模式每条都踢；batch 模式把 seen 推进到 gen（暂不踢），最后一条才踢；
+//   - 拒绝收尾：仍有工具在跑时 seen = gen（“停车”），等结果入账来踢——避免空转烧 LLM；
+//   - 轮末兜底：一轮结束时若 gen != seen（期间有新进展），自跳 step 补一轮。
 
 import (
 	"context"
@@ -308,13 +319,33 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 	}
 	st.mu.Unlock()
 
+	// 交付前复查：放行到真正交付之间，任务可能已被同会话新消息取代（boardOpen 置 closed）——
+	// 取代后旧答复不再交付。
+	st.mu.Lock()
+	replaced := st.closed
+	st.mu.Unlock()
+	if replaced {
+		s.logger.Printf("会话 %s：任务已被新消息取代，答复不再交付", st.cid)
+		return
+	}
+
 	if err := s.deliverToBoss(st, text); err != nil {
 		s.logger.Printf("会话 %s：交付 boss(%s) 失败: %v（按“送达后不重试”原则停住，等下一次事件）", st.cid, st.boss, err)
 		return
 	}
+
+	// 交付在途被取代：答复已送达（无法撤回），仍写入记忆保持历史一致；“任务完成”日志让位。
+	st.mu.Lock()
+	replaced = st.closed
+	st.mu.Unlock()
+
 	s.Fire(s.cfg.Memory, "store", protocol.StorePayload{ConversationID: st.cid, Role: "assistant", Content: text}, st.trace, s.cfg.Name)
 	s.boardClose(st)
-	s.logger.Printf("会话 %s：任务完成，已交付 boss(%s)", st.cid, st.boss)
+	if replaced {
+		s.logger.Printf("会话 %s：交付完成（在途已被新任务取代；答复已送达并记入记忆）", st.cid)
+	} else {
+		s.logger.Printf("会话 %s：任务完成，已交付 boss(%s)", st.cid, st.boss)
+	}
 }
 
 // deliverToBoss 把最终结果直达 boss（短响应；Call 内部只对“拨号失败”安全重试）。
