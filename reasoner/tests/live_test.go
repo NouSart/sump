@@ -54,9 +54,9 @@ func TestLiveDeepSeek(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Shutdown)
-	mem.setAgentURL(s.WsURL())
+	mem.setReasonerURL(s.WsURL())
 
-	c := dialAgent(t, s)
+	c := dialReasoner(t, s)
 	raw, err := protocol.EncodePayload(map[string]any{
 		"text": "请先调用 stub-center__ping 工具，然后用一句话告诉我工具返回了什么。",
 	})

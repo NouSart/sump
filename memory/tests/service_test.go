@@ -134,7 +134,7 @@ func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
 	return protocol.RosterPayload{Services: services, Revision: 1}
 }
 
-// ---------- 调用方替身（扮演 llm / reasoner） ----------
+// ---------- 调用方替身（扮演 reasoner） ----------
 
 type stubCaller struct {
 	ln      net.Listener
@@ -170,7 +170,7 @@ func startStubCaller(t *testing.T, centerURL string) *stubCaller {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	env, err := protocol.NewEnvelope(protocol.TypeRegister, "reasoner", "settings-center", "", protocol.RegisterPayload{
-		Name: "reasoner", Addr: c.URL(), Description: "llm 测试替身",
+		Name: "reasoner", Addr: c.URL(), Description: "reasoner 测试替身",
 	})
 	if err != nil {
 		t.Fatal(err)

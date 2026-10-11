@@ -25,7 +25,7 @@ func TestHelloWeb(t *testing.T) {
 	scPort := freePort(t)
 	alPort := freePort(t)
 	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	agentURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", alPort)
+	reasonerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", alPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
@@ -47,7 +47,7 @@ func TestHelloWeb(t *testing.T) {
 	waitRosterHas(t, obs, "settings-center", 10*time.Second)
 
 	// 观察者连 reasoner，做跳转断言。
-	ac, err := protocol.Dial(agentURL, nil)
+	ac, err := protocol.Dial(reasonerURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

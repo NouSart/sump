@@ -1,5 +1,5 @@
 ﻿# SUMP v2 本地开发：一键启动服务（settings-center + memory + images + qq + reasoner）
-# 用法：.\scripts\run-local.ps1 [-CenterAddr 127.0.0.1:9000] [-MemoryAddr 127.0.0.1:9201] [-ImageAddr 127.0.0.1:9401] [-QQAddr 127.0.0.1:9301] [-AgentAddr 127.0.0.1:9101]
+# 用法：.\scripts\run-local.ps1 [-CenterAddr 127.0.0.1:9000] [-MemoryAddr 127.0.0.1:9201] [-ImageAddr 127.0.0.1:9401] [-QQAddr 127.0.0.1:9301] [-ReasonerAddr 127.0.0.1:9101]
 #       [-NapCatURL ws://127.0.0.1:3001] [-NapCatToken xxx] [-Owner 主人QQ] [-LlmKey sk-...] [-LlmModel deepseek-chat]
 # 停止：Ctrl+C（脚本会清理子进程）
 # 注：qq 连不上 NapCat 会自动重试，不影响其他服务；不填 -Owner 则拒绝所有 QQ 私聊
@@ -8,7 +8,7 @@ param(
     [string]$MemoryAddr = '127.0.0.1:9201',
     [string]$ImageAddr = '127.0.0.1:9401',
     [string]$QQAddr = '127.0.0.1:9301',
-    [string]$AgentAddr = '127.0.0.1:9101',
+    [string]$ReasonerAddr = '127.0.0.1:9101',
     [string]$NapCatURL = 'ws://127.0.0.1:3001',
     [string]$NapCatToken = $env:SUMP_NAPCAT_TOKEN,
     [string]$Owner = '',
@@ -57,11 +57,11 @@ try {
     Pop-Location
 }
 
-$center = $null
-$mem    = $null
-$img    = $null
-$qq     = $null
-$agent  = $null
+$center   = $null
+$mem      = $null
+$img      = $null
+$qq       = $null
+$reasoner = $null
 try {
     Write-Host '[2/6] 启动 settings-center ...' -ForegroundColor Cyan
     $center = Start-Process -FilePath (Join-Path $binDir 'settings-center.exe') -ArgumentList '-addr', $CenterAddr -PassThru -NoNewWindow
@@ -86,21 +86,21 @@ try {
     if (-not (Wait-Port $QQAddr 60)) { throw 'qq 未在 60 秒内就绪' }
 
     Write-Host '[6/6] 启动 reasoner ...' -ForegroundColor Cyan
-    $agentArgs = @('-addr', $AgentAddr, '-center', "ws://$CenterAddr/ws", '-llm-base', $LlmBase, '-llm-model', $LlmModel)
-    if ($LlmKey) { $agentArgs += @('-llm-key', $LlmKey) }
-    $agent = Start-Process -FilePath (Join-Path $binDir 'reasoner.exe') -ArgumentList $agentArgs -PassThru -NoNewWindow
+    $reasonerArgs = @('-addr', $ReasonerAddr, '-center', "ws://$CenterAddr/ws", '-llm-base', $LlmBase, '-llm-model', $LlmModel)
+    if ($LlmKey) { $reasonerArgs += @('-llm-key', $LlmKey) }
+    $reasoner = Start-Process -FilePath (Join-Path $binDir 'reasoner.exe') -ArgumentList $reasonerArgs -PassThru -NoNewWindow
 
     Write-Host ''
     Write-Host "settings-center: ws://$CenterAddr/ws  (PID $($center.Id))"
     Write-Host "memory:          ws://$MemoryAddr/ws  (PID $($mem.Id))  db: data/memory.db"
     Write-Host "images:          ws://$ImageAddr/ws  (PID $($img.Id))  db: data/images.db  dir: data/images"
     Write-Host "qq:              ws://$QQAddr/ws  (PID $($qq.Id))  napcat: $NapCatURL"
-    Write-Host "reasoner:       ws://$AgentAddr/ws  (PID $($agent.Id))"
+    Write-Host "reasoner:       ws://$ReasonerAddr/ws  (PID $($reasoner.Id))"
     Write-Host '按 Ctrl+C 停止' -ForegroundColor Yellow
 
-    Wait-Process -Id $center.Id, $mem.Id, $img.Id, $qq.Id, $agent.Id
+    Wait-Process -Id $center.Id, $mem.Id, $img.Id, $qq.Id, $reasoner.Id
 } finally {
-    foreach ($proc in @($center, $mem, $img, $qq, $agent)) {
+    foreach ($proc in @($center, $mem, $img, $qq, $reasoner)) {
         if ($null -ne $proc -and -not $proc.HasExited) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         }

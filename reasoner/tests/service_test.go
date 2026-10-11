@@ -187,9 +187,9 @@ func (sc *stubCenter) withSettings(t *testing.T, res protocol.SettingsResult) {
 
 // ---------- 测试辅助 ----------
 
-func startAgent(t *testing.T, centerURL string) *server.Server {
+func startReasoner(t *testing.T, centerURL string) *server.Server {
 	t.Helper()
-	logger := log.New(os.Stdout, "[agent-test] ", log.LstdFlags)
+	logger := log.New(os.Stdout, "[reasoner-test] ", log.LstdFlags)
 	s := server.New(server.Config{
 		Name:              "reasoner",
 		Listen:            "127.0.0.1:0",
@@ -205,7 +205,7 @@ func startAgent(t *testing.T, centerURL string) *server.Server {
 	return s
 }
 
-func dialAgent(t *testing.T, s *server.Server) *protocol.Client {
+func dialReasoner(t *testing.T, s *server.Server) *protocol.Client {
 	t.Helper()
 	c, err := protocol.Dial(s.WsURL(), nil)
 	if err != nil {
@@ -242,7 +242,7 @@ func jump(t *testing.T, c *protocol.Client, action string, input any, ctx contex
 // TestRegisterAndEcho 验证：注册后名册到账；echo 动作可用。
 func TestRegisterAndEcho(t *testing.T) {
 	sc := startStubCenter(t)
-	s := startAgent(t, sc.URL())
+	s := startReasoner(t, sc.URL())
 
 	roster := s.Roster()
 	if len(roster) != 2 || roster[0].Name != "reasoner" || roster[1].Name != "stub-center" {
@@ -251,7 +251,7 @@ func TestRegisterAndEcho(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := dialAgent(t, s)
+	c := dialReasoner(t, s)
 
 	rp := jump(t, c, "echo", map[string]any{"msg": "hi"}, ctx)
 	if !rp.OK {
@@ -275,11 +275,11 @@ func TestRegisterAndEcho(t *testing.T) {
 // 这是“循环 = 自我跳转链”的最小形态。
 func TestSelfJump(t *testing.T) {
 	sc := startStubCenter(t)
-	s := startAgent(t, sc.URL())
+	s := startReasoner(t, sc.URL())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := dialAgent(t, s)
+	c := dialReasoner(t, s)
 
 	rp := jump(t, c, "debug_jump", map[string]any{
 		"to":     "self",
@@ -306,11 +306,11 @@ func TestSelfJump(t *testing.T) {
 // TestJumpToCenter 验证跨服务跳转：debug_jump 经名册解析地址，访问 stub-center 的 ping。
 func TestJumpToCenter(t *testing.T) {
 	sc := startStubCenter(t)
-	s := startAgent(t, sc.URL())
+	s := startReasoner(t, sc.URL())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := dialAgent(t, s)
+	c := dialReasoner(t, s)
 
 	rp := jump(t, c, "debug_jump", map[string]any{
 		"to":     "stub-center",

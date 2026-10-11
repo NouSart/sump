@@ -139,9 +139,9 @@ func runSixTools(t *testing.T, limit int) *stubSlow {
 		t.Fatal(err)
 	}
 	t.Cleanup(l.Shutdown)
-	mem.setAgentURL(l.WsURL())
+	mem.setReasonerURL(l.WsURL())
 
-	c := dialAgent(t, l)
+	c := dialReasoner(t, l)
 	raw, err := protocol.EncodePayload(map[string]any{"text": "跑六个任务"})
 	if err != nil {
 		t.Fatal(err)

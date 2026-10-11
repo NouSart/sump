@@ -1,6 +1,6 @@
 // memory：SUMP v2 的记忆服务（第一批）。
-// 会话历史存储 + 上下文组装：recall 收到 llm 托管的任务上下文 →
-// 注入记忆后以 resume 发回（触发 llm 的“完全启动”）。
+// 会话历史存储 + 上下文组装：recall 收到调用方托管的任务上下文 →
+// 注入记忆后以 resume 发回（触发其“完全启动”）。
 package main
 
 import (

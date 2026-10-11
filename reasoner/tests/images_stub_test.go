@@ -131,9 +131,9 @@ func TestImagePrefetch(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Shutdown)
-	mem.setAgentURL(s.WsURL())
+	mem.setReasonerURL(s.WsURL())
 
-	c := dialAgent(t, s)
+	c := dialReasoner(t, s)
 	raw, err := protocol.EncodePayload(map[string]any{
 		"text":            "看看这图",
 		"conversation_id": "c-img",

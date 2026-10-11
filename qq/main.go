@@ -19,7 +19,7 @@ func main() {
 	napcatURL := flag.String("napcat", "ws://127.0.0.1:3001", "NapCat 正向 WS 地址")
 	napcatToken := flag.String("napcat-token", os.Getenv("SUMP_NAPCAT_TOKEN"), "NapCat access_token（默认取环境变量 SUMP_NAPCAT_TOKEN）")
 	owner := flag.String("owner", "", "主人 QQ（唯一授权私聊用户；留空则拒绝所有私聊）")
-	agent := flag.String("agent", "reasoner", "任务跳转目标（reasoner 服务名）")
+	reasoner := flag.String("reasoner", "reasoner", "任务跳转目标（reasoner 服务名）")
 	images := flag.String("images", "images", "图片服务名")
 	flag.Parse()
 
@@ -32,7 +32,7 @@ func main() {
 		NapCatURL:   *napcatURL,
 		NapCatToken: *napcatToken,
 		Owner:       *owner,
-		Agent:       *agent,
+		Reasoner:    *reasoner,
 		Images:      *images,
 	}, logger)
 	if err := s.Start(context.Background()); err != nil {

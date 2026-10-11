@@ -252,7 +252,7 @@ func privateImageEvent(uid int64, text, url string) map[string]any {
 
 // ---------- stub reasoner ----------
 
-type agentRequest struct {
+type reasonerRequest struct {
 	From    string
 	Boss    string
 	Payload map[string]any
@@ -262,7 +262,7 @@ type stubReasoner struct {
 	ln   net.Listener
 	srv  *http.Server
 	mu   sync.Mutex
-	reqs []agentRequest
+	reqs []reasonerRequest
 }
 
 func startStubReasoner(t *testing.T, center *stubCenter) *stubReasoner {
@@ -313,7 +313,7 @@ func (a *stubReasoner) handleWS(w http.ResponseWriter, r *http.Request) {
 			var payload map[string]any
 			_ = protocol.DecodeRaw(jp.Input, &payload)
 			a.mu.Lock()
-			a.reqs = append(a.reqs, agentRequest{From: env.From, Boss: env.Boss, Payload: payload})
+			a.reqs = append(a.reqs, reasonerRequest{From: env.From, Boss: env.Boss, Payload: payload})
 			a.mu.Unlock()
 			resp, _ := protocol.NewResponse(env, "reasoner", protocol.ResponsePayload{OK: true})
 			c.send(resp)
@@ -321,7 +321,7 @@ func (a *stubReasoner) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *stubReasoner) waitRequest(t *testing.T, timeout time.Duration) agentRequest {
+func (a *stubReasoner) waitRequest(t *testing.T, timeout time.Duration) reasonerRequest {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -335,7 +335,7 @@ func (a *stubReasoner) waitRequest(t *testing.T, timeout time.Duration) agentReq
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("等待 user_message 超时")
-	return agentRequest{}
+	return reasonerRequest{}
 }
 
 func (a *stubReasoner) count() int {
@@ -472,7 +472,7 @@ func startQQ(t *testing.T, sc *stubCenter, nc *stubNapCat, owner string) *server
 		HeartbeatInterval: 200 * time.Millisecond,
 		NapCatURL:         nc.URL(),
 		Owner:             owner,
-		Agent:             "reasoner",
+		Reasoner:          "reasoner",
 		Images:            "images",
 	}, logger)
 	// t.Context()：随测试结束取消——napcat 连接循环需要活的 ctx，不能用 defer cancel()。
