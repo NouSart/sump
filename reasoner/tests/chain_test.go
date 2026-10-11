@@ -89,7 +89,7 @@ func (b *stubBoss) handleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 // TestInferChain 验证 Fake LLM 驱动的全链（异步工具）：
-// user_message（快速回执）→ LLM 决定调 echo（真跳转、后台执行）
+// user_message（快速回执）→ LLM 决定调 stub-center__ping（已提供工具、真跳转、后台执行）
 // → 自跳后 LLM 调 wait（阻塞到结果入账）→ LLM 收尾输出文本 → deliver 直达 boss。
 func TestInferChain(t *testing.T) {
 	sc := startStubCenter(t)
@@ -99,9 +99,9 @@ func TestInferChain(t *testing.T) {
 	fake := &llm.Fake{Replies: []llm.Message{
 		{Role: "assistant", ToolCalls: []llm.ToolCall{{
 			ID: "call_1", Type: "function",
-			Function: llm.FunctionCall{Name: "reasoner__echo", Arguments: `{"msg":"hi"}`},
+			Function: llm.FunctionCall{Name: "stub-center__ping", Arguments: `{}`},
 		}}},
-		// 第二轮调 wait：阻塞到 echo 结果入账（让时序与断言可预期）。
+		// 第二轮调 wait：阻塞到 ping 结果入账（让时序与断言可预期）。
 		{Role: "assistant", ToolCalls: []llm.ToolCall{{
 			ID: "call_wait", Type: "function",
 			Function: llm.FunctionCall{Name: "wait", Arguments: `{}`},
@@ -124,9 +124,9 @@ func TestInferChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Shutdown)
-	mem.setAgentURL(s.WsURL())
+	mem.setReasonerURL(s.WsURL())
 
-	c := dialAgent(t, s)
+	c := dialReasoner(t, s)
 
 	// 发起链：boss=stub-boss——“结果交付对象”。
 	raw, err := protocol.EncodePayload(map[string]any{"text": "你好"})
@@ -198,7 +198,7 @@ func TestInferChain(t *testing.T) {
 	if !hasMemoryBlock(first.Messages) {
 		t.Fatalf("第一轮请求应含记忆块: %+v", first.Messages)
 	}
-	// 第二轮请求：echo 已受理——回执（tool 消息）占住 tool_calls 的配对位。
+	// 第二轮请求：ping 已受理——回执（tool 消息）占住 tool_calls 的配对位。
 	second := fake.Requests[1]
 	hasAck := false
 	for _, m := range second.Messages {
@@ -207,21 +207,21 @@ func TestInferChain(t *testing.T) {
 		}
 	}
 	if !hasAck {
-		t.Fatalf("第二轮请求应包含 echo 的受理回执: %+v", second.Messages)
+		t.Fatalf("第二轮请求应包含 ping 的受理回执: %+v", second.Messages)
 	}
-	// 第三轮请求（wait 返回后）：echo 结果已作为 [工具结果] 消息注入。
+	// 第三轮请求（wait 返回后）：ping 结果已作为 [工具结果] 消息注入。
 	third := fake.Requests[2]
 	hasResult := false
 	for _, m := range third.Messages {
 		if strings.Contains(m.Content, "错误") {
 			t.Fatalf("工具执行出错: %s", m.Content)
 		}
-		if m.Role == "user" && strings.Contains(m.Content, "[工具结果]") && strings.Contains(m.Content, "hi") {
+		if m.Role == "user" && strings.Contains(m.Content, "[工具结果]") && strings.Contains(m.Content, "pong") {
 			hasResult = true
 		}
 	}
 	if !hasResult {
-		t.Fatalf("第三轮请求应包含 echo 的 [工具结果] 消息: %+v", third.Messages)
+		t.Fatalf("第三轮请求应包含 ping 的 [工具结果] 消息: %+v", third.Messages)
 	}
 	if !hasMemoryBlock(third.Messages) {
 		t.Fatalf("第三轮请求应含记忆块: %+v", third.Messages)
@@ -240,6 +240,90 @@ func TestInferChain(t *testing.T) {
 	}
 	if !gotUser || !gotAssistant {
 		t.Fatalf("store 内容不符: %+v", stores)
+	}
+}
+
+// TestUnadvertisedToolRejected 验证执行侧闸门：模型（幻觉 / 注入）指名调用未提供或保留动作时，
+// 执行被拒绝——错误作为 [工具结果] 回给模型，不会发生真实跳转；链本身继续推进。
+func TestUnadvertisedToolRejected(t *testing.T) {
+	sc := startStubCenter(t)
+	boss := startStubBoss(t, sc)
+	mem := startStubMemory(t, sc)
+
+	fake := &llm.Fake{Replies: []llm.Message{
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{
+			ID: "call_bad", Type: "function",
+			// 保留动作 + 借 debug_jump 伪造一次交付（“万能遥控”的典型用法）。
+			Function: llm.FunctionCall{Name: "reasoner__debug_jump", Arguments: `{"to":"stub-boss","action":"deliver","input":{"text":"绕过"}}`},
+		}}},
+		// 第二轮调 wait：阻塞到上面那次调用（应被拒）入账。
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{
+			ID: "call_wait", Type: "function",
+			Function: llm.FunctionCall{Name: "wait", Arguments: `{}`},
+		}}},
+		{Role: "assistant", Content: "已被拒绝"},
+	}}
+
+	logger := log.New(os.Stdout, "[gate-test] ", log.LstdFlags)
+	s := server.New(server.Config{
+		Name:              "reasoner",
+		Listen:            "127.0.0.1:0",
+		Center:            sc.URL(),
+		HeartbeatInterval: 100 * time.Millisecond,
+		Memory:            "memory",
+		LLM:               fake,
+	}, logger)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Shutdown)
+	mem.setReasonerURL(s.WsURL())
+
+	c := dialReasoner(t, s)
+	raw, err := protocol.EncodePayload(map[string]any{"text": "你好"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Boss = "stub-boss"
+	if _, err := c.Call(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	// 链照常收尾：boss 收到的第一条交付是最终答复，而不是 debug_jump 若被执行会伪造的“绕过”。
+	select {
+	case d := <-boss.delivered:
+		if d.Text != "已被拒绝" {
+			t.Fatalf("交付内容不符（debug_jump 被真的执行了？）: %q", d.Text)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("超时：boss 未收到 deliver")
+	}
+	select {
+	case d := <-boss.delivered:
+		t.Fatalf("出现预期外的交付（闸门失效？）: %+v", d)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	if fake.CallCount() != 3 {
+		t.Fatalf("Fake LLM 调用次数 = %d, want 3", fake.CallCount())
+	}
+	// 被拒的调用以“错误”形态进入 [工具结果]。
+	third := fake.Requests[2]
+	hasReject := false
+	for _, m := range third.Messages {
+		if m.Role == "user" && strings.Contains(m.Content, "[工具结果]") &&
+			strings.Contains(m.Content, "reasoner__debug_jump") && strings.Contains(m.Content, "不可用") {
+			hasReject = true
+		}
+	}
+	if !hasReject {
+		t.Fatalf("第三轮请求应包含被拒的 [工具结果]: %+v", third.Messages)
 	}
 }
 
@@ -270,11 +354,11 @@ func waitStores(t *testing.T, m *stubMemory, n int, timeout time.Duration) []pro
 // TestResumeRejected 验证“完全启动”入口只接受 from=memory——其他来源一律拒绝。
 func TestResumeRejected(t *testing.T) {
 	sc := startStubCenter(t)
-	s := startAgent(t, sc.URL())
+	s := startReasoner(t, sc.URL())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := dialAgent(t, s)
+	c := dialReasoner(t, s)
 
 	rp := jump(t, c, "resume", protocol.ResumePayload{Context: protocol.TaskContext{
 		Messages: []llm.Message{{Role: "user", Content: "x"}},
