@@ -30,7 +30,7 @@ func main() {
 	if err != nil {
 		logger.Fatalf("启动失败: %v", err)
 	}
-	_ = s
+	defer func() { _ = s.Shutdown() }()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)

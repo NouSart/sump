@@ -115,6 +115,7 @@ func (s *Service) Start(ctx context.Context) error {
 	s.logger.Printf("%s 监听 %s", s.cfg.Name, s.selfURL)
 
 	if err := s.connectAndRegister(ctx); err != nil {
+		_ = s.httpSrv.Close() // 注册失败即放弃启动：回收监听，不留“半个服务”
 		return fmt.Errorf("注册失败: %w", err)
 	}
 	go s.watchCenter(ctx)
