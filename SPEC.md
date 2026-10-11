@@ -89,7 +89,7 @@ SUMP 是“服务的互联网”：每个服务是一个独立进程、独立数
 | `heartbeat` | 服务 → 设置中心 | 报活（默认 15s） |
 | `jump` | 任何服务 → 任何服务 | **唯一的“访问”动作**；目标可以是自己（自跳 = 循环的下一步） |
 
-拉取名册复用 `jump`（`action: "roster"`）；设置中心另提供 `ping`（连通性）与设置动作（见 §7）。
+拉取名册复用 `jump`（`action: "roster"`）；设置中心另提供 `ping`（连通性）、`report`（错误上报，见 §7）与设置动作（见 §7）。
 
 ---
 
@@ -161,6 +161,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 | `list_settings` | `{service?}`（可选过滤） | `{services:[{service, settings:[{key,value,default,overridden}]}]}` |
 | `set_setting` | `{service, key, value}` | 被改动服务的设置（同上结构） |
 | `reset_setting` | `{service, key}` | 同上（回落默认值） |
+| `report` | `{kind?, message}` | `{status:"ok"}`（中心记日志并交给消费挂点） |
 
 - 生效值 = **覆盖值 ?? 声明默认值**；覆盖值落盘于设置中心（`data/settings.json`）。
 - 校验：服务必须已注册、设置项必须已被该服务声明，否则报错。
@@ -168,6 +169,10 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
   推送给所属服务（载荷 `{key, value, default, overridden}`；尽力送达、失败仅记日志、不阻塞响应）。
   服务侧实时应用（如 reasoner 的 `tool.notify_mode` 立即生效）；**启动拉取保留为兜底**
   （推送丢失 / 服务离线期间变更）——两者幂等，重复应用无副作用。
+- **错误上报（已实现·留接口）**：服务把错误上报给中心（`report`）——中心记一条日志并交给 `OnReport`
+  消费挂点（前端 / 落盘 / 富日志后续接入此处）。**不含链路编号**（暂无链路记录者，记了无处可查）；
+  **防刷在上报方**：退避 1s 起逐档翻倍、封顶 30s，静默 60s 重置，被节流即丢弃；中心视为**永远在线**，
+  不做补发队列——断连期间的上报直接丢弃（中心侧不排队、不回补、不落盘）。
 
 ---
 
@@ -218,6 +223,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 | 8 | 链级失败策略 | 拨号失败已安全重试；送达后失败不重试（无幂等键）；工具超时 / 任务取代的结果丢弃已定义 | 幂等键；失败上报 boss（降级回复） |
 | 9 | 工具结果通知模式 | **已实现**：设置项 `tool.notify_mode`（each 默认 / batch）+ 启动拉取 + `-tool-notify` | 运行时下发（`configure`）即时生效 |
 | 10 | 长期记忆 | **已实现 v0**：`remember`/`forget`（软删）+ bigram 召回（1~2 字中文可命中）+ 核心注入（priority）；`remember` 在 provides 里（自动暴露为 LLM 工具），`forget` 不在 | embedding 语义召回；自动提炼与巩固线（sleep）；去重 / 冲突 |
+| 11 | 错误上报（服务 → 中心） | **已实现·留接口**：`report` 动作 + 中心日志 + `OnReport` 挂点；上报方退避防刷（1s 起翻倍、封顶 30s）；无队列（中心视为永远在线）；当前接入点：骨架 Fire 未送达 | 前端 / 落盘 / 富日志接入挂点；更多上报点按需接入 |
 
 ---
 
