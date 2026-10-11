@@ -27,7 +27,7 @@ type Config struct {
 	NapCatURL         string        // NapCat 正向 WS 地址
 	NapCatToken       string        // access_token（可选）
 	Owner             string        // 主人 QQ（唯一授权私聊用户；留空则拒绝所有私聊）
-	Agent             string        // 任务跳转目标（reasoner 服务名，默认 reasoner）
+	Reasoner          string        // 任务跳转目标（reasoner 服务名，默认 reasoner）
 	Images            string        // 图片服务名（默认 images）
 }
 
@@ -45,8 +45,8 @@ type Server struct {
 
 // New 创建实例并注册动作。
 func New(cfg Config, logger *log.Logger) *Server {
-	if cfg.Agent == "" {
-		cfg.Agent = "reasoner"
+	if cfg.Reasoner == "" {
+		cfg.Reasoner = "reasoner"
 	}
 	if cfg.Images == "" {
 		cfg.Images = "images"
@@ -61,8 +61,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Provides: []protocol.Provide{
 			{Action: "deliver", Input: "{text, conversation_id}", Output: "回执（已发回 QQ）"},
 		},
-		Settings: []protocol.Setting{{Key: "conn.default_ttl", Default: "5m"}},
-		Logger:   logger,
+		Logger: logger,
 	})
 	s.Handle("deliver", s.actionDeliver)
 	s.napcat = napcat.New(napcat.Config{
@@ -159,7 +158,7 @@ func (s *Server) onQQEvent(ev napcat.Event) {
 
 	cid := "qq:private:" + uid
 	payload := protocol.UserMessagePayload{Text: text, ConversationID: cid, Images: ids}
-	if err := s.callAgent("user_message", payload); err != nil {
+	if err := s.callReasoner("user_message", payload); err != nil {
 		s.logger.Printf("user_message 未受理: %v", err)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -184,11 +183,11 @@ func (s *Server) saveImage(url string) (string, error) {
 	return res.ID, nil
 }
 
-// callAgent 向 reasoner 发 user_message（等受理回执；boss=本服务）。
-func (s *Server) callAgent(action string, payload any) error {
+// callReasoner 向 reasoner 发 user_message（等受理回执；boss=本服务）。
+func (s *Server) callReasoner(action string, payload any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	_, err := s.Call(ctx, s.cfg.Agent, action, payload, protocol.NewID(), s.cfg.Name)
+	_, err := s.Call(ctx, s.cfg.Reasoner, action, payload, protocol.NewID(), s.cfg.Name)
 	return err
 }
 

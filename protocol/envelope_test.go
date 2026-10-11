@@ -13,7 +13,7 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 		Addr:        "ws://127.0.0.1:9101/ws",
 		Description: "测试用名片",
 		Provides:    []Provide{{Action: "echo", Input: "任意", Output: "原样返回"}},
-		Settings:    []Setting{{Key: "conn.default_ttl", Default: "5m"}},
+		Settings:    []Setting{{Key: "demo.setting", Default: "5m"}},
 		HeartbeatMS: 15000,
 	}
 	env, err := NewEnvelope(TypeRegister, "reasoner", "settings-center", "trace-1", reg)
@@ -50,7 +50,7 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 	if len(reg2.Provides) != 1 || reg2.Provides[0].Action != "echo" {
 		t.Fatalf("provides 不符: %+v", reg2.Provides)
 	}
-	if len(reg2.Settings) != 1 || reg2.Settings[0].Key != "conn.default_ttl" {
+	if len(reg2.Settings) != 1 || reg2.Settings[0].Key != "demo.setting" {
 		t.Fatalf("settings 不符: %+v", reg2.Settings)
 	}
 	if reg2.HeartbeatMS != 15000 {

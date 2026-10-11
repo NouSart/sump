@@ -1,6 +1,6 @@
 // memory 服务的核心：把记忆动作注册到服务骨架（注册 / 心跳 / 名册 /
 // 断线自愈 / 告别见 service 包）。
-// recall 收到 llm 托管的任务上下文 → 查会话历史并组装记忆 → 以 resume 发回 llm（触发其“完全启动”）。
+// recall 收到调用方托管的任务上下文 → 查会话历史并组装记忆 → 以 resume 发回调用方（触发其“完全启动”）。
 package server
 
 import (
@@ -56,14 +56,13 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
-		Description:       "记忆服务：会话历史 + 长期记忆（remember/forget；bigram 召回 + 核心注入）与上下文组装（recall 后向 llm 回发 resume）",
+		Description:       "记忆服务：会话历史 + 长期记忆（remember/forget；bigram 召回 + 核心注入）与上下文组装（recall 后向调用方回发 resume）",
 		Provides: []protocol.Provide{
 			{Action: "recall", Input: "任务上下文 {conversation_id, messages, boss}", Output: "受理回执；随后向调用方发送 resume（注入记忆后的上下文）"},
 			{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
 			{Action: "remember", Tool: true, Input: "长期记忆条目 {kind, content, priority?}（kind 如 偏好/身份/知识/事件；priority>0 = 核心记忆，每次对话都会带上）", Output: "{id, created}（同 kind+content 已有 active 条目时幂等跳过）"},
 		},
-		Settings: []protocol.Setting{{Key: "conn.default_ttl", Default: "5m"}},
-		Logger:   logger,
+		Logger: logger,
 	})
 	s.Handle("recall", s.actionRecall)
 	s.Handle("store", s.actionStore)
@@ -200,7 +199,7 @@ func (s *Server) actionRecall(_ context.Context, env protocol.Envelope, in proto
 	return map[string]any{"status": "accepted"}, nil
 }
 
-// fireResume 向调用方（llm 服务）发送组装完成的上下文——“过程中的 boss 是 llm”。
+// fireResume 向调用方发送组装完成的上下文——记忆往返期间 boss 是调用方。
 // resolve 失败会同步返回（调用方可收到错误）；投递本身异步进行（发出即完）。
 func (s *Server) fireResume(req protocol.Envelope, payload any) error {
 	target := req.From

@@ -166,7 +166,7 @@ sequenceDiagram
       { "action": "user_message", "input": "用户消息（文本/图片）", "output": "流式回复" }
     ],
     "settings": [                             // 可设置项
-      { "key": "conn.default_ttl", "default": "5m" }
+      { "key": "tool.notify_mode", "default": "each" }
     ]
   }
 }

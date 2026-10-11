@@ -116,6 +116,9 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 1. 链机制保留动作（§6.1 的 `user_message` / `step` / `deliver` / `recall` / `resume` / `store` / `save` / `fetch`）；
 2. 调试 / 测试动作（如 reasoner 的 `echo` / `debug_jump`）。
 
+两闸同时作用于**执行面**：模型若仍指名调用未提供（或保留动作）的工具，
+reasoner 在执行前直接拒绝（错误作为工具结果回给模型——不会发生真实跳转）。
+
 > 为什么必须显式声明：第三方服务的动作无法被 reasoner 的硬编码表覆盖，必须由服务自己表态。
 
 **工具并发**：同一会话内的工具调用并发执行；reasoner 侧默认单会话上限 10（可配置，-1 = 不限制），超限排队。同一服务的多个调用可并发重复进行，不做去重。
@@ -146,9 +149,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
     { "action": "save",  "input": "{url} 或 {data(base64), mime}", "output": "{id, mime, size}" },
     { "action": "fetch", "input": "{id}", "output": "{id, mime, data(base64), size}" }
   ],
-  "settings": [                                  // 我可被设置哪些项
-    { "key": "conn.default_ttl", "default": "5m" }
-  ]
+  "settings": []                                 // 我可被设置哪些项（当前无——只声明真正消费的项）
 }
 ```
 
@@ -217,7 +218,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 | 2 | 离线判定 | **已实现**：2× 心跳超时 + 扫描摘除 + 告别立即摘除 + 心跳复归 | — |
 | 3 | 连接自愈 | **已实现**（`service/` 骨架）：指数退避重连 + 重新注册 + 注册去重 | — |
 | 4 | 设置下发 | **已实现**：set/reset 成功后推送 `configure`（尽力送达）；reasoner 实时应用 `tool.notify_mode`（启动拉取为兜底） | 更多设置项接入；服务侧通用接收框架 |
-| 5 | 连接时长自适应 | 全短连接（注释已标注） | 热保留 / 冷回落，参数可配置 |
+| 5 | 连接时长自适应 | 全短连接（注释已标注） | 热保留 / 冷回落，参数可配置（实现前不声明设置项） |
 | 6 | 审批链路 | 占名未实现 | `approval_request` / `approval_result` |
 | 7 | 服务骨架复用 | **已实现**：`service/` 薄骨架库（注册/心跳/名册/自愈/告别），四服务共用 | — |
 | 8 | 链级失败策略 | 拨号失败已安全重试；送达后失败不重试（无幂等键）；工具超时 / 任务取代的结果丢弃已定义 | 幂等键；失败上报 boss（降级回复） |

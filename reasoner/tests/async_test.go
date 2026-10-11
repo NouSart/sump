@@ -39,14 +39,14 @@ func startAsyncEnv(t *testing.T, sc *stubCenter, fake *llm.Fake, notify string) 
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Shutdown)
-	mem.setAgentURL(s.WsURL())
+	mem.setReasonerURL(s.WsURL())
 	return s, boss
 }
 
 // sendUser 向 reasoner 发一条 user_message（boss=stub-boss）并断言被受理。
 func sendUser(t *testing.T, s *server.Server, text string) {
 	t.Helper()
-	c := dialAgent(t, s)
+	c := dialReasoner(t, s)
 	raw, err := protocol.EncodePayload(map[string]any{"text": text})
 	if err != nil {
 		t.Fatal(err)
@@ -186,12 +186,20 @@ func TestConfigureLive(t *testing.T) {
 	s, boss := startAsyncEnv(t, startStubCenter(t), fake, "each")
 
 	// 模拟设置中心推送：tool.notify_mode = batch。
-	c := dialAgent(t, s)
+	c := dialReasoner(t, s)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	rp := jump(t, c, "configure", protocol.ConfigurePayload{Key: "tool.notify_mode", Value: "batch", Default: "each", Overridden: true}, ctx)
 	if !rp.OK {
 		t.Fatalf("configure 未被受理: %s", rp.Error)
+	}
+	// 未支持的设置键：明确拒绝（回执不“假装已应用”）。
+	bad := jump(t, c, "configure", protocol.ConfigurePayload{Key: "no.such.key", Value: "x"}, ctx)
+	if bad.OK {
+		t.Fatal("未支持的设置键应被拒绝")
+	}
+	if !strings.Contains(bad.Error, "未支持的设置键") {
+		t.Fatalf("拒绝理由不符: %q", bad.Error)
 	}
 
 	sendUser(t, s, "跑两个慢任务")

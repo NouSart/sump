@@ -80,7 +80,6 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "debug_jump", Input: "{to, action, input}", Output: "目标服务的响应数据（调试用）"},
 		},
 		Settings: []protocol.Setting{
-			{Key: "conn.default_ttl", Default: "5m"},
 			{Key: "tool.notify_mode", Default: "each"},
 		},
 		Logger: logger,
@@ -145,10 +144,11 @@ func (s *Server) actionConfigure(_ context.Context, _ protocol.Envelope, in prot
 		}
 		s.setNotifyMode(p.Value)
 		s.logger.Printf("设置生效（下发）: tool.notify_mode=%s", p.Value)
+		return map[string]any{"status": "applied"}, nil
 	default:
-		s.logger.Printf("configure: 未支持的设置键 %q（忽略）", p.Key)
+		// 只回执“已应用”的事：未支持的设置键明确拒绝（中心侧会记推送失败）。
+		return nil, fmt.Errorf("configure: 未支持的设置键 %q", p.Key)
 	}
-	return map[string]any{"status": "applied"}, nil
 }
 
 // toolTimeout 返回单个工具调用的执行超时（默认 60s）。

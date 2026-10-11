@@ -54,8 +54,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "save", Input: "{url} 或 {data(base64), mime}", Output: "{id, mime, size}"},
 			{Action: "fetch", Input: "{id}", Output: "{id, mime, data(base64), size}"},
 		},
-		Settings: []protocol.Setting{{Key: "conn.default_ttl", Default: "5m"}},
-		Logger:   logger,
+		Logger: logger,
 	})
 	s.Handle("save", s.actionSave)
 	s.Handle("fetch", s.actionFetch)
