@@ -132,49 +132,43 @@ export function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
+      <aside className="sidebar">
         <div className="brand">
-          <h1>SUMP</h1>
+          <span className="brand-name">SUMP</span>
           <span className="brand-sub">设置中心</span>
         </div>
-        <div className="topbar-meta">
-          <span className={connected ? 'status status-on' : 'status status-off'}>
+        <div className="side-status">
+          <span
+            className={connected ? 'status status-on' : 'status status-off'}
+            title={overview ? `设置中心 ${overview.center}` : '设置中心'}
+          >
             <span className="status-dot" aria-hidden="true" />
-            {connected ? '已连接设置中心' : '未连接设置中心'}
+            {connected ? '已连接' : '未连接'}
           </span>
-          {overview && <span className="mono muted center-addr">{overview.center}</span>}
-          <button type="button" className="btn ghost" onClick={() => void load()} disabled={loading}>
+          <button type="button" className="icon-btn" onClick={() => void load()} disabled={loading} aria-label="刷新" title="刷新">
             <RefreshIcon spinning={loading} />
-            刷新
           </button>
         </div>
-      </header>
-
-      <main className="layout">
-        <aside className="sidebar">
-          <p className="section-label">服务（{services.length}）</p>
+        <nav className="svc-nav" aria-label="服务列表">
+          <p className="section-label">服务 · {services.length}</p>
           <ServiceList services={services} selected={selected} onSelect={setSelected} settingsCountOf={settingsCountOf} />
-          {loadError && (
-            <p className="inline-error" role="alert">
-              加载失败：{loadError}
-            </p>
-          )}
-        </aside>
-        <section className="content">
-          <SettingsPanel
-            service={selectedService}
-            settings={selectedSettings}
-            connected={connected}
-            onSave={onSave}
-            onReset={onReset}
-          />
-        </section>
-      </main>
+        </nav>
+      </aside>
 
-      <footer className="footer muted">
-        数据源：设置中心 <span className="mono">{overview?.center ?? ''}</span> · 面板为视图层，不持业务状态
-        {overview && <span> · 更新于 {new Date(overview.fetchedAt).toLocaleTimeString()}</span>}
-      </footer>
+      <main className="content">
+        {loadError && (
+          <p className="inline-error" role="alert">
+            加载失败：{loadError}
+          </p>
+        )}
+        <SettingsPanel
+          service={selectedService}
+          settings={selectedSettings}
+          connected={connected}
+          onSave={onSave}
+          onReset={onReset}
+        />
+      </main>
 
       <Toasts items={toasts} />
     </div>

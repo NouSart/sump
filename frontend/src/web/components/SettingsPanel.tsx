@@ -20,9 +20,10 @@ export function SettingsPanel({ service, settings, connected, onSave, onReset }:
   return (
     <div className="panel">
       <header className="panel-head">
+        <p className="eyebrow">服务</p>
         <h2 className="panel-title mono">{service.name}</h2>
         {service.description && <p className="panel-desc">{service.description}</p>}
-        <p className="panel-addr mono muted">{service.addr}</p>
+        <p className="panel-addr mono">{service.addr}</p>
         {(service.provides?.length ?? 0) > 0 && (
           <div className="chips">
             {service.provides?.map((p) => (
@@ -35,38 +36,26 @@ export function SettingsPanel({ service, settings, connected, onSave, onReset }:
         )}
       </header>
 
-      <p className="section-label">设置项</p>
+      <div className="settings-head">
+        <p className="section-label">设置项</p>
+        {settings !== null && settings.length > 0 && <p className="settings-count">{settings.length}</p>}
+      </div>
       {settings === null ? (
-        <div className="empty">加载中…</div>
+        <p className="empty">加载中…</p>
       ) : settings.length === 0 ? (
-        <div className="empty">该服务未声明可设置项。面板只显示服务真实声明并消费的设置（不做假旋钮）。</div>
+        <p className="empty">该服务未声明可设置项——面板只显示服务真实声明并消费的设置（不做假旋钮）。</p>
       ) : (
-        <div className="card table-scroll">
-          <table className="settings-table">
-            <thead>
-              <tr>
-                <th scope="col">键</th>
-                <th scope="col">生效值</th>
-                <th scope="col">默认值</th>
-                <th scope="col">状态</th>
-                <th scope="col" className="col-actions">
-                  操作
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {settings.map((item) => (
-                <SettingRow
-                  key={item.key}
-                  service={service.name}
-                  item={item}
-                  connected={connected}
-                  onSave={onSave}
-                  onReset={onReset}
-                />
-              ))}
-            </tbody>
-          </table>
+        <div className="settings">
+          {settings.map((item) => (
+            <SettingRow
+              key={item.key}
+              service={service.name}
+              item={item}
+              connected={connected}
+              onSave={onSave}
+              onReset={onReset}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -127,9 +116,12 @@ function SettingRow({ service, item, connected, onSave, onReset }: RowProps) {
   };
 
   return (
-    <tr>
-      <td className="mono">{item.key}</td>
-      <td>
+    <div className="set-row">
+      <div className="set-keycol">
+        <div className="set-key mono">{item.key}</div>
+        <div className="set-meta">默认 {item.default || '—'}</div>
+      </div>
+      <div className="set-valuecol">
         {editing ? (
           <input
             className="input"
@@ -143,14 +135,13 @@ function SettingRow({ service, item, connected, onSave, onReset }: RowProps) {
             autoFocus
           />
         ) : (
-          <span className="mono">{item.value || '—'}</span>
+          <>
+            <span className="set-value mono">{item.value || '—'}</span>
+            {item.overridden ? <span className="badge badge-warn">已覆盖</span> : <span className="badge badge-quiet">默认</span>}
+          </>
         )}
-      </td>
-      <td>
-        <span className="mono muted">{item.default || '—'}</span>
-      </td>
-      <td>{item.overridden ? <span className="badge badge-warn">已覆盖</span> : <span className="badge badge-quiet">默认</span>}</td>
-      <td className="col-actions">
+      </div>
+      <div className="set-actions">
         {editing ? (
           <>
             <button type="button" className="btn primary" onClick={() => void save()} disabled={busy || !connected}>
@@ -162,7 +153,7 @@ function SettingRow({ service, item, connected, onSave, onReset }: RowProps) {
           </>
         ) : (
           <>
-            <button type="button" className="btn" onClick={startEdit} disabled={busy || !connected}>
+            <button type="button" className="btn ghost" onClick={startEdit} disabled={busy || !connected}>
               修改
             </button>
             {item.overridden && (
@@ -177,7 +168,7 @@ function SettingRow({ service, item, connected, onSave, onReset }: RowProps) {
             )}
           </>
         )}
-      </td>
-    </tr>
+      </div>
+    </div>
   );
 }

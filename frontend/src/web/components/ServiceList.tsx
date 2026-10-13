@@ -9,7 +9,7 @@ interface Props {
 
 export function ServiceList({ services, selected, settingsCountOf, onSelect }: Props) {
   if (services.length === 0) {
-    return <p className="empty">尚未收到名册——等待设置中心广播。</p>;
+    return <p className="empty empty-side">尚未收到名册</p>;
   }
   return (
     <ul className="svc-list">
@@ -21,16 +21,14 @@ export function ServiceList({ services, selected, settingsCountOf, onSelect }: P
               type="button"
               className={selected === s.name ? 'svc-item svc-item-active' : 'svc-item'}
               onClick={() => onSelect(s.name)}
+              title={s.description ?? s.name}
             >
-              <span className="svc-name-row">
-                <span className="svc-name mono">{s.name}</span>
-                {count > 0 && (
-                  <span className="badge" title={`${count} 个设置项`}>
-                    {count}
-                  </span>
-                )}
-              </span>
-              {s.description && <span className="svc-desc">{s.description}</span>}
+              <span className="svc-name">{s.name}</span>
+              {count > 0 && (
+                <span className="badge" title={`${count} 个设置项`}>
+                  {count}
+                </span>
+              )}
             </button>
           </li>
         );

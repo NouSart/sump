@@ -26,7 +26,7 @@ npm start            # 启动（需先 build）：node dist/server/index.js -add
 - `src/server/center.ts`：中心连接（注册 / 心跳 / 断线自愈 / 名册广播 / 调用的 `RemoteError` 区分）；
 - `src/server/service.ts`：自己的 WS 端点（v1 未提供动作，一律 `unknown action` 回执——注册的地址必须真实可达）；
 - `src/server/api.ts`：HTTP 层（`/api/overview`、`/api/settings/set|reset`、`/api/events` SSE、静态托管）；
-- `src/web/`：React 面板（瑞典极简：系统无衬线字体、亚麻白底、发丝线、零阴影）。
+- `src/web/`：React 面板（瑞典极简：系统无衬线字体、亚麻白底、发丝线、零阴影；无顶栏 / 底栏——左栏 200px 服务列表 + 连接状态，右侧行式设置）。
 
 ## 设计说明（节选）
 
