@@ -339,7 +339,7 @@ func (c *serverConn) handleResetSetting(env protocol.Envelope, jp protocol.JumpP
 }
 
 // pushConfigure 把某个设置项的变更生效值以 configure 跳转推送给所属服务。
-// 尽力送达：失败仅记日志（服务侧仍保留“启动拉取”作兜底）。异步进行，不阻塞响应。
+// 尽力送达：失败/被拒仅记日志（服务侧仍保留“启动拉取”作兜底）。异步进行，不阻塞响应。
 func (s *Server) pushConfigure(service string, ss protocol.ServiceSettings, key string) {
 	var item protocol.SettingView
 	found := false
@@ -376,8 +376,19 @@ func (s *Server) pushConfigure(service string, ss protocol.ServiceSettings, key 
 		if err != nil {
 			return
 		}
-		if _, err := c.Call(ctx, env); err != nil {
+		resp, err := c.Call(ctx, env)
+		if err != nil {
 			s.logger.Printf("configure 推送 %s 失败: %v", service, err)
+			return
+		}
+		// 响应里 ok=false 也是“推送失败”（服务明确拒绝，如未支持的设置键）——不能只看到达。
+		var rp protocol.ResponsePayload
+		if err := resp.DecodePayload(&rp); err != nil || !rp.OK {
+			reason := rp.Error
+			if reason == "" {
+				reason = "响应缺少 ok"
+			}
+			s.logger.Printf("configure 推送 %s 被拒绝: %s", service, reason)
 			return
 		}
 		s.logger.Printf("configure 已推送: %s.%s = %q", service, item.Key, item.Value)
