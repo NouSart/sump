@@ -21,19 +21,27 @@ export function SettingsPanel({ service, settings, connected, onSave, onReset }:
     <div className="panel">
       <header className="panel-head">
         <p className="eyebrow">服务</p>
-        <h2 className="panel-title mono">{service.name}</h2>
+        <h2 className="panel-title">{service.name}</h2>
         {service.description && <p className="panel-desc">{service.description}</p>}
-        <p className="panel-addr mono">{service.addr}</p>
-        {(service.provides?.length ?? 0) > 0 && (
-          <div className="chips">
-            {service.provides?.map((p) => (
-              <span key={p.action} className={p.tool ? 'chip chip-tool' : 'chip'} title={provideTitle(p.input, p.output)}>
-                {p.action}
-                {p.tool && <span className="chip-tag">工具</span>}
-              </span>
-            ))}
+        <dl className="meta">
+          <div className="meta-row">
+            <dt className="meta-label">地址</dt>
+            <dd className="meta-value">{service.addr}</dd>
           </div>
-        )}
+          {(service.provides?.length ?? 0) > 0 && (
+            <div className="meta-row">
+              <dt className="meta-label">动作</dt>
+              <dd className="meta-value">
+                {service.provides?.map((p) => (
+                  <span key={p.action} className={p.tool ? 'tag tag-tool' : 'tag'} title={provideTitle(p.input, p.output)}>
+                    {p.action}
+                    {p.tool && <span className="tag-mark">工具</span>}
+                  </span>
+                ))}
+              </dd>
+            </div>
+          )}
+        </dl>
       </header>
 
       <div className="settings-head">
@@ -44,7 +52,14 @@ export function SettingsPanel({ service, settings, connected, onSave, onReset }:
       ) : settings.length === 0 ? (
         <p className="empty">该服务未声明可设置项——面板只显示服务真实声明并消费的设置（不做假旋钮）。</p>
       ) : (
-        <div className="settings">
+        <div className="set-table">
+          <div className="set-headrow" aria-hidden="true">
+            <span>键</span>
+            <span>生效值</span>
+            <span>默认值</span>
+            <span>状态</span>
+            <span className="head-actions">操作</span>
+          </div>
           {settings.map((item) => (
             <SettingRow
               key={item.key}
@@ -116,11 +131,8 @@ function SettingRow({ service, item, connected, onSave, onReset }: RowProps) {
 
   return (
     <div className="set-row">
-      <div className="set-keycol">
-        <div className="set-key mono">{item.key}</div>
-        <div className="set-meta">默认 {item.default || '—'}</div>
-      </div>
-      <div className="set-valuecol">
+      <div className="set-key">{item.key}</div>
+      <div className="set-val">
         {editing ? (
           <input
             className="input"
@@ -134,12 +146,11 @@ function SettingRow({ service, item, connected, onSave, onReset }: RowProps) {
             autoFocus
           />
         ) : (
-          <>
-            <span className="set-value mono">{item.value || '—'}</span>
-            {item.overridden ? <span className="badge badge-warn">已覆盖</span> : <span className="badge badge-quiet">默认</span>}
-          </>
+          (item.value || '—')
         )}
       </div>
+      <div className="set-default">{item.default || '—'}</div>
+      <div>{item.overridden ? <span className="tag-over">已覆盖</span> : <span className="tag-default">默认</span>}</div>
       <div className="set-actions">
         {editing ? (
           <>
@@ -152,13 +163,13 @@ function SettingRow({ service, item, connected, onSave, onReset }: RowProps) {
           </>
         ) : (
           <>
-            <button type="button" className="btn ghost" onClick={startEdit} disabled={busy || !connected}>
+            <button type="button" className="btn" onClick={startEdit} disabled={busy || !connected}>
               修改
             </button>
             {item.overridden && (
               <button
                 type="button"
-                className={confirming ? 'btn danger' : 'btn ghost'}
+                className={confirming ? 'btn danger' : 'btn quiet-danger'}
                 onClick={() => void reset()}
                 disabled={busy || !connected}
               >
