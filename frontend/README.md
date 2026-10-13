@@ -26,7 +26,7 @@ npm start            # 启动（需先 build）：node dist/server/index.js -add
 - `src/server/center.ts`：中心连接（注册 / 心跳 / 断线自愈 / 名册广播 / 调用的 `RemoteError` 区分）；
 - `src/server/service.ts`：自己的 WS 端点（v1 未提供动作，一律 `unknown action` 回执——注册的地址必须真实可达）；
 - `src/server/api.ts`：HTTP 层（`/api/overview`、`/api/settings/set|reset`、`/api/events` SSE、静态托管）；
-- `src/web/`：React 面板（瑞士国际风格 + 瑞典旗色：12 栏网格、平涂色场——服务身份色编号牌（蓝/黄/红/绿按名哈希）、选中行整行铺色、黄底“已覆盖”；零圆角零阴影、结构性横线；无顶栏 / 底栏——左栏 200px + 右侧表格化设置）。
+- `src/web/`：React 面板（瑞士国际风格 + 瑞典旗色：12 栏网格、平涂色场——服务身份色编号牌（蓝/黄/红/绿按名哈希）、选中行整行铺色、黄底“已覆盖”；Fira Sans / Fira Code（@fontsource 本地打包）；零圆角零阴影、结构性横线；无顶栏 / 底栏——左栏 200px + 右侧表格化设置）。
 
 ## 设计说明（节选）
 
