@@ -1,9 +1,10 @@
 <!doctype html>
-<!-- SUMP 设置中心 · 版式样张（瑞典式：大量留白 / 超大主体 / 单一蓝 / 细线分隔 / 零装饰）
-     规则映射：①对比=96px主体 vs 11px微标签；②简洁=整屏只留必要元素；
-     ③规整=统一左轴线 + 8px 节奏；④少内容=一屏一个设置；⑤字号层级=96/38/15/11；
-     ⑥主体=服务名即画面主体；⑦色彩=白/近黑/灰 + 唯一蓝（绿仅作状态点）。
-     样式在 specimen.css（外链）：内联 <style> 会被前端服务 CSP 屏蔽。 -->
+<!-- SUMP 设置中心 · 版式样张 v2
+     ①页面=表格：主列所有元素同一左轴、统一列宽；设置退为横向一行（表格化）
+     ②唯一主体：96px 服务名；设置值 14px（仅为注释层，不抢视野）
+     ③边栏=悬浮胶囊：白底细边微浮起、内容高不通高、sticky 跟随
+     ④色彩克制：白/近黑/灰 + 唯一蓝（绿仅 7px 状态点）
+     样式外链 specimen.css（内联 <style> 会被前端服务 CSP 屏蔽）。 -->
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
@@ -13,7 +14,7 @@
   </head>
   <body>
     <div class="shell">
-      <aside class="rail">
+      <aside class="capsule">
         <div class="brand">SUMP<small>设置中心</small></div>
         <nav>
           <p class="label">服务 · 05</p>
@@ -37,20 +38,25 @@
           <hr class="rule" />
           <h2>设置</h2>
 
-          <section class="setting">
-            <div>
-              <div class="value-line">
-                <span class="value">batch</span>
-                <span class="chip">已覆盖</span>
-              </div>
-              <div class="key">tool.notify_mode</div>
-              <div class="meta">默认 each · 可选 each / batch</div>
+          <div class="table">
+            <div class="row head" aria-hidden="true">
+              <span>键</span>
+              <span>生效值</span>
+              <span>默认值</span>
+              <span>状态</span>
+              <span class="end">操作</span>
             </div>
-            <div class="actions">
-              <button class="btn" type="button">修改</button>
-              <button class="link" type="button">重置</button>
+            <div class="row">
+              <span class="key">tool.notify_mode</span>
+              <span class="val">batch</span>
+              <span class="def">each</span>
+              <span class="chip">已覆盖</span>
+              <span class="acts">
+                <button class="btn" type="button">修改</button>
+                <button class="link" type="button">重置</button>
+              </span>
             </div>
-          </section>
+          </div>
         </div>
       </main>
     </div>
