@@ -165,6 +165,7 @@ export function App() {
           service={selectedService}
           settings={selectedSettings}
           connected={connected}
+          revision={roster?.revision ?? null}
           onSave={onSave}
           onReset={onReset}
         />

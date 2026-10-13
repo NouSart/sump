@@ -13,7 +13,7 @@ export function ServiceList({ services, selected, settingsCountOf, onSelect }: P
   }
   return (
     <ul className="svc-list">
-      {services.map((s) => {
+      {services.map((s, i) => {
         const count = settingsCountOf(s.name);
         return (
           <li key={s.name}>
@@ -23,6 +23,7 @@ export function ServiceList({ services, selected, settingsCountOf, onSelect }: P
               onClick={() => onSelect(s.name)}
               title={s.description ?? s.name}
             >
+              <span className="svc-idx">{String(i + 1).padStart(2, '0')}</span>
               <span className="svc-name">{s.name}</span>
               {count > 0 && (
                 <span className="badge" title={`${count} 个设置项`}>

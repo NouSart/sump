@@ -5,6 +5,7 @@ interface Props {
   service: ServiceCardView | null;
   settings: SettingViewData[] | null;
   connected: boolean;
+  revision?: number | null;
   onSave: (service: string, key: string, value: string) => Promise<void>;
   onReset: (service: string, key: string) => Promise<void>;
 }
@@ -13,14 +14,17 @@ function provideTitle(input?: string, output?: string): string {
   return [input ? `输入：${input}` : '', output ? `输出：${output}` : ''].filter(Boolean).join(' / ');
 }
 
-export function SettingsPanel({ service, settings, connected, onSave, onReset }: Props) {
+export function SettingsPanel({ service, settings, connected, revision, onSave, onReset }: Props) {
   if (!service) {
     return <div className="empty">尚未收到名册——等待设置中心广播，或检查面板与中心的连接。</div>;
   }
   return (
     <div className="panel">
       <header className="panel-head">
-        <p className="eyebrow">服务</p>
+        <p className="eyebrow">
+          服务
+          {revision !== null && revision !== undefined && <span className="eyebrow-meta">REV {revision}</span>}
+        </p>
         <h2 className="panel-title">{service.name}</h2>
         {service.description && <p className="panel-desc">{service.description}</p>}
         <dl className="meta">

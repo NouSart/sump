@@ -11,8 +11,9 @@
   --line: #e4e4e4;
   --line-strong: #111111;
   --hover: #f6f6f6;
-  --accent: #005b99; /* 瑞典蓝：唯一强调色 */
-  --accent-hover: #00497b;
+  --paper: #fafaf7;
+  --accent: #006aa7; /* 瑞典国旗蓝：唯一强调色 */
+  --accent-hover: #00568a;
   --accent-soft: #eef4f9;
   --danger: #b4232a;
   --ok: #1c7a4a;
@@ -69,6 +70,7 @@ input:focus-visible {
   width: 200px;
   display: flex;
   flex-direction: column;
+  background: var(--paper);
   border-right: 1px solid var(--line-strong);
 }
 
@@ -201,7 +203,21 @@ input:focus-visible {
   color: var(--ink);
 }
 
+.svc-idx {
+  flex: none;
+  width: 16px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+}
+
+.svc-item-active .svc-idx {
+  color: var(--accent);
+}
+
 .svc-name {
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: 12px;
   overflow: hidden;
@@ -237,12 +253,23 @@ input:focus-visible {
 }
 
 .panel {
-  max-width: 760px;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  column-gap: 24px;
+  max-width: 900px;
+}
+
+.panel-head {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  column-gap: 24px;
 }
 
 .eyebrow {
   display: flex;
   align-items: center;
+  grid-column: 1 / -1;
   gap: 8px;
   margin: 0 0 16px;
   font-size: 10px;
@@ -258,25 +285,34 @@ input:focus-visible {
   background: var(--accent); /* 几何标记：唯一强调色落点 */
 }
 
+.eyebrow-meta {
+  margin-left: auto;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+}
+
 .panel-title {
-  margin: 0 0 12px;
-  font-size: 30px;
+  grid-column: 1 / span 10;
+  margin: 0 0 14px;
+  font-size: 38px;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
 }
 
 .panel-desc {
+  grid-column: 1 / span 8;
   margin: 0;
-  max-width: 64ch;
   color: var(--muted);
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.6;
 }
 
 /* ---------- 元信息（标签 / 值 栅格） ---------- */
 
 .meta {
+  grid-column: 1 / -1;
   margin: 28px 0 0;
   border-top: 1px solid var(--line);
 }
@@ -332,6 +368,7 @@ input:focus-visible {
 /* ---------- 设置项：五列表格（瑞士式栅格） ---------- */
 
 .settings-head {
+  grid-column: 1 / -1;
   margin-top: 44px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--line-strong);
@@ -341,6 +378,10 @@ input:focus-visible {
   padding: 0;
   font-size: 11px;
   color: var(--ink);
+}
+
+.set-table {
+  grid-column: 1 / -1;
 }
 
 .set-headrow,
@@ -503,6 +544,7 @@ input:focus-visible {
 /* ---------- 空态 / 错误 / Toast ---------- */
 
 .empty {
+  grid-column: 1 / -1;
   padding: 22px 0;
   color: var(--muted);
   font-size: 13px;
@@ -648,8 +690,13 @@ input:focus-visible {
     padding: 28px 18px 56px;
   }
 
+  .panel,
+  .panel-head {
+    display: block;
+  }
+
   .panel-title {
-    font-size: 24px;
+    font-size: 26px;
   }
 
   .meta-row {
