@@ -1,0 +1,30 @@
+{
+  "name": "sump-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SUMP v2 前端服务：设置中心可视化面板（服务节点 + React 界面）",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "build:server": "tsc -p tsconfig.json",
+    "build:web": "vite build",
+    "build": "npm run typecheck && npm run build:server && npm run build:web",
+    "start": "node dist/server/index.js",
+    "test": "node --test \"tests/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@msgpack/msgpack": "^3.1.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^5.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.1"
+  }
+}
