@@ -1,0 +1,58 @@
+<!doctype html>
+<!-- SUMP 设置中心 · 版式样张（瑞典式：大量留白 / 超大主体 / 单一蓝 / 细线分隔 / 零装饰）
+     规则映射：①对比=96px主体 vs 11px微标签；②简洁=整屏只留必要元素；
+     ③规整=统一左轴线 + 8px 节奏；④少内容=一屏一个设置；⑤字号层级=96/38/15/11；
+     ⑥主体=服务名即画面主体；⑦色彩=白/近黑/灰 + 唯一蓝（绿仅作状态点）。
+     样式在 specimen.css（外链）：内联 <style> 会被前端服务 CSP 屏蔽。 -->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SUMP · 样张</title>
+    <link rel="stylesheet" href="./specimen.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail">
+        <div class="brand">SUMP<small>设置中心</small></div>
+        <nav>
+          <p class="label">服务 · 05</p>
+          <a class="svc on" href="#reasoner"><i></i>reasoner</a>
+          <a class="svc" href="#memory"><i></i>memory</a>
+          <a class="svc" href="#images"><i></i>images</a>
+          <a class="svc" href="#qq"><i></i>qq</a>
+          <a class="svc" href="#settings-center"><i></i>settings-center</a>
+        </nav>
+        <p class="foot"><b></b>已连接</p>
+      </aside>
+
+      <main class="main">
+        <div class="canvas">
+          <div class="mark"></div>
+          <p class="eyebrow">服务 · 02 / 05</p>
+          <h1>reasoner</h1>
+          <p class="lede">LLM 单步推理：任务先经记忆服务托管，收到来自记忆的 resume 才完全启动。</p>
+          <p class="addr">ws://127.0.0.1:19131/ws</p>
+
+          <hr class="rule" />
+          <h2>设置</h2>
+
+          <section class="setting">
+            <div>
+              <div class="value-line">
+                <span class="value">batch</span>
+                <span class="chip">已覆盖</span>
+              </div>
+              <div class="key">tool.notify_mode</div>
+              <div class="meta">默认 each · 可选 each / batch</div>
+            </div>
+            <div class="actions">
+              <button class="btn" type="button">修改</button>
+              <button class="link" type="button">重置</button>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>
