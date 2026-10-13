@@ -1,62 +1,43 @@
-import { useState, type CSSProperties } from 'react';
-import { serviceColor } from '../colors';
+import { useState } from 'react';
 import type { SettingViewData, ServiceCardView } from '../types';
 
 interface Props {
   service: ServiceCardView | null;
   settings: SettingViewData[] | null;
   connected: boolean;
-  revision?: number | null;
+  index: number;
+  total: number;
   onSave: (service: string, key: string, value: string) => Promise<void>;
   onReset: (service: string, key: string) => Promise<void>;
 }
 
-function provideTitle(input?: string, output?: string): string {
-  return [input ? `输入：${input}` : '', output ? `输出：${output}` : ''].filter(Boolean).join(' / ');
-}
-
-export function SettingsPanel({ service, settings, connected, revision, onSave, onReset }: Props) {
+export function SettingsPanel({ service, settings, connected, index, total, onSave, onReset }: Props) {
   if (!service) {
-    return <div className="empty">尚未收到名册——等待设置中心广播，或检查面板与中心的连接。</div>;
-  }
-  const svc = serviceColor(service.name);
-  return (
-    <div className="panel" style={{ '--svc': svc } as CSSProperties}>
-      <header className="panel-head">
-        <p className="eyebrow">
-          服务
-          {revision !== null && revision !== undefined && <span className="eyebrow-meta">REV {revision}</span>}
-        </p>
-        <h2 className="panel-title">{service.name}</h2>
-        {service.description && <p className="panel-desc">{service.description}</p>}
-        <dl className="meta">
-          <div className="meta-row">
-            <dt className="meta-label">地址</dt>
-            <dd className="meta-value">{service.addr}</dd>
-          </div>
-          {(service.provides?.length ?? 0) > 0 && (
-            <div className="meta-row">
-              <dt className="meta-label">动作</dt>
-              <dd className="meta-value">
-                {service.provides?.map((p) => (
-                  <span key={p.action} className={p.tool ? 'tag tag-tool' : 'tag'} title={provideTitle(p.input, p.output)}>
-                    {p.action}
-                    {p.tool && <span className="tag-mark">工具</span>}
-                  </span>
-                ))}
-              </dd>
-            </div>
-          )}
-        </dl>
-      </header>
-
-      <div className="settings-head">
-        <p className="section-label">设置项</p>
+    return (
+      <div className="panel">
+        <p className="empty">尚未收到名册——等待设置中心广播，或检查面板与中心的连接。</p>
       </div>
+    );
+  }
+  const no = String(index).padStart(2, '0');
+  const den = String(total).padStart(2, '0');
+  return (
+    <div className="panel">
+      <div className="mark" aria-hidden="true" />
+      <p className="eyebrow">
+        服务 · {no} / {den}
+      </p>
+      <h1 className="panel-title">{service.name}</h1>
+      {service.description && <p className="panel-desc">{service.description}</p>}
+      <p className="panel-addr">{service.addr}</p>
+
+      <hr className="rule" />
+      <h2 className="set-label">设置</h2>
+
       {settings === null ? (
         <p className="empty">加载中…</p>
       ) : settings.length === 0 ? (
-        <p className="empty">该服务未声明可设置项——面板只显示服务真实声明并消费的设置（不做假旋钮）。</p>
+        <p className="empty">该服务未声明可设置项——只显示服务真实声明并消费的设置（不做假旋钮）。</p>
       ) : (
         <div className="set-table">
           <div className="set-headrow" aria-hidden="true">
@@ -137,8 +118,8 @@ function SettingRow({ service, item, connected, onSave, onReset }: RowProps) {
 
   return (
     <div className="set-row">
-      <div className="set-key">{item.key}</div>
-      <div className="set-val">
+      <span className="set-key">{item.key}</span>
+      <span className="set-val">
         {editing ? (
           <input
             className="input"
@@ -152,15 +133,15 @@ function SettingRow({ service, item, connected, onSave, onReset }: RowProps) {
             autoFocus
           />
         ) : (
-          (item.value || '—')
+          item.value || '—'
         )}
-      </div>
-      <div className="set-default">{item.default || '—'}</div>
-      <div>{item.overridden ? <span className="tag-over">已覆盖</span> : <span className="tag-default">默认</span>}</div>
-      <div className="set-actions">
+      </span>
+      <span className="set-default">{item.default || '—'}</span>
+      <span>{item.overridden ? <span className="tag-over">已覆盖</span> : <span className="tag-default">默认</span>}</span>
+      <span className="set-actions">
         {editing ? (
           <>
-            <button type="button" className="btn primary" onClick={() => void save()} disabled={busy || !connected}>
+            <button type="button" className="btn" onClick={() => void save()} disabled={busy || !connected}>
               保存
             </button>
             <button type="button" className="btn ghost" onClick={() => setEditing(false)} disabled={busy}>
@@ -184,7 +165,7 @@ function SettingRow({ service, item, connected, onSave, onReset }: RowProps) {
             )}
           </>
         )}
-      </div>
+      </span>
     </div>
   );
 }

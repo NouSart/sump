@@ -83,6 +83,11 @@ export function App() {
     if (overview === null || selected === null) return null;
     return overview.settings?.services.find((s) => s.service === selected)?.settings ?? [];
   }, [overview, selected]);
+  const svcIndex = useMemo(() => {
+    if (selected === null) return 0;
+    const i = services.findIndex((s) => s.name === selected);
+    return i >= 0 ? i + 1 : 0;
+  }, [services, selected]);
 
   const applyUpdates = useCallback((updated: ServiceSettingsView[]) => {
     setOverview((prev) => {
@@ -134,15 +139,13 @@ export function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-row">
-            <span className="brand-name">SUMP</span>
-            <span className="brand-mark" aria-hidden="true">
-              <i />
-              <i />
-            </span>
-          </div>
+          SUMP
           <span className="brand-sub">设置中心</span>
         </div>
+        <nav aria-label="服务列表">
+          <p className="section-label">服务 · {services.length}</p>
+          <ServiceList services={services} selected={selected} onSelect={setSelected} settingsCountOf={settingsCountOf} />
+        </nav>
         <div className="side-status">
           <span
             className={connected ? 'status status-on' : 'status status-off'}
@@ -155,10 +158,6 @@ export function App() {
             <RefreshIcon spinning={loading} />
           </button>
         </div>
-        <nav className="svc-nav" aria-label="服务列表">
-          <p className="section-label">服务 · {services.length}</p>
-          <ServiceList services={services} selected={selected} onSelect={setSelected} settingsCountOf={settingsCountOf} />
-        </nav>
       </aside>
 
       <main className="content">
@@ -171,7 +170,8 @@ export function App() {
           service={selectedService}
           settings={selectedSettings}
           connected={connected}
-          revision={roster?.revision ?? null}
+          index={svcIndex}
+          total={services.length}
           onSave={onSave}
           onReset={onReset}
         />
