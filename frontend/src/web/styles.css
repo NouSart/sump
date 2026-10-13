@@ -316,12 +316,6 @@ input:focus-visible {
   padding: 0;
 }
 
-.settings-count {
-  margin: 0;
-  font-size: 11.5px;
-  color: var(--faint);
-}
-
 .set-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(150px, auto) auto;

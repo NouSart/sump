@@ -38,7 +38,6 @@ export function SettingsPanel({ service, settings, connected, onSave, onReset }:
 
       <div className="settings-head">
         <p className="section-label">设置项</p>
-        {settings !== null && settings.length > 0 && <p className="settings-count">{settings.length}</p>}
       </div>
       {settings === null ? (
         <p className="empty">加载中…</p>
