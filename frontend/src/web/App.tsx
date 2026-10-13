@@ -134,7 +134,13 @@ export function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-name">SUMP</span>
+          <div className="brand-row">
+            <span className="brand-name">SUMP</span>
+            <span className="brand-mark" aria-hidden="true">
+              <i />
+              <i />
+            </span>
+          </div>
           <span className="brand-sub">设置中心</span>
         </div>
         <div className="side-status">

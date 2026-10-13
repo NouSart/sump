@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
+import { serviceColor } from '../colors';
 import type { SettingViewData, ServiceCardView } from '../types';
 
 interface Props {
@@ -18,8 +19,9 @@ export function SettingsPanel({ service, settings, connected, revision, onSave, 
   if (!service) {
     return <div className="empty">尚未收到名册——等待设置中心广播，或检查面板与中心的连接。</div>;
   }
+  const svc = serviceColor(service.name);
   return (
-    <div className="panel">
+    <div className="panel" style={{ '--svc': svc } as CSSProperties}>
       <header className="panel-head">
         <p className="eyebrow">
           服务

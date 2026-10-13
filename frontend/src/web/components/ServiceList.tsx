@@ -1,3 +1,5 @@
+import type { CSSProperties } from 'react';
+import { inkOn, serviceColor } from '../colors';
 import type { ServiceCardView } from '../types';
 
 interface Props {
@@ -15,15 +17,17 @@ export function ServiceList({ services, selected, settingsCountOf, onSelect }: P
     <ul className="svc-list">
       {services.map((s, i) => {
         const count = settingsCountOf(s.name);
+        const color = serviceColor(s.name);
         return (
           <li key={s.name}>
             <button
               type="button"
               className={selected === s.name ? 'svc-item svc-item-active' : 'svc-item'}
+              style={{ '--svc': color, '--svc-ink': inkOn(color) } as CSSProperties}
               onClick={() => onSelect(s.name)}
               title={s.description ?? s.name}
             >
-              <span className="svc-idx">{String(i + 1).padStart(2, '0')}</span>
+              <span className="svc-plate">{String(i + 1).padStart(2, '0')}</span>
               <span className="svc-name">{s.name}</span>
               {count > 0 && (
                 <span className="badge" title={`${count} 个设置项`}>

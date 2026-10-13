@@ -12,6 +12,7 @@
   --line-strong: #111111;
   --hover: #f6f6f6;
   --paper: #fafaf7;
+  --yellow: #ffcd00; /* 瑞典国旗黄：品牌标 / “已覆盖”标记 */
   --accent: #006aa7; /* 瑞典国旗蓝：唯一强调色 */
   --accent-hover: #00568a;
   --accent-soft: #eef4f9;
@@ -76,6 +77,27 @@ input:focus-visible {
 
 .brand {
   padding: 22px 18px 12px;
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.brand-mark {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.brand-mark i {
+  width: 9px;
+  height: 9px;
+  background: var(--accent);
+}
+
+.brand-mark i:last-child {
+  background: var(--yellow);
 }
 
 .brand-name {
@@ -178,12 +200,10 @@ input:focus-visible {
 .svc-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  padding: 9px 12px 9px 17px;
+  padding: 8px 12px;
   border: 0;
-  border-left: 3px solid transparent;
   background: transparent;
   color: var(--body-text);
   text-align: left;
@@ -198,21 +218,32 @@ input:focus-visible {
 }
 
 .svc-item-active {
-  border-left-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--ink);
+  background: var(--svc, var(--accent));
+  color: var(--svc-ink, #ffffff);
 }
 
-.svc-idx {
+.svc-item-active:hover {
+  background: var(--svc, var(--accent));
+  color: var(--svc-ink, #ffffff);
+}
+
+.svc-plate {
   flex: none;
-  width: 16px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--svc, var(--accent));
+  color: var(--svc-ink, #ffffff);
   font-size: 10px;
-  letter-spacing: 0.06em;
-  color: var(--faint);
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
-.svc-item-active .svc-idx {
-  color: var(--accent);
+.svc-item-active .svc-plate {
+  background: var(--svc-ink, #ffffff);
+  color: var(--svc, var(--accent));
 }
 
 .svc-name {
@@ -231,16 +262,13 @@ input:focus-visible {
 
 .badge {
   flex: none;
-  padding: 0 5px;
-  border: 1px solid var(--faint);
-  font-size: 10px;
-  line-height: 15px;
+  font-size: 10.5px;
   color: var(--muted);
 }
 
 .svc-item-active .badge {
-  border-color: var(--accent);
-  color: var(--accent);
+  color: inherit;
+  opacity: 0.85;
 }
 
 /* ---------- 内容区 ---------- */
@@ -280,16 +308,18 @@ input:focus-visible {
 
 .eyebrow::before {
   content: '';
-  width: 7px;
-  height: 7px;
-  background: var(--accent); /* 几何标记：唯一强调色落点 */
+  width: 10px;
+  height: 10px;
+  background: var(--svc, var(--accent)); /* 服务身份色：wayfinding */
 }
 
 .eyebrow-meta {
   margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid var(--ink);
   font-weight: 400;
   letter-spacing: 0.14em;
-  color: var(--faint);
+  color: var(--ink);
 }
 
 .panel-title {
@@ -440,8 +470,8 @@ input:focus-visible {
 .tag-over {
   display: inline-block;
   padding: 2px 7px;
-  background: var(--ink);
-  color: #ffffff;
+  background: var(--yellow);
+  color: var(--ink);
   font-size: 10px;
   letter-spacing: 0.1em;
 }
@@ -672,18 +702,17 @@ input:focus-visible {
     width: auto;
     padding: 6px 10px;
     border: 1px solid var(--line);
-    border-left-width: 1px;
   }
 
   .svc-item-active {
-    border-color: var(--ink);
-    background: var(--ink);
-    color: #ffffff;
+    border-color: var(--svc, var(--ink));
+    background: var(--svc, var(--ink));
+    color: var(--svc-ink, #ffffff);
   }
 
   .svc-item-active .badge {
-    border-color: #ffffff;
-    color: #ffffff;
+    color: inherit;
+    opacity: 0.85;
   }
 
   .content {
