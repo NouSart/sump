@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { SettingViewData, ServiceCardView } from '../types';
+import type { RowStatus, SettingViewData, ServiceCardView } from '../types';
 
 interface Props {
   service: ServiceCardView | null;
@@ -7,11 +7,12 @@ interface Props {
   connected: boolean;
   index: number;
   total: number;
+  statusOf: (service: string, key: string) => RowStatus | undefined;
   onSave: (service: string, key: string, value: string) => Promise<void>;
   onReset: (service: string, key: string) => Promise<void>;
 }
 
-export function SettingsPanel({ service, settings, connected, index, total, onSave, onReset }: Props) {
+export function SettingsPanel({ service, settings, connected, index, total, statusOf, onSave, onReset }: Props) {
   if (!service) {
     return (
       <div className="panel">
@@ -52,6 +53,7 @@ export function SettingsPanel({ service, settings, connected, index, total, onSa
               key={item.key}
               service={service.name}
               item={item}
+              status={statusOf(service.name, item.key)}
               connected={connected}
               onSave={onSave}
               onReset={onReset}
@@ -66,12 +68,13 @@ export function SettingsPanel({ service, settings, connected, index, total, onSa
 interface RowProps {
   service: string;
   item: SettingViewData;
+  status?: RowStatus;
   connected: boolean;
   onSave: (service: string, key: string, value: string) => Promise<void>;
   onReset: (service: string, key: string) => Promise<void>;
 }
 
-function SettingRow({ service, item, connected, onSave, onReset }: RowProps) {
+function SettingRow({ service, item, status, connected, onSave, onReset }: RowProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.value);
   const [busy, setBusy] = useState(false);
@@ -137,7 +140,19 @@ function SettingRow({ service, item, connected, onSave, onReset }: RowProps) {
         )}
       </span>
       <span className="set-default">{item.default || '—'}</span>
-      <span>{item.overridden ? <span className="tag-over">已覆盖</span> : <span className="tag-default">默认</span>}</span>
+      <span>
+        {status?.state === 'pending' ? (
+          <span className="tag-over">已覆盖 · 待确认</span>
+        ) : status?.state === 'failed' ? (
+          <span className="tag-over" title={status.error}>
+            已覆盖 · 未送达
+          </span>
+        ) : item.overridden ? (
+          <span className="tag-over">已覆盖</span>
+        ) : (
+          <span className="tag-default">默认</span>
+        )}
+      </span>
       <span className="set-actions">
         {editing ? (
           <>

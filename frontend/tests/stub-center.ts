@@ -78,6 +78,18 @@ export class StubCenter {
     for (const ws of this.conns) ws.send(bytes);
   }
 
+  broadcastSettings(payload: unknown): void {
+    const bytes = encode({
+      v: 1,
+      id: `settings-${++this.seq}`,
+      type: 'settings',
+      from: 'settings-center',
+      to: '*',
+      payload,
+    });
+    for (const ws of this.conns) ws.send(bytes);
+  }
+
   private onMessage(ws: WebSocket, bytes: Uint8Array): void {
     const env = decode(bytes) as unknown as WireEnvelope;
     switch (env.type) {

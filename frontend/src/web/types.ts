@@ -22,6 +22,27 @@ export interface SettingViewData {
   overridden: boolean;
 }
 
+// SettingResultViewData 是一次下发中单个设置项的结果（settings 事件）。
+export interface SettingResultViewData {
+  key: string;
+  value?: string;
+  ok?: boolean;
+  error?: string;
+}
+
+// SettingsEventViewData 是中心广播的 settings 事件（面板经 SSE 接收）。
+export interface SettingsEventViewData {
+  cause?: string;
+  service?: string;
+  results?: SettingResultViewData[];
+}
+
+// RowStatus 是设置行的会话内瞬态状态（写入待确认 / 未送达）。
+export interface RowStatus {
+  state: 'pending' | 'failed';
+  error?: string;
+}
+
 export interface ServiceSettingsView {
   service: string;
   settings?: SettingViewData[];

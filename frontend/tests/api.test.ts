@@ -247,4 +247,15 @@ test('SSE：初始 status/roster + 名册广播实时推送', async (t) => {
   const next = await readEvents(1);
   assert.match(next[0] ?? '', /event: roster/);
   assert.match(next[0] ?? '', /svc-x/);
+
+  // settings 事件：中心广播的设置下发结果同样实时转发。
+  stub.broadcastSettings({
+    cause: 'set_setting',
+    service: 'svc-x',
+    results: [{ key: 'tool.notify_mode', value: 'batch', ok: true }],
+  });
+  const settingsEvents = await readEvents(1);
+  assert.match(settingsEvents[0] ?? '', /event: settings/);
+  assert.match(settingsEvents[0] ?? '', /set_setting/);
+  assert.match(settingsEvents[0] ?? '', /tool\.notify_mode/);
 });

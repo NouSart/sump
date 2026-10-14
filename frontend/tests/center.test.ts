@@ -121,3 +121,32 @@ test('中心明确回错误：调用抛 Error（消息为远端错误）', async
     /设置项未声明/,
   );
 });
+
+test('settings 事件：中心广播的发放结果转成事件', async (t) => {
+  const stub = new StubCenter();
+  const url = await stub.start();
+  const link = makeLink(url);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, '连接建立');
+
+  const seen: unknown[] = [];
+  link.on((e) => {
+    if (e.kind === 'settings') seen.push(e.event);
+  });
+  stub.broadcastSettings({
+    cause: 'register',
+    service: 'svc-a',
+    results: [{ key: 'tool.notify_mode', value: 'each', ok: true }],
+  });
+  await waitFor(() => seen.length === 1, 3000, 'settings 事件');
+  const ev = seen[0] as { cause?: string; service?: string; results?: { key?: string; value?: string; ok?: boolean }[] };
+  assert.equal(ev.cause, 'register');
+  assert.equal(ev.service, 'svc-a');
+  assert.equal(ev.results?.[0]?.key, 'tool.notify_mode');
+  assert.equal(ev.results?.[0]?.value, 'each');
+  assert.equal(ev.results?.[0]?.ok, true);
+});

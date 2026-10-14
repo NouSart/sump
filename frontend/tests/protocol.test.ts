@@ -48,6 +48,8 @@ const goResponse =
   'h6F2AaJpZLowMUZJWFJFR0lTVEVSMDAwMDAwMDAwMDAwMKV0cmFjZadUUkFDRS0xpHR5cGWocmVzcG9uc2WkZnJvba9zZXR0aW5ncy1jZW50ZXKidG+lc3ZjLWGncGF5bG9hZIKib2vDpGRhdGGBqHNlcnZpY2VzkYKnc2VydmljZaVzdmMtYahzZXR0aW5nc5GEo2tleaxkZW1vLnNldHRpbmeldmFsdWWjMTBtp2RlZmF1bHSiNW2qb3ZlcnJpZGRlbsM=';
 const goHeartbeat =
   'h6F2AaJpZLowMUZJWEhFQVJUQkVBVDAwMDAwMDAwMDAwMKV0cmFjZadUUkFDRS0zpHR5cGWpaGVhcnRiZWF0pGZyb22lc3ZjLWGidG+vc2V0dGluZ3MtY2VudGVyp3BheWxvYWSBpnN0YXR1c6Jvaw==';
+const goSettings =
+  'h6F2AaJpZLowMUZJWFNFVFRJTkdTMDAwMDAwMDAwMDAwMKV0cmFjZadUUkFDRS00pHR5cGWoc2V0dGluZ3OkZnJvba9zZXR0aW5ncy1jZW50ZXKidG+lc3ZjLWGncGF5bG9hZIOlY2F1c2Wrc2V0X3NldHRpbmenc2VydmljZaVzdmMtYadyZXN1bHRzkoOja2V5sHRvb2wubm90aWZ5X21vZGWldmFsdWWlYmF0Y2iib2vDg6NrZXmlZ2hvc3Sib2vCpWVycm9y2TLmnKrpgIHovr46IOacjeWKoeS4jeWcqOWQjeWGjO+8iOWPr+iDveW3suemu+e6v++8iQ==';
 
 test('解析 Go 产出的 register 信封（字段逐项）', () => {
   const env = decodeEnvelope(Buffer.from(goRegister, 'base64'));
@@ -111,4 +113,27 @@ test('解析 Go 产出的 heartbeat 事件', () => {
   assert.equal(env.from, 'svc-a');
   const hb = env.payload as { status?: string };
   assert.equal(hb?.status, 'ok');
+});
+
+test('解析 Go 产出的 settings 事件（下发结果逐项）', () => {
+  const env = decodeEnvelope(Buffer.from(goSettings, 'base64'));
+  assert.equal(env.v, 1);
+  assert.equal(env.type, 'settings');
+  assert.equal(env.from, 'settings-center');
+  assert.equal(env.to, 'svc-a');
+  assert.equal(env.trace, 'TRACE-4');
+  const p = env.payload as {
+    cause?: string;
+    service?: string;
+    results?: { key?: string; value?: string; ok?: boolean; error?: string }[];
+  };
+  assert.equal(p?.cause, 'set_setting');
+  assert.equal(p?.service, 'svc-a');
+  assert.equal(p?.results?.length, 2);
+  assert.equal(p?.results?.[0]?.key, 'tool.notify_mode');
+  assert.equal(p?.results?.[0]?.value, 'batch');
+  assert.equal(p?.results?.[0]?.ok, true);
+  assert.equal(p?.results?.[1]?.key, 'ghost');
+  assert.equal(p?.results?.[1]?.ok, false);
+  assert.match(p?.results?.[1]?.error ?? '', /未送达/);
 });

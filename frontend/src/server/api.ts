@@ -152,7 +152,8 @@ export function createRequestHandler(
     send('roster', center.roster ?? { services: [], revision: 0 });
     const unsubscribe = center.on((e: CenterEvent) => {
       if (e.kind === 'status') send('status', { connected: e.connected, center: cfg.centerURL });
-      else send('roster', e.roster as RosterPayload);
+      else if (e.kind === 'roster') send('roster', e.roster as RosterPayload);
+      else send('settings', e.event);
     });
     const keepalive = setInterval(() => {
       res.write(': ping\n\n');

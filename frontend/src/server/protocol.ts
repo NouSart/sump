@@ -12,6 +12,7 @@ export const TypeResponse = 'response';
 export const TypeRoster = 'roster';
 export const TypeJump = 'jump';
 export const TypeHeartbeat = 'heartbeat';
+export const TypeSettings = 'settings';
 
 export interface Provide {
   action: string;
@@ -83,6 +84,21 @@ export interface ServiceSettings {
 
 export interface SettingsResult {
   services: ServiceSettings[];
+}
+
+// SettingResultView 是一次下发中单个设置项的结果（settings 事件）。
+export interface SettingResultView {
+  key: string;
+  value?: string;
+  ok?: boolean;
+  error?: string;
+}
+
+// SettingsEventView 是 settings 事件载荷（中心 → 各服务广播；面板转 SSE）。
+export interface SettingsEventView {
+  cause?: string;
+  service?: string;
+  results?: SettingResultView[];
 }
 
 export interface Envelope {

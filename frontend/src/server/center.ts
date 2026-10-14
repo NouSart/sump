@@ -2,13 +2,14 @@
 // 注册 / 心跳 / 断线自愈（重连 + 重注册）/ 名册广播接收 / 跳转调用。
 // 与 Go 侧 service/ 骨架同语义（本服务是 TS，等价实现其中这一个子集）。
 import WebSocket, { type RawData } from 'ws';
-import type { Envelope, Provide, RegisterPayload, ResponsePayloadView, RosterPayload, Setting } from './protocol.ts';
+import type { Envelope, Provide, RegisterPayload, ResponsePayloadView, RosterPayload, Setting, SettingsEventView } from './protocol.ts';
 import {
   TypeHeartbeat,
   TypeJump,
   TypeRegister,
   TypeResponse,
   TypeRoster,
+  TypeSettings,
   decodeEnvelope,
   encodeEnvelope,
   frameBytes,
@@ -28,7 +29,8 @@ export interface CenterOptions {
 
 export type CenterEvent =
   | { kind: 'status'; connected: boolean }
-  | { kind: 'roster'; roster: RosterPayload };
+  | { kind: 'roster'; roster: RosterPayload }
+  | { kind: 'settings'; event: SettingsEventView };
 
 interface Pending {
   resolve: (v: unknown) => void;
@@ -208,6 +210,12 @@ export class CenterLink {
     if (env.type === TypeRoster) {
       const roster = env.payload as RosterPayload | undefined;
       if (roster && typeof roster === 'object') this.setRoster(roster);
+      return;
+    }
+    if (env.type === TypeSettings) {
+      const ev = env.payload as SettingsEventView | undefined;
+      if (ev && typeof ev === 'object') this.emit({ kind: 'settings', event: ev });
+      return;
     }
   }
 

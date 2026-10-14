@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchOverview, resetSetting, setSetting } from './api';
-import { RefreshIcon } from './components/icons';
 import { ServiceList } from './components/ServiceList';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Toasts, type Toast } from './components/Toasts';
-import type { Overview, RosterView, ServiceSettingsView } from './types';
+import type { Overview, RosterView, RowStatus, ServiceSettingsView, SettingsEventViewData } from './types';
 
 let toastSeq = 0;
 
@@ -13,9 +12,11 @@ export function App() {
   const [roster, setRoster] = useState<RosterView | null>(null);
   const [connected, setConnected] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [rowStates, setRowStates] = useState<Record<string, RowStatus>>({});
+  const pendingKeysRef = useRef(new Set<string>());
+  const rosterRevRef = useRef(-1);
 
   const pushToast = useCallback((kind: Toast['kind'], text: string) => {
     const id = ++toastSeq;
@@ -24,17 +25,17 @@ export function App() {
   }, []);
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       const o = await fetchOverview();
       setOverview(o);
       setConnected(o.connected);
-      if (o.roster) setRoster(o.roster);
+      if (o.roster) {
+        setRoster(o.roster);
+        rosterRevRef.current = o.roster.revision;
+      }
       setLoadError(null);
     } catch (err) {
       setLoadError((err as Error).message);
-    } finally {
-      setLoading(false);
     }
   }, []);
 
@@ -46,9 +47,38 @@ export function App() {
     void load();
   }, [load]);
 
+  // settings 事件：更新行的会话内状态（待确认 → 已生效 / 未送达），并刷新设置视图。
+  const handleSettingsEvent = useCallback(
+    (e: SettingsEventViewData) => {
+      const svc = e.service ?? '';
+      for (const r of e.results ?? []) {
+        const k = `${svc}.${r.key}`;
+        const wasPending = pendingKeysRef.current.delete(k);
+        if (r.ok === true) {
+          setRowStates((prev) => {
+            if (!(k in prev)) return prev;
+            const next = { ...prev };
+            delete next[k];
+            return next;
+          });
+          if (wasPending) pushToast('ok', `已生效 ${k}${r.value ? ` = ${r.value}` : ''}`);
+        } else {
+          const reason = r.error ?? '未送达';
+          setRowStates((prev) => ({ ...prev, [k]: { state: 'failed', error: reason } }));
+          if (wasPending) pushToast('error', `未生效 ${k}：${reason}`);
+        }
+      }
+      void loadRef.current();
+    },
+    [pushToast],
+  );
+  const settingsHandlerRef = useRef(handleSettingsEvent);
+  useEffect(() => {
+    settingsHandlerRef.current = handleSettingsEvent;
+  }, [handleSettingsEvent]);
+
   // SSE：中心连接状态与名册实时更新；重连后的首次 connected 事件触发一次重载。
   const wasConnectedRef = useRef(false);
-  const rosterCountRef = useRef(-1);
   useEffect(() => {
     const es = new EventSource('/api/events');
     es.addEventListener('status', (ev) => {
@@ -60,9 +90,14 @@ export function App() {
     es.addEventListener('roster', (ev) => {
       const d = JSON.parse((ev as MessageEvent).data) as RosterView;
       setRoster(d);
-      const count = d.services?.length ?? 0;
-      if (rosterCountRef.current >= 0 && count !== rosterCountRef.current) void loadRef.current();
-      rosterCountRef.current = count;
+      // 名册修订变化（含服务重启重注册、声明变化）→ 重新拉取设置视图。
+      if (rosterRevRef.current !== d.revision) {
+        rosterRevRef.current = d.revision;
+        void loadRef.current();
+      }
+    });
+    es.addEventListener('settings', (ev) => {
+      settingsHandlerRef.current(JSON.parse((ev as MessageEvent).data) as SettingsEventViewData);
     });
     return () => es.close();
   }, []);
@@ -104,11 +139,20 @@ export function App() {
 
   const onSave = useCallback(
     async (service: string, key: string, value: string) => {
+      const k = `${service}.${key}`;
+      pendingKeysRef.current.add(k);
+      setRowStates((prev) => ({ ...prev, [k]: { state: 'pending' } }));
       try {
         const updated = await setSetting(service, key, value);
         applyUpdates(updated);
-        pushToast('ok', `已写入 ${service}.${key}`);
+        pushToast('ok', `已写入 ${k}（待服务确认）`);
       } catch (err) {
+        pendingKeysRef.current.delete(k);
+        setRowStates((prev) => {
+          const next = { ...prev };
+          delete next[k];
+          return next;
+        });
         pushToast('error', `写入失败：${(err as Error).message}`);
         throw err;
       }
@@ -118,11 +162,20 @@ export function App() {
 
   const onReset = useCallback(
     async (service: string, key: string) => {
+      const k = `${service}.${key}`;
+      pendingKeysRef.current.add(k);
+      setRowStates((prev) => ({ ...prev, [k]: { state: 'pending' } }));
       try {
         const updated = await resetSetting(service, key);
         applyUpdates(updated);
-        pushToast('ok', `已重置 ${service}.${key} 为默认值`);
+        pushToast('ok', `已重置 ${k}（待服务确认）`);
       } catch (err) {
+        pendingKeysRef.current.delete(k);
+        setRowStates((prev) => {
+          const next = { ...prev };
+          delete next[k];
+          return next;
+        });
         pushToast('error', `重置失败：${(err as Error).message}`);
         throw err;
       }
@@ -154,9 +207,6 @@ export function App() {
             <span className="status-dot" aria-hidden="true" />
             {connected ? '已连接' : '未连接'}
           </span>
-          <button type="button" className="icon-btn" onClick={() => void load()} disabled={loading} aria-label="刷新" title="刷新">
-            <RefreshIcon spinning={loading} />
-          </button>
         </div>
       </aside>
 
@@ -172,6 +222,7 @@ export function App() {
           connected={connected}
           index={svcIndex}
           total={services.length}
+          statusOf={(service, key) => rowStates[`${service}.${key}`]}
           onSave={onSave}
           onReset={onReset}
         />
