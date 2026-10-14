@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QAQ-awa-QAQ/sump/memory/compose"
@@ -26,15 +28,16 @@ type Config struct {
 	HeartbeatInterval time.Duration   // 心跳间隔（默认 15s）
 	Store             *store.Store    // 会话库
 	Longterm          *longterm.Store // 长期记忆库（与会话库共享同一 SQLite 句柄）
-	HistoryLimit      int             // recall 返回的最近消息条数（默认 12）
+	HistoryLimit      int             // recall 返回的最近消息条数（默认 12；作为声明预设上报）
 }
 
-// v0 注入预算（对齐 v1 量级；以后可升为设置项）。
+// v0 注入预算的默认值（对齐 v1 量级；作为声明预设，可被设置中心覆盖）。
 const (
-	coreLimit    = 3   // 核心记忆条数上限
-	coreMaxChars = 400 // 核心记忆字符预算
-	relLimit     = 5   // 相关记忆条数上限
-	relMaxChars  = 800 // 相关记忆字符预算
+	defaultHistoryLimit = 12  // recall 返回的最近消息条数
+	defaultCoreLimit    = 3   // 核心记忆条数上限
+	defaultCoreMaxChars = 400 // 核心记忆字符预算
+	defaultRelLimit     = 5   // 相关记忆条数上限
+	defaultRelMaxChars  = 800 // 相关记忆字符预算
 )
 
 // Server 是 memory 服务实例（服务骨架 + 会话库）。
@@ -43,14 +46,28 @@ type Server struct {
 
 	cfg    Config
 	logger *log.Logger
+
+	setMu        sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
+	historyLimit int        // recall 返回的最近消息条数
+	coreLimit    int        // 核心记忆条数上限
+	coreMaxChars int        // 核心记忆字符预算
+	relLimit     int        // 相关记忆条数上限
+	relMaxChars  int        // 相关记忆字符预算
 }
 
 // New 创建实例并注册动作。
 func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.HistoryLimit <= 0 {
-		cfg.HistoryLimit = 12
+		cfg.HistoryLimit = defaultHistoryLimit
 	}
-	s := &Server{cfg: cfg, logger: logger}
+	s := &Server{
+		cfg: cfg, logger: logger,
+		historyLimit: cfg.HistoryLimit,
+		coreLimit:    defaultCoreLimit,
+		coreMaxChars: defaultCoreMaxChars,
+		relLimit:     defaultRelLimit,
+		relMaxChars:  defaultRelMaxChars,
+	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Listen:            cfg.Listen,
@@ -64,11 +81,78 @@ func New(cfg Config, logger *log.Logger) *Server {
 		},
 		Logger: logger,
 	})
+	// 可设置项：预设 = 本服务的启动引导值（来源由服务自己决定）。
+	s.HandleSetting("recall.history_limit", strconv.Itoa(cfg.HistoryLimit), func(v string) error {
+		n, err := parseNonNeg(v)
+		if err != nil {
+			return err
+		}
+		s.setMu.Lock()
+		s.historyLimit = n
+		s.setMu.Unlock()
+		return nil
+	})
+	s.HandleSetting("recall.core_limit", strconv.Itoa(defaultCoreLimit), func(v string) error {
+		n, err := parseNonNeg(v)
+		if err != nil {
+			return err
+		}
+		s.setMu.Lock()
+		s.coreLimit = n
+		s.setMu.Unlock()
+		return nil
+	})
+	s.HandleSetting("recall.core_max_chars", strconv.Itoa(defaultCoreMaxChars), func(v string) error {
+		n, err := parseNonNeg(v)
+		if err != nil {
+			return err
+		}
+		s.setMu.Lock()
+		s.coreMaxChars = n
+		s.setMu.Unlock()
+		return nil
+	})
+	s.HandleSetting("recall.rel_limit", strconv.Itoa(defaultRelLimit), func(v string) error {
+		n, err := parseNonNeg(v)
+		if err != nil {
+			return err
+		}
+		s.setMu.Lock()
+		s.relLimit = n
+		s.setMu.Unlock()
+		return nil
+	})
+	s.HandleSetting("recall.rel_max_chars", strconv.Itoa(defaultRelMaxChars), func(v string) error {
+		n, err := parseNonNeg(v)
+		if err != nil {
+			return err
+		}
+		s.setMu.Lock()
+		s.relMaxChars = n
+		s.setMu.Unlock()
+		return nil
+	})
 	s.Handle("recall", s.actionRecall)
 	s.Handle("store", s.actionStore)
 	s.Handle("remember", s.actionRemember)
 	s.Handle("forget", s.actionForget)
 	return s
+}
+
+// parseNonNeg 解析非负整数（设置项校验）。
+func parseNonNeg(v string) (int, error) {
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("需要 ≥0 的整数，收到 %q", v)
+	}
+	return n, nil
+}
+
+// limits 返回当前生效的召回预算（锁内快照）。
+func (s *Server) limits() (history, core, coreChars, rel, relChars int) {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.historyLimit, s.coreLimit, s.coreMaxChars, s.relLimit, s.relMaxChars
 }
 
 // ---------- 动作 ----------
@@ -155,7 +239,9 @@ func (s *Server) actionRecall(_ context.Context, env protocol.Envelope, in proto
 		cid = "default"
 	}
 
-	history, err := s.cfg.Store.Recent(cid, s.cfg.HistoryLimit)
+	historyLimit, coreLimit, coreMaxChars, relLimit, relMaxChars := s.limits()
+
+	history, err := s.cfg.Store.Recent(cid, historyLimit)
 	if err != nil {
 		return nil, fmt.Errorf("查询历史失败: %w", err)
 	}
