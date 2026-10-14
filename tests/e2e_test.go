@@ -143,8 +143,8 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// startProc 启动子进程并在测试结束时清理。
-func startProc(t *testing.T, bin string, args ...string) {
+// startProc 启动子进程并在测试结束时清理（返回句柄，便于中途重启演练）。
+func startProc(t *testing.T, bin string, args ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = os.Stdout
@@ -156,6 +156,7 @@ func startProc(t *testing.T, bin string, args ...string) {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 	})
+	return cmd
 }
 
 // waitWSReady 重试拨号直到目标可连接。
