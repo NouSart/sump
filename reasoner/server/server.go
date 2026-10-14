@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 
@@ -47,8 +48,10 @@ type Server struct {
 	boardMu sync.Mutex            // 黑板锁
 	board   map[string]*taskState // 会话 → 进行中的任务（窗口 = 任务在跑期）
 
-	notifyMu sync.Mutex // 通知模式锁
-	notify   string     // 工具结果通知模式（each / batch）
+	setMu   sync.Mutex    // 运行时可设项锁（设置下发 / 拉取即时生效）
+	notify  string        // 工具结果通知模式（each / batch）
+	conc    int           // 单会话工具并发上限（-1 = 不限制）
+	timeout time.Duration // 单个工具调用的执行超时
 }
 
 // New 创建实例并注册动作。
@@ -62,11 +65,19 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.ToolConcurrency == 0 {
 		cfg.ToolConcurrency = 10
 	}
+	if cfg.ToolTimeout <= 0 {
+		cfg.ToolTimeout = 60 * time.Second
+	}
+	if cfg.NotifyMode == "" {
+		cfg.NotifyMode = "each"
+	}
 	s := &Server{
 		cfg: cfg, logger: logger,
-		sems:   map[string]chan struct{}{},
-		board:  map[string]*taskState{},
-		notify: cfg.NotifyMode,
+		sems:    map[string]chan struct{}{},
+		board:   map[string]*taskState{},
+		notify:  cfg.NotifyMode,
+		conc:    cfg.ToolConcurrency,
+		timeout: cfg.ToolTimeout,
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
@@ -79,101 +90,91 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "echo", Input: "任意", Output: "原样返回（测试用）"},
 			{Action: "debug_jump", Input: "{to, action, input}", Output: "目标服务的响应数据（调试用）"},
 		},
-		Settings: []protocol.Setting{
-			{Key: "tool.notify_mode", Default: "each"},
-		},
 		Logger: logger,
+	})
+	// 可设置项：预设 = 本服务的启动引导值（来源由服务自己决定，见 main.go 的 flag）。
+	s.HandleSetting("tool.notify_mode", cfg.NotifyMode, func(v string) error {
+		if v != "each" && v != "batch" {
+			return fmt.Errorf("不接受值 %q（可选 each / batch）", v)
+		}
+		s.setNotifyMode(v)
+		return nil
+	})
+	s.HandleSetting("tool.concurrency", strconv.Itoa(cfg.ToolConcurrency), func(v string) error {
+		n, err := strconv.Atoi(v)
+		if err != nil || (n != -1 && n < 1) {
+			return fmt.Errorf("需要 -1 或 ≥1 的整数，收到 %q", v)
+		}
+		s.setToolConcurrency(n)
+		return nil
+	})
+	s.HandleSetting("tool.timeout_ms", strconv.FormatInt(cfg.ToolTimeout.Milliseconds(), 10), func(v string) error {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1000 {
+			return fmt.Errorf("需要 ≥1000 的整数（毫秒），收到 %q", v)
+		}
+		s.setToolTimeout(time.Duration(n) * time.Millisecond)
+		return nil
 	})
 	s.Handle("echo", s.actionEcho)
 	s.Handle("debug_jump", s.actionDebugJump)
-	s.Handle("configure", s.actionConfigure)
 	s.Handle("user_message", s.actionUserMessage)
 	s.Handle("step", s.actionStep)
 	s.Handle("resume", s.actionResume)
 	return s
 }
 
-// Start 启动服务骨架，并同步拉取一次设置中心里本服务的设置覆盖值（覆盖不改变运行中的轮次）。
+// Start 启动服务骨架；设置同步由骨架负责（注册后全量下发 + 拉取兜底）。
 func (s *Server) Start(ctx context.Context) error {
-	if err := s.Service.Start(ctx); err != nil {
-		return err
-	}
-	s.pullSettings(ctx)
-	return nil
+	return s.Service.Start(ctx)
 }
 
-// pullSettings 拉取设置中心里本服务的设置（目前只关心 tool.notify_mode 的覆盖值）。
-// 拉取失败不阻塞启动：沿用本地默认（CLI 参数）。
-func (s *Server) pullSettings(ctx context.Context) {
-	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	data, err := s.Call(cctx, "settings-center", "list_settings", protocol.SettingsListPayload{Service: s.cfg.Name}, s.cfg.Name, "")
-	if err != nil {
-		s.logger.Printf("拉取设置失败（沿用本地值 %s）: %v", s.notifyMode(), err)
-		return
-	}
-	var res protocol.SettingsResult
-	if err := protocol.DecodeRaw(data, &res); err != nil {
-		s.logger.Printf("设置解析失败（沿用本地值 %s）: %v", s.notifyMode(), err)
-		return
-	}
-	for _, svc := range res.Services {
-		if svc.Service != s.cfg.Name {
-			continue
-		}
-		for _, item := range svc.Settings {
-			if item.Key == "tool.notify_mode" && item.Overridden && item.Value != "" {
-				s.setNotifyMode(item.Value)
-				s.logger.Printf("设置生效: tool.notify_mode=%s（来自设置中心）", item.Value)
-			}
-		}
-	}
-}
-
-// actionConfigure 承接设置中心下发的设置变更（configure）：立即生效（不等重启）。
-// 推送是尽力送达，启动时的 pullSettings 是兜底——两者幂等，重复应用无副作用。
-func (s *Server) actionConfigure(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	var p protocol.ConfigurePayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
-		return nil, err
-	}
-	switch p.Key {
-	case "tool.notify_mode":
-		if p.Value != "each" && p.Value != "batch" {
-			return nil, fmt.Errorf("configure: tool.notify_mode 不接受值 %q（可选 each / batch）", p.Value)
-		}
-		s.setNotifyMode(p.Value)
-		s.logger.Printf("设置生效（下发）: tool.notify_mode=%s", p.Value)
-		return map[string]any{"status": "applied"}, nil
-	default:
-		// 只回执“已应用”的事：未支持的设置键明确拒绝（中心侧会记推送失败）。
-		return nil, fmt.Errorf("configure: 未支持的设置键 %q", p.Key)
-	}
-}
-
-// toolTimeout 返回单个工具调用的执行超时（默认 60s）。
+// toolTimeout 返回单个工具调用的执行超时（当前生效值）。
 func (s *Server) toolTimeout() time.Duration {
-	if s.cfg.ToolTimeout > 0 {
-		return s.cfg.ToolTimeout
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	if s.timeout <= 0 {
+		return 60 * time.Second
 	}
-	return 60 * time.Second
+	return s.timeout
+}
+
+// setToolTimeout 更新单个工具调用的执行超时（设置下发 / 拉取调用）。
+func (s *Server) setToolTimeout(d time.Duration) {
+	s.setMu.Lock()
+	s.timeout = d
+	s.setMu.Unlock()
+}
+
+// toolConcurrency 返回单会话工具并发上限（-1 = 不限制）。
+func (s *Server) toolConcurrency() int {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.conc
+}
+
+// setToolConcurrency 更新单会话工具并发上限（已建的会话信号量不缩容，新会话用新值）。
+func (s *Server) setToolConcurrency(n int) {
+	s.setMu.Lock()
+	s.conc = n
+	s.setMu.Unlock()
 }
 
 // notifyMode 返回工具结果通知模式："each"（逐条唤醒，默认）或 "batch"（攒批唤醒）。
 func (s *Server) notifyMode() string {
-	s.notifyMu.Lock()
-	defer s.notifyMu.Unlock()
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
 	if s.notify == "batch" {
 		return "batch"
 	}
 	return "each"
 }
 
-// setNotifyMode 设置通知模式（启动时由设置中心覆盖值调用）。
+// setNotifyMode 设置通知模式（设置下发 / 拉取调用）。
 func (s *Server) setNotifyMode(v string) {
-	s.notifyMu.Lock()
+	s.setMu.Lock()
 	s.notify = v
-	s.notifyMu.Unlock()
+	s.setMu.Unlock()
 }
 
 // ---------- 调试 / 测试动作 ----------

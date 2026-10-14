@@ -45,7 +45,7 @@ var structuralActions = map[string]bool{
 	"fetch":        true, // images 服务：取图（llm 侧按需调用）
 	"echo":         true, // 本服务：连通性测试（仅供直连调试）
 	"debug_jump":   true, // 本服务：调试代理跳转
-	"configure":    true, // 本服务：设置中心下发的设置变更（链机制外，中心驱动）
+	"configure":    true, // 骨架保留动作：设置下发（中心驱动，不进 provides）
 }
 
 // rosterTools 把名册里各服务**显式声明 tool:true** 的动作映射为 LLM 工具
@@ -156,9 +156,10 @@ func (s *Server) runToolCall(ctx context.Context, trace string, call llm.ToolCal
 	return rawToJSONText(data), nil
 }
 
-// toolSem 返回某会话的工具并发信号量（nil = 不限制）。信号量懒创建、按会话复用。
+// toolSem 返回某会话的工具并发信号量（nil = 不限制）。信号量懒创建、按会话复用；
+// 并发上限的变更只影响此后新建的会话（已建信号量不缩容）。
 func (s *Server) toolSem(conversationID string) chan struct{} {
-	n := s.cfg.ToolConcurrency
+	n := s.toolConcurrency()
 	if n < 0 {
 		return nil
 	}

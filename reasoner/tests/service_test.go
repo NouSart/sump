@@ -197,7 +197,7 @@ func startReasoner(t *testing.T, centerURL string) *server.Server {
 		HeartbeatInterval: 100 * time.Millisecond,
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel) // ctx 需活到测试结束：骨架的后台工作（心跳 / 设置拉取）挂在它上面
 	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

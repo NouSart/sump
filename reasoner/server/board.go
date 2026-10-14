@@ -201,7 +201,7 @@ func (s *Server) dispatchToolCalls(st *taskState, resp llm.Message) {
 		go s.runToolJob(st, call)
 	}
 	if dispatched > 0 {
-		s.logger.Printf("会话 %s：派发 %d 个工具（单会话并发上限 %d）", st.cid, dispatched, s.cfg.ToolConcurrency)
+		s.logger.Printf("会话 %s：派发 %d 个工具（单会话并发上限 %d）", st.cid, dispatched, s.toolConcurrency())
 	}
 
 	var waits []llm.Message

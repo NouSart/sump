@@ -134,7 +134,7 @@ func runSixTools(t *testing.T, limit int) *stubSlow {
 		LLM:               fake,
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	t.Cleanup(cancel) // ctx 需活到测试结束：骨架的后台工作（心跳 / 设置拉取）挂在它上面
 	if err := l.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

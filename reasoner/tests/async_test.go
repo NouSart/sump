@@ -34,7 +34,7 @@ func startAsyncEnv(t *testing.T, sc *stubCenter, fake *llm.Fake, notify string) 
 		LLM:               fake,
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	t.Cleanup(cancel) // ctx 需活到测试结束：骨架的后台工作（心跳 / 设置拉取）挂在它上面
 	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -198,8 +198,28 @@ func TestConfigureLive(t *testing.T) {
 	if bad.OK {
 		t.Fatal("未支持的设置键应被拒绝")
 	}
-	if !strings.Contains(bad.Error, "未支持的设置键") {
+	if !strings.Contains(bad.Error, "未声明的设置项") {
 		t.Fatalf("拒绝理由不符: %q", bad.Error)
+	}
+
+	// 并发与超时：下发即生效（读回生效值），非法值被拒且保持旧值。
+	okConc := jump(t, c, "configure", protocol.ConfigurePayload{Key: "tool.concurrency", Value: "2"}, ctx)
+	if !okConc.OK {
+		t.Fatalf("tool.concurrency 下发应成功: %s", okConc.Error)
+	}
+	if v := s.SettingValue("tool.concurrency"); v != "2" {
+		t.Fatalf("tool.concurrency 生效值应为 2，实际 %q", v)
+	}
+	badConc := jump(t, c, "configure", protocol.ConfigurePayload{Key: "tool.concurrency", Value: "0"}, ctx)
+	if badConc.OK {
+		t.Fatal("tool.concurrency=0 应被拒绝")
+	}
+	if v := s.SettingValue("tool.concurrency"); v != "2" {
+		t.Fatalf("拒绝后应保持 2，实际 %q", v)
+	}
+	badTimeout := jump(t, c, "configure", protocol.ConfigurePayload{Key: "tool.timeout_ms", Value: "99"}, ctx)
+	if badTimeout.OK {
+		t.Fatal("tool.timeout_ms=99 应被拒绝（最小 1000ms）")
 	}
 
 	sendUser(t, s, "跑两个慢任务")
@@ -241,6 +261,14 @@ func TestNotifyModeFromSettings(t *testing.T) {
 		}},
 	}}})
 	s, boss := startAsyncEnv(t, sc, fake, "each") // 本地是 each，中心覆盖为 batch
+	// 设置拉取由骨架在注册后异步进行——等覆盖值落地再发消息，保证整任务按 batch 运行。
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && s.SettingValue("tool.notify_mode") != "batch" {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if v := s.SettingValue("tool.notify_mode"); v != "batch" {
+		t.Fatalf("启动拉取未生效: %q", v)
+	}
 	sendUser(t, s, "跑两个慢任务")
 
 	select {

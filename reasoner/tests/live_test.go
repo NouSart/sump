@@ -49,7 +49,7 @@ func TestLiveDeepSeek(t *testing.T) {
 		LLM:               llm.NewDeepSeekClient("https://api.deepseek.com", key, model),
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	t.Cleanup(cancel) // ctx 需活到测试结束：骨架的后台工作（心跳 / 设置拉取）挂在它上面
 	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
