@@ -89,8 +89,8 @@ func TestConcurrencyConfigureLive(t *testing.T) {
 }
 
 // TestToolTimeoutConfigureLive：下发 tool.timeout_ms=1000 后，
-// 耗时 1.3s 的工具调用按失败入账（[工具结果] 含“错误”），而不是无限等待——
-// 设置真正改变了单次工具执行的超时。
+// 耗时 2s 的工具调用按失败入账（[工具结果] 含“错误”），而不是无限等待——
+// 设置真正改变了单次工具执行的超时（2s vs 1s：留 1s 余量防调度抖动；测试耗时不变，等待方是超时路径）。
 func TestToolTimeoutConfigureLive(t *testing.T) {
 	fake := &llm.Fake{Replies: []llm.Message{
 		{Role: "assistant", ToolCalls: []llm.ToolCall{{
@@ -99,7 +99,7 @@ func TestToolTimeoutConfigureLive(t *testing.T) {
 		}}},
 		{Role: "assistant", Content: "收尾"},
 	}}
-	s, slow, boss := startSlowReasoner(t, fake, 1300*time.Millisecond, 0)
+	s, slow, boss := startSlowReasoner(t, fake, 2*time.Second, 0)
 
 	configure(t, s, protocol.ConfigurePayload{Key: "tool.timeout_ms", Value: "1000", Default: "60000", Overridden: true})
 

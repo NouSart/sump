@@ -105,23 +105,7 @@ func TestSettingsHotPathE2E(t *testing.T) {
 	waitWSReady(t, imagesURL, 60*time.Second)
 
 	// 观察者：注册进中心，收集 settings 广播（地址不会被拨号：无声明设置项）。
-	rec := &settingsRecorder{}
-	obs, err := protocol.Dial(centerURL, rec.onEvent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = obs.Close() })
-	obsReg, err := protocol.NewEnvelope(protocol.TypeRegister, "e2e-settings-observer", "settings-center", "", protocol.RegisterPayload{
-		Name: "e2e-settings-observer", Addr: "ws://127.0.0.1:1/ws", Description: "设置热链观察者",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	obsCtx, obsCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	if _, err := obs.Call(obsCtx, obsReg); err != nil {
-		t.Fatal(err)
-	}
-	obsCancel()
+	obs, rec := registerObserver(t, centerURL)
 	waitRosterHas(t, obs, "images", 60*time.Second)
 
 	// 1) set max_mb=1：受理回执立即返回（含新值视图）——不等待服务送达。
@@ -187,4 +171,116 @@ func TestSettingsHotPathE2E(t *testing.T) {
 	if r := saveImage(t, imagesURL2, big); !r.OK {
 		t.Fatalf("重置后 2MiB 应可保存: %s", r.Error)
 	}
+}
+
+// registerObserver 注册一个“设置热链观察者”：收集 settings 事件，供断言使用
+// （名片地址不会被拨号——观察者不声明设置项）。
+func registerObserver(t *testing.T, centerURL string) (*protocol.Client, *settingsRecorder) {
+	t.Helper()
+	rec := &settingsRecorder{}
+	c, err := protocol.Dial(centerURL, rec.onEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	env, err := protocol.NewEnvelope(protocol.TypeRegister, "e2e-settings-observer", "settings-center", "", protocol.RegisterPayload{
+		Name: "e2e-settings-observer", Addr: "ws://127.0.0.1:1/ws", Description: "设置热链观察者",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := c.Call(ctx, env); err != nil {
+		t.Fatal(err)
+	}
+	return c, rec
+}
+
+// waitSaveRejected 轮询保存直到被拒（错误含 want），超时失败。
+func waitSaveRejected(t *testing.T, imagesURL, data, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last protocol.ResponsePayload
+	for time.Now().Before(deadline) {
+		last = saveImage(t, imagesURL, data)
+		if !last.OK && strings.Contains(last.Error, want) {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("等待保存被拒（含 %q）超时；最后响应: %+v", want, last)
+}
+
+// waitSaveOK 轮询保存直到成功，超时失败。
+func waitSaveOK(t *testing.T, imagesURL, data string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last protocol.ResponsePayload
+	for time.Now().Before(deadline) {
+		last = saveImage(t, imagesURL, data)
+		if last.OK {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("等待保存成功超时；最后响应: %+v", last)
+}
+
+// TestSettingsCenterRestartE2E：覆盖值落盘——中心重启后从 settings.json 恢复，
+// 服务断线自愈自动重连重注册并与之全量对齐，行为仍被覆盖值约束；reset 后回落预设。
+func TestSettingsCenterRestartE2E(t *testing.T) {
+	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
+	imgBin := buildServiceNamed(t, "github.com/QAQ-awa-QAQ/sump/images", "sump-images")
+
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	scPort := freePort(t)
+	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
+	imgPort := freePort(t)
+	imagesURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", imgPort)
+	big := base64.StdEncoding.EncodeToString(make([]byte, 2<<20))
+
+	scCmd := startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort), "-settings", settingsPath)
+	waitWSReady(t, centerURL, 60*time.Second)
+	startProc(t, imgBin,
+		"-addr", fmt.Sprintf("127.0.0.1:%d", imgPort), "-center", centerURL,
+		"-db", filepath.Join(dir, "images.db"), "-dir", filepath.Join(dir, "images"))
+	waitWSReady(t, imagesURL, 60*time.Second)
+
+	obs, rec := registerObserver(t, centerURL)
+	waitRosterHas(t, obs, "images", 60*time.Second)
+
+	// 写覆盖并确认生效（下发事件 ok）→ 2MiB 保存被拒。
+	setCtx, setCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	rp := callJump(t, obs, "settings-center", "set_setting", protocol.SetSettingPayload{Service: "images", Key: "max_mb", Value: "1"}, setCtx)
+	setCancel()
+	if !rp.OK {
+		t.Fatalf("set_setting 未被受理: %s", rp.Error)
+	}
+	evs := rec.wait(t, 1, 30*time.Second)
+	if len(evs[0].Results) != 1 || !evs[0].Results[0].OK {
+		t.Fatalf("覆盖下发未生效: %+v", evs[0])
+	}
+	waitSaveRejected(t, imagesURL, big, "1048576", 10*time.Second)
+
+	// 重启中心（同一 settings 文件）：覆盖值应从盘恢复。
+	_ = scCmd.Process.Kill()
+	_, _ = scCmd.Process.Wait()
+	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort), "-settings", settingsPath)
+	waitWSReady(t, centerURL, 60*time.Second)
+
+	// images 断线自愈：重连重注册 → 与中心对齐（推送或拉取）→ 覆盖值仍然生效。
+	obs2, _ := registerObserver(t, centerURL)
+	waitRosterHas(t, obs2, "images", 60*time.Second)
+	waitSaveRejected(t, imagesURL, big, "1048576", 15*time.Second)
+
+	// reset → 回落预设（32MB）→ 2MiB 可保存。
+	resetCtx, resetCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	rp = callJump(t, obs2, "settings-center", "reset_setting", protocol.ResetSettingPayload{Service: "images", Key: "max_mb"}, resetCtx)
+	resetCancel()
+	if !rp.OK {
+		t.Fatalf("reset_setting 未被受理: %s", rp.Error)
+	}
+	waitSaveOK(t, imagesURL, big, 15*time.Second)
 }
