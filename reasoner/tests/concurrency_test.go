@@ -17,10 +17,12 @@ import (
 	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
 )
 
-// stubSlow 是“慢工具”服务替身：每次 work 调用睡 80ms，记录并发峰值。
+// stubSlow 是“慢工具”服务替身：每次 work 调用睡一段（默认 80ms），记录并发峰值。
 type stubSlow struct {
 	ln  net.Listener
 	srv *http.Server
+
+	sleep time.Duration
 
 	mu            sync.Mutex
 	inflight      int
@@ -30,11 +32,17 @@ type stubSlow struct {
 
 func startStubSlow(t *testing.T, center *stubCenter) *stubSlow {
 	t.Helper()
+	return startStubSlowSleep(t, center, 80*time.Millisecond)
+}
+
+// startStubSlowSleep 同 startStubSlow，但可指定单次调用耗时（工具超时行为测试用）。
+func startStubSlowSleep(t *testing.T, center *stubCenter, sleep time.Duration) *stubSlow {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &stubSlow{ln: ln}
+	s := &stubSlow{ln: ln, sleep: sleep}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
 	s.srv = &http.Server{Handler: mux}
@@ -87,7 +95,7 @@ func (s *stubSlow) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.Unlock()
 
-		time.Sleep(80 * time.Millisecond)
+		time.Sleep(s.sleep)
 
 		s.mu.Lock()
 		s.inflight--

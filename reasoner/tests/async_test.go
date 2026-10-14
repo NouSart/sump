@@ -193,10 +193,10 @@ func TestConfigureLive(t *testing.T) {
 	if !rp.OK {
 		t.Fatalf("configure 未被受理: %s", rp.Error)
 	}
-	// 未支持的设置键：明确拒绝（回执不“假装已应用”）。
+	// 未声明的设置键：明确拒绝（回执不“假装已应用”）。
 	bad := jump(t, c, "configure", protocol.ConfigurePayload{Key: "no.such.key", Value: "x"}, ctx)
 	if bad.OK {
-		t.Fatal("未支持的设置键应被拒绝")
+		t.Fatal("未声明的设置键应被拒绝")
 	}
 	if !strings.Contains(bad.Error, "未声明的设置项") {
 		t.Fatalf("拒绝理由不符: %q", bad.Error)
