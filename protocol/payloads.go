@@ -184,13 +184,29 @@ type ResetSettingPayload struct {
 	Key     string `msgpack:"key"`
 }
 
-// ConfigurePayload 是 configure 的输入：设置中心在 set_setting / reset_setting 成功后，
-// 把变更的**生效值**推送给所属服务（尽力送达；服务侧仍应保留启动拉取作兜底）。
+// ConfigurePayload 是 configure 的输入：设置中心把生效值下发给所属服务
+// （注册成功后全量逐键下发；set_setting / reset_setting 后单键下发）。
 type ConfigurePayload struct {
 	Key        string `msgpack:"key"`
 	Value      string `msgpack:"value"`      // 生效值 = 覆盖值 ?? 声明默认值
 	Default    string `msgpack:"default"`    // 服务声明的默认值
 	Overridden bool   `msgpack:"overridden"` // 是否处于覆盖状态
+}
+
+// SettingResult 是一次下发中单个设置项的结果（settings 事件用）。
+type SettingResult struct {
+	Key   string `msgpack:"key"`
+	Value string `msgpack:"value,omitempty"` // 成功应用后的生效值
+	OK    bool   `msgpack:"ok"`
+	Error string `msgpack:"error,omitempty"`
+}
+
+// SettingsEventPayload 是 settings 事件的载荷：中心广播某服务的设置变更与下发结果。
+// Cause 复用触发的动作名（register / set_setting / reset_setting）。
+type SettingsEventPayload struct {
+	Cause   string          `msgpack:"cause"`
+	Service string          `msgpack:"service"`
+	Results []SettingResult `msgpack:"results,omitempty"`
 }
 
 // ---------- 长期记忆（memory） ----------
