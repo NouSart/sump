@@ -13,8 +13,10 @@ TS 服务节点 + 浏览器面板：把设置中心的状态与设置可视化�
 
 ```powershell
 npm install          # 安装依赖（Node ≥ 22.18）
-npm run build        # 类型检查（tsc ×2）+ 服务端编译 + vite 构建（dist/server + dist/web）
-npm test             # 协议夹具 / 中心链路 / HTTP API 测试（node --test，内置 TS 类型剥离）
+npm run build        # 类型检查（tsc ×3，含测试）+ 服务端编译 + vite 构建（dist/server + dist/web）
+npm test             # 全部测试 = test:node + test:web
+npm run test:node    # 协议夹具 / 中心链路 / HTTP API（node --test，内置 TS 类型剥离）
+npm run test:web     # 面板组件测试（vitest + jsdom + Testing Library，逻辑层）
 npm start            # 启动（需先 build）：node dist/server/index.js -addr 127.0.0.1:9501 -center ws://127.0.0.1:9000/ws
 ```
 
@@ -27,6 +29,8 @@ npm start            # 启动（需先 build）：node dist/server/index.js -add
 - `src/server/service.ts`：自己的 WS 端点（v1 未提供动作，一律 `unknown action` 回执——注册的地址必须真实可达）；
 - `src/server/api.ts`：HTTP 层（`/api/overview`、`/api/settings/set|reset`、`/api/events` SSE——事件：`status` / `roster` / `settings`、静态托管）；
 - `src/web/`：React 面板（v2 版式：悬浮胶囊边栏 + 96px 服务名主体 + 设置五列表格；唯一蓝强调；Fira Sans / Fira Code 本地打包）。
+- `tests/`：`*.test.ts` = 服务端（node --test）；`tests/web/` = 面板组件测试（vitest + jsdom，
+  `harness.ts` 提供假 EventSource 与 fetch 路由桩——SSE/fetch 在边界处替换，App 代码零改动；`tsconfig.test.json` 让测试进类型检查）。
 - `design/`：版式样张（specimen.html + specimen.css，纯静态、供版式评审；经 `:19531` 查看需先拷到 `dist/web/`）。
 
 ## 设计说明（节选）

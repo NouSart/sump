@@ -45,7 +45,7 @@ cd tests; go test ./... -count=1; cd ..
    cd <模块>; $env:GOWORK='off'; go build ./...
    ```
 
-改动 `frontend`（TS）时另加：`cd frontend; npm test`（协议 / 中心链路 / HTTP API；`npm run build` 内含类型检查）。
+改动 `frontend`（TS）时另加：`cd frontend; npm test`（协议 / 中心链路 / HTTP API / 面板组件测试；`npm run build` 内含类型检查，含测试）。
 
 CI（GitHub Actions）会替你跑全部内容；本地先过一遍能省一轮等待。
 
