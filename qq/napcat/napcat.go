@@ -81,6 +81,33 @@ func (ev Event) ImageURLs() []string {
 	return urls
 }
 
+// FileRef 是一条文件附件的引用（下载 URL + 文件名）。
+type FileRef struct {
+	URL  string
+	Name string
+}
+
+// FileRefs 提取文件附件（OneBot 11 file 段：data.url 下载地址；
+// 文件名各实现不一——data.file / data.name 都认）。
+func (ev Event) FileRefs() []FileRef {
+	var out []FileRef
+	for _, seg := range ParseSegments(ev.Message) {
+		if seg.Type != "file" {
+			continue
+		}
+		u, _ := seg.Data["url"].(string)
+		if u == "" {
+			continue
+		}
+		name, _ := seg.Data["file"].(string)
+		if n, ok := seg.Data["name"].(string); ok && n != "" {
+			name = n
+		}
+		out = append(out, FileRef{URL: u, Name: name})
+	}
+	return out
+}
+
 // Client 是 NapCat 客户端。
 type Client struct {
 	cfg Config

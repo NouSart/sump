@@ -98,7 +98,7 @@ SUMP 是“服务的互联网”：每个服务是一个独立进程、独立数
 ### 6.1 保留动作名（链机制，语义不可改）
 
 `user_message`（链入口）/ `step`（自跳继续）/ `deliver`（终点直达 boss）/
-`recall` `resume` `store`（记忆往返）/ `save` `fetch`（图片链）。
+`recall` `resume` `store`（记忆往返）/ `save` `fetch`（图片/文件链）。
 
 这些是**协议级词汇**：即便某个服务提供了同名动作，也**不作为 LLM 工具**暴露。
 
@@ -229,6 +229,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 | reasoner | Go | 单步推理器：任务入口经 memory 托管、收到 resume 才调 LLM；工具异步派发（即时回执 → 结果注入 → 唤醒），收尾门禁保护，结果 deliver 直达 boss |
 | memory | Go | 会话消息的唯一保管者；recall 取最近历史 + 长期记忆（核心注入 + bigram 召回）组装为记忆块后 resume 回调用方；remember 写入（幂等）/ forget 软删 |
 | images | Go | save（URL/base64 落盘）返回 id；fetch（id → base64） |
+| files | Go | save（URL/base64 + filename 落盘）返回 id；fetch（id → base64）；read（id → 截断文本，`tool: true`——LLM 凭占位 id 自取；二进制明确拒绝） |
 | qq | Go | 把主人私聊消息（图先存 images）打成 user_message 发给 reasoner；实现 deliver 回发私聊 |
 | tests | Go | 跨服务真进程端到端（不属于任何服务） |
 

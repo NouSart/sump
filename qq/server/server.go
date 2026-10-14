@@ -29,6 +29,7 @@ type Config struct {
 	Owner             string        // 主人 QQ（唯一授权私聊用户；留空则拒绝所有私聊）
 	Agent             string        // 任务跳转目标（reasoner 服务名，默认 reasoner）
 	Images            string        // 图片服务名（默认 images）
+	Files             string        // 文件服务名（默认 files）
 }
 
 // Server 是 qq 服务实例（服务骨架 + NapCat 客户端）。
@@ -50,6 +51,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}
 	if cfg.Images == "" {
 		cfg.Images = "images"
+	}
+	if cfg.Files == "" {
+		cfg.Files = "files"
 	}
 	s := &Server{cfg: cfg, logger: logger, locks: map[string]*sync.Mutex{}}
 	s.Service = service.New(service.Config{
@@ -153,12 +157,24 @@ func (s *Server) onQQEvent(ev napcat.Event) {
 		}
 		ids = append(ids, id)
 	}
-	if strings.TrimSpace(text) == "" && len(ids) == 0 {
+	var fileIDs []string
+	for _, fr := range ev.FileRefs() {
+		id, err := s.saveFile(fr)
+		if err != nil {
+			s.logger.Printf("保存文件失败: %v", err)
+			text = appendLine(text, "[文件]")
+			continue
+		}
+		fileIDs = append(fileIDs, id)
+		// 占位必须带 id——文件是模型凭 id 调 files__read 自取的（与图片的自动内联不同）。
+		text = appendLine(text, fmt.Sprintf("[文件: %s, id=%s]", fr.Name, id))
+	}
+	if strings.TrimSpace(text) == "" && len(ids) == 0 && len(fileIDs) == 0 {
 		return
 	}
 
 	cid := "qq:private:" + uid
-	payload := protocol.UserMessagePayload{Text: text, ConversationID: cid, Images: ids}
+	payload := protocol.UserMessagePayload{Text: text, ConversationID: cid, Images: ids, Files: fileIDs}
 	if err := s.callAgent("user_message", payload); err != nil {
 		s.logger.Printf("user_message 未受理: %v", err)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -182,6 +198,33 @@ func (s *Server) saveImage(url string) (string, error) {
 		return "", errors.New("images.save 返回无效")
 	}
 	return res.ID, nil
+}
+
+// saveFile 把文件 URL 交给 files 服务保存，返回文件 id。
+func (s *Server) saveFile(fr napcat.FileRef) (string, error) {
+	name := strings.TrimSpace(fr.Name)
+	if name == "" {
+		name = "未命名文件"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	data, err := s.Call(ctx, s.cfg.Files, "save", protocol.FileSavePayload{URL: fr.URL, Filename: name}, protocol.NewID(), s.cfg.Name)
+	if err != nil {
+		return "", err
+	}
+	var res protocol.FileSaveResult
+	if err := protocol.DecodeRaw(data, &res); err != nil || res.ID == "" {
+		return "", errors.New("files.save 返回无效")
+	}
+	return res.ID, nil
+}
+
+// appendLine 向文本追加一行（空文本直接起行）。
+func appendLine(text, line string) string {
+	if strings.TrimSpace(text) == "" {
+		return line
+	}
+	return text + "\n" + line
 }
 
 // callAgent 向 reasoner 发 user_message（等受理回执；boss=本服务）。

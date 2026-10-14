@@ -3,7 +3,7 @@
 [![CI](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml/badge.svg)](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-> 状态：M6 完成（长期记忆 v0：remember / forget + bigram 召回 + 核心注入） · 设计文档：[DESIGN.md](./DESIGN.md)
+> 状态：M7 完成（文件服务 v0：QQ 文件消息 → files 存取 + `files__read` 工具自取文本） · 设计文档：[DESIGN.md](./DESIGN.md)
 
 SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独立运行（独立进程、独立数据库、任意语言），通过 WebSocket 按地址互相访问；智能体循环由 LLM 服务在服务网络之上自由跳转、组装。
 
@@ -25,17 +25,18 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - **长期记忆 v0**：`remember`（声明在 `provides` 里，自动成为 LLM 工具——加能力零 reasoner 改动）/ `forget` 软删；召回 = bigram 打分（1~2 字中文可命中）+ 核心注入（priority）；recall 组装为「最近对话 / 核心记忆 / 相关记忆」三节
 - **记忆激活（完全启动）**：LLM 调 API 前先把任务上下文托管给记忆服务；只有收到 `from=memory` 的 `resume` 才“完全启动”——注入什么记忆由记忆服务决定
 - **图片链路**：QQ 图片存入 images 服务（独立进程/独立库）；llm 推理前自动取“最近一条消息”的图转 base64 内联给模型（更早的消息转文本占位）
+- **文件链路**：QQ 文件存入 files 服务（独立进程/独立库）；链上只传 id + 占位文本（`[文件: 名, id=...]`），`read` 声明 `tool: true` 自动成为 LLM 工具（`files__read`）——模型凭 id 自取文本（截断；二进制明确拒绝），reasoner 零改动
 
 ## 本地运行
 
 ```powershell
-# 构建并启动五个服务（settings-center :9000 + memory :9201 + images :9401 + qq :9301 + reasoner :9101）
+# 构建并启动六个服务（settings-center :9000 + memory :9201 + images :9401 + files :9501 + qq :9301 + reasoner :9101）
 .\scripts\run-local.ps1
 ```
 
-- 自定义地址：`.\scripts\run-local.ps1 -CenterAddr 127.0.0.1:9000 -MemoryAddr 127.0.0.1:9201 -ImageAddr 127.0.0.1:9401 -QQAddr 127.0.0.1:9301 -AgentAddr 127.0.0.1:9101`
+- 自定义地址：`.\scripts\run-local.ps1 -CenterAddr 127.0.0.1:9000 -MemoryAddr 127.0.0.1:9201 -ImageAddr 127.0.0.1:9401 -FilesAddr 127.0.0.1:9501 -QQAddr 127.0.0.1:9301 -AgentAddr 127.0.0.1:9101`
 - 接 QQ（NapCat 正向 WS，仅私聊）：`.\scripts\run-local.ps1 -Owner 2271917353 -NapCatURL ws://192.168.11.196:3001 -NapCatToken <token>`——连不上会自动重试，不影响其余服务
-- 数据落在 `data/`（`memory.db` / `images.db` / `images/` / `settings.json`，不入库）
+- 数据落在 `data/`（`memory.db` / `images.db` / `images/` / `files.db` / `files/` / `settings.json`，不入库）
 - 接入真 LLM：`$env:DEEPSEEK_API_KEY='sk-...'; .\scripts\run-local.ps1`（或显式 `-LlmKey/-LlmModel/-LlmBase`）
 - 真 LLM 冒烟测试：`$env:SUMP_LIVE_LLM='1'; $env:DEEPSEEK_API_KEY='sk-...'; cd reasoner; go test ./tests/ -run TestLiveDeepSeek -v`（平时自动跳过）
 - `Ctrl+C` 停止（脚本会清理全部子进程）
@@ -53,7 +54,8 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - [x] 异步工具模型（M5）：派发即回执 / `[工具结果]` 注入 / `wait` / 收尾门禁 / 任务窗口黑板；工具结果通知模式 `tool.notify_mode`（each 默认 / batch；设置中心覆盖 + 启动拉取）
 - [x] 长期记忆 v0（M6）：`remember`（provides → 自动成为 LLM 工具）/ `forget` 软删；bigram 召回（1~2 字中文可命中）+ 核心注入（priority）；recall 组装三节（最近对话 / 核心 / 相关）
 - [x] 工具暴露显式声明（`provides` 里 `tool: true`）+ 设置下发（`configure`）：中心 set/reset 后推送生效值，reasoner 实时应用（启动拉取兜底）
-- [ ] 下一步：embedding 语义召回 / 巩固线（sleep 提炼）、群聊（@ 必回 / 自主插话）、审批链路
+- [x] 文件服务（M7）：`files` 服务（save/fetch/read，独立进程/独立库）；QQ 私聊文件消息 → 存库 → 占位带 id 上链；`read` 声明 `tool: true` 自动成为 LLM 工具（文本截断 / 二进制明确拒绝）——含服务级测试、qq 接缝测试与全链真进程 e2e
+- [ ] 下一步：embedding 语义召回 / 巩固线（sleep 提炼）、群聊（@ 必回 / 自主插话）、审批链路、PDF/Office 抽取（files.read 升级）
 
 ## 文档
 

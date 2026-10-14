@@ -22,7 +22,7 @@ cd sump
 
 # 跑某一个模块的测试（推荐先跑一遍确认环境正常）
 cd protocol; go test ./... -count=1; cd ..
-# 模块共 8 个：protocol / service / settings-center / reasoner / memory / images / qq / tests
+# 模块共 9 个：protocol / service / settings-center / reasoner / memory / images / files / qq / tests
 
 # 跨服务真进程端到端（约 20 秒）
 cd tests; go test ./... -count=1; cd ..
