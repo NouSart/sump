@@ -64,35 +64,64 @@ func NewSettings(path string, logger *log.Logger) (*Settings, error) {
 
 // Declare 记录某服务声明的设置项（注册时调用）。
 // 未再声明的项其覆盖值会被清除——保管内容始终与服务声明一致。
-func (s *Settings) Declare(service string, items []protocol.Setting) {
+// 返回声明是否发生变化（含清理覆盖；调用方据此决定是否广播 settings 事件）。
+func (s *Settings) Declare(service string, items []protocol.Setting) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	old := s.declared[service]
+	changed := !sameSettings(old, items)
 	s.declared[service] = items
 
 	ov := s.overrides[service]
 	if ov == nil {
-		return
+		return changed
 	}
 	valid := make(map[string]bool, len(items))
 	for _, it := range items {
 		valid[it.Key] = true
 	}
-	changed := false
+	dropped := false
 	for k := range ov {
 		if !valid[k] {
 			delete(ov, k)
-			changed = true
+			dropped = true
 		}
 	}
 	if len(ov) == 0 {
 		delete(s.overrides, service)
 	}
-	if changed {
+	if dropped {
 		s.logf("服务 %s 重新注册：清除未再声明的设置覆盖", service)
 		if err := s.saveLocked(); err != nil {
 			s.logf("保存设置失败: %v", err)
 		}
+		changed = true
 	}
+	return changed
+}
+
+// Items 返回某服务的生效值清单（未声明返回 nil）。
+func (s *Settings) Items(service string) []protocol.SettingView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ss, ok := s.viewLocked(service)
+	if !ok {
+		return nil
+	}
+	return ss.Settings
+}
+
+// sameSettings 比较两份设置声明（nil 与空视为相同）。
+func sameSettings(a, b []protocol.Setting) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // List 返回设置清单：service 为空 = 全部（只含声明了设置项的服务，按服务名排序）。

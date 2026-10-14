@@ -126,14 +126,14 @@ func TestImagePrefetch(t *testing.T) {
 		LLM:               fake,
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel) // ctx 需活到测试结束：骨架的后台工作（心跳 / 设置拉取）挂在它上面
 	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Shutdown)
-	mem.setAgentURL(s.WsURL())
+	mem.setReasonerURL(s.WsURL())
 
-	c := dialAgent(t, s)
+	c := dialReasoner(t, s)
 	raw, err := protocol.EncodePayload(map[string]any{
 		"text":            "看看这图",
 		"conversation_id": "c-img",

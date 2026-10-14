@@ -1,4 +1,5 @@
-// settings-center 离线判定测试：心跳超时摘除（含广播）/ 告别立即摘除 / 重连去重。
+// settings-center 离线判定测试：心跳超时摘除（含广播）/ 告别立即摘除 / 重连去重 /
+// 中心自身设置（扫描间隔与兜底心跳）即时生效。
 package tests
 
 import (
@@ -230,5 +231,35 @@ func TestRegisterDedup(t *testing.T) {
 	_ = c3
 	if r3 := rev(); r3 <= r1 {
 		t.Fatalf("名片变化应推进 revision: %d -> %d", r1, r3)
+	}
+}
+
+// TestSweepSettingsLive 验证：中心自身设置**行为级**生效——
+// 默认（扫描 5s / 兜底 15s）时，未声明心跳的服务要 ~30s 才判离线；
+// 下发（扫描 100ms / 兜底 300ms）后，同一情形 ~1s 内即被摘除（扫描间隔变更立即重排）。
+func TestSweepSettingsLive(t *testing.T) {
+	s, err := server.Start(server.Config{Addr: "127.0.0.1:0"}, newLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Shutdown() })
+	wsURL := "ws://" + s.Addr() + "/ws"
+
+	for _, p := range []protocol.SetSettingPayload{
+		{Service: "settings-center", Key: "sweep_ms", Value: "100"},
+		{Service: "settings-center", Key: "heartbeat_fallback_ms", Value: "300"},
+	} {
+		if _, msg := callSettings(t, wsURL, "set_setting", p); msg != "" {
+			t.Fatalf("%s 下发失败: %s", p.Key, msg)
+		}
+	}
+
+	// 未声明心跳（hbMS=0）且不发心跳：兜底 300ms → 2×300ms 后应判离线。
+	registerRaw(t, wsURL, "svc-f", 0, "兜底心跳测试")
+	waitInRoster(t, wsURL, "svc-f", true, 3*time.Second)
+	start := time.Now()
+	waitInRoster(t, wsURL, "svc-f", false, 5*time.Second)
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("兜底=300ms 时应 ~1s 内判离线，实际 %v", elapsed)
 	}
 }

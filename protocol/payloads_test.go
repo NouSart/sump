@@ -90,6 +90,13 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 		{"setSetting", SetSettingPayload{Service: "svc-a", Key: "k", Value: "v"}, &SetSettingPayload{}},
 		{"resetSetting", ResetSettingPayload{Service: "svc-a", Key: "k"}, &ResetSettingPayload{}},
 		{"configure", ConfigurePayload{Key: "tool.notify_mode", Value: "batch", Default: "each", Overridden: true}, &ConfigurePayload{}},
+		{"settingsEvent", SettingsEventPayload{Cause: "set_setting", Service: "svc-a", Results: []SettingResult{
+			{Key: "k", Value: "v", OK: true},
+			{Key: "j", OK: false, Error: "未送达: 连接失败"},
+		}}, &SettingsEventPayload{}},
+		{"settingsEventNoResults", SettingsEventPayload{Cause: "register", Service: "svc-a"}, &SettingsEventPayload{}},
+		{"report", ReportPayload{Kind: "fire", Message: "跳转失败"}, &ReportPayload{}},
+		{"reportNoKind", ReportPayload{Message: "boom"}, &ReportPayload{}},
 		{"settingsResult", SettingsResult{Services: []ServiceSettings{{
 			Service: "svc-a",
 			Settings: []SettingView{{

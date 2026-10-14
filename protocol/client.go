@@ -117,7 +117,10 @@ func (c *Client) readLoop() {
 		}
 		env, err := Unmarshal(data)
 		if err != nil {
-			continue // 坏帧跳过（M1 最小实现）
+			// 坏帧 = 协议损坏：无法归属到任何在途请求，直接关闭连接让它们立即失败
+			//（调用方不再干等到超时；上层发现断开后按断线自愈重连）。
+			c.close()
+			return
 		}
 		if env.Type == TypeResponse {
 			c.pendingMu.Lock()

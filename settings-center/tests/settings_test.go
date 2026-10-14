@@ -104,25 +104,25 @@ func TestSettingsFlow(t *testing.T) {
 	t.Cleanup(func() { _ = s.Shutdown() })
 	wsURL := "ws://" + s.Addr() + "/ws"
 
-	registerWithSettings(t, wsURL, "svc-a", []protocol.Setting{{Key: "conn.default_ttl", Default: "5m"}})
+	registerWithSettings(t, wsURL, "svc-a", []protocol.Setting{{Key: "demo.setting", Default: "5m"}})
 
 	// 未覆盖：生效值 = 声明默认值
 	res, errMsg := callSettings(t, wsURL, "list_settings", protocol.SettingsListPayload{})
 	if errMsg != "" {
 		t.Fatalf("list_settings 失败: %s", errMsg)
 	}
-	if v := findSetting(t, res, "svc-a", "conn.default_ttl"); v.Value != "5m" || v.Default != "5m" || v.Overridden {
+	if v := findSetting(t, res, "svc-a", "demo.setting"); v.Value != "5m" || v.Default != "5m" || v.Overridden {
 		t.Fatalf("初始状态不符: %+v", v)
 	}
 
 	// 写入覆盖值
 	res, errMsg = callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{
-		Service: "svc-a", Key: "conn.default_ttl", Value: "10m",
+		Service: "svc-a", Key: "demo.setting", Value: "10m",
 	})
 	if errMsg != "" {
 		t.Fatalf("set_setting 失败: %s", errMsg)
 	}
-	if v := findSetting(t, res, "svc-a", "conn.default_ttl"); v.Value != "10m" || !v.Overridden || v.Default != "5m" {
+	if v := findSetting(t, res, "svc-a", "demo.setting"); v.Value != "10m" || !v.Overridden || v.Default != "5m" {
 		t.Fatalf("覆盖状态不符: %+v", v)
 	}
 
@@ -141,11 +141,11 @@ func TestSettingsFlow(t *testing.T) {
 	}
 
 	// 重置 → 回落默认值
-	res, errMsg = callSettings(t, wsURL, "reset_setting", protocol.ResetSettingPayload{Service: "svc-a", Key: "conn.default_ttl"})
+	res, errMsg = callSettings(t, wsURL, "reset_setting", protocol.ResetSettingPayload{Service: "svc-a", Key: "demo.setting"})
 	if errMsg != "" {
 		t.Fatalf("reset_setting 失败: %s", errMsg)
 	}
-	if v := findSetting(t, res, "svc-a", "conn.default_ttl"); v.Value != "5m" || v.Overridden {
+	if v := findSetting(t, res, "svc-a", "demo.setting"); v.Value != "5m" || v.Overridden {
 		t.Fatalf("重置后状态不符: %+v", v)
 	}
 }

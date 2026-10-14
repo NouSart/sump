@@ -25,7 +25,7 @@ func TestHelloWeb(t *testing.T) {
 	scPort := freePort(t)
 	alPort := freePort(t)
 	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	agentURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", alPort)
+	reasonerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", alPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
@@ -47,7 +47,7 @@ func TestHelloWeb(t *testing.T) {
 	waitRosterHas(t, obs, "settings-center", 10*time.Second)
 
 	// 观察者连 reasoner，做跳转断言。
-	ac, err := protocol.Dial(agentURL, nil)
+	ac, err := protocol.Dial(reasonerURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +143,8 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// startProc 启动子进程并在测试结束时清理。
-func startProc(t *testing.T, bin string, args ...string) {
+// startProc 启动子进程并在测试结束时清理（返回句柄，便于中途重启演练）。
+func startProc(t *testing.T, bin string, args ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = os.Stdout
@@ -156,6 +156,7 @@ func startProc(t *testing.T, bin string, args ...string) {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 	})
+	return cmd
 }
 
 // waitWSReady 重试拨号直到目标可连接。

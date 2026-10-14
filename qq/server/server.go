@@ -26,8 +26,8 @@ type Config struct {
 	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
 	NapCatURL         string        // NapCat 正向 WS 地址
 	NapCatToken       string        // access_token（可选）
-	Owner             string        // 主人 QQ（唯一授权私聊用户；留空则拒绝所有私聊）
-	Agent             string        // 任务跳转目标（reasoner 服务名，默认 reasoner）
+	Owner             string        // 主人 QQ（唯一授权私聊用户；留空则拒绝所有私聊；作为声明预设上报）
+	Reasoner          string        // 任务跳转目标（reasoner 服务名，默认 reasoner）
 	Images            string        // 图片服务名（默认 images）
 	Files             string        // 文件服务名（默认 files）
 }
@@ -40,14 +40,17 @@ type Server struct {
 	logger *log.Logger
 	napcat *napcat.Client
 
+	setMu sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
+	owner string     // 当前主人 QQ（空 = 拒绝所有私聊）
+
 	locksMu sync.Mutex
 	locks   map[string]*sync.Mutex // 会话级串行锁（防同一会话消息乱序）
 }
 
 // New 创建实例并注册动作。
 func New(cfg Config, logger *log.Logger) *Server {
-	if cfg.Agent == "" {
-		cfg.Agent = "reasoner"
+	if cfg.Reasoner == "" {
+		cfg.Reasoner = "reasoner"
 	}
 	if cfg.Images == "" {
 		cfg.Images = "images"
@@ -55,7 +58,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.Files == "" {
 		cfg.Files = "files"
 	}
-	s := &Server{cfg: cfg, logger: logger, locks: map[string]*sync.Mutex{}}
+	s := &Server{cfg: cfg, logger: logger, owner: cfg.Owner, locks: map[string]*sync.Mutex{}}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Listen:            cfg.Listen,
@@ -65,8 +68,20 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Provides: []protocol.Provide{
 			{Action: "deliver", Input: "{text, conversation_id}", Output: "回执（已发回 QQ）"},
 		},
-		Settings: []protocol.Setting{{Key: "conn.default_ttl", Default: "5m"}},
-		Logger:   logger,
+		Logger: logger,
+	})
+	// 可设置项：预设 = 本服务的启动引导值（来源由服务自己决定）。
+	s.HandleSetting("owner", cfg.Owner, func(v string) error {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			if _, err := strconv.ParseUint(v, 10, 64); err != nil {
+				return fmt.Errorf("需要空串或纯数字 QQ 号，收到 %q", v)
+			}
+		}
+		s.setMu.Lock()
+		s.owner = v
+		s.setMu.Unlock()
+		return nil
 	})
 	s.Handle("deliver", s.actionDeliver)
 	s.napcat = napcat.New(napcat.Config{
@@ -76,6 +91,13 @@ func New(cfg Config, logger *log.Logger) *Server {
 		OnMessage: s.onQQEvent,
 	})
 	return s
+}
+
+// ownerNow 返回当前主人 QQ（空 = 拒绝所有私聊）。
+func (s *Server) ownerNow() string {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.owner
 }
 
 // Start 启动服务骨架，并额外启动 NapCat 连接循环（连不上会自动重试，不阻塞其余服务）。
@@ -127,7 +149,8 @@ func (s *Server) onQQEvent(ev napcat.Event) {
 		return
 	}
 	uid := strconv.FormatInt(ev.UserID, 10)
-	if s.cfg.Owner == "" || uid != s.cfg.Owner {
+	owner := s.ownerNow()
+	if owner == "" || uid != owner {
 		s.logger.Printf("拒绝非主人私聊: user_id=%s", uid)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -175,7 +198,7 @@ func (s *Server) onQQEvent(ev napcat.Event) {
 
 	cid := "qq:private:" + uid
 	payload := protocol.UserMessagePayload{Text: text, ConversationID: cid, Images: ids, Files: fileIDs}
-	if err := s.callAgent("user_message", payload); err != nil {
+	if err := s.callReasoner("user_message", payload); err != nil {
 		s.logger.Printf("user_message 未受理: %v", err)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -227,11 +250,11 @@ func appendLine(text, line string) string {
 	return text + "\n" + line
 }
 
-// callAgent 向 reasoner 发 user_message（等受理回执；boss=本服务）。
-func (s *Server) callAgent(action string, payload any) error {
+// callReasoner 向 reasoner 发 user_message（等受理回执；boss=本服务）。
+func (s *Server) callReasoner(action string, payload any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	_, err := s.Call(ctx, s.cfg.Agent, action, payload, protocol.NewID(), s.cfg.Name)
+	_, err := s.Call(ctx, s.cfg.Reasoner, action, payload, protocol.NewID(), s.cfg.Name)
 	return err
 }
 

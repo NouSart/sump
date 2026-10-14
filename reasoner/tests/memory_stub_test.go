@@ -20,9 +20,9 @@ type stubMemory struct {
 	ln  net.Listener
 	srv *http.Server
 
-	mu       sync.Mutex
-	agentURL string // resume 的投递目标（reasoner 启动后设置）
-	stores   []protocol.StorePayload
+	mu          sync.Mutex
+	reasonerURL string // resume 的投递目标（reasoner 启动后设置）
+	stores      []protocol.StorePayload
 }
 
 func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
@@ -52,9 +52,9 @@ func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
 
 func (m *stubMemory) URL() string { return "ws://" + m.ln.Addr().String() + "/ws" }
 
-func (m *stubMemory) setAgentURL(u string) {
+func (m *stubMemory) setReasonerURL(u string) {
 	m.mu.Lock()
-	m.agentURL = u
+	m.reasonerURL = u
 	m.mu.Unlock()
 }
 
@@ -132,7 +132,7 @@ func (m *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
 // fireResume 把组装好的上下文发给 reasoner（from=memory → 触发完全启动）。
 func (m *stubMemory) fireResume(trace string, raw msgpack.RawMessage) {
 	m.mu.Lock()
-	url := m.agentURL
+	url := m.reasonerURL
 	m.mu.Unlock()
 	if url == "" {
 		return

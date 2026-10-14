@@ -42,8 +42,10 @@
   - **推送**：有新服务注册时，设置中心向所有服务推送最新**全量**清单（`roster` 事件）；
   - **拉取**：服务可随时访问设置中心获取最新全量清单（`jump` 的 `roster` 动作）——推送丢失 / 服务重启后的自愈手段。
 - **设置与调度**：各服务接受设置中心的设置与调度。调度**不是中央交换机**，而是“设置各个服务的行为、设计工作流”。
-  - **设置存取（已实现）**：服务注册时声明的 `settings` 由设置中心保管——`list_settings` 查询、`set_setting` 写覆盖值、`reset_setting` 清除覆盖；生效值 = 覆盖值 ?? 声明默认值；覆盖值落盘 `data/settings.json`。**下发（已实现）**：`set_setting` / `reset_setting` 成功后，中心把变更项的生效值以 `configure` 推送给所属服务（尽力送达）；服务侧实时应用（reasoner 的 `tool.notify_mode` 立即生效），启动拉取为兜底。这三个动作不在 `provides` 声明 `tool`（不作为 LLM 工具暴露）。
+  - **设置存取（已实现）**：服务注册时声明的 `settings` 由设置中心保管——`list_settings` 查询、`set_setting` 写覆盖值、`reset_setting` 清除覆盖；生效值 = 覆盖值 ?? 服务声明的预设值；覆盖值落盘 `data/settings.json`。**下发（已实现·注册即对齐）**：`register` 响应发出后，中心异步把该服务**全部生效值**逐键以 `configure` 下发（有界重试；服务明确拒绝不重试），set/reset 成功后单键下发；**受理回执不等待送达**，结果（ok=true / ok=false + 原因）以 `settings` 事件广播（`{cause, service, results}`），面板据此自动刷新与提示。服务侧接收由骨架统一实现（`HandleSetting`：声明 / 校验 / 应用；注册成功后异步拉取一次作兜底，与下发幂等）。设置动作与 `configure` 都不在 `provides` 声明 `tool`（不作为 LLM 工具暴露）。中心自身也声明并应用自己的设置项（`sweep_ms` / `heartbeat_fallback_ms`，本地应用、不经网络）。
   - **离线判定（已实现）**：服务在名片中声明心跳间隔（`heartbeat_ms`）；中心周期扫描，超过 2× 心跳未见即判离线——摘除名册并广播；退出前的 `bye` 心跳立即摘除；心跳晚到可从墓碑复归。断开自愈在服务侧（`service/` 骨架：指数退避重连 + 重新注册 + 注册去重）。
+- **错误上报（已实现·留接口）**：服务经既有中心连接 `report` 一条错误——中心记日志并交给 `OnReport` 挂点（frontend / 落盘 / 富日志后续接入——前端面板已在，上报视图按计划随 v2）。**不含链路编号**（暂无链路记录者）；**防刷在上报方**：退避 1s 起逐档翻倍、封顶 30s，静默 60s 重置；中心视为**永远在线**——不排队、不回补。当前接入点：骨架 `Fire` 未送达（kind=fire）。
+- **前端面板（frontend，已实现 v1）**：拓扑 `浏览器 ——HTTP/JSON + SSE——▶ frontend(:9501) ——单条 WS（注册 / 心跳 / 名册广播 / 动作代转）——▶ 设置中心`。面板本体是服务节点（可在名册中看到自己），但**不持业务状态**：每次请求把 HTTP 翻成中心跳转、把回执翻回 JSON；名册与连接状态经 SSE 实时推送。界面（v2 版式，多轮评审后定稿）：**悬浮胶囊 + 表格化**——①页面=表格：主列元素同一左轴，设置五列全对齐（键 / 生效值 / 默认值 / 状态 / 操作）；②唯一主体=服务名（clamp 56–96px），其余要素降为注释层；③边栏=悬浮胶囊（白底、细边、微浮起、20px 圆角、内容高不通高、sticky）；④色彩克制：白 #FAFAF9 / 近黑 #101418 / 灰，唯一蓝 #005B99（绿仅 7px 状态点）；字体 Fira Sans / Fira Code（@fontsource 本地打包、离线可用）。版式样张在 `frontend/design/`（specimen.html + specimen.css；字体资产为拷贝，不入库）。**评审记录**：暗色（skill Modern Dark）、服务身份色池、通高栏、12 栏大字号色场均经试验后否决——定稿以样张为准。**有意偏差**：首个连接失败不退出（面板的持续退避重连优先于“引导错误立刻可见”）；`-web` 可指定静态目录。v1 范围：设置查看 / 修改 / 重置 + 名册 / 连接状态 / 设置结果事件驱动实时（无刷新按钮）；错误上报视图留待 v2。
 - 服务间的实际访问**不经设置中心中转**。
 
 ```mermaid
@@ -108,7 +110,7 @@ sequenceDiagram
 ### 文件链路（qq → files → llm 凭 id 自取）
 
 - qq 收到文件消息：把文件 URL 与文件名交给 files 服务保存（`save` → `{id}`），`user_message` 携带文件 id（`Files` 字段）并在文本里附加占位 `[文件: 名, id=...]`——占位必须带 id：文件不是自动内联的，是模型凭 id 自取；
-- `read` 在 `provides` 里声明 `tool: true`，经名册自动成为 LLM 工具（`files__read`），**reasoner 零改动**（同 `remember` 先例）：文本类返回截断文本（`read.max_chars` 默认 4000，`truncated` 显式标记“没给全”）；二进制明确拒绝——PDF/Office 抽取属后续批次，届时只升级 files 内部；
+- `read` 在 `provides` 里声明 `tool: true`，经名册自动成为 LLM 工具（`files__read`），**reasoner 零改动**（同 `remember` 先例）：文本类返回截断文本（`read_max_chars` 默认 4000，`truncated` 显式标记“没给全”）；二进制明确拒绝——PDF/Office 抽取属后续批次，届时只升级 files 内部；
 - `fetch`（id → base64 全量）与图片语义同构，v0 链上无消费者，为对称与后续检索/解析服务预留；
 - 文件 id 寿命与图片 id 一致：任务窗口内随消息链（`Message.FileIDs`），落库后只剩占位文本（`StorePayload` 只存文本）；
 - files 独立库（SQLite 元数据 + 文件目录），单文件上限默认 100MiB（`-max-mb` 可调；文件无模型侧限制）。
@@ -173,7 +175,7 @@ sequenceDiagram
       { "action": "user_message", "input": "用户消息（文本/图片）", "output": "流式回复" }
     ],
     "settings": [                             // 可设置项
-      { "key": "conn.default_ttl", "default": "5m" }
+      { "key": "tool.notify_mode", "default": "each" }
     ]
   }
 }
@@ -233,7 +235,7 @@ sequenceDiagram
 - **工具命名**：`<service>__<action>`——由 roster 的 `provides` 自动生成；**暴露 = provides 里显式声明 `tool: true`**（未声明的动作对模型不可见）；`user_message` / `step` / `deliver` / `recall` / `resume` / `store` / `save` / `fetch` 属链机制动作，调试动作（如 reasoner 的 `echo` / `debug_jump`）同样不暴露（第二道闸）
 - **工具异步模型（已实现）**：
   - 派发即回执：每个调用立刻回一条“已受理”`tool` 消息（占住配对位），执行在后台（单次超时默认 60s）；
-  - 结果注入：完成后以 `[工具结果] …`（role=user）写入黑板；通知模式 `tool.notify_mode`（`each` 默认逐条唤醒 / `batch` 攒批），设置中心可覆盖（启动拉取）；
+  - 结果注入：完成后以 `[工具结果] …`（role=user）写入黑板；通知模式 `tool.notify_mode`（`each` 默认逐条唤醒 / `batch` 攒批），设置中心可覆盖（注册下发 + 拉取兜底）；
   - 内置工具 `wait`：阻塞等待全部工具完成；
   - 收尾门禁：仍有工具在跑、或本轮快照过期 → 拒绝收尾（暂存答复 + 注入 `【系统】` 提示）；
   - **任务窗口黑板**：最新消息链 + 在跑工具表（唯一副本）；同会话新消息取代旧任务（在跑结果丢弃）；窗口 = 任务在跑期，交付即释放
@@ -255,7 +257,7 @@ sequenceDiagram
 **后续批次（占名）**
 
 - `approval_request` / `approval_result`（reasoner ↔ qq/web）：审批挂起与裁决
-- `configure`（设置中心 → 服务）：**已实现**基本下发（`set_setting` / `reset_setting` → 推送生效值 → 服务实时应用）；“调度 = 设置行为、设计工作流”的完整形态待设计
+- `configure`（设置中心 → 服务）：**已实现**（注册即全量下发 + 变更单键下发 + `settings` 事件回传；骨架统一承接）；“调度 = 设置行为、设计工作流”的完整形态待设计
 
 ### 服务清单（草案 · 语言已定）
 
@@ -274,7 +276,7 @@ sequenceDiagram
 | images（图片） | Go | 图片保存（URL/base64）+ 按需转 base64 发回（llm 取图内联） | （v1 图片直通部分） | **已实现** |
 | files（文件） | Go | 文件保存（URL/base64）+ fetch 全量取回 + read 文本截取（`tool: true`，LLM 凭 id 自取） | `assets.py`（存取部分） | **已实现**（M7；索引/检索与 PDF/Office 抽取后续） |
 | web（Web 接入） | Go | 浏览器 REST/SSE 接入（不带前端） | `api/` | UI 归 frontend 服务 |
-| frontend（前端服务） | TS | 浏览器 UI，独立服务节点 | `frontend/` | **后续批次**；当前所有服务不带前端 |
+| frontend（前端服务） | TS | 设置中心可视化面板：注册为服务节点（心跳 / 名册广播）；浏览器 HTTP JSON + SSE；设置查看 / 修改 / 重置（中心受理并下发） | `frontend/` | **已实现 v1**（错误上报视图随 v2） |
 | assets（资产） | Go | 文件资产库、索引、检索 | `assets.py` | |
 | skills（技能） | 并入 reasoner | 技能创建 / 加载 | `skills/` | |
 | smart-home（智能家居） | Go | 家居控制后端 | `smart_home/` | 或并入 tools |
@@ -304,7 +306,7 @@ sequenceDiagram
 - memory：SQLite（`data/memory.db`）——`messages` 会话消息表 + `memories` 长期记忆表（v0：kind / content / priority / source / conversation_id / status 软删 / 时间戳）；**两表共享同一 DB 句柄**（同进程同库，跨表事务可行）。
 - images：SQLite 元数据（`data/images.db`）+ 图片文件目录（`data/images/`）。
 - files：SQLite 元数据（`data/files.db`，含 `filename` 列——文件与图片的结构差异）+ 文件目录（`data/files/`）。
-- settings-center：`data/settings.json`——设置覆盖值（默认值由各服务声明，不落盘）。
+- settings-center：`data/settings.json`——设置覆盖值（预设值由各服务声明，不落盘）。
 - （细化待定：其余服务存什么、跨服务数据如何流转）
 
 ## 5. 从 1 的取舍清单

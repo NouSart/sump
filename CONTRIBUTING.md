@@ -24,10 +24,13 @@ cd sump
 cd protocol; go test ./... -count=1; cd ..
 # 模块共 9 个：protocol / service / settings-center / reasoner / memory / images / files / qq / tests
 
+# 前端服务（TS，Node ≥ 22.18）：类型检查 + 构建 + 测试
+cd frontend; npm install; npm test; cd ..
+
 # 跨服务真进程端到端（约 20 秒）
 cd tests; go test ./... -count=1; cd ..
 
-# 本地启动全部服务
+# 本地启动全部服务（含设置面板 http://127.0.0.1:9501/）
 .\scripts\run-local.ps1
 ```
 
@@ -41,6 +44,8 @@ cd tests; go test ./... -count=1; cd ..
    ```powershell
    cd <模块>; $env:GOWORK='off'; go build ./...
    ```
+
+改动 `frontend`（TS）时另加：`cd frontend; npm test`（协议 / 中心链路 / HTTP API / 面板组件测试；`npm run build` 内含类型检查，含测试）。
 
 CI（GitHub Actions）会替你跑全部内容；本地先过一遍能省一轮等待。
 

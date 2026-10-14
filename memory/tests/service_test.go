@@ -44,11 +44,12 @@ func (c *stubConn) send(env protocol.Envelope) {
 }
 
 type stubCenter struct {
-	ln    net.Listener
-	srv   *http.Server
-	mu    sync.Mutex
-	cards map[string]protocol.ServiceCard
-	conns map[*stubConn]struct{}
+	ln       net.Listener
+	srv      *http.Server
+	mu       sync.Mutex
+	cards    map[string]protocol.ServiceCard
+	settings map[string][]protocol.Setting
+	conns    map[*stubConn]struct{}
 }
 
 var stubUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -59,7 +60,7 @@ func startStubCenter(t *testing.T) *stubCenter {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sc := &stubCenter{ln: ln, cards: map[string]protocol.ServiceCard{}, conns: map[*stubConn]struct{}{}}
+	sc := &stubCenter{ln: ln, cards: map[string]protocol.ServiceCard{}, settings: map[string][]protocol.Setting{}, conns: map[*stubConn]struct{}{}}
 	sc.cards["stub-center"] = protocol.ServiceCard{Name: "stub-center", Addr: sc.URL(), Description: "设置中心测试替身"}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", sc.handleWS)
@@ -70,6 +71,13 @@ func startStubCenter(t *testing.T) *stubCenter {
 }
 
 func (sc *stubCenter) URL() string { return "ws://" + sc.ln.Addr().String() + "/ws" }
+
+// DeclaredSettings 返回某服务最近一次注册声明的设置项。
+func (sc *stubCenter) DeclaredSettings(name string) []protocol.Setting {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return append([]protocol.Setting(nil), sc.settings[name]...)
+}
 
 func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 	ws, err := stubUpgrader.Upgrade(w, r, nil)
@@ -98,6 +106,7 @@ func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			sc.mu.Lock()
 			sc.cards[reg.Name] = reg.Card()
+			sc.settings[reg.Name] = reg.Settings
 			sc.conns[c] = struct{}{}
 			roster := sc.snapshotLocked()
 			targets := make([]*stubConn, 0, len(sc.conns))
@@ -134,7 +143,7 @@ func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
 	return protocol.RosterPayload{Services: services, Revision: 1}
 }
 
-// ---------- 调用方替身（扮演 llm / reasoner） ----------
+// ---------- 调用方替身（扮演 reasoner） ----------
 
 type stubCaller struct {
 	ln      net.Listener
@@ -170,7 +179,7 @@ func startStubCaller(t *testing.T, centerURL string) *stubCaller {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	env, err := protocol.NewEnvelope(protocol.TypeRegister, "reasoner", "settings-center", "", protocol.RegisterPayload{
-		Name: "reasoner", Addr: c.URL(), Description: "llm 测试替身",
+		Name: "reasoner", Addr: c.URL(), Description: "reasoner 测试替身",
 	})
 	if err != nil {
 		t.Fatal(err)

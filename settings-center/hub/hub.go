@@ -175,6 +175,11 @@ func (h *Hub) Snapshot() protocol.RosterPayload {
 
 // Broadcast 把快照作为 roster 事件推给所有已注册连接（锁外发送，避免 IO 持锁）。
 func (h *Hub) Broadcast(roster protocol.RosterPayload) {
+	h.BroadcastEvent(protocol.TypeRoster, roster)
+}
+
+// BroadcastEvent 把任意事件载荷推给所有已注册连接（锁外发送，避免 IO 持锁）。
+func (h *Hub) BroadcastEvent(typ string, payload any) {
 	type target struct {
 		name string
 		conn Conn
@@ -187,12 +192,12 @@ func (h *Hub) Broadcast(roster protocol.RosterPayload) {
 	h.mu.Unlock()
 
 	for _, t := range targets {
-		env, err := protocol.NewEnvelope(protocol.TypeRoster, "settings-center", t.name, "", roster)
+		env, err := protocol.NewEnvelope(typ, "settings-center", t.name, "", payload)
 		if err != nil {
 			continue
 		}
 		if err := t.conn.Send(env); err != nil {
-			h.log.Printf("roster 推送失败 (%s): %v", t.name, err)
+			h.log.Printf("%s 推送失败 (%s): %v", typ, t.name, err)
 		}
 	}
 }

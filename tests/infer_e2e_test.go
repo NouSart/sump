@@ -23,7 +23,7 @@ import (
 )
 
 // fakeDeepSeek 是 OpenAI 兼容的假 LLM（异步工具版剧本）：
-// toolFirst=true 时：第 1 轮回 tool_call（echo）、第 2 轮回 tool_call（wait）、其后回文本；
+// toolFirst=true 时：第 1 轮回 tool_call（echo——未提供，会被执行侧闸门拒绝；另一个 memory__remember 正常）、第 2 轮回 tool_call（wait）、其后回文本；
 // toolFirst=false 时始终回文本。
 type fakeDeepSeek struct {
 	mu       sync.Mutex
@@ -53,7 +53,7 @@ func startFakeDeepSeek(t *testing.T, toolFirst bool) *fakeDeepSeek {
 		var msg map[string]any
 		switch {
 		case toolFirst && call == 1:
-			// 第 1 轮并发派发两个工具：echo（链路跳转）与 memory__remember
+			// 第 1 轮并发派发两个调用：echo（未提供——验证执行侧闸门拒绝）与 memory__remember
 			//（后者验证 memory 的 provides 自动变成 LLM 工具、reasoner 零改动）。
 			msg = map[string]any{
 				"role": "assistant",
@@ -228,7 +228,7 @@ func (b *e2eBoss) register(t *testing.T, centerURL string) *protocol.Client {
 }
 
 // TestInferChainE2E 真进程版全链（完全启动）：user_message → 记忆往返（recall → resume）
-// → 工具派发（异步受理回执：echo + memory__remember）→ 自跳 → wait 等到结果 → 收尾轮 → deliver；
+// → 工具派发（异步受理回执；echo 被闸门拒绝、memory__remember 成功）→ 自跳 → wait 等到结果 → 收尾轮 → deliver；
 // 以预置会话历史验证记忆注入，并以第二轮对话验证长期记忆召回（remember 写入的条目被注入）。
 func TestInferChainE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
@@ -242,7 +242,7 @@ func TestInferChainE2E(t *testing.T) {
 	alPort := freePort(t)
 	memPort := freePort(t)
 	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	agentURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", alPort)
+	reasonerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", alPort)
 	memoryURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", memPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
@@ -267,7 +267,7 @@ func TestInferChainE2E(t *testing.T) {
 		"-llm-key", "test-key",
 		"-llm-model", "fake-model",
 	)
-	waitWSReady(t, agentURL, 60*time.Second)
+	waitWSReady(t, reasonerURL, 60*time.Second)
 
 	// 等名册齐全。
 	obs, err := protocol.Dial(centerURL, nil)
@@ -312,7 +312,7 @@ func TestInferChainE2E(t *testing.T) {
 	}
 
 	// 发起链：boss=e2e-boss。
-	ac, err := protocol.Dial(agentURL, nil)
+	ac, err := protocol.Dial(reasonerURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,14 +416,14 @@ func TestInferChainE2E(t *testing.T) {
 		t.Fatalf("第二次 LLM 请求应包含两个调用的受理回执: %+v", msgs2)
 	}
 
-	// 第三轮请求（wait 返回后）：两个结果都已作为 [工具结果] 注入。
+	// 第三轮请求（wait 返回后）：两个调用都已入账——echo 被拒（“不可用”错误），remember 成功（created）。
 	msgs3, _ := reqs[2]["messages"].([]any)
 	foundResult, foundRememberResult := false, false
 	for _, m := range msgs3 {
 		mm, _ := m.(map[string]any)
 		if mm["role"] == "user" {
 			s, _ := mm["content"].(string)
-			if strings.Contains(s, "[工具结果]") && strings.Contains(s, "e2e") && strings.Contains(s, "reasoner__echo") {
+			if strings.Contains(s, "[工具结果]") && strings.Contains(s, "不可用") && strings.Contains(s, "reasoner__echo") {
 				foundResult = true
 			}
 			if strings.Contains(s, "[工具结果]") && strings.Contains(s, "memory__remember") && strings.Contains(s, "created") {
@@ -432,7 +432,7 @@ func TestInferChainE2E(t *testing.T) {
 		}
 	}
 	if !foundResult || !foundRememberResult {
-		t.Fatalf("第三次 LLM 请求应包含两个 [工具结果]: %+v", msgs3)
+		t.Fatalf("第三次 LLM 请求应含 echo 的拒绝（“不可用”）与 remember 的成功结果: %+v", msgs3)
 	}
 
 	// ---------- 第二轮对话：长期记忆召回（remember 的条目应被注入） ----------

@@ -29,7 +29,6 @@ type Config struct {
 	ActionTimeout     time.Duration      // 单次动作处理超时（默认 30s）
 	Description       string             // 名片：功能简介
 	Provides          []protocol.Provide // 名片：对外提供的动作
-	Settings          []protocol.Setting // 名片：可设置项
 	Logger            *log.Logger        // 日志（默认 log.Default）
 }
 
@@ -43,12 +42,22 @@ type Service struct {
 
 	actions map[string]Handler
 
+	settingsMu    sync.Mutex        // 设置声明与生效值
+	settings      []settingEntry    // 已声明的设置项（按声明顺序）
+	settingIndex  map[string]int    // 键 → settings 下标
+	settingValues map[string]string // 最近一次成功应用的生效值（初始 = 预设）
+	applyMu       sync.Mutex        // 应用串行化：多个下发不并发进回调
+
 	mu      sync.Mutex
 	roster  map[string]protocol.ServiceCard
 	selfURL string
 	center  *protocol.Client // 当前中心连接（nil = 未连接）
 	closed  bool             // Shutdown 后为真（阻止继续重连）
+	started bool             // Start 后为真（阻止再声明设置项）
 	regs    int64            // 注册成功次数（日志用）
+
+	repMu       sync.Mutex     // 错误上报退避锁
+	repThrottle reportThrottle // 错误上报防刷（见 report.go）
 
 	httpSrv *http.Server
 }
@@ -64,16 +73,25 @@ func New(cfg Config) *Service {
 	if cfg.Logger == nil {
 		cfg.Logger = log.Default()
 	}
-	return &Service{
-		cfg:     cfg,
-		logger:  cfg.Logger,
-		actions: map[string]Handler{},
-		roster:  map[string]protocol.ServiceCard{},
+	s := &Service{
+		cfg:           cfg,
+		logger:        cfg.Logger,
+		actions:       map[string]Handler{},
+		settingIndex:  map[string]int{},
+		settingValues: map[string]string{},
+		roster:        map[string]protocol.ServiceCard{},
 	}
+	// "configure" 是骨架保留动作（设置下发专用）：不进 provides、不作 LLM 工具。
+	s.actions["configure"] = s.actionConfigure
+	return s
 }
 
-// Handle 注册一个动作的处理函数。
+// Handle 注册一个动作的处理函数（"configure" 为骨架保留动作，自定义会被忽略）。
 func (s *Service) Handle(action string, fn Handler) {
+	if action == "configure" {
+		s.logger.Printf("configure 为骨架保留动作（设置下发专用），忽略自定义处理")
+		return
+	}
 	s.actions[action] = fn
 }
 
@@ -95,6 +113,10 @@ func (s *Service) Roster() []protocol.ServiceCard {
 // Start 启动 WS 服务端并**同步**接入设置中心（首次注册失败即返回错误——
 // 引导配置错误要立刻可见）；之后由后台循环负责断线自愈（重连 + 重新注册）。
 func (s *Service) Start(ctx context.Context) error {
+	s.mu.Lock()
+	s.started = true
+	s.mu.Unlock()
+
 	ln, err := net.Listen("tcp", s.cfg.Listen)
 	if err != nil {
 		return err
@@ -112,6 +134,7 @@ func (s *Service) Start(ctx context.Context) error {
 	s.logger.Printf("%s 监听 %s", s.cfg.Name, s.selfURL)
 
 	if err := s.connectAndRegister(ctx); err != nil {
+		_ = s.httpSrv.Close() // 注册失败即放弃启动：回收监听，不留“半个服务”
 		return fmt.Errorf("注册失败: %w", err)
 	}
 	go s.watchCenter(ctx)
@@ -156,7 +179,7 @@ func (s *Service) connectAndRegister(ctx context.Context) error {
 		Addr:        s.selfURL,
 		Description: s.cfg.Description,
 		Provides:    s.cfg.Provides,
-		Settings:    s.cfg.Settings,
+		Settings:    s.declarations(),
 		HeartbeatMS: s.cfg.HeartbeatInterval.Milliseconds(),
 	})
 	if err != nil {
@@ -202,6 +225,7 @@ func (s *Service) connectAndRegister(ctx context.Context) error {
 	} else {
 		s.logger.Printf("%s 已重新接入设置中心（第 %d 次注册）", s.cfg.Name, regs)
 	}
+	go s.refreshSettings(ctx) // 兜底：注册后主动拉一次（与中心下发幂等）
 	go s.heartbeatLoop(ctx, c)
 	return nil
 }
@@ -289,6 +313,8 @@ func (s *Service) onCenterEvent(env protocol.Envelope) {
 		}
 		s.setRoster(r)
 		s.logger.Printf("roster 更新: %d 个服务 (rev %d)", len(r.Services), r.Revision)
+	case protocol.TypeSettings:
+		// 设置事件是给面板等观察者的信息流；服务侧的设置变更由 configure 直达——这里静默忽略。
 	default:
 		s.logger.Printf("未知事件: %s", env.Type)
 	}
@@ -479,12 +505,16 @@ func (s *Service) callOnce(ctx context.Context, name, addr, action string, raw m
 }
 
 // Fire 后台发起一跳（发出即完；完成与否仅记日志）。
+// 失败时向设置中心上报一条（kind=fire）——链路跳转未送达属于值得集中可见的错误。
 func (s *Service) Fire(to, action string, payload any, trace, boss string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if _, err := s.Call(ctx, to, action, payload, trace, boss); err != nil {
 			s.logger.Printf("跳转 %s(%s) 未确认送达: %v", to, action, err)
+			if to != "settings-center" {
+				s.Report("fire", fmt.Sprintf("跳转 %s(%s) 未送达: %v", to, action, err))
+			}
 		}
 	}()
 }

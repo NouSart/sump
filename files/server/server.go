@@ -14,7 +14,9 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -30,8 +32,8 @@ type Config struct {
 	Center            string        // 设置中心 WS 地址
 	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
 	Store             *store.Store  // 文件库
-	MaxBytes          int64         // 单文件上限（默认 100MiB）
-	ReadMaxChars      int           // read 返回的最大字符数（默认 4000）
+	MaxBytes          int64         // 单文件上限（默认 100MiB；作为声明预设上报）
+	ReadMaxChars      int           // read 返回的最大字符数（默认 4000；作为声明预设上报）
 }
 
 // Server 是 files 服务实例（服务骨架 + 文件库）。
@@ -40,6 +42,10 @@ type Server struct {
 
 	cfg    Config
 	logger *log.Logger
+
+	setMu        sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
+	maxBytes     int64      // 当前单文件上限（字节）
+	readMaxChars int        // 当前 read 截断阈值（字符数）
 }
 
 // New 创建实例并注册动作。
@@ -47,10 +53,13 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.MaxBytes <= 0 {
 		cfg.MaxBytes = 100 << 20
 	}
+	if cfg.MaxBytes < 1<<20 {
+		cfg.MaxBytes = 1 << 20 // 声明以 MB 计——小于 1MiB 的引导值归一到 1MiB
+	}
 	if cfg.ReadMaxChars <= 0 {
 		cfg.ReadMaxChars = 4000
 	}
-	s := &Server{cfg: cfg, logger: logger}
+	s := &Server{cfg: cfg, logger: logger, maxBytes: cfg.MaxBytes, readMaxChars: cfg.ReadMaxChars}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Listen:            cfg.Listen,
@@ -63,16 +72,47 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "fetch", Input: "{id}", Output: "{id, filename, mime, data(base64), size}"},
 			{Action: "read", Input: "{id}", Output: "{id, filename, text, truncated}（文本类；二进制报错）", Tool: true},
 		},
-		Settings: []protocol.Setting{
-			{Key: "conn.default_ttl", Default: "5m"},
-			{Key: "read.max_chars", Default: "4000"},
-		},
 		Logger: logger,
+	})
+	// 可设置项：预设 = 本服务的启动引导值（来源由服务自己决定）。
+	s.HandleSetting("max_mb", strconv.FormatInt(cfg.MaxBytes>>20, 10), func(v string) error {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 {
+			return fmt.Errorf("需要 ≥1 的整数（MB），收到 %q", v)
+		}
+		s.setMu.Lock()
+		s.maxBytes = n << 20
+		s.setMu.Unlock()
+		return nil
+	})
+	s.HandleSetting("read_max_chars", strconv.Itoa(cfg.ReadMaxChars), func(v string) error {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 100 {
+			return fmt.Errorf("需要 ≥100 的整数（字符数），收到 %q", v)
+		}
+		s.setMu.Lock()
+		s.readMaxChars = int(n)
+		s.setMu.Unlock()
+		return nil
 	})
 	s.Handle("save", s.actionSave)
 	s.Handle("fetch", s.actionFetch)
 	s.Handle("read", s.actionRead)
 	return s
+}
+
+// maxBytesNow 返回当前单文件上限（字节）。
+func (s *Server) maxBytesNow() int64 {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.maxBytes
+}
+
+// readMaxCharsNow 返回当前 read 截断阈值（字符数）。
+func (s *Server) readMaxCharsNow() int {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.readMaxChars
 }
 
 // ---------- 动作 ----------
@@ -86,9 +126,10 @@ func (s *Server) actionSave(_ context.Context, _ protocol.Envelope, in protocol.
 	var data []byte
 	var mimeHint string
 	var err error
+	limit := s.maxBytesNow()
 	switch {
 	case strings.TrimSpace(p.URL) != "":
-		data, mimeHint, err = fetchURL(p.URL, s.cfg.MaxBytes)
+		data, mimeHint, err = fetchURL(p.URL, limit)
 	case strings.TrimSpace(p.Data) != "":
 		data, err = base64.StdEncoding.DecodeString(p.Data)
 	default:
@@ -100,8 +141,8 @@ func (s *Server) actionSave(_ context.Context, _ protocol.Envelope, in protocol.
 	if len(data) == 0 {
 		return nil, errors.New("save: 文件为空")
 	}
-	if int64(len(data)) > s.cfg.MaxBytes {
-		return nil, fmt.Errorf("save: 文件超过 %d 字节上限", s.cfg.MaxBytes)
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("save: 文件超过 %d 字节上限", limit)
 	}
 	filename := strings.TrimSpace(p.Filename)
 	if filename == "" {
@@ -168,7 +209,7 @@ func (s *Server) actionRead(_ context.Context, _ protocol.Envelope, in protocol.
 	if !utf8.Valid(data) {
 		return nil, fmt.Errorf("read: %s 的内容不是有效的 UTF-8 文本", meta.Filename)
 	}
-	text, truncated := truncateRunes(string(data), s.cfg.ReadMaxChars)
+	text, truncated := truncateRunes(string(data), s.readMaxCharsNow())
 	s.logger.Printf("已读取文件 %s（%s, %d 字节, 截断=%v）", p.ID, meta.Filename, len(data), truncated)
 	return protocol.FileReadResult{ID: p.ID, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
 }

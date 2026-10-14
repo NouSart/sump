@@ -32,7 +32,8 @@ const systemPrompt = `你是 SUMP 服务网络中的“单步推理器”（reas
 
 // structuralActions 是即便声明 tool:true 也不作为工具暴露的动作：协议/链机制动作（模型不得绕过链路），
 // 以及本服务的调试/测试动作（echo / debug_jump——不给模型“万能遥控”）。
-// 第一道闸是 provides 里显式声明 tool:true；这里是第二道闸（防御性）。
+// 两道闸共用这张表：rosterTools 生成列表时过滤（暴露面）；runToolCall 执行前同样校验并拒绝（执行面）——
+// 模型若仍指名调用未提供的动作（幻觉 / 注入），不会发生真实跳转。
 var structuralActions = map[string]bool{
 	"user_message": true,
 	"step":         true,
@@ -44,11 +45,11 @@ var structuralActions = map[string]bool{
 	"fetch":        true, // images 服务：取图（llm 侧按需调用）
 	"echo":         true, // 本服务：连通性测试（仅供直连调试）
 	"debug_jump":   true, // 本服务：调试代理跳转
-	"configure":    true, // 本服务：设置中心下发的设置变更（链机制外，中心驱动）
+	"configure":    true, // 骨架保留动作：设置下发（中心驱动，不进 provides）
 }
 
 // rosterTools 把名册里各服务**显式声明 tool:true** 的动作映射为 LLM 工具
-// （未声明的不暴露；链机制/调试动作再由 structuralActions 第二道闸拦下）。
+// （未声明的不暴露；保留 / 调试动作再由 structuralActions 拦下——暴露与执行两侧同一判据）。
 func (s *Server) rosterTools() []llm.Tool {
 	var out []llm.Tool
 	for _, card := range s.Roster() {
@@ -115,11 +116,34 @@ func rawToJSONText(raw msgpack.RawMessage) string {
 	return string(b)
 }
 
+// toolAdvertised 判断某服务动作当前是否为“对 LLM 提供”的工具（provides 声明 tool:true 且非保留动作）。
+// 与 rosterTools 同一把尺子——执行侧复查，用于拒绝指名调用未提供的动作。
+func (s *Server) toolAdvertised(service, action string) bool {
+	if structuralActions[action] {
+		return false
+	}
+	for _, card := range s.Roster() {
+		if card.Name != service {
+			continue
+		}
+		for _, p := range card.Provides {
+			if p.Action == action && p.Tool {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
 // runToolCall 执行一次工具调用并返回给 LLM 的内容文本（JSON）。
 func (s *Server) runToolCall(ctx context.Context, trace string, call llm.ToolCall) (string, error) {
 	svc, action, ok := parseToolName(call.Function.Name)
 	if !ok {
 		return "", fmt.Errorf("工具名无效: %s", call.Function.Name)
+	}
+	if !s.toolAdvertised(svc, action) {
+		return "", fmt.Errorf("工具不可用（未提供或属保留动作）: %s", call.Function.Name)
 	}
 	rawIn, err := argsToRaw(call.Function.Arguments)
 	if err != nil {
@@ -132,9 +156,10 @@ func (s *Server) runToolCall(ctx context.Context, trace string, call llm.ToolCal
 	return rawToJSONText(data), nil
 }
 
-// toolSem 返回某会话的工具并发信号量（nil = 不限制）。信号量懒创建、按会话复用。
+// toolSem 返回某会话的工具并发信号量（nil = 不限制）。信号量懒创建、按会话复用；
+// 并发上限的变更只影响此后新建的会话（已建信号量不缩容）。
 func (s *Server) toolSem(conversationID string) chan struct{} {
-	n := s.cfg.ToolConcurrency
+	n := s.toolConcurrency()
 	if n < 0 {
 		return nil
 	}
