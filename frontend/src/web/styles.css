@@ -198,40 +198,6 @@ input:focus-visible {
   background: var(--danger);
 }
 
-.side-status .icon-btn {
-  margin-left: auto;
-}
-
-.icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--faint);
-  transition:
-    background 150ms ease,
-    color 150ms ease;
-}
-
-.icon-btn:hover:not(:disabled) {
-  background: var(--hover);
-  color: var(--ink);
-}
-
-.icon-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.icon-btn .icon {
-  margin: 0;
-}
-
 .empty-side {
   padding: 4px 12px;
   font-size: 12px;
@@ -511,21 +477,7 @@ input:focus-visible {
   border-left-color: var(--danger);
 }
 
-/* ---------- 图标 / 动效 ---------- */
-
-.icon {
-  vertical-align: -2px;
-}
-
-.spin {
-  animation: spin 900ms linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
+/* ---------- 动效 ---------- */
 
 @keyframes rise {
   from {
