@@ -50,7 +50,8 @@ type Server struct {
 	sweepMS      atomic.Int64 // 离线扫描间隔（毫秒；可被设置覆盖）
 	hbFallbackMS atomic.Int64 // 心跳判定兜底（毫秒；可被设置覆盖）
 
-	done chan struct{} // Shutdown 时关闭（停止离线扫描）
+	done      chan struct{} // Shutdown 时关闭（停止离线扫描）
+	sweepWake chan struct{} // 扫描间隔变更时唤醒扫描循环（立即按新间隔重排）
 }
 
 var upgrader = websocket.Upgrader{
@@ -91,7 +92,7 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 		{Key: settingSweepMS, Default: strconv.FormatInt(cfg.Sweep.Milliseconds(), 10)},
 		{Key: settingHeartbeatFallbackMS, Default: strconv.FormatInt(cfg.Heartbeat.Milliseconds(), 10)},
 	})
-	s := &Server{cfg: cfg, hub: h, settings: st, ln: ln, logger: logger, done: make(chan struct{})}
+	s := &Server{cfg: cfg, hub: h, settings: st, ln: ln, logger: logger, done: make(chan struct{}), sweepWake: make(chan struct{}, 1)}
 	s.sweepMS.Store(cfg.Sweep.Milliseconds())
 	s.hbFallbackMS.Store(cfg.Heartbeat.Milliseconds())
 	// 覆盖值启动即应用（本地生效；应用失败沿用引导值）。
@@ -118,13 +119,18 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 	return s, nil
 }
 
-// sweepLoop 周期扫描心跳超时：判离线则摘除名册并广播（间隔取当前生效值，可被设置覆盖）。
+// sweepLoop 周期扫描心跳超时：判离线则摘除名册并广播。
+// 间隔取当前生效值；sweep_ms 变更时被唤醒，立即按新间隔重排（不等旧档位走完）。
 func (s *Server) sweepLoop() {
 	for {
+		timer := time.NewTimer(time.Duration(s.sweepMS.Load()) * time.Millisecond)
 		select {
 		case <-s.done:
+			timer.Stop()
 			return
-		case <-time.After(time.Duration(s.sweepMS.Load()) * time.Millisecond):
+		case <-s.sweepWake:
+			timer.Stop()
+		case <-timer.C:
 			fallback := time.Duration(s.hbFallbackMS.Load()) * time.Millisecond
 			if roster, changed := s.hub.Sweep(time.Now(), fallback); changed {
 				s.hub.Broadcast(roster)
@@ -515,6 +521,10 @@ func (s *Server) applySelfSetting(key, value string) error {
 			return fmt.Errorf("需要 ≥100 的整数（毫秒），收到 %q", value)
 		}
 		s.sweepMS.Store(n)
+		select { // 唤醒扫描循环：立即按新间隔重排
+		case s.sweepWake <- struct{}{}:
+		default:
+		}
 		return nil
 	case settingHeartbeatFallbackMS:
 		n, err := strconv.ParseInt(value, 10, 64)
