@@ -88,6 +88,7 @@ SUMP 是“服务的互联网”：每个服务是一个独立进程、独立数
 | `roster` | 设置中心 → 各服务 | 全局清单推送（事件） |
 | `heartbeat` | 服务 → 设置中心 | 报活（默认 15s） |
 | `jump` | 任何服务 → 任何服务 | **唯一的“访问”动作**；目标可以是自己（自跳 = 循环的下一步） |
+| `settings` | 设置中心 → 各服务 | 设置变更与下发结果（事件） |
 
 拉取名册复用 `jump`（`action: "roster"`）；设置中心另提供 `ping`（连通性）、`report`（错误上报，见 §7）与设置动作（见 §7）。
 
@@ -101,6 +102,7 @@ SUMP 是“服务的互联网”：每个服务是一个独立进程、独立数
 `recall` `resume` `store`（记忆往返）/ `save` `fetch`（图片链）。
 
 这些是**协议级词汇**：即便某个服务提供了同名动作，也**不作为 LLM 工具**暴露。
+另有**骨架保留动作** `configure`（设置下发专用，由 `service/` 骨架统一承接，见 §7）——同样不进 `provides`、不作 LLM 工具。
 
 ### 6.2 服务自定义动作
 
@@ -164,12 +166,19 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | `reset_setting` | `{service, key}` | 同上（回落默认值） |
 | `report` | `{kind?, message}` | `{status:"ok"}`（中心记日志并交给消费挂点） |
 
-- 生效值 = **覆盖值 ?? 声明默认值**；覆盖值落盘于设置中心（`data/settings.json`）。
-- 校验：服务必须已注册、设置项必须已被该服务声明，否则报错。
-- **下发（已实现）**：中心在 `set_setting` / `reset_setting` 成功后，把变更项的生效值以 `configure` 跳转
-  推送给所属服务（载荷 `{key, value, default, overridden}`；尽力送达、失败仅记日志、不阻塞响应）。
-  服务侧实时应用（如 reasoner 的 `tool.notify_mode` 立即生效）；**启动拉取保留为兜底**
-  （推送丢失 / 服务离线期间变更）——两者幂等，重复应用无副作用。
+- 生效值 = **覆盖值 ?? 服务声明的预设值**；覆盖值落盘于设置中心（`data/settings.json`）。
+- 校验两级：中心只校验“服务已注册、设置项已被声明”；**值是否合法由服务自己校验**——
+  `configure` 被服务拒绝即保持旧值（中心把拒绝理由记入结果事件）。
+- **下发（注册即对齐 + 变更单键）**：中心在 `register` 响应发出后**异步**（不阻塞注册、不等待送达）
+  把该服务全部生效值逐键以 `configure` 跳转下发（有界重试 +0.5s、+2s；服务明确拒绝不重试）；
+  `set_setting` / `reset_setting` 成功后单键下发。**受理回执只表示“已落盘受理”**，送达结果
+  （含失败原因）以 `settings` 事件广播：`{cause, service, results:[{key, value?, ok, error?}]}`
+  （cause = `register` / `set_setting` / `reset_setting`）——面板据此自动刷新与提示。
+- **服务侧接收（骨架通用）**：Go 骨架 `service/` 提供 `HandleSetting(键, 预设, 校验+应用回调)`——
+  声明进名片、统一承接 `configure`、注册成功后**异步拉取一次**作兜底（只应用覆盖项；与下发幂等）；
+  另暴露 `RefreshSettings()` 手动拉取。预设值由**服务自己决定**（库不规定来源）。
+  非 Go 服务照此实现；**服务之间不新增任何设置同步通道**（设置只走服务 ↔ 中心）。
+- **离线一致性**：服务离线期间的变更**不排队补发**——其下次注册时全量对齐（幂等收敛）。
 - **错误上报（已实现·留接口）**：服务把错误上报给中心（`report`）——中心记一条日志并交给 `OnReport`
   消费挂点（前端 / 落盘 / 富日志后续接入此处）。**不含链路编号**（暂无链路记录者，记了无处可查）；
   **防刷在上报方**：退避 1s 起逐档翻倍、封顶 30s，静默 60s 重置，被节流即丢弃；中心视为**永远在线**，
@@ -217,7 +226,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | 1 | LLM 工具暴露规则 | **已实现**：`provides` 里 `tool: true` 显式声明才暴露 + 保留/调试动作硬排除（第二道闸） | — |
 | 2 | 离线判定 | **已实现**：2× 心跳超时 + 扫描摘除 + 告别立即摘除 + 心跳复归 | — |
 | 3 | 连接自愈 | **已实现**（`service/` 骨架）：指数退避重连 + 重新注册 + 注册去重 | — |
-| 4 | 设置下发 | **已实现**：set/reset 成功后推送 `configure`（尽力送达）；reasoner 实时应用 `tool.notify_mode`（启动拉取为兜底） | 更多设置项接入；服务侧通用接收框架 |
+| 4 | 设置热链 | **已实现 M7**：注册即全量下发（异步、不等待）+ set/reset 单键下发 + `settings` 事件回传结果；骨架通用接收（`HandleSetting` + 注册后拉取兜底）；各服务设置项（reasoner 3 / memory 5 / images 1 / qq 1 / 中心自身 2） | “调度 = 设置行为、设计工作流”的完整形态 |
 | 5 | 连接时长自适应 | 全短连接（注释已标注） | 热保留 / 冷回落，参数可配置（实现前不声明设置项） |
 | 6 | 审批链路 | 占名未实现 | `approval_request` / `approval_result` |
 | 7 | 服务骨架复用 | **已实现**：`service/` 薄骨架库（注册/心跳/名册/自愈/告别），四服务共用 | — |
@@ -240,4 +249,18 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | frontend | TS | 设置中心可视化面板：注册为服务节点（心跳 / 名册广播）；浏览器 HTTP JSON + SSE；设置查看 / 修改 / 重置（中心 `configure` 下发） |
 | tests | Go | 跨服务真进程端到端（不属于任何服务） |
 
-> 非 Go 实现只需遵循本规范；`protocol/`（协议实现）与 `service/`（服务骨架：注册 / 心跳 / 重连 / 告别）是 Go 侧的便利库，不是准入条件。
+> 非 Go 实现只需遵循本规范；`protocol/`（协议实现）与 `service/`（服务骨架：注册 / 心跳 / 重连 / 告别 / 设置）是 Go 侧的便利库，不是准入条件。
+
+---
+
+## 13. 命名基线（防漂移）
+
+**名字只增不改；改名 = 破坏性变更，须在本表登记替代名与迁移说明。** 新增任何名字前先对照本表：
+
+| 类别 | 规则 | 现有值 |
+| ---- | ---- | ------ |
+| 消息类型（`type`） | 裸名词；请求 / 响应 / 事件方向固定（事件型只由中心广播） | `register` `response` `roster` `jump` `heartbeat`；事件：`roster` `settings` |
+| 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §6.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting`；骨架保留：`configure` |
+| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms` |
+| 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `qq` `frontend` |
+| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `max_mb` `owner` `sweep_ms` `heartbeat_fallback_ms` |
