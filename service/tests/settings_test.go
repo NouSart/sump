@@ -193,3 +193,70 @@ func TestSettingPullOnRegister(t *testing.T) {
 		t.Fatalf("非覆盖项不应被应用，实际 %+v", got)
 	}
 }
+
+// logBuffer 是并发安全的日志缓冲（读循环与测试并发写）。
+type logBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *logBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// TestSettingsEventIgnored 验证：settings 事件是**已知协议事件**——骨架静默忽略，
+// 不记“未知事件”（该分支只留给真正未知的事件类型），且不影响后续名册更新。
+func TestSettingsEventIgnored(t *testing.T) {
+	sc := startStubCenter(t)
+	lb := &logBuffer{}
+	s := service.New(service.Config{
+		Name:              "svc-e",
+		Listen:            "127.0.0.1:0",
+		Center:            sc.URL(),
+		HeartbeatInterval: 100 * time.Millisecond,
+		Logger:            log.New(lb, "", 0),
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Shutdown)
+
+	sc.Broadcast(protocol.TypeSettings, protocol.SettingsEventPayload{
+		Cause: "set_setting", Service: "svc-e",
+		Results: []protocol.SettingResult{{Key: "k", Value: "v", OK: true}},
+	})
+	// 真正的未知事件仍应记日志（对照组），确保静默只针对 settings。
+	sc.Broadcast("mystery_event", map[string]any{"x": 1})
+	// 事件之后名册照常工作。
+	sc.Broadcast(protocol.TypeRoster, protocol.RosterPayload{
+		Services: []protocol.ServiceCard{
+			{Name: "settings-center", Addr: sc.URL()},
+			{Name: "svc-x", Addr: "ws://127.0.0.1:1/ws"},
+		},
+		Revision: 2,
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(s.Roster()) < 2 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(s.Roster()) != 2 {
+		t.Fatalf("settings 事件后名册应照常更新: %+v", s.Roster())
+	}
+	if strings.Contains(lb.String(), "未知事件: settings") {
+		t.Fatalf("settings 是已知事件，不应记为未知: %s", lb.String())
+	}
+	if !strings.Contains(lb.String(), "未知事件: mystery_event") {
+		t.Fatalf("真正未知的事件仍应记日志: %s", lb.String())
+	}
+}

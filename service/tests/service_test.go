@@ -180,6 +180,22 @@ func (sc *stubCenter) SetSettings(res protocol.SettingsResult) {
 	sc.mu.Unlock()
 }
 
+// Broadcast 向所有已连接服务广播一条事件（测试骨架对已知 / 未知事件的处理）。
+func (sc *stubCenter) Broadcast(typ string, payload any) {
+	sc.mu.Lock()
+	targets := make([]*stubConn, 0, len(sc.conns))
+	for c := range sc.conns {
+		targets = append(targets, c)
+	}
+	sc.mu.Unlock()
+	for _, c := range targets {
+		env, err := protocol.NewEnvelope(typ, "settings-center", "", "", payload)
+		if err == nil {
+			c.send(env)
+		}
+	}
+}
+
 // waitReports 等待至少 n 条上报（超时失败）。
 func (sc *stubCenter) waitReports(t *testing.T, n int, timeout time.Duration) []reportRecord {
 	t.Helper()

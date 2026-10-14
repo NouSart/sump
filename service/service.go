@@ -313,6 +313,8 @@ func (s *Service) onCenterEvent(env protocol.Envelope) {
 		}
 		s.setRoster(r)
 		s.logger.Printf("roster 更新: %d 个服务 (rev %d)", len(r.Services), r.Revision)
+	case protocol.TypeSettings:
+		// 设置事件是给面板等观察者的信息流；服务侧的设置变更由 configure 直达——这里静默忽略。
 	default:
 		s.logger.Printf("未知事件: %s", env.Type)
 	}
