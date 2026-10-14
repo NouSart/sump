@@ -127,8 +127,8 @@ func TestSettingsReadMaxChars(t *testing.T) {
 	}
 
 	// 非法值 / 未声明键：拒绝且保持旧值。
-	bad := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "read_max_chars", Value: "5"})
-	if bad.OK || !strings.Contains(bad.Error, "≥100") {
+	bad := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "read_max_chars", Value: "0"})
+	if bad.OK || !strings.Contains(bad.Error, "≥1") {
 		t.Fatalf("非法值应被拒绝: %+v", bad)
 	}
 	if v := srv.SettingValue("read_max_chars"); v != "10" {

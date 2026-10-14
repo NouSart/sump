@@ -87,8 +87,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 	})
 	s.HandleSetting("read_max_chars", strconv.Itoa(cfg.ReadMaxChars), func(v string) error {
 		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || n < 100 {
-			return fmt.Errorf("需要 ≥100 的整数（字符数），收到 %q", v)
+		if err != nil || n < 1 {
+			return fmt.Errorf("需要 ≥1 的整数（字符数），收到 %q", v)
 		}
 		s.setMu.Lock()
 		s.readMaxChars = int(n)
