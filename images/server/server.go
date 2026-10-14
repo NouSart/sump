@@ -11,7 +11,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QAQ-awa-QAQ/sump/images/store"
@@ -26,8 +28,11 @@ type Config struct {
 	Center            string        // 设置中心 WS 地址
 	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
 	Store             *store.Store  // 图片库
-	MaxBytes          int64         // 单图上限（默认 32MiB，对齐 DeepSeek 图片限制）
+	MaxBytes          int64         // 单图上限（默认 32MiB，对齐 DeepSeek 图片限制；作为声明预设上报）
 }
+
+// 默认单图上限（32MiB）。
+const defaultMaxBytes = 32 << 20
 
 // Server 是 images 服务实例（服务骨架 + 图片库）。
 type Server struct {
@@ -35,14 +40,20 @@ type Server struct {
 
 	cfg    Config
 	logger *log.Logger
+
+	setMu    sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
+	maxBytes int64      // 当前单图上限（字节）
 }
 
 // New 创建实例并注册动作。
 func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.MaxBytes <= 0 {
-		cfg.MaxBytes = 32 << 20
+		cfg.MaxBytes = defaultMaxBytes
 	}
-	s := &Server{cfg: cfg, logger: logger}
+	if cfg.MaxBytes < 1<<20 {
+		cfg.MaxBytes = 1 << 20 // 声明以 MB 计——小于 1MiB 的引导值归一到 1MiB
+	}
+	s := &Server{cfg: cfg, logger: logger, maxBytes: cfg.MaxBytes}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Listen:            cfg.Listen,
@@ -56,9 +67,27 @@ func New(cfg Config, logger *log.Logger) *Server {
 		},
 		Logger: logger,
 	})
+	// 可设置项：预设 = 本服务的启动引导值（来源由服务自己决定）。
+	s.HandleSetting("max_mb", strconv.FormatInt(cfg.MaxBytes>>20, 10), func(v string) error {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 {
+			return fmt.Errorf("需要 ≥1 的整数（MB），收到 %q", v)
+		}
+		s.setMu.Lock()
+		s.maxBytes = n << 20
+		s.setMu.Unlock()
+		return nil
+	})
 	s.Handle("save", s.actionSave)
 	s.Handle("fetch", s.actionFetch)
 	return s
+}
+
+// maxBytesNow 返回当前单图上限（字节）。
+func (s *Server) maxBytesNow() int64 {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.maxBytes
 }
 
 // ---------- 动作 ----------
@@ -72,9 +101,10 @@ func (s *Server) actionSave(_ context.Context, _ protocol.Envelope, in protocol.
 	var data []byte
 	var mimeHint string
 	var err error
+	limit := s.maxBytesNow()
 	switch {
 	case strings.TrimSpace(p.URL) != "":
-		data, mimeHint, err = fetchURL(p.URL, s.cfg.MaxBytes)
+		data, mimeHint, err = fetchURL(p.URL, limit)
 	case strings.TrimSpace(p.Data) != "":
 		data, err = base64.StdEncoding.DecodeString(p.Data)
 	default:
@@ -86,8 +116,8 @@ func (s *Server) actionSave(_ context.Context, _ protocol.Envelope, in protocol.
 	if len(data) == 0 {
 		return nil, errors.New("save: 图片为空")
 	}
-	if int64(len(data)) > s.cfg.MaxBytes {
-		return nil, fmt.Errorf("save: 图片超过 %d 字节上限", s.cfg.MaxBytes)
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("save: 图片超过 %d 字节上限", limit)
 	}
 	mime := p.Mime
 	if mime == "" {
