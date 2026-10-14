@@ -39,11 +39,12 @@ type stubCenter struct {
 	ln  net.Listener
 	srv *http.Server
 
-	mu      sync.Mutex
-	regs    []protocol.RegisterPayload
-	byes    int
-	conns   map[*stubConn]struct{}
-	reports []reportRecord
+	mu       sync.Mutex
+	regs     []protocol.RegisterPayload
+	byes     int
+	conns    map[*stubConn]struct{}
+	reports  []reportRecord
+	settings protocol.SettingsResult // list_settings 的应答
 }
 
 // reportRecord 是中心收到的一条错误上报。
@@ -106,7 +107,7 @@ func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 			sc.regs = append(sc.regs, reg)
 			sc.mu.Unlock()
 			roster := protocol.RosterPayload{
-				Services: []protocol.ServiceCard{{Name: "stub-center", Addr: sc.URL()}},
+				Services: []protocol.ServiceCard{{Name: "settings-center", Addr: sc.URL()}},
 				Revision: 1,
 			}
 			respData, _ := protocol.EncodePayload(roster)
@@ -125,7 +126,8 @@ func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 			if err := env.DecodePayload(&jp); err != nil {
 				continue
 			}
-			if jp.Action == "report" {
+			switch jp.Action {
+			case "report":
 				var p protocol.ReportPayload
 				if err := protocol.DecodeRaw(jp.Input, &p); err == nil {
 					sc.mu.Lock()
@@ -133,6 +135,13 @@ func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 					sc.mu.Unlock()
 				}
 				resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true})
+				c.send(resp)
+			case "list_settings":
+				sc.mu.Lock()
+				res := sc.settings
+				sc.mu.Unlock()
+				data, _ := protocol.EncodePayload(res)
+				resp, _ := protocol.NewResponse(env, "settings-center", protocol.ResponsePayload{OK: true, Data: data})
 				c.send(resp)
 			}
 		}
@@ -162,6 +171,13 @@ func (sc *stubCenter) Reports() []reportRecord {
 	out := make([]reportRecord, len(sc.reports))
 	copy(out, sc.reports)
 	return out
+}
+
+// SetSettings 设置 list_settings 的应答（并发安全）。
+func (sc *stubCenter) SetSettings(res protocol.SettingsResult) {
+	sc.mu.Lock()
+	sc.settings = res
+	sc.mu.Unlock()
 }
 
 // waitReports 等待至少 n 条上报（超时失败）。
