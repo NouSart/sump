@@ -221,16 +221,27 @@ func TestQQFileE2E(t *testing.T) {
 		t.Fatal("占位文本未携带文件 id（假 LLM 未能提取）")
 	}
 
-	// 第二轮请求应包含 [工具结果] 注入的文件文本（read 真实执行并回流的证明）。
+	// 工具结果应注入后续某一轮请求（受理轮与结果轮不必相邻——中间可能有回执轮），
+	// 扫描全部请求而非固定下标。
 	reqs := fakeLLM.Requests()
 	if len(reqs) < 2 {
 		t.Fatalf("假 LLM 调用轮次 = %d, want >= 2", len(reqs))
 	}
-	b, _ := json.Marshal(reqs[1])
-	if !strings.Contains(string(b), "files__read") {
-		t.Fatalf("第二轮请求缺少 files__read 工具结果: %s", b)
+	foundToolResult := false
+	foundContent := false
+	for _, r := range reqs {
+		b, _ := json.Marshal(r)
+		if strings.Contains(string(b), "[工具结果] files__read") {
+			foundToolResult = true
+		}
+		if strings.Contains(string(b), "季度营收上涨") {
+			foundContent = true
+		}
 	}
-	if !strings.Contains(string(b), "季度营收上涨") {
-		t.Fatalf("文件内容未注入模型: %s", b)
+	if !foundToolResult {
+		t.Fatalf("缺少 files__read 工具结果注入: %+v", reqs[len(reqs)-1])
+	}
+	if !foundContent {
+		t.Fatalf("文件内容未注入模型: %+v", reqs[len(reqs)-1])
 	}
 }
