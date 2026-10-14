@@ -3,16 +3,27 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 	"github.com/QAQ-awa-QAQ/sump/settings-center/hub"
+)
+
+// 设置中心自身的设置项（一切皆服务：中心也声明并应用自己的设置；本地应用，不经网络）。
+const (
+	selfServiceName            = "settings-center"
+	settingSweepMS             = "sweep_ms"              // 离线扫描间隔（毫秒）
+	settingHeartbeatFallbackMS = "heartbeat_fallback_ms" // 未声明心跳的服务判离线时的兜底间隔（毫秒）
 )
 
 // Config 是设置中心的启动配置。
@@ -35,6 +46,9 @@ type Server struct {
 	httpSrv  *http.Server
 	ln       net.Listener
 	logger   *log.Logger
+
+	sweepMS      atomic.Int64 // 离线扫描间隔（毫秒；可被设置覆盖）
+	hbFallbackMS atomic.Int64 // 心跳判定兜底（毫秒；可被设置覆盖）
 
 	done chan struct{} // Shutdown 时关闭（停止离线扫描）
 }
@@ -63,7 +77,7 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 		return nil, err
 	}
 	h.PutSelf(protocol.ServiceCard{
-		Name:        "settings-center",
+		Name:        selfServiceName,
 		Addr:        "ws://" + ln.Addr().String() + "/ws",
 		Description: "服务注册 · 全局信息 · 设置与调度",
 		Provides: []protocol.Provide{
@@ -72,7 +86,25 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 			{Action: "report", Input: "{kind?, message}", Output: "回执（中心记日志并交给消费挂点）"},
 		},
 	})
+	// 中心自身也是服务：声明自己的可设置项（预设 = 本次启动的引导值）。
+	st.Declare(selfServiceName, []protocol.Setting{
+		{Key: settingSweepMS, Default: strconv.FormatInt(cfg.Sweep.Milliseconds(), 10)},
+		{Key: settingHeartbeatFallbackMS, Default: strconv.FormatInt(cfg.Heartbeat.Milliseconds(), 10)},
+	})
 	s := &Server{cfg: cfg, hub: h, settings: st, ln: ln, logger: logger, done: make(chan struct{})}
+	s.sweepMS.Store(cfg.Sweep.Milliseconds())
+	s.hbFallbackMS.Store(cfg.Heartbeat.Milliseconds())
+	// 覆盖值启动即应用（本地生效；应用失败沿用引导值）。
+	for _, it := range st.Items(selfServiceName) {
+		if !it.Overridden {
+			continue
+		}
+		if err := s.applySelfSetting(it.Key, it.Value); err != nil {
+			logger.Printf("设置应用失败（启动，沿用引导值）: %s.%s: %v", selfServiceName, it.Key, err)
+			continue
+		}
+		logger.Printf("设置生效（启动）: %s.%s = %q", selfServiceName, it.Key, it.Value)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
 	s.httpSrv = &http.Server{Handler: mux}
@@ -86,16 +118,15 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 	return s, nil
 }
 
-// sweepLoop 周期扫描心跳超时：判离线则摘除名册并广播。
+// sweepLoop 周期扫描心跳超时：判离线则摘除名册并广播（间隔取当前生效值，可被设置覆盖）。
 func (s *Server) sweepLoop() {
-	t := time.NewTicker(s.cfg.Sweep)
-	defer t.Stop()
 	for {
 		select {
 		case <-s.done:
 			return
-		case <-t.C:
-			if roster, changed := s.hub.Sweep(time.Now(), s.cfg.Heartbeat); changed {
+		case <-time.After(time.Duration(s.sweepMS.Load()) * time.Millisecond):
+			fallback := time.Duration(s.hbFallbackMS.Load()) * time.Millisecond
+			if roster, changed := s.hub.Sweep(time.Now(), fallback); changed {
 				s.hub.Broadcast(roster)
 			}
 		}
@@ -211,7 +242,7 @@ func (c *serverConn) handleRegister(env protocol.Envelope) {
 
 	c.name = reg.Name
 	roster, changed := c.hub.Register(reg.Card(), c)
-	c.settings.Declare(reg.Name, reg.Settings)
+	declChanged := c.settings.Declare(reg.Name, reg.Settings)
 
 	data, err := protocol.EncodePayload(roster)
 	if err != nil {
@@ -227,6 +258,14 @@ func (c *serverConn) handleRegister(env protocol.Envelope) {
 		c.logger.Printf("注册: %s (%s)", reg.Name, reg.Addr)
 	} else {
 		c.logger.Printf("重连: %s（名片无变化，不广播）", reg.Name)
+	}
+	// 注册即对齐（不阻塞注册响应）：声明非空 → 全量逐键下发（异步、有界重试）；
+	// 声明清空但有变化 → 只广播一次事件（面板刷新）。
+	if len(reg.Settings) > 0 {
+		items := c.settings.Items(reg.Name)
+		go c.srv.pushSettings(reg.Name, items, "register")
+	} else if declChanged {
+		c.srv.broadcastSettings(protocol.SettingsEventPayload{Cause: "register", Service: reg.Name})
 	}
 }
 
@@ -304,7 +343,7 @@ func (c *serverConn) handleListSettings(env protocol.Envelope, jp protocol.JumpP
 	c.replyData(env, protocol.SettingsResult{Services: c.settings.List(p.Service)})
 }
 
-// handleSetSetting 写覆盖值（服务与设置项都必须已被声明）；成功后向所属服务推送 configure。
+// handleSetSetting 写覆盖值（服务与设置项都必须已被声明）；成功后按边界落地生效值。
 func (c *serverConn) handleSetSetting(env protocol.Envelope, jp protocol.JumpPayload) {
 	var p protocol.SetSettingPayload
 	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
@@ -316,12 +355,12 @@ func (c *serverConn) handleSetSetting(env protocol.Envelope, jp protocol.JumpPay
 		c.replyError(env, err.Error())
 		return
 	}
-	c.logger.Printf("设置变更: %s.%s = %q", p.Service, p.Key, p.Value)
-	c.srv.pushConfigure(p.Service, ss, p.Key)
+	c.logger.Printf("设置变更: %s.%s = %q（来自 %s）", p.Service, p.Key, p.Value, env.From)
+	c.srv.applyOrPush(p.Service, ss, p.Key, "set_setting")
 	c.replyData(env, protocol.SettingsResult{Services: []protocol.ServiceSettings{ss}})
 }
 
-// handleResetSetting 清除覆盖值，回落默认值。
+// handleResetSetting 清除覆盖值，回落服务声明的预设值。
 func (c *serverConn) handleResetSetting(env protocol.Envelope, jp protocol.JumpPayload) {
 	var p protocol.ResetSettingPayload
 	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
@@ -333,14 +372,14 @@ func (c *serverConn) handleResetSetting(env protocol.Envelope, jp protocol.JumpP
 		c.replyError(env, err.Error())
 		return
 	}
-	c.logger.Printf("设置重置: %s.%s → 默认值", p.Service, p.Key)
-	c.srv.pushConfigure(p.Service, ss, p.Key)
+	c.logger.Printf("设置重置: %s.%s → 预设值（来自 %s）", p.Service, p.Key, env.From)
+	c.srv.applyOrPush(p.Service, ss, p.Key, "reset_setting")
 	c.replyData(env, protocol.SettingsResult{Services: []protocol.ServiceSettings{ss}})
 }
 
-// pushConfigure 把某个设置项的变更生效值以 configure 跳转推送给所属服务。
-// 尽力送达：失败/被拒仅记日志（服务侧仍保留“启动拉取”作兜底）。异步进行，不阻塞响应。
-func (s *Server) pushConfigure(service string, ss protocol.ServiceSettings, key string) {
+// applyOrPush 落地一次设置变更：设置中心自身 → 本地应用并广播结果；
+// 其余服务 → 异步逐键下发（不阻塞调用方，结果与失败以 settings 事件回传）。
+func (s *Server) applyOrPush(service string, ss protocol.ServiceSettings, key, cause string) {
 	var item protocol.SettingView
 	found := false
 	for _, v := range ss.Settings {
@@ -352,47 +391,141 @@ func (s *Server) pushConfigure(service string, ss protocol.ServiceSettings, key 
 	if !found {
 		return
 	}
-	card, ok := s.hub.Lookup(service)
-	if !ok {
-		s.logger.Printf("configure 未推送：服务 %s 不在名册（可能已离线）", service)
+	if service == selfServiceName {
+		res := protocol.SettingResult{Key: key, Value: item.Value}
+		if err := s.applySelfSetting(key, item.Value); err != nil {
+			res.Error = err.Error()
+			s.logger.Printf("设置应用失败（本地）: %s.%s: %v", service, key, err)
+		} else {
+			res.OK = true
+			s.logger.Printf("设置生效（本地）: %s.%s = %q", service, key, item.Value)
+		}
+		s.broadcastSettings(protocol.SettingsEventPayload{Cause: cause, Service: service, Results: []protocol.SettingResult{res}})
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		c, err := protocol.DialContext(ctx, card.Addr, nil)
-		if err != nil {
-			s.logger.Printf("configure 推送 %s 失败（拨号）: %v", service, err)
-			return
+	go s.pushSettings(service, []protocol.SettingView{item}, cause)
+}
+
+// pushSettings 把某服务的设置项逐键以 configure 下发（有界重试：+0.5s、+2s），
+// 完成后广播 settings 事件（结果回传 + 面板刷新）。服务明确拒绝不重试（拒绝也是结果）。
+func (s *Server) pushSettings(service string, items []protocol.SettingView, cause string) {
+	results := make([]protocol.SettingResult, len(items))
+	for i, it := range items {
+		results[i] = protocol.SettingResult{Key: it.Key}
+	}
+	remaining := make([]int, 0, len(items))
+	for i := range items {
+		remaining = append(remaining, i)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 3 && len(remaining) > 0; attempt++ {
+		if attempt > 0 {
+			wait := 500 * time.Millisecond
+			if attempt == 2 {
+				wait = 2 * time.Second
+			}
+			time.Sleep(wait)
 		}
-		defer c.Close()
+		remaining, lastErr = s.pushAttempt(service, items, remaining, results)
+	}
+	deliverErr := "未送达"
+	if lastErr != nil {
+		deliverErr = "未送达: " + lastErr.Error()
+	}
+	for _, i := range remaining {
+		results[i].Error = deliverErr
+	}
+
+	for _, r := range results {
+		if r.OK {
+			s.logger.Printf("configure 已推送: %s.%s = %q", service, r.Key, r.Value)
+		} else {
+			s.logger.Printf("configure 推送未生效: %s.%s: %s", service, r.Key, r.Error)
+		}
+	}
+	s.broadcastSettings(protocol.SettingsEventPayload{Cause: cause, Service: service, Results: results})
+}
+
+// pushAttempt 用一条连接逐键下发；返回仍未送达的下标（服务明确拒绝记为结果，不重试）。
+func (s *Server) pushAttempt(service string, items []protocol.SettingView, idxs []int, results []protocol.SettingResult) ([]int, error) {
+	card, ok := s.hub.Lookup(service)
+	if !ok {
+		return idxs, errors.New("服务不在名册（可能已离线）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := protocol.DialContext(ctx, card.Addr, nil)
+	if err != nil {
+		return idxs, fmt.Errorf("拨号失败: %v", err)
+	}
+	defer c.Close()
+
+	var remaining []int
+	var lastErr error
+	for _, i := range idxs {
+		it := items[i]
 		raw, err := protocol.EncodePayload(protocol.ConfigurePayload{
-			Key: item.Key, Value: item.Value, Default: item.Default, Overridden: item.Overridden,
+			Key: it.Key, Value: it.Value, Default: it.Default, Overridden: it.Overridden,
 		})
 		if err != nil {
-			return
+			results[i].Error = "编码失败: " + err.Error()
+			continue
 		}
-		env, err := protocol.NewEnvelope(protocol.TypeJump, "settings-center", service, "", protocol.JumpPayload{Action: "configure", Input: raw})
+		env, err := protocol.NewEnvelope(protocol.TypeJump, selfServiceName, service, "", protocol.JumpPayload{Action: "configure", Input: raw})
 		if err != nil {
-			return
+			results[i].Error = err.Error()
+			continue
 		}
 		resp, err := c.Call(ctx, env)
 		if err != nil {
-			s.logger.Printf("configure 推送 %s 失败: %v", service, err)
-			return
+			remaining = append(remaining, i)
+			lastErr = err
+			continue
 		}
-		// 响应里 ok=false 也是“推送失败”（服务明确拒绝，如未支持的设置键）——不能只看到达。
 		var rp protocol.ResponsePayload
-		if err := resp.DecodePayload(&rp); err != nil || !rp.OK {
-			reason := rp.Error
-			if reason == "" {
-				reason = "响应缺少 ok"
-			}
-			s.logger.Printf("configure 推送 %s 被拒绝: %s", service, reason)
-			return
+		if err := resp.DecodePayload(&rp); err != nil {
+			results[i].Error = "响应解析失败: " + err.Error()
+			continue
 		}
-		s.logger.Printf("configure 已推送: %s.%s = %q", service, item.Key, item.Value)
-	}()
+		if !rp.OK {
+			results[i].Error = rp.Error
+			if results[i].Error == "" {
+				results[i].Error = "响应缺少 ok"
+			}
+			continue
+		}
+		results[i].OK = true
+		results[i].Value = it.Value
+	}
+	return remaining, lastErr
+}
+
+// broadcastSettings 广播一条设置事件（面板据此刷新与提示；其余服务忽略）。
+func (s *Server) broadcastSettings(p protocol.SettingsEventPayload) {
+	s.hub.BroadcastEvent(protocol.TypeSettings, p)
+}
+
+// applySelfSetting 应用设置中心自身的设置项（本地生效，不经网络）。
+func (s *Server) applySelfSetting(key, value string) error {
+	switch key {
+	case settingSweepMS:
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n < 100 {
+			return fmt.Errorf("需要 ≥100 的整数（毫秒），收到 %q", value)
+		}
+		s.sweepMS.Store(n)
+		return nil
+	case settingHeartbeatFallbackMS:
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n < 100 {
+			return fmt.Errorf("需要 ≥100 的整数（毫秒），收到 %q", value)
+		}
+		s.hbFallbackMS.Store(n)
+		return nil
+	default:
+		return fmt.Errorf("未声明的设置项 %q", key)
+	}
 }
 
 // replyData 构造并发送一个成功响应（data 为任意可编码值）。
