@@ -35,7 +35,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 ```
 
 - 自定义地址：`.\scripts\run-local.ps1 -CenterAddr 127.0.0.1:9000 -MemoryAddr 127.0.0.1:9201 -ImageAddr 127.0.0.1:9401 -QQAddr 127.0.0.1:9301 -ReasonerAddr 127.0.0.1:9101 -FrontendAddr 127.0.0.1:9501`
-- 设置面板：<http://127.0.0.1:9501/>——查看各服务声明的设置项、修改（中心受理并下发，服务确认结果实时回显：待确认 / 已生效 / 未送达）/ 重置；名册、连接状态与设置结果事件驱动实时刷新（SSE，无刷新按钮）；首次运行会自动 `npm install` + `npm run build`（需要 Node ≥ 22.18，推荐 24）
+- 设置面板：<http://127.0.0.1:9501/>——查看各服务声明的设置项、修改（中心受理即回执，不等待服务送达）/ 重置；名册、连接状态与设置结果（行状态：已覆盖·待确认 / 已覆盖·未送达；提示：已生效 / 未生效 + 原因）事件驱动实时刷新（SSE，无刷新按钮）；首次运行会自动 `npm install` + `npm run build`（需要 Node ≥ 22.18，推荐 24）
 - 前端单独开发：`cd frontend; npm run build`（构建）/ `npm test`（协议 + 链路 + API 测试）
 - 接 QQ（NapCat 正向 WS，仅私聊）：`.\scripts\run-local.ps1 -Owner 2271917353 -NapCatURL ws://192.168.11.196:3001 -NapCatToken <token>`——连不上会自动重试，不影响其余服务
 - 数据落在 `data/`（`memory.db` / `images.db` / `images/` / `settings.json`，不入库）
@@ -56,7 +56,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - [x] 异步工具模型（M5）：派发即回执 / `[工具结果]` 注入 / `wait` / 收尾门禁 / 任务窗口黑板；工具结果通知模式 `tool.notify_mode`（each 默认 / batch；设置中心覆盖 + 启动拉取）
 - [x] 长期记忆 v0（M6）：`remember`（provides → 自动成为 LLM 工具）/ `forget` 软删；bigram 召回（1~2 字中文可命中）+ 核心注入（priority）；recall 组装三节（最近对话 / 核心 / 相关）
 - [x] 工具暴露显式声明（`provides` 里 `tool: true`）+ 设置下发（`configure`）：中心 set/reset 后推送生效值，reasoner 实时应用（启动拉取兜底）
-- [x] 设置热链（M7）：注册即全量下发（受理回执不等待送达）｜`settings` 事件回传结果（applied / 未送达 + 原因）｜骨架通用接收（`HandleSetting` 声明 + 校验 + 应用；注册后异步拉取兜底）｜设置项接入全部服务（reasoner 3 / memory 5 / images 1 / qq 1 / 中心 2）｜面板事件驱动自动刷新（无刷新按钮）
+- [x] 设置热链（M7）：注册即全量下发（受理回执不等待送达）｜`settings` 事件回传结果（ok=true / ok=false + 原因）｜骨架通用接收（`HandleSetting` 声明 + 校验 + 应用；注册后异步拉取兜底）｜设置项接入全部服务（reasoner 3 / memory 5 / images 1 / qq 1 / 中心 2）｜面板事件驱动自动刷新（无刷新按钮）
 - [x] 前端服务 v1（`frontend`）：设置中心可视化面板——TS 服务节点（注册 / 心跳 / 名册）+ HTTP JSON + SSE；设置查看 / 修改（configure 下发）/ 重置；瑞典极简界面（React/Vite + 系统无衬线字体）；协议以 Go 产出夹具做跨语言字节级锚定
 - [ ] 下一步：embedding 语义召回 / 巩固线（sleep 提炼）、群聊（@ 必回 / 自主插话）、审批链路
 

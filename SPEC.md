@@ -151,19 +151,21 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
     { "action": "save",  "input": "{url} 或 {data(base64), mime}", "output": "{id, mime, size}" },
     { "action": "fetch", "input": "{id}", "output": "{id, mime, data(base64), size}" }
   ],
-  "settings": []                                 // 我可被设置哪些项（当前无——只声明真正消费的项）
+  "settings": [                                  // 我可被设置哪些项（预设值 = 本服务启动引导值；只声明真正消费的项）
+    { "key": "max_mb", "default": "32" }
+  ]
 }
 ```
 
 - `provides[].input/output` 是**给人看的宽松描述**，不是 JSON Schema。
   精确的字段形状由协议包里的载荷类型定义（`protocol/payloads.go`）。
-- `settings[]` 声明“可设置项 + 默认值”。设置中心保管并提供动作：
+- `settings[]` 声明“可设置项 + 预设值”（线路字段名沿用 `default`；预设值 = 服务自己给的引导值，可在重启后变化）。设置中心保管并提供动作：
 
 | 动作（jump 到 `settings-center`） | 输入 | 输出 |
 | ---- | ---- | ---- |
 | `list_settings` | `{service?}`（可选过滤） | `{services:[{service, settings:[{key,value,default,overridden}]}]}` |
 | `set_setting` | `{service, key, value}` | 被改动服务的设置（同上结构） |
-| `reset_setting` | `{service, key}` | 同上（回落默认值） |
+| `reset_setting` | `{service, key}` | 同上（回落预设值） |
 | `report` | `{kind?, message}` | `{status:"ok"}`（中心记日志并交给消费挂点） |
 
 - 生效值 = **覆盖值 ?? 服务声明的预设值**；覆盖值落盘于设置中心（`data/settings.json`）。
@@ -231,7 +233,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | 6 | 审批链路 | 占名未实现 | `approval_request` / `approval_result` |
 | 7 | 服务骨架复用 | **已实现**：`service/` 薄骨架库（注册/心跳/名册/自愈/告别），四服务共用 | — |
 | 8 | 链级失败策略 | 拨号失败已安全重试；送达后失败不重试（无幂等键）；工具超时 / 任务取代的结果丢弃已定义 | 幂等键；失败上报 boss（降级回复） |
-| 9 | 工具结果通知模式 | **已实现**：设置项 `tool.notify_mode`（each 默认 / batch）+ 启动拉取 + `-tool-notify` | 运行时下发（`configure`）即时生效 |
+| 9 | 工具结果通知模式 | **已实现**：设置项 `tool.notify_mode`（each 默认 / batch）+ 注册下发 + 拉取兜底 + `-tool-notify` | — |
 | 10 | 长期记忆 | **已实现 v0**：`remember`/`forget`（软删）+ bigram 召回（1~2 字中文可命中）+ 核心注入（priority）；`remember` 在 provides 里（自动暴露为 LLM 工具），`forget` 不在 | embedding 语义召回；自动提炼与巩固线（sleep）；去重 / 冲突 |
 | 11 | 错误上报（服务 → 中心） | **已实现·留接口**：`report` 动作 + 中心日志 + `OnReport` 挂点；上报方退避防刷（1s 起翻倍、封顶 30s）；无队列（中心视为永远在线）；当前接入点：骨架 Fire 未送达 | 前端 / 落盘 / 富日志接入挂点；更多上报点按需接入 |
 
@@ -246,7 +248,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | memory | Go | 会话消息的唯一保管者；recall 取最近历史 + 长期记忆（核心注入 + bigram 召回）组装为记忆块后 resume 回调用方；remember 写入（幂等）/ forget 软删 |
 | images | Go | save（URL/base64 落盘）返回 id；fetch（id → base64） |
 | qq | Go | 把主人私聊消息（图先存 images）打成 user_message 发给 reasoner；实现 deliver 回发私聊 |
-| frontend | TS | 设置中心可视化面板：注册为服务节点（心跳 / 名册广播）；浏览器 HTTP JSON + SSE；设置查看 / 修改 / 重置（中心 `configure` 下发） |
+| frontend | TS | 设置中心可视化面板：注册为服务节点（心跳 / 名册广播）；浏览器 HTTP JSON + SSE；设置查看 / 修改 / 重置（中心受理并下发） |
 | tests | Go | 跨服务真进程端到端（不属于任何服务） |
 
 > 非 Go 实现只需遵循本规范；`protocol/`（协议实现）与 `service/`（服务骨架：注册 / 心跳 / 重连 / 告别 / 设置）是 Go 侧的便利库，不是准入条件。
