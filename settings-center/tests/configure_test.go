@@ -1,7 +1,7 @@
 package tests
 
-// configure 下发测试：set_setting / reset_setting 成功后，设置中心把变更项的生效值
-// 推送给所属服务（尽力送达；服务侧可用启动拉取兜底）。
+// configure 下发测试：注册即全量下发、变更单键下发、结果以 settings 事件广播
+// （受理回执不等待送达）；覆盖不可达服务（未送达）与服务拒绝两类失败。
 
 import (
 	"context"
@@ -68,7 +68,7 @@ func startStubService(t *testing.T) *stubService {
 				}
 			}
 			if jp.Action == "configure" && st.reject.Load() {
-				resp, err := protocol.NewResponse(env, "stub-svc", protocol.ResponsePayload{OK: false, Error: "configure: 未支持的设置键"})
+				resp, err := protocol.NewResponse(env, "stub-svc", protocol.ResponsePayload{OK: false, Error: `configure: 未声明的设置项 "tool.notify_mode"`})
 				if err != nil {
 					continue
 				}
@@ -356,10 +356,51 @@ func TestConfigurePushRejected(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		logText := buf.String()
-		if strings.Contains(logText, "推送未生效") && strings.Contains(logText, "未支持的设置键") {
+		if strings.Contains(logText, "推送未生效") && strings.Contains(logText, "未声明的设置项") {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("中心应记录下发未生效（含服务给出的原因）；实际日志: %s", buf.String())
+}
+
+// TestSetWhenOffline 验证“受理不等待送达”的边界：目标服务不可达时，
+// set 受理回执**立即**返回（不等待下发重试）；下发经有界重试失败后，
+// 以 settings 事件回传 ok=false（未送达 + 原因）。
+func TestSetWhenOffline(t *testing.T) {
+	s, err := server.Start(server.Config{Addr: "127.0.0.1:0"}, newLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Shutdown() })
+	wsURL := "ws://" + s.Addr() + "/ws"
+
+	// 名片地址指向死端口：中心一切下发都会失败（服务自身连接仍正常）。
+	_, events := registerService(t, wsURL, "svc-off", "ws://127.0.0.1:1/ws", []protocol.Setting{{Key: "k", Default: "d"}})
+
+	// 1) 注册下发经重试后失败 → 事件 ok=false（未送达）。
+	ev := events.wait(t, 1, 15*time.Second)
+	if ev[0].Cause != "register" || len(ev[0].Results) != 1 || ev[0].Results[0].OK || !strings.Contains(ev[0].Results[0].Error, "未送达") {
+		t.Fatalf("不可达服务的注册下发应回 ok=false（未送达）: %+v", ev[0])
+	}
+
+	// 2) set：受理回执立即返回（远早于下发重试链），视图显示覆盖已落盘。
+	start := time.Now()
+	res, msg := callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{Service: "svc-off", Key: "k", Value: "v"})
+	elapsed := time.Since(start)
+	if msg != "" {
+		t.Fatalf("set_setting 应被受理（不等待送达）: %s", msg)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("受理回执不应等待下发重试，耗时 %v", elapsed)
+	}
+	if len(res.Services) != 1 || len(res.Services[0].Settings) != 1 || res.Services[0].Settings[0].Value != "v" || !res.Services[0].Settings[0].Overridden {
+		t.Fatalf("受理后视图应显示覆盖值: %+v", res)
+	}
+
+	// 3) 下发失败 → 事件回传 ok=false（未送达 + 原因）。
+	ev = events.wait(t, 2, 15*time.Second)
+	if ev[1].Cause != "set_setting" || len(ev[1].Results) != 1 || ev[1].Results[0].OK || !strings.Contains(ev[1].Results[0].Error, "未送达") {
+		t.Fatalf("不可达服务的 set 下发应回 ok=false（未送达）: %+v", ev[1])
+	}
 }
