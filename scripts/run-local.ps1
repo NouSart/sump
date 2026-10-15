@@ -1,8 +1,9 @@
-﻿# SUMP v2 本地开发：一键启动服务（settings-center + memory + embedding + images + qq + reasoner + frontend）
-# 用法：.\scripts\run-local.ps1 [-CenterAddr 127.0.0.1:9000] [-MemoryAddr 127.0.0.1:9201] [-EmbeddingAddr 127.0.0.1:9601] [-ImageAddr 127.0.0.1:9401] [-QQAddr 127.0.0.1:9301] [-ReasonerAddr 127.0.0.1:9101] [-FrontendAddr 127.0.0.1:9501]
+﻿# SUMP v2 本地开发：一键启动服务（settings-center + memory + embedding + images + qq + shell + reasoner + frontend）
+# 用法：.\scripts\run-local.ps1 [-CenterAddr 127.0.0.1:9000] [-MemoryAddr 127.0.0.1:9201] [-EmbeddingAddr 127.0.0.1:9601] [-ImageAddr 127.0.0.1:9401] [-QQAddr 127.0.0.1:9301] [-ShellAddr 127.0.0.1:9701] [-ReasonerAddr 127.0.0.1:9101] [-FrontendAddr 127.0.0.1:9501]
 #       [-NapCatURL ws://127.0.0.1:3001] [-NapCatToken xxx] [-Owner 主人QQ] [-LlmKey sk-...] [-LlmModel deepseek-chat]
 # 停止：Ctrl+C（脚本会清理子进程）
 # 注：qq 连不上 NapCat 会自动重试，不影响其他服务；不填 -Owner 则拒绝所有 QQ 私聊
+# 注：shell 的工作目录根 = 仓库根；审批未接入（approval.service 留空）时一律“未通过”——命令不会被执行
 # 注：frontend 需要 Node ≥ 22；首次运行会自动 npm install + npm run build（面板 http://127.0.0.1:9501/）
 # 注：embedding 需要 Python ≥ 3.12；首次运行自动建 venv + 装依赖；模型缺席时以 fake 后端启动（语义召回不可用，控制台会显著警告）
 param(
@@ -11,6 +12,7 @@ param(
     [string]$EmbeddingAddr = '127.0.0.1:9601',
     [string]$ImageAddr = '127.0.0.1:9401',
     [string]$QQAddr = '127.0.0.1:9301',
+    [string]$ShellAddr = '127.0.0.1:9701',
     [string]$ReasonerAddr = '127.0.0.1:9101',
     [string]$FrontendAddr = '127.0.0.1:9501',
     [string]$NapCatURL = 'ws://127.0.0.1:3001',
@@ -43,7 +45,7 @@ function Wait-Port([string]$Addr, [int]$TimeoutSec) {
     return $false
 }
 
-Write-Host '[1/8] 构建 settings-center / memory / images / qq / reasoner ...' -ForegroundColor Cyan
+Write-Host '[1/9] 构建 settings-center / memory / images / qq / shell / reasoner ...' -ForegroundColor Cyan
 Push-Location $root
 try {
     go build -o (Join-Path $binDir 'settings-center.exe') 'github.com/QAQ-awa-QAQ/sump/settings-center'
@@ -55,13 +57,15 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'images 构建失败' }
     go build -o (Join-Path $binDir 'qq.exe') 'github.com/QAQ-awa-QAQ/sump/qq'
     if ($LASTEXITCODE -ne 0) { throw 'qq 构建失败' }
+    go build -o (Join-Path $binDir 'shell.exe') 'github.com/QAQ-awa-QAQ/sump/shell'
+    if ($LASTEXITCODE -ne 0) { throw 'shell 构建失败' }
     go build -o (Join-Path $binDir 'reasoner.exe') 'github.com/QAQ-awa-QAQ/sump/reasoner'
     if ($LASTEXITCODE -ne 0) { throw 'reasoner 构建失败' }
 } finally {
     Pop-Location
 }
 
-Write-Host '[2/8] 构建 frontend（首次会自动 npm install）...' -ForegroundColor Cyan
+Write-Host '[2/9] 构建 frontend（首次会自动 npm install）...' -ForegroundColor Cyan
 $frontendDir = Join-Path $root 'frontend'
 if (-not (Test-Path (Join-Path $frontendDir 'node_modules'))) {
     Push-Location $frontendDir
@@ -86,7 +90,7 @@ if (-not (Test-Path (Join-Path $frontendDir 'dist\server\index.js')) -or -not (T
 
 $dataDir = Join-Path $root 'data'
 
-Write-Host '[3/8] 准备 embedding（venv + 依赖 + 模型检测）...' -ForegroundColor Cyan
+Write-Host '[3/9] 准备 embedding（venv + 依赖 + 模型检测）...' -ForegroundColor Cyan
 $embeddingDir = Join-Path $root 'embedding'
 $embVenv = Join-Path $embeddingDir '.venv'
 $embPython = Join-Path $embVenv 'Scripts\python.exe'
@@ -124,22 +128,23 @@ $mem    = $null
 $emb    = $null
 $img    = $null
 $qq     = $null
+$shellSvc = $null
 $reasoner = $null
 $frontend = $null
 try {
-    Write-Host '[4/8] 启动 settings-center ...' -ForegroundColor Cyan
+    Write-Host '[4/9] 启动 settings-center ...' -ForegroundColor Cyan
     $center = Start-Process -FilePath (Join-Path $binDir 'settings-center.exe') -ArgumentList '-addr', $CenterAddr -PassThru -NoNewWindow
     if (-not (Wait-Port $CenterAddr 60)) { throw 'settings-center 未在 60 秒内就绪' }
 
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
-    Write-Host '[5/8] 启动 memory + embedding ...' -ForegroundColor Cyan
+    Write-Host '[5/9] 启动 memory + embedding ...' -ForegroundColor Cyan
     $mem = Start-Process -FilePath (Join-Path $binDir 'memory.exe') -ArgumentList '-addr', $MemoryAddr, '-center', "ws://$CenterAddr/ws", '-db', (Join-Path $dataDir 'memory.db') -PassThru -NoNewWindow
     if (-not (Wait-Port $MemoryAddr 60)) { throw 'memory 未在 60 秒内就绪' }
     $emb = Start-Process -FilePath $embPython -ArgumentList (@('-m', 'sump_embedding') + $embeddingArgs) -WorkingDirectory $root -PassThru -NoNewWindow
     if (-not (Wait-Port $EmbeddingAddr 60)) { throw 'embedding 未在 60 秒内就绪（首次启动需加载模型，或依赖缺失——见上方日志）' }
 
-    Write-Host '[6/8] 启动 images + qq ...' -ForegroundColor Cyan
+    Write-Host '[6/9] 启动 images + qq ...' -ForegroundColor Cyan
     $img = Start-Process -FilePath (Join-Path $binDir 'sump-images.exe') -ArgumentList '-addr', $ImageAddr, '-center', "ws://$CenterAddr/ws", '-db', (Join-Path $dataDir 'images.db'), '-dir', (Join-Path $dataDir 'images') -PassThru -NoNewWindow
     if (-not (Wait-Port $ImageAddr 60)) { throw 'images 未在 60 秒内就绪' }
     $qqArgs = @('-addr', $QQAddr, '-center', "ws://$CenterAddr/ws", '-napcat', $NapCatURL)
@@ -148,12 +153,16 @@ try {
     $qq = Start-Process -FilePath (Join-Path $binDir 'qq.exe') -ArgumentList $qqArgs -PassThru -NoNewWindow
     if (-not (Wait-Port $QQAddr 60)) { throw 'qq 未在 60 秒内就绪' }
 
-    Write-Host '[7/8] 启动 reasoner ...' -ForegroundColor Cyan
+    Write-Host '[7/9] 启动 shell ...' -ForegroundColor Cyan
+    $shellSvc = Start-Process -FilePath (Join-Path $binDir 'shell.exe') -ArgumentList '-addr', $ShellAddr, '-center', "ws://$CenterAddr/ws", '-root', $root -PassThru -NoNewWindow
+    if (-not (Wait-Port $ShellAddr 60)) { throw 'shell 未在 60 秒内就绪' }
+
+    Write-Host '[8/9] 启动 reasoner ...' -ForegroundColor Cyan
     $reasonerArgs = @('-addr', $ReasonerAddr, '-center', "ws://$CenterAddr/ws", '-llm-base', $LlmBase, '-llm-model', $LlmModel)
     if ($LlmKey) { $reasonerArgs += @('-llm-key', $LlmKey) }
     $reasoner = Start-Process -FilePath (Join-Path $binDir 'reasoner.exe') -ArgumentList $reasonerArgs -PassThru -NoNewWindow
 
-    Write-Host '[8/8] 启动 frontend ...' -ForegroundColor Cyan
+    Write-Host '[9/9] 启动 frontend ...' -ForegroundColor Cyan
     $frontend = Start-Process -FilePath 'node' -ArgumentList 'dist/server/index.js', '-addr', $FrontendAddr, '-center', "ws://$CenterAddr/ws" -WorkingDirectory $frontendDir -PassThru -NoNewWindow
     if (-not (Wait-Port $FrontendAddr 60)) { throw 'frontend 未在 60 秒内就绪' }
 
@@ -163,13 +172,14 @@ try {
     Write-Host "embedding:       ws://$EmbeddingAddr/ws  (PID $($emb.Id))  后端: $(if ($null -ne $modelFile) { 'onnx（真模型）' } else { 'fake（无模型——语义召回不可用）' })"
     Write-Host "images:          ws://$ImageAddr/ws  (PID $($img.Id))  db: data/images.db  dir: data/images"
     Write-Host "qq:              ws://$QQAddr/ws  (PID $($qq.Id))  napcat: $NapCatURL"
+    Write-Host "shell:           ws://$ShellAddr/ws  (PID $($shellSvc.Id))  root: $root  审批: 未接入（一律未通过）"
     Write-Host "reasoner:       ws://$ReasonerAddr/ws  (PID $($reasoner.Id))"
     Write-Host "frontend:       http://$FrontendAddr/  (PID $($frontend.Id))  ← 设置面板" -ForegroundColor Green
     Write-Host '按 Ctrl+C 停止' -ForegroundColor Yellow
 
-    Wait-Process -Id $center.Id, $mem.Id, $emb.Id, $img.Id, $qq.Id, $reasoner.Id, $frontend.Id
+    Wait-Process -Id $center.Id, $mem.Id, $emb.Id, $img.Id, $qq.Id, $shellSvc.Id, $reasoner.Id, $frontend.Id
 } finally {
-    foreach ($proc in @($center, $mem, $emb, $img, $qq, $reasoner, $frontend)) {
+    foreach ($proc in @($center, $mem, $emb, $img, $qq, $shellSvc, $reasoner, $frontend)) {
         if ($null -ne $proc -and -not $proc.HasExited) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         }
