@@ -60,6 +60,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - [x] 设置热链（M7）：注册即全量下发（受理回执不等待送达）｜`settings` 事件回传结果（ok=true / ok=false + 原因）｜骨架通用接收（`HandleSetting` 声明 + 校验 + 应用；注册后异步拉取兜底）｜设置项接入全部服务（reasoner 3 / memory 5 / images 1 / qq 1 / 中心 2）｜面板事件驱动自动刷新（无刷新按钮）
 - [x] 前端服务 v1（`frontend`）：设置中心可视化面板——TS 服务节点（注册 / 心跳 / 名册）+ HTTP JSON + SSE；设置查看 / 修改（configure 下发）/ 重置；瑞典极简界面（React/Vite + 系统无衬线字体）；协议以 Go 产出夹具做跨语言字节级锚定
 - [x] 文件服务（M8）：`files` 服务（save/fetch/read，独立进程/独立库）；QQ 私聊文件消息 → 存库 → 占位带 id 上链；`read` 声明 `tool: true` 自动成为 LLM 工具（文本截断 / 二进制明确拒绝）——含服务级测试、qq 接缝测试与全链真进程 e2e
+- [x] Excel 读写（M9）：`read` 升级 xlsx 文本化（逐 sheet 转 TSV、行边界截断、.xls 明确拒绝）；新动作 `write`（`tool: true`）单元格级编辑——LLM 凭 id 按需调用，就地修改权威副本（写锁防并发丢更新）
 - [ ] 下一步：embedding 语义召回 / 巩固线（sleep 提炼）、群聊（@ 必回 / 自主插话）、审批链路、PDF/Office 抽取（files.read 升级）
 
 ## 文档
