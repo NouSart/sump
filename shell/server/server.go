@@ -42,7 +42,7 @@ type Config struct {
 	Listen            string        // 监听地址 host:port
 	Center            string        // 设置中心 WS 地址
 	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
-	Root              string        // 工作目录根（默认 = 进程当前目录；命令的 workdir 必须落在其内）
+	Root              string        // 工作目录根（默认 = 进程当前目录；命令的 work_dir 必须落在其内）
 	Shell             string        // 命令解释器（默认自动探测：bash → pwsh → cmd / sh）
 	Timeout           time.Duration // 单条命令执行超时（默认 5 分钟）
 	MaxOutputBytes    int64         // 单流输出上限（默认 256KiB）
@@ -141,8 +141,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 				Action: "run",
 				Tool:   true,
 				Async:  true,
-				Input:  "{command: 要执行的命令行（交给服务的 shell 解释）; workdir?: 工作目录（须在服务根目录内，可省略）}",
-				Output: "受理回执 {item_id, state}；执行结果稍后由 report_result 补报送达（可能在你收尾之后才到）",
+				Input:  "{command: 要执行的命令行（交给服务的 shell 解释）; work_dir?: 工作目录（须在服务根目录内，可省略）}",
+				Output: "受理回执 {item_id, phase}；执行结果稍后由 report_result 补报送达（可能在你收尾之后才到）",
 			},
 		},
 		Logger: logger,
@@ -280,7 +280,7 @@ func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol
 	}
 	s.logger.Printf("受理命令 %s（来自 %s，%s）：%s", j.item, j.caller, dir, oneLine(j.command))
 	go s.process(j)
-	return protocol.ShellRunResult{ItemID: j.item, State: "queued"}, nil
+	return protocol.ShellRunResult{ItemID: j.item, Phase: "queued"}, nil
 }
 
 // process 走完一条命令的全程：审批 → 排队 / 执行 → 补报。
@@ -324,9 +324,9 @@ func (s *Server) enqueue(j *job) (string, error) {
 		return "", fmt.Errorf("执行队列已满（上限 %d：队列中 %d 条，正在执行 %d 条）", s.queueLimitNow(), n, running)
 	}
 	s.waiting = append(s.waiting, j)
-	n := len(s.waiting)
+	ahead := len(s.waiting) - 1 // 不含自己：真正排在自己前面的条数
 	s.schedMu.Unlock()
-	return fmt.Sprintf("已排队（前方 %d 条）", n), nil
+	return fmt.Sprintf("已排队（前方 %d 条）", ahead), nil
 }
 
 // execute 执行一条命令并补报结果；结束后让出槽位、拉起下一条等待中的命令。

@@ -17,7 +17,7 @@ func main() {
 	name := flag.String("name", "shell", "服务名")
 	addr := flag.String("addr", "127.0.0.1:9701", "监听地址（host:port）")
 	center := flag.String("center", "ws://127.0.0.1:9000/ws", "设置中心 WS 地址")
-	root := flag.String("root", "", "工作目录根（默认 = 进程当前目录；命令的 workdir 必须落在其内）")
+	root := flag.String("root", "", "工作目录根（默认 = 进程当前目录；命令的 work_dir 必须落在其内）")
 	sh := flag.String("shell", "", "命令解释器（默认自动探测：bash → pwsh → cmd）")
 	timeoutMS := flag.Int("timeout-ms", 300000, "单条命令执行超时（毫秒）")
 	maxKB := flag.Int("max-output-kb", 256, "单流输出上限（KB；超出即截断并标注）")

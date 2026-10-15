@@ -148,7 +148,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 // 调用方 → 服务（jump）
 { "action": "run", "input": { "command": "ls -la" } }
 // 服务的响应（只表示已受理）
-{ "ok": true, "data": { "item_id": "01J…", "state": "queued" } }
+{ "ok": true, "data": { "item_id": "01J…", "phase": "queued" } }
 ```
 
 **补报**：后续每条进展都是服务 → 调用方的一次独立 `jump`（`action: "report_result"`，`to` = 原先的调用方）：
@@ -159,7 +159,8 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
   "data": { "exit_code": 0, "stdout": "…", "stderr": "", "duration_ms": 12 } }
 ```
 
-- `item_id`：受理回执里的句柄（调用方据此把补报配回自己的记账）；`phase` 与 `data` 的内容由服务自定；
+- `item_id`：受理回执里的句柄（调用方据此把补报配回自己的记账）；补报的 `phase` 与 `data` 内容由服务自定；
+  受理回执里的 `phase` 与补报同一词汇（受理就是第一个阶段；shell 当前：`queued`）；
   `text` 是可直接阅读的正文（调用方据此注入上下文 / 呈现）；`final: true` = 该次受理的最后一条。
 - **零阻塞**：受理回执不等审批、不等执行；补报各自独立一跳；调用方离线 = 补报发不出去（服务只记日志，不排队补发）。
 - 调用方缺失句柄对应关系时的补报（重复 / 服务重启过）**忽略即可**，不是错误。
@@ -296,7 +297,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | ---- | ---- | ------ |
 | 消息类型（`type`） | 裸名词；请求 / 响应 / 事件方向固定（事件型只由中心广播） | `register` `response` `roster` `jump` `heartbeat`；事件：`roster` `settings` |
 | 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §6.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting` `embed` `run` `report_result`；骨架保留：`configure` |
-| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms` `texts` `query` `vectors` `dim` `model`；异步补报：`item_id` `phase` `text` `data` `final`；shell：`command` `workdir` `state` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms` |
+| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms` `texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms` |
 | 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `qq` `shell` `frontend` `embedding` |
 | 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `max_mb` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.concurrency` `exec.queue_limit` `approval.service` `approval.timeout_ms` |
 | 名片字段（`provides[]`） | 小写下划线；跨语言一致 | `action` `input` `output` `tool` `async` |

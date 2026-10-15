@@ -88,7 +88,7 @@ func (a *stubAsync) handleWS(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 		// 受理即回执：只回句柄，不执行。
-		out, _ := protocol.EncodePayload(map[string]any{"item_id": a.itemID, "state": "queued"})
+		out, _ := protocol.EncodePayload(map[string]any{"item_id": a.itemID, "phase": "queued"})
 		resp, _ := protocol.NewResponse(env, "stub-async", protocol.ResponsePayload{OK: true, Data: out})
 		c.send(resp)
 	}

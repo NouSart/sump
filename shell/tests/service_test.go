@@ -326,7 +326,7 @@ func run(t *testing.T, c *protocol.Client, command, workdir string) protocol.She
 	if err := protocol.DecodeRaw(rp.Data, &res); err != nil {
 		t.Fatal(err)
 	}
-	if res.ItemID == "" || res.State != "queued" {
+	if res.ItemID == "" || res.Phase != "queued" {
 		t.Fatalf("受理回执不符: %+v", res)
 	}
 	return res

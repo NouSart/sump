@@ -193,7 +193,7 @@ func TestShellHotPathE2E(t *testing.T) {
 	if err := protocol.DecodeRaw(rp.Data, &res); err != nil {
 		t.Fatal(err)
 	}
-	if res.ItemID == "" || res.State != "queued" {
+	if res.ItemID == "" || res.Phase != "queued" {
 		t.Fatalf("受理回执不符: %+v", res)
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
@@ -223,8 +223,8 @@ func TestShellHotPathE2E(t *testing.T) {
 	ctxD, cancelD := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelD()
 	if rp := callJump(t, caller, "shell", "run", map[string]any{
-		"command": "echo hi",
-		"workdir": "..",
+		"command":  "echo hi",
+		"work_dir": "..",
 	}, ctxD); rp.OK {
 		t.Fatal("越界的工作目录应被同步拒绝")
 	}

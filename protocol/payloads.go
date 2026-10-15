@@ -249,20 +249,21 @@ type AsyncResultPayload struct {
 
 // ShellRunPayload 是 shell.run 的输入：一条待执行的命令。
 type ShellRunPayload struct {
-	Command string `msgpack:"command"`           // 命令行（交给服务选定的 shell 解释）
-	WorkDir string `msgpack:"workdir,omitempty"` // 工作目录（默认服务根目录；越界即拒）
+	Command string `msgpack:"command"`            // 命令行（交给服务选定的 shell 解释）
+	WorkDir string `msgpack:"work_dir,omitempty"` // 工作目录（默认服务根目录；越界即拒）
 }
 
 // ShellRunResult 是 shell.run 的受理回执：命令已入队列，执行结果由 report_result 补报送达。
+// Phase 与补报（AsyncResultPayload.Phase）用同一词汇：受理回执就是这条命令的第一个阶段（queued）。
 type ShellRunResult struct {
 	ItemID string `msgpack:"item_id"` // 受理句柄（补报原样带回）
-	State  string `msgpack:"state"`   // 受理状态：queued
+	Phase  string `msgpack:"phase"`   // 阶段：queued
 }
 
 // ShellEventData 是 shell 补报的结构化补充（report_result 的 data）。
 type ShellEventData struct {
 	Command     string `msgpack:"command,omitempty"`
-	WorkDir     string `msgpack:"workdir,omitempty"`
+	WorkDir     string `msgpack:"work_dir,omitempty"`
 	Shell       string `msgpack:"shell,omitempty"` // 实际使用的 shell 可执行文件
 	ExitCode    int    `msgpack:"exit_code"`       // 退出码（未执行 / 超时终止时为 0 / -1）
 	Stdout      string `msgpack:"stdout,omitempty"`

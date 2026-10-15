@@ -12,9 +12,15 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 )
+
+// waitDelay 是一次命令被终止后，Wait 等待其 I/O 收尾的最长时间。
+// 主要防一种卡死：kill 失败且孙进程还占着 stdout 管道时，Wait 会无限等下去——
+// 那条命令会永久占住执行槽位，攒满并发上限后所有命令都被拒。有它就最多多占 10 秒。
+const waitDelay = 10 * time.Second
 
 // runCommand 真正执行一条命令。
 // 返回的 error 只表示“没能跑起来 / 没能跑完”（shell 缺失、进程启动失败等）；
@@ -36,7 +42,13 @@ func (s *Server) runCommand(j *job) (protocol.ShellEventData, error) {
 	stdout, stderr := newLimitWriter(s.maxOutputNow()), newLimitWriter(s.maxOutputNow())
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	// 超时终止整棵进程树（只杀直接子进程会留下“还在跑”的孙进程）。
-	cmd.Cancel = func() error { return killTree(cmd.Process) }
+	// killErr 留档：终止失败要如实进补报——不许默认“已终止”。
+	var killErr error
+	cmd.Cancel = func() error {
+		killErr = killTree(cmd.Process)
+		return killErr
+	}
+	cmd.WaitDelay = waitDelay
 
 	if err := cmd.Start(); err != nil {
 		res.Error = err.Error()
@@ -52,6 +64,10 @@ func (s *Server) runCommand(j *job) (protocol.ShellEventData, error) {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		res.TimedOut = true
 		res.ExitCode = -1
+		// 只有确实杀掉了才叫“被终止”；杀不掉要把原样原因说清楚（进程可能仍在运行）。
+		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			res.Error = fmt.Sprintf("超时后终止失败（进程可能仍在运行）: %v", killErr)
+		}
 		return res, nil
 	}
 	var ee *exec.ExitError
@@ -112,11 +128,15 @@ func lookShell(name string) (string, error) {
 }
 
 // renderDone 把执行结果整理成一条可直接阅读的文本（补报的 Text 字段）。
+// 超时但终止失败时不得说“被终止”——原因原文照写（数据字段里也有）。
 func renderDone(j *job, res protocol.ShellEventData, limit int64) string {
 	var b strings.Builder
-	if res.TimedOut {
+	switch {
+	case res.TimedOut && res.Error != "":
+		fmt.Fprintf(&b, "命令超时，且未能终止（进程可能仍在运行；退出码 -1，耗时 %dms）：%s\n", res.DurationMS, res.Error)
+	case res.TimedOut:
 		fmt.Fprintf(&b, "命令超时并被终止（退出码 -1，耗时 %dms）\n", res.DurationMS)
-	} else {
+	default:
 		fmt.Fprintf(&b, "命令执行完成（退出码 %d，耗时 %dms）\n", res.ExitCode, res.DurationMS)
 	}
 	fmt.Fprintf(&b, "$ %s\n", j.command)
