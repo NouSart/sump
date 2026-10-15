@@ -6,6 +6,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -19,6 +20,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/xuri/excelize/v2"
 
 	"github.com/QAQ-awa-QAQ/sump/files/store"
 	"github.com/QAQ-awa-QAQ/sump/protocol"
@@ -46,6 +49,8 @@ type Server struct {
 	setMu        sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
 	maxBytes     int64      // 当前单文件上限（字节）
 	readMaxChars int        // 当前 read 截断阈值（字符数）
+
+	writeMu sync.Mutex // write 的 read-modify-write 串行化（防并发改同一文件丢更新）
 }
 
 // New 创建实例并注册动作。
@@ -70,7 +75,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Provides: []protocol.Provide{
 			{Action: "save", Input: "{url} 或 {data(base64), filename, mime}", Output: "{id, filename, mime, size}"},
 			{Action: "fetch", Input: "{id}", Output: "{id, filename, mime, data(base64), size}"},
-			{Action: "read", Input: "{id}", Output: "{id, filename, text, truncated}（文本类；二进制报错）", Tool: true},
+			{Action: "read", Input: "{id}", Output: "{id, filename, text, truncated}（文本类与 .xlsx 转 TSV；其余二进制报错）", Tool: true},
+			{Action: "write", Input: "{id, sheet, edits:[{cell, value}]}", Output: "{id, sheet, updated}（就地修改 .xlsx；先 read 看清坐标再改）", Tool: true},
 		},
 		Logger: logger,
 	})
@@ -98,6 +104,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("save", s.actionSave)
 	s.Handle("fetch", s.actionFetch)
 	s.Handle("read", s.actionRead)
+	s.Handle("write", s.actionWrite)
 	return s
 }
 
@@ -185,8 +192,9 @@ func (s *Server) actionFetch(_ context.Context, _ protocol.Envelope, in protocol
 	}, nil
 }
 
-// actionRead 读取文本类文件的内容（LLM 工具）：先 Stat 判定类型再读本体，
-// 超长按字符数截断并置 truncated——“没给全”必须显式告知模型。
+// actionRead 读取文件的可文本化内容（LLM 工具）：先 Stat 判定类型再读本体。
+// 文本类直接读取；.xlsx 逐 sheet 转 TSV；.xls 与其余二进制明确拒绝。
+// 截断阈值 = read_max_chars（截断置 truncated——“没给全”必须显式告知模型）。
 func (s *Server) actionRead(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p protocol.FileReadPayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
@@ -199,10 +207,21 @@ func (s *Server) actionRead(_ context.Context, _ protocol.Envelope, in protocol.
 	if err != nil {
 		return nil, err
 	}
-	if !isTextual(meta.Mime, meta.Filename) {
-		return nil, fmt.Errorf("read: 该文件类型（%s）暂不支持阅读，仅支持文本类", meta.Mime)
+	switch {
+	case isLegacyXls(meta.Mime, meta.Filename):
+		return nil, errors.New("read: 旧版 .xls 不支持，请另存为 .xlsx 后重试")
+	case isExcelFile(meta.Mime, meta.Filename):
+		return s.readXlsx(p.ID, meta)
+	case isTextual(meta.Mime, meta.Filename):
+		return s.readText(p.ID, meta)
+	default:
+		return nil, fmt.Errorf("read: 该文件类型（%s）暂不支持阅读，仅支持文本类与 .xlsx", meta.Mime)
 	}
-	data, _, err := s.cfg.Store.Load(p.ID)
+}
+
+// readText 文本类读取：UTF-8 校验 + 按字符数截断。
+func (s *Server) readText(id string, meta store.Meta) (any, error) {
+	data, _, err := s.cfg.Store.Load(id)
 	if err != nil {
 		return nil, err
 	}
@@ -210,8 +229,65 @@ func (s *Server) actionRead(_ context.Context, _ protocol.Envelope, in protocol.
 		return nil, fmt.Errorf("read: %s 的内容不是有效的 UTF-8 文本", meta.Filename)
 	}
 	text, truncated := truncateRunes(string(data), s.readMaxCharsNow())
-	s.logger.Printf("已读取文件 %s（%s, %d 字节, 截断=%v）", p.ID, meta.Filename, len(data), truncated)
-	return protocol.FileReadResult{ID: p.ID, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
+	s.logger.Printf("已读取文件 %s（%s, %d 字节, 截断=%v）", id, meta.Filename, len(data), truncated)
+	return protocol.FileReadResult{ID: id, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
+}
+
+// readXlsx .xlsx 读取：逐 sheet 转 TSV（行边界截断）。
+func (s *Server) readXlsx(id string, meta store.Meta) (any, error) {
+	data, _, err := s.cfg.Store.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	f, err := excelize.OpenReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("read: 解析 %s 为 xlsx 失败: %w", meta.Filename, err)
+	}
+	defer f.Close()
+	text, truncated := xlsxToText(f, s.readMaxCharsNow())
+	s.logger.Printf("已读取 xlsx %s（%s, %d 字节, 截断=%v）", id, meta.Filename, len(data), truncated)
+	return protocol.FileReadResult{ID: id, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
+}
+
+// actionWrite 编辑 xlsx 的单元格（LLM 工具，就地修改权威副本）。
+// 校验链：id 存在 → 必须 .xlsx → sheet 存在（报错附可用表清单）→ 坐标全量预检 → 写回库。
+// 全局写锁串行化 read-modify-write，防并发改同一文件丢更新。
+func (s *Server) actionWrite(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.FileWritePayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	if p.ID == "" {
+		return nil, errors.New("write: id 必填")
+	}
+	if strings.TrimSpace(p.Sheet) == "" {
+		return nil, errors.New("write: sheet 必填")
+	}
+	if len(p.Edits) == 0 {
+		return nil, errors.New("write: edits 至少一条")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	meta, err := s.cfg.Store.Stat(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !isExcelFile(meta.Mime, meta.Filename) {
+		return nil, fmt.Errorf("write: 仅支持编辑 .xlsx 文件（%s 的类型是 %s）", meta.Filename, meta.Mime)
+	}
+	data, _, err := s.cfg.Store.Load(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	out, n, err := editXlsx(data, p.Sheet, p.Edits)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.cfg.Store.Overwrite(p.ID, out); err != nil {
+		return nil, fmt.Errorf("write: 写回库失败: %w", err)
+	}
+	s.logger.Printf("已编辑 xlsx %s（%s, 表 %s, %d 格）", p.ID, meta.Filename, p.Sheet, n)
+	return protocol.FileWriteResult{ID: p.ID, Sheet: p.Sheet, Updated: n}, nil
 }
 
 // ---------- 文本类判定与截断 ----------

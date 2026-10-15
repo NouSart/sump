@@ -103,6 +103,23 @@ func (s *Store) Stat(id string) (Meta, error) {
 	return m, nil
 }
 
+// Overwrite 用新内容就地覆盖已存在的文件（权威副本保持唯一；新尺寸入台账）。
+func (s *Store) Overwrite(id string, data []byte) error {
+	var path string
+	err := s.db.QueryRow(`SELECT path FROM files WHERE id=?`, id).Scan(&path)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE files SET size=? WHERE id=?`, len(data), id)
+	return err
+}
+
 // Load 读取一个文件（二进制 + 元数据）。
 func (s *Store) Load(id string) ([]byte, Meta, error) {
 	var m Meta
