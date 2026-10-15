@@ -95,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     log = logging.getLogger("embedding")
+    # websockets 的连接生命周期日志太吵：只保留警告及以上。
+    logging.getLogger("websockets").setLevel(logging.WARNING)
     try:
         asyncio.run(run(args, log))
     except KeyboardInterrupt:
