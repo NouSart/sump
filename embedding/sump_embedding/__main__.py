@@ -14,7 +14,7 @@ import logging
 import signal
 import sys
 
-from .backends import BGE_QUERY_PREFIX, FakeBackend, OnnxBackend
+from .backends import FakeBackend, OnnxBackend
 from .service import DEFAULT_MAX_BATCH, Config, Service
 
 # query 侧指令前缀的默认值由实测裁决（scripts/measure_query_prefix.py；数字见 README）：
@@ -38,7 +38,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("-heartbeat-ms", "--heartbeat-ms", type=int, default=15000, help="心跳间隔（毫秒）")
     parser.add_argument("-max-batch", "--max-batch", type=int, default=DEFAULT_MAX_BATCH, help="单次 embed 文本数上限")
-    parser.add_argument("-fake-dim", "--fake-dim", type=int, default=384, help="fake 后端维度（对齐真模型，便于联调）")
+    parser.add_argument("-fake-dim", "--fake-dim", type=int, default=512, help="fake 后端维度（默认 512 = 真模型 bge-small-zh-v1.5 的隐藏维，便于联调）")
     return parser.parse_args(argv)
 
 

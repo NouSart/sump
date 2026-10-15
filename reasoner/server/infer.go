@@ -28,24 +28,30 @@ const systemPrompt = `你是 SUMP 服务网络中的“单步推理器”（reas
 工具是异步执行的：
 - 你发起调用后会立刻收到“已受理”回执（tool 消息），执行结果稍后以“[工具结果] …”开头的消息送达；
 - 可以并行调用多个工具；也可以调用 wait 工具等待全部工具完成，或先继续做其他事；
-- 仍有工具任务未完成时不要收尾——若提前输出最终答复，系统会拒绝并要求你继续等待。`
+- 仍有工具任务未完成时不要收尾——若提前输出最终答复，系统会拒绝并要求你继续等待。
+
+受理即回执的动作（回执里有 item_id，如 shell 命令）：
+- 回执只表示“已排队 / 正在执行”，不是结果；其后续进展以“[后续补报] …”开头的消息送达，可能在你收尾之后；
+- 在补报到达前不要断言执行结果（不要说“已完成 / 输出是 …”），只能告诉用户“已受理，结果稍后送达”；
+- 补报到达时（含收尾之后）你会被再次唤醒：若需要告知用户，直接给出要发送给用户的补充文本。`
 
 // structuralActions 是即便声明 tool:true 也不作为工具暴露的动作：协议/链机制动作（模型不得绕过链路），
 // 以及本服务的调试/测试动作（echo / debug_jump——不给模型“万能遥控”）。
 // 两道闸共用这张表：rosterTools 生成列表时过滤（暴露面）；runToolCall 执行前同样校验并拒绝（执行面）——
 // 模型若仍指名调用未提供的动作（幻觉 / 注入），不会发生真实跳转。
 var structuralActions = map[string]bool{
-	"user_message": true,
-	"step":         true,
-	"deliver":      true,
-	"recall":       true, // memory 服务：记忆请求
-	"store":        true, // memory 服务：对话落库
-	"resume":       true, // 本服务的“完全启动”入口（仅接受 from=memory）
-	"save":         true, // images 服务：保存图片（qq 侧调用）
-	"fetch":        true, // images 服务：取图（llm 侧按需调用）
-	"echo":         true, // 本服务：连通性测试（仅供直连调试）
-	"debug_jump":   true, // 本服务：调试代理跳转
-	"configure":    true, // 骨架保留动作：设置下发（中心驱动，不进 provides）
+	"user_message":  true,
+	"step":          true,
+	"deliver":       true,
+	"recall":        true, // memory 服务：记忆请求
+	"store":         true, // memory 服务：对话落库
+	"resume":        true, // 本服务的“完全启动”入口（仅接受 from=memory）
+	"save":          true, // images 服务：保存图片（qq 侧调用）
+	"fetch":         true, // images 服务：取图（llm 侧按需调用）
+	"echo":          true, // 本服务：连通性测试（仅供直连调试）
+	"debug_jump":    true, // 本服务：调试代理跳转
+	"report_result": true, // 异步受理的补报（服务 → 调用方；协议级动作，不给模型当工具）
+	"configure":     true, // 骨架保留动作：设置下发（中心驱动，不进 provides）
 }
 
 // rosterTools 把名册里各服务**显式声明 tool:true** 的动作映射为 LLM 工具
@@ -122,22 +128,29 @@ func (s *Server) toolAdvertised(service, action string) bool {
 	if structuralActions[action] {
 		return false
 	}
+	p, ok := s.provideOf(service, action)
+	return ok && p.Tool
+}
+
+// provideOf 在名册里取某服务动作的 provides 声明。
+func (s *Server) provideOf(service, action string) (protocol.Provide, bool) {
 	for _, card := range s.Roster() {
 		if card.Name != service {
 			continue
 		}
 		for _, p := range card.Provides {
-			if p.Action == action && p.Tool {
-				return true
+			if p.Action == action {
+				return p, true
 			}
 		}
-		return false
+		return protocol.Provide{}, false
 	}
-	return false
+	return protocol.Provide{}, false
 }
 
 // runToolCall 执行一次工具调用并返回给 LLM 的内容文本（JSON）。
-func (s *Server) runToolCall(ctx context.Context, trace string, call llm.ToolCall) (string, error) {
+// 声明为异步（Provide.Async）的动作：受理回执带回句柄，登记到在途表等补报（见 async.go）。
+func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCall) (string, error) {
 	svc, action, ok := parseToolName(call.Function.Name)
 	if !ok {
 		return "", fmt.Errorf("工具名无效: %s", call.Function.Name)
@@ -149,11 +162,38 @@ func (s *Server) runToolCall(ctx context.Context, trace string, call llm.ToolCal
 	if err != nil {
 		return "", err
 	}
-	data, err := s.Call(ctx, svc, action, rawIn, trace, "")
+	// boss 随跳转传下去：受理方若事后补报，才知道结果面向谁。
+	data, err := s.Call(ctx, svc, action, rawIn, st.trace, st.boss)
 	if err != nil {
 		return "", err
 	}
+	if p, ok := s.provideOf(svc, action); ok && p.Async {
+		s.trackAsync(svc, action, st, call, data)
+	}
 	return rawToJSONText(data), nil
+}
+
+// trackAsync 登记一次异步受理：从回执里取句柄（item_id），后续进展由 report_result 补报。
+func (s *Server) trackAsync(svc, action string, st *taskState, call llm.ToolCall, data msgpack.RawMessage) {
+	var res struct {
+		ItemID string `msgpack:"item_id"`
+	}
+	if err := protocol.DecodeRaw(data, &res); err != nil {
+		s.logger.Printf("异步动作 %s__%s 的受理回执无法解析（补报将无处归属）: %v", svc, action, err)
+		return
+	}
+	if res.ItemID == "" {
+		s.logger.Printf("异步动作 %s__%s 的受理回执未带 item_id（补报将无处归属）", svc, action)
+		return
+	}
+	s.registerAsync(res.ItemID, asyncJob{
+		cid:    st.cid,
+		callID: call.ID,
+		name:   call.Function.Name,
+		boss:   st.boss,
+		trace:  st.trace,
+	})
+	s.logger.Printf("会话 %s：已受理异步动作 %s（item=%s, job=%s），等补报", st.cid, call.Function.Name, res.ItemID, call.ID)
 }
 
 // toolSem 返回某会话的工具并发信号量（nil = 不限制）。信号量懒创建、按会话复用；

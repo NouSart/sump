@@ -196,7 +196,7 @@ sequenceDiagram
 ```jsonc
 {
   "type": "jump",
-  "payload": { "action": "shell_exec", "input": { "command": "ls -la" } }
+  "payload": { "action": "run", "input": { "command": "ls -la" } }
 }
 ```
 
@@ -231,6 +231,11 @@ sequenceDiagram
   - 内置工具 `wait`：阻塞等待全部工具完成；
   - 收尾门禁：仍有工具在跑、或本轮快照过期 → 拒绝收尾（暂存答复 + 注入 `【系统】` 提示）；
   - **任务窗口黑板**：最新消息链 + 在跑工具表（唯一副本）；同会话新消息取代旧任务（在跑结果丢弃）；窗口 = 任务在跑期，交付即释放
+- **受理即回执与补报（已实现）**：`provides` 里 `async: true` 的动作，响应只表示已受理（带回 `item_id`）；
+  后续进展由该服务以 `report_result` 补报给调用方（`{item_id, phase, text?, data?, final?}`，见 SPEC §6.5）——
+  - 受理回执即该次工具调用的“结果位”，补报**不进入**在跑工具表：模型的收尾不被长命令扣住；
+  - 补报到达时：任务在跑 → 注入黑板并唤醒；任务已收尾 → 开一轮“补报轮”（system + 补报），模型据此给 boss 补一句（结果不丢）；
+  - `item_id` 对不上的补报忽略（不是错误）；`wait` 如实披露“已受理未回报”的条数，但不阻塞等待
 
 #### 记忆动作（memory）
 
@@ -245,11 +250,15 @@ sequenceDiagram
   2. `（核心记忆）`：`priority>0` 条目（上限 3 条 / 400 字，按优先级 + 新近排序）；
   3. `（相关记忆）`：bigram 子串打分（相邻二字近似分词；**实测 FTS5 trigram 对 1~2 字中文全打空，故不用**）——top 5 / 800 字，同分按 priority、新近。
 - **检索位置**：**已实现 M8**——语义召回（embedding 服务，余弦 ≥0.45，阈值来自真模型实测分数带）+ bigram 兜底（服务缺席/超时 3s/解析失败 → 静默回落，不阻塞 recall）；条目向量存 memory 自己的 SQLite（BLOB，派生数据：懒补齐、可重建、换模型失效重算）。
+  - 已定语义：**补齐部分失败的条目本轮不参与**（不回落 bigram；日志有记录）——“零可用向量时是否回落”**保持现状，之后决策**。
+  - 已修（M9 复核）：Python 端 WS 端点的取消是**连接级**的——一条连接断开只取消它自己在飞的动作（此前跨连接连坐，会误伤并发的 embed 调用）。
 
 **后续批次（占名）**
 
-- `approval_request` / `approval_result`（reasoner ↔ qq/web）：审批挂起与裁决
+- `approval_request` / `approval_result`（reasoner ↔ qq/web）：审批挂起与裁决；**shell 的审批接缝已留**（`Approver` 接口 + fail-closed 默认），协议由审批服务定
 - `configure`（设置中心 → 服务）：**已实现**（注册即全量下发 + 变更单键下发 + `settings` 事件回传；骨架统一承接）；“调度 = 设置行为、设计工作流”的完整形态待设计
+- **后台任务托管**（shell 的第二形态：start / status / logs / kill）：受理即回执的天然形态，本批**未做**（只做前台 `run`）
+- **输出有界引用**（PTC 式：大输出留句柄、按需分页取）：本批**未做**——shell 只按 `exec.max_output_kb` 截断并标注总数
 
 ### 服务清单（草案 · 语言已定）
 
@@ -266,6 +275,7 @@ sequenceDiagram
 | tools（工具） | Go | 工具注册与执行（Shell 等） | `tools/registry.py`、`tools/builtin/` | 是否按类再拆待定 |
 | qq（QQ 接入） | Go | NapCat/OneBot 11 正向 WS；私聊（零信任）→ 任务链；deliver → 回发 | `plugins/builtin/napcat_plugin.py` | **已实现**（仅私聊；群聊/审批后续） |
 | images（图片） | Go | 图片保存（URL/base64）+ 按需转 base64 发回（llm 取图内联） | （v1 图片直通部分） | **已实现** |
+| **shell（命令执行）** | Go | 受理即回执的命令执行：审批接缝（未接入 = 一律未通过）+ 并行/队列/超时终止/输出截断；结果由 `report_result` 补报 | `tools/builtin/`（shell 部分） | **已实现**（审批协议等审批服务定；白名单策略不在本服务） |
 | web（Web 接入） | Go | 浏览器 REST/SSE 接入（不带前端） | `api/` | UI 归 frontend 服务 |
 | frontend（前端服务） | TS | 设置中心可视化面板：注册为服务节点（心跳 / 名册广播）；浏览器 HTTP JSON + SSE；设置查看 / 修改 / 重置（中心受理并下发） | `frontend/` | **已实现 v1**（错误上报视图随 v2） |
 | assets（资产） | Go | 文件资产库、索引、检索 | `assets.py` | |

@@ -33,10 +33,12 @@ class JumpEndpoint:
         self.actions = actions
         self.action_timeout = action_timeout
         self.log = log
-        self._tasks: set[asyncio.Task] = set()
 
     async def handle_conn(self, ws: websockets.ServerConnection) -> None:
         lock = asyncio.Lock()
+        # 任务集合是**连接级**的：一条连接断开只取消它自己在飞的动作，不得连坐其它连接
+        # （调用方各自短连接、各自等自己的响应；连坐会让无辜的调用方只能超时）。
+        tasks: set[asyncio.Task] = set()
 
         async def send(env: dict) -> None:
             async with lock:  # websockets 允许并发 send，但显式串行化更省心
@@ -53,13 +55,15 @@ class JumpEndpoint:
                     await send(new_response(env, self.name, {"ok": False, "error": f"unsupported message type: {env['type']}"}))
                     continue
                 task = asyncio.create_task(self._handle_jump(send, env))
-                self._tasks.add(task)
-                task.add_done_callback(self._tasks.discard)
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
         except websockets.ConnectionClosed:
             pass
         finally:
-            for task in list(self._tasks):
+            for task in list(tasks):
                 task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _handle_jump(self, send: Callable[[dict], Awaitable[None]], env: dict) -> None:
         payload = env["payload"]

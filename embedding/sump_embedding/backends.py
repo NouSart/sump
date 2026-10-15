@@ -73,7 +73,7 @@ class Backend(Protocol):
 class FakeBackend:
     """确定性伪向量：字符/词项 bigram 特征哈希（测试与 CI 用；语义无关，但排序可预期）。"""
 
-    def __init__(self, dim: int = 384, name: str = "fake-bigram-v1") -> None:
+    def __init__(self, dim: int = 512, name: str = "fake-bigram-v1") -> None:
         self.dim = dim
         self.name = name
 
