@@ -192,6 +192,26 @@ type FileReadResult struct {
 	Truncated bool   `msgpack:"truncated"` // true = 内容被截断，未给全（模型可据此决定后续动作）
 }
 
+// FileWriteEdit 是一次单元格写入：A1 风格坐标 + 值（v0 统一字符串）。
+type FileWriteEdit struct {
+	Cell  string `msgpack:"cell"`
+	Value string `msgpack:"value"`
+}
+
+// FileWritePayload 是 files.write 的 payload：编辑 xlsx 的单元格（就地修改权威副本）。
+type FileWritePayload struct {
+	ID    string          `msgpack:"id"`
+	Sheet string          `msgpack:"sheet"`
+	Edits []FileWriteEdit `msgpack:"edits"`
+}
+
+// FileWriteResult 是 files.write 的结果：实际写入的单元格数。
+type FileWriteResult struct {
+	ID      string `msgpack:"id"`
+	Sheet   string `msgpack:"sheet"`
+	Updated int    `msgpack:"updated"`
+}
+
 // ---------- 设置中心：设置存取 ----------
 
 // SettingView 是一个设置项的当前状态（设置中心对外呈现）。

@@ -82,6 +82,8 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 		{"fileFetchResult", FileFetchResult{ID: "01J", Filename: "a.pdf", Mime: "application/pdf", Data: "AA==", Size: 1}, &FileFetchResult{}},
 		{"fileRead", FileReadPayload{ID: "01J"}, &FileReadPayload{}},
 		{"fileReadResult", FileReadResult{ID: "01J", Filename: "a.md", Text: "内容", Truncated: true}, &FileReadResult{}},
+		{"fileWrite", FileWritePayload{ID: "01J", Sheet: "Sheet1", Edits: []FileWriteEdit{{Cell: "A1", Value: "姓名"}, {Cell: "B2", Value: "30"}}}, &FileWritePayload{}},
+		{"fileWriteResult", FileWriteResult{ID: "01J", Sheet: "Sheet1", Updated: 2}, &FileWriteResult{}},
 		{"save", ImageSavePayload{URL: "http://x/i.png", Mime: "image/png"}, &ImageSavePayload{}},
 		{"saveResult", ImageSaveResult{ID: "01J", Mime: "image/png", Size: 123}, &ImageSaveResult{}},
 		{"fetch", ImageFetchPayload{ID: "01J"}, &ImageFetchPayload{}},
