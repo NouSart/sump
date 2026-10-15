@@ -14,3 +14,10 @@ data/
 frontend/node_modules/
 frontend/dist/
 frontend/design/specimen-assets/
+
+# embedding 服务（Python）：虚拟环境 / 缓存 / 构建元数据不入库
+embedding/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/

@@ -209,6 +209,23 @@ type SettingsEventPayload struct {
 	Results []SettingResult `msgpack:"results,omitempty"`
 }
 
+// ---------- embedding（文本 → 向量） ----------
+
+// EmbedPayload 是 embed 的输入：一批文本；Query 标记查询侧（服务按模型建议决定是否加指令前缀）。
+type EmbedPayload struct {
+	Texts []string `msgpack:"texts"`
+	Query bool     `msgpack:"query,omitempty"`
+}
+
+// EmbedResult 是 embed 的输出：与 texts 一一对应的向量（L2 归一化）+ 维度 + 模型标识
+// （模型标识用于判定已存向量是否失效）。向量在线路上是 float64（Python/JS 原生数字），
+// Go 消费侧按需转 float32。
+type EmbedResult struct {
+	Vectors [][]float64 `msgpack:"vectors"`
+	Dim     int         `msgpack:"dim"`
+	Model   string      `msgpack:"model"`
+}
+
 // ---------- 长期记忆（memory） ----------
 
 // RememberPayload 是 remember 的 payload：写入一条长期记忆条目。

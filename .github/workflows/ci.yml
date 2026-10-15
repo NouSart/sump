@@ -20,6 +20,15 @@ jobs:
           go-version-file: go.work
           cache: true
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: embedding/pyproject.toml
+
+      - name: 安装 embedding 依赖（根 e2e 需要 Python 服务）
+        run: pip install ./embedding
+
       - name: gofmt 检查
         run: |
           out=$(gofmt -l $(git ls-files '*.go'))
@@ -71,3 +80,22 @@ jobs:
       - name: 测试（协议 / 中心链路 / HTTP API）
         working-directory: frontend
         run: npm test
+
+  embedding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: embedding/pyproject.toml
+
+      - name: 安装依赖（核心 + dev；不含 onnx extra——真模型冒烟在 CI 上跳过）
+        run: pip install -e "./embedding[dev]"
+
+      - name: 测试（协议锚定 / fake 后端 / 真 WS 集成）
+        working-directory: embedding
+        run: python -m pytest tests -q

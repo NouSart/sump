@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sump-embedding"
+version = "0.1.0"
+description = "SUMP v2 embedding 服务：文本 → 向量（本地 ONNX 推理，bge-small-zh-v1.5）"
+requires-python = ">=3.12"
+dependencies = [
+    "msgspec>=0.22",
+    "websockets>=17",
+]
+
+[project.optional-dependencies]
+# 真模型推理（本地离线）；CI 与纯协议/集成测试不需要
+onnx = [
+    "onnxruntime>=1.31",
+    "tokenizers>=0.23",
+    "numpy>=2.3",
+]
+dev = [
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+include = ["sump_embedding*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

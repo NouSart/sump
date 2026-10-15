@@ -11,6 +11,7 @@
 ## 环境要求
 
 - Go 1.26+（`go version` 确认）
+- Python ≥ 3.12（embedding 服务与根 e2e；`python --version` 确认）
 - Git；文本文件使用 **LF** 换行（仓库已带 `.gitattributes`，克隆后自动生效；Windows 用户无需额外设置）
 - 可选：VS Code + Go 插件
 
@@ -22,10 +23,17 @@ cd sump
 
 # 跑某一个模块的测试（推荐先跑一遍确认环境正常）
 cd protocol; go test ./... -count=1; cd ..
-# 模块共 8 个：protocol / service / settings-center / reasoner / memory / images / qq / tests
+# 模块共 8 个（Go）：protocol / service / settings-center / reasoner / memory / images / qq / tests；另有 embedding（Python，见下）
 
 # 前端服务（TS，Node ≥ 22.18）：类型检查 + 构建 + 测试
 cd frontend; npm install; npm test; cd ..
+
+# embedding 服务（Python ≥ 3.12）：建环境 + 测试（CI 同款：python -m pytest tests -q）
+cd embedding
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[onnx,dev]"   # Linux/macOS: .venv/bin/python
+.\.venv\Scripts\python.exe -m pytest tests -q
+cd ..
 
 # 跨服务真进程端到端（约 20 秒）
 cd tests; go test ./... -count=1; cd ..
@@ -46,6 +54,7 @@ cd tests; go test ./... -count=1; cd ..
    ```
 
 改动 `frontend`（TS）时另加：`cd frontend; npm test`（协议 / 中心链路 / HTTP API / 面板组件测试；`npm run build` 内含类型检查，含测试）。
+改动 `embedding`（Python）时另加：`cd embedding; python -m pytest tests -q`（CI 只装核心依赖——真模型冒烟在本地以 `SUMP_EMBED_MODEL_DIR` 开启）。
 
 CI（GitHub Actions）会替你跑全部内容；本地先过一遍能省一轮等待。
 

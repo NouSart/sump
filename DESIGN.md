@@ -244,7 +244,7 @@ sequenceDiagram
   1. `（最近对话）`：会话库最近 N 条（现有逻辑，去重裁剪不变）；
   2. `（核心记忆）`：`priority>0` 条目（上限 3 条 / 400 字，按优先级 + 新近排序）；
   3. `（相关记忆）`：bigram 子串打分（相邻二字近似分词；**实测 FTS5 trigram 对 1~2 字中文全打空，故不用**）——top 5 / 800 字，同分按 priority、新近。
-- **检索位置**：v0 为进程内全量打分（个人规模毫秒级）；升级路径：FTS5/bigram 预索引或 embedding 语义召回（独立服务）。
+- **检索位置**：**已实现 M8**——语义召回（embedding 服务，余弦 ≥0.45，阈值来自真模型实测分数带）+ bigram 兜底（服务缺席/超时 3s/解析失败 → 静默回落，不阻塞 recall）；条目向量存 memory 自己的 SQLite（BLOB，派生数据：懒补齐、可重建、换模型失效重算）。
 
 **后续批次（占名）**
 
@@ -261,7 +261,7 @@ sequenceDiagram
 | **settings-center**（设置中心） | Go | 服务注册 · 全局信息 · 设置 · 调度/工作流 | `settings.py`、`config.py` | **第一批** |
 | sessions（会话） | Go | 会话历史与上下文持久化 | `api/session_manager.py`、`core/context.py` | 与接入服务的边界待定 |
 | memory（记忆） | Go | 会话历史 + 上下文组装（recall/resume/store，完全启动链）；四层记忆/检索/巩固后续批次 | `memory/`（除 embedder）、记忆巩固工具、`core/sleep.py` | **已实现**（第二批） |
-| embedding（推理） | Python | 文本 → 向量（ONNX Runtime） | `memory/embedder.py` | 从 memory 拆出的独立小服务 |
+| embedding（推理） | Python | 文本 → 向量（onnxruntime + tokenizers，CLS pooling + L2 归一；fake 后端供测试/CI；零存储、零设置项） | `memory/embedder.py`（v1，fastembed） | **已实现**（M8） |
 | security（安全审批） | Go | 规则 + LLM 分析 + 裁决；挂起/超时 | `security/` | |
 | tools（工具） | Go | 工具注册与执行（Shell 等） | `tools/registry.py`、`tools/builtin/` | 是否按类再拆待定 |
 | qq（QQ 接入） | Go | NapCat/OneBot 11 正向 WS；私聊（零信任）→ 任务链；deliver → 回发 | `plugins/builtin/napcat_plugin.py` | **已实现**（仅私聊；群聊/审批后续） |
