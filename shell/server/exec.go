@@ -25,7 +25,9 @@ const waitDelay = 10 * time.Second
 // runCommand 真正执行一条命令。
 // 返回的 error 只表示“没能跑起来 / 没能跑完”（shell 缺失、进程启动失败等）；
 // 超时属于执行结果（TimedOut=true，退出码 -1）。
-func (s *Server) runCommand(j *job) (protocol.ShellEventData, error) {
+// limit 是本条命令的输出上限快照：由调用方读一次后传入——“实际截断”与“补报文案里的数字”
+// 共用同一个值，中途改设置不改变本次执行的口径。
+func (s *Server) runCommand(j *job, limit int64) (protocol.ShellEventData, error) {
 	res := protocol.ShellEventData{Command: j.command, WorkDir: j.workDir}
 	exe, args, err := s.commandLine(j.command)
 	if err != nil {
@@ -39,7 +41,7 @@ func (s *Server) runCommand(j *job) (protocol.ShellEventData, error) {
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = j.workDir
 	cmd.SysProcAttr = sysProcAttr()
-	stdout, stderr := newLimitWriter(s.maxOutputNow()), newLimitWriter(s.maxOutputNow())
+	stdout, stderr := newLimitWriter(limit), newLimitWriter(limit)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	// 超时终止整棵进程树（只杀直接子进程会留下“还在跑”的孙进程）。
 	// killErr 留档：终止失败要如实进补报——不许默认“已终止”。

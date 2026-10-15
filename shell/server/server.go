@@ -332,7 +332,8 @@ func (s *Server) enqueue(j *job) (string, error) {
 // execute 执行一条命令并补报结果；结束后让出槽位、拉起下一条等待中的命令。
 func (s *Server) execute(j *job) {
 	start := time.Now()
-	res, err := s.runCommand(j)
+	limit := s.maxOutputNow() // 每次执行只读一次上限：截断与补报文案共用，杜绝两次读数不一致
+	res, err := s.runCommand(j, limit)
 	res.DurationMS = time.Since(start).Milliseconds()
 	switch {
 	case err != nil:
@@ -341,7 +342,7 @@ func (s *Server) execute(j *job) {
 		}
 		s.report(j, "failed", fmt.Sprintf("未能执行：%v\n$ %s", err, j.command), res)
 	default:
-		s.report(j, "done", renderDone(j, res, s.maxOutputNow()), res)
+		s.report(j, "done", renderDone(j, res, limit), res)
 	}
 	s.next()
 }

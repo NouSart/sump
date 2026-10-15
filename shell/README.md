@@ -18,7 +18,7 @@ run 受理（立即回执 {item_id, phase:"queued"}）
 | 工作目录 | 必须在**根目录内**（越界、不存在、不可访问 → 同步拒绝；软链先解析再判边界） | `exec.root` |
 | 解释器 | 默认自动探测 `bash` → `pwsh` → `powershell` → `cmd`（Unix：`bash` → `sh`） | `exec.shell` |
 | 执行超时 | 超时终止**整棵进程树**（Windows：`taskkill /T /F`；Unix：杀进程组），补报 `timed_out` + 退出码 `-1`；**终止失败如实标注**（“进程可能仍在运行”+ 原因原文，不谎称已终止），并设 `WaitDelay=10s` 兜住管道被孙进程占住时的无限等待 | `exec.timeout_ms` |
-| 输出上限 | 单流保前 N 字节，附“共多少字节”，**命令照常跑完**（不因截断中断） | `exec.max_output_kb` |
+| 输出上限 | 单流保前 N 字节，附“共多少字节”，**命令照常跑完**（不因截断中断）；上限**每次执行只读一次**（截断与补报文案同一口径，中途改设置不影响本次结果） | `exec.max_output_kb` |
 | 并行 | 同时执行的命令数上限 | `exec.concurrency` |
 | 队列 | 已通过审批、等待执行的条数上限；满 → 立即拒绝（不排队等待） | `exec.queue_limit` |
 | 审批 | 见下节；未接入 = 一律未通过 | `approval.service` / `approval.timeout_ms` |
