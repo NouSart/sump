@@ -7,6 +7,7 @@ use (
 	./memory
 	./images
 	./qq
+	./shell
 	./settings-center
 	./tests
 )
