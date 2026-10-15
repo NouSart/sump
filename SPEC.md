@@ -234,7 +234,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | 7 | 服务骨架复用 | **已实现**：`service/` 薄骨架库（注册/心跳/名册/自愈/告别），四服务共用 | — |
 | 8 | 链级失败策略 | 拨号失败已安全重试；送达后失败不重试（无幂等键）；工具超时 / 任务取代的结果丢弃已定义 | 幂等键；失败上报 boss（降级回复） |
 | 9 | 工具结果通知模式 | **已实现**：设置项 `tool.notify_mode`（each 默认 / batch）+ 注册下发 + 拉取兜底 + `-tool-notify` | — |
-| 10 | 长期记忆 | **已实现 v0**：`remember`/`forget`（软删）+ bigram 召回（1~2 字中文可命中）+ 核心注入（priority）；`remember` 在 provides 里（自动暴露为 LLM 工具），`forget` 不在 | embedding 语义召回；自动提炼与巩固线（sleep）；去重 / 冲突 |
+| 10 | 长期记忆 | **已实现**：`remember`/`forget`（软删）+ 核心注入（priority）+ **语义召回（embedding 服务，余弦 ≥0.45）+ bigram 兜底**；`remember` 在 provides 里（自动暴露为 LLM 工具），`forget` 不在 | 自动提炼与巩固线（sleep）；去重 / 冲突 |
 | 11 | 错误上报（服务 → 中心） | **已实现·留接口**：`report` 动作 + 中心日志 + `OnReport` 挂点；上报方退避防刷（1s 起翻倍、封顶 30s）；无队列（中心视为永远在线）；当前接入点：骨架 Fire 未送达 | 前端 / 落盘 / 富日志接入挂点；更多上报点按需接入 |
 
 ---
@@ -247,6 +247,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | reasoner | Go | 单步推理器：任务入口经 memory 托管、收到 resume 才调 LLM；工具异步派发（即时回执 → 结果注入 → 唤醒），收尾门禁保护，结果 deliver 直达 boss |
 | memory | Go | 会话消息的唯一保管者；recall 取最近历史 + 长期记忆（核心注入 + bigram 召回）组装为记忆块后 resume 回调用方；remember 写入（幂等）/ forget 软删 |
 | images | Go | save（URL/base64 落盘）返回 id；fetch（id → base64） |
+| embedding | Python | 文本 → 向量（onnxruntime + tokenizers，CLS pooling + L2 归一）；动作 `embed`；fake 后端供测试与 CI |
 | qq | Go | 把主人私聊消息（图先存 images）打成 user_message 发给 reasoner；实现 deliver 回发私聊 |
 | frontend | TS | 设置中心可视化面板：注册为服务节点（心跳 / 名册广播）；浏览器 HTTP JSON + SSE；设置查看 / 修改 / 重置（中心受理并下发） |
 | tests | Go | 跨服务真进程端到端（不属于任何服务） |
@@ -262,7 +263,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | 类别 | 规则 | 现有值 |
 | ---- | ---- | ------ |
 | 消息类型（`type`） | 裸名词；请求 / 响应 / 事件方向固定（事件型只由中心广播） | `register` `response` `roster` `jump` `heartbeat`；事件：`roster` `settings` |
-| 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §6.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting`；骨架保留：`configure` |
-| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms` |
-| 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `qq` `frontend` |
+| 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §6.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting` `embed`；骨架保留：`configure` |
+| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms` `texts` `query` `vectors` `dim` `model` |
+| 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `qq` `frontend` `embedding` |
 | 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `max_mb` `owner` `sweep_ms` `heartbeat_fallback_ms` |
