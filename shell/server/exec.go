@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -163,6 +164,9 @@ func (s *Server) resolveWorkDir(dir string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		return "", fmt.Errorf("run: 工作目录不存在或不可访问 %q: %v", dir, err)
+	}
+	if st, err := os.Stat(resolved); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("run: 工作目录不是目录 %q", dir)
 	}
 	if !within(root, resolved) {
 		return "", fmt.Errorf("run: 工作目录越界（根目录 %s）: %s", root, resolved)

@@ -430,11 +430,15 @@ func TestRunExecutesAfterApproval(t *testing.T) {
 	}
 }
 
-// TestWorkDirBoundary：工作目录越界 / 不存在 → 同步拒绝（请求本身不合法，不入队列）。
+// TestWorkDirBoundary：工作目录越界 / 不存在 / 指向文件 → 同步拒绝（请求本身不合法，不入队列）。
 func TestWorkDirBoundary(t *testing.T) {
 	root := t.TempDir()
 	sub := filepath.Join(root, "sub")
 	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(root, "not-a-dir.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	sc := startStubCenter(t)
@@ -447,10 +451,10 @@ func TestWorkDirBoundary(t *testing.T) {
 	}
 	waitReport(t, cl, "done")
 
-	for _, wd := range []string{"..", filepath.Join(root, ".."), filepath.Join(root, "nope")} {
+	for _, wd := range []string{"..", filepath.Join(root, ".."), filepath.Join(root, "nope"), file} {
 		rp := jump(t, c, "shell", "run", protocol.ShellRunPayload{Command: echoCommand("x"), WorkDir: wd})
 		if rp.OK {
-			t.Fatalf("越界 / 不存在的工作目录应被拒: %q", wd)
+			t.Fatalf("越界 / 不存在 / 非目录的工作目录应被拒: %q", wd)
 		}
 	}
 }
