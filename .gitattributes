@@ -3,6 +3,7 @@
 
 # 二进制文件不做换行转换
 *.db binary
+*.onnx binary
 *.png binary
 *.jpg binary
 *.jpeg binary
