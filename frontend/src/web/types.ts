@@ -62,3 +62,10 @@ export interface Overview {
   error?: string;
   fetchedAt: string;
 }
+
+// PortalMessage 是门户对话里的一条消息：用户发的（本地回显）或智能体经 deliver 送来的。
+export interface PortalMessage {
+  author: 'user' | 'agent';
+  text: string;
+  at: string;
+}

@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { fetchOverview, resetSetting, setSetting } from './api';
+import { fetchOverview, resetSetting, sendMessage, setSetting } from './api';
+import { PortalView } from './components/PortalView';
 import { ServiceList } from './components/ServiceList';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Toasts, type Toast } from './components/Toasts';
-import type { Overview, RosterView, RowStatus, ServiceSettingsView, SettingsEventViewData } from './types';
+import type {
+  Overview,
+  PortalMessage,
+  RosterView,
+  RowStatus,
+  ServiceSettingsView,
+  SettingsEventViewData,
+} from './types';
 
 let toastSeq = 0;
 
@@ -15,6 +23,10 @@ export function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [rowStates, setRowStates] = useState<Record<string, RowStatus>>({});
+  // 视图：门户（默认，主体）与设置（从侧栏底部进入的独立页）。
+  const [view, setView] = useState<'portal' | 'settings'>('portal');
+  const [messages, setMessages] = useState<PortalMessage[]>([]);
+  const [portalError, setPortalError] = useState<string | null>(null);
   const pendingKeysRef = useRef(new Set<string>());
   const rosterRevRef = useRef(-1);
 
@@ -98,6 +110,11 @@ export function App() {
     });
     es.addEventListener('settings', (ev) => {
       settingsHandlerRef.current(JSON.parse((ev as MessageEvent).data) as SettingsEventViewData);
+    });
+    // 门户投递：智能体经 deliver 送来的消息，落到对话里。
+    es.addEventListener('deliver', (ev) => {
+      const d = JSON.parse((ev as MessageEvent).data) as { text: string; at: string };
+      setMessages((prev) => [...prev, { author: 'agent', text: d.text, at: d.at }]);
     });
     return () => es.close();
   }, []);
@@ -188,17 +205,24 @@ export function App() {
     [overview],
   );
 
+  const onSend = useCallback(async (text: string) => {
+    setPortalError(null);
+    // 本地先回显（受理回执只说明消息已交给 reasoner，不代表已有回复）。
+    setMessages((prev) => [...prev, { author: 'user', text, at: new Date().toISOString() }]);
+    try {
+      await sendMessage(text);
+    } catch (err) {
+      setPortalError(`未送达：${(err as Error).message}`);
+    }
+  }, []);
+
   return (
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
           SUMP
-          <span className="brand-sub">设置中心</span>
+          <span className="brand-sub">门户</span>
         </div>
-        <nav aria-label="服务列表">
-          <p className="section-label">服务 · {services.length}</p>
-          <ServiceList services={services} selected={selected} onSelect={setSelected} settingsCountOf={settingsCountOf} />
-        </nav>
         <div className="side-status">
           <span
             className={connected ? 'status status-on' : 'status status-off'}
@@ -208,6 +232,20 @@ export function App() {
             {connected ? '已连接' : '未连接'}
           </span>
         </div>
+        {/* 设置入口在侧栏底部（与 DSH 的设置页同一位置）：主区让给门户，设置另起一页。 */}
+        <div className="side-foot">
+          <button
+            type="button"
+            className="side-row"
+            aria-current={view === 'settings' ? 'page' : undefined}
+            onClick={() => {
+              setView('settings');
+            }}
+          >
+            <span aria-hidden="true">⚙</span>
+            设置
+          </button>
+        </div>
       </aside>
 
       <main className="content">
@@ -216,16 +254,43 @@ export function App() {
             加载失败：{loadError}
           </p>
         )}
-        <SettingsPanel
-          service={selectedService}
-          settings={selectedSettings}
-          connected={connected}
-          index={svcIndex}
-          total={services.length}
-          statusOf={(service, key) => rowStates[`${service}.${key}`]}
-          onSave={onSave}
-          onReset={onReset}
-        />
+
+        {view === 'portal' ? (
+          <PortalView connected={connected} messages={messages} error={portalError} onSend={onSend} />
+        ) : (
+          <section className="settings-page" aria-label="设置">
+            <header className="page-head">
+              <h1>设置</h1>
+              <button
+                type="button"
+                className="page-close"
+                onClick={() => {
+                  setView('portal');
+                }}
+              >
+                关闭
+              </button>
+            </header>
+            <div className="settings-body">
+              <nav aria-label="服务列表">
+                <p className="section-label">服务 · {services.length}</p>
+                <ServiceList services={services} selected={selected} onSelect={setSelected} settingsCountOf={settingsCountOf} />
+              </nav>
+              <div className="settings-content">
+                <SettingsPanel
+                  service={selectedService}
+                  settings={selectedSettings}
+                  connected={connected}
+                  index={svcIndex}
+                  total={services.length}
+                  statusOf={(service, key) => rowStates[`${service}.${key}`]}
+                  onSave={onSave}
+                  onReset={onReset}
+                />
+              </div>
+            </div>
+          </section>
+        )}
       </main>
 
       <Toasts items={toasts} />

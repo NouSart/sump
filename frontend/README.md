@@ -43,7 +43,7 @@ npm start            # 启动（需先 build）：node dist/server/index.js -add
 - `src/server/portal.ts`：门户的会话身份、投递分发（WS → SSE）与浏览器信任栅栏；
 - `src/server/service.ts`：自己的 WS 端点（对外提供 `deliver`；其余动作一律 `unknown action` 回执——注册的地址必须真实可达）；
 - `src/server/api.ts`：HTTP 层（`/api/overview`、`/api/message`、`/api/settings/set|reset`、`/api/events` SSE——事件：`status` / `roster` / `settings` / `deliver`、静态托管；每个请求先过信任栅栏）；
-- `src/web/`：React 面板（v2 版式：悬浮胶囊边栏 + 96px 服务名主体 + 设置五列表格；唯一蓝强调；Fira Sans / Fira Code 本地打包）。
+- `src/web/`：React 界面（v2 版式：悬浮胶囊边栏；**主体是门户对话**，设置从侧栏底部一行进入、另起一页并自带服务导航 + 设置五列表格；唯一蓝强调；Fira Sans / Fira Code 本地打包）。
 - `tests/`：`*.test.ts` = 服务端（node --test）；`tests/web/` = 面板组件测试（vitest + jsdom，
   `harness.ts` 提供假 EventSource 与 fetch 路由桩——SSE/fetch 在边界处替换，App 代码零改动；`tsconfig.test.json` 让测试进类型检查）。
 - `design/`：版式样张（specimen.html + specimen.css，纯静态、供版式评审；经 `:19531` 查看需先拷到 `dist/web/`）。

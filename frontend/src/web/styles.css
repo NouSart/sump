@@ -554,3 +554,211 @@ input:focus-visible {
     margin-top: 6px;
   }
 }
+
+/* ---------- 门户（主体）与设置页（侧栏底部进入） ---------- */
+
+.side-foot {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* 侧栏底部一行：与 DSH 设置页的入口同一位置（图标 + 文字，外壳给按钮，内容给文案）。 */
+.side-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--body-text);
+  font-size: 13px;
+  text-align: left;
+}
+
+.side-row:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.side-row[aria-current='page'] {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.portal {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 56px);
+}
+
+.portal-title {
+  margin: 0 0 4px;
+  font-size: clamp(28px, 4vw, 44px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.portal-sub {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--faint);
+}
+
+.portal-list {
+  flex: 1;
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  max-height: calc(100vh - 320px);
+}
+
+.portal-empty {
+  color: var(--faint);
+  font-size: 14px;
+}
+
+.msg {
+  max-width: 76%;
+  padding: 12px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+}
+
+.msg-user {
+  align-self: flex-end;
+  background: var(--blue-soft);
+  border-color: transparent;
+}
+
+.msg-agent {
+  align-self: flex-start;
+  background: #ffffff;
+}
+
+.msg-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-time {
+  display: block;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.composer-input {
+  flex: 1;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #ffffff;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 15px;
+  resize: vertical;
+}
+
+.composer-input:disabled {
+  background: var(--hover);
+  color: var(--faint);
+}
+
+.composer-send {
+  padding: 12px 22px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--blue);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.composer-send:disabled {
+  background: var(--line);
+  color: var(--faint);
+  cursor: not-allowed;
+}
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 56px);
+}
+
+.page-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.page-head h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.page-close {
+  padding: 7px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #ffffff;
+  color: var(--body-text);
+  font-size: 13px;
+}
+
+.page-close:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.settings-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 40px;
+  margin-top: 20px;
+}
+
+.settings-body > nav {
+  flex: none;
+  width: 196px;
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 1080px) {
+  .settings-body {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .settings-body > nav {
+    width: 100%;
+  }
+}

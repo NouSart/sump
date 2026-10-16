@@ -33,7 +33,7 @@ export function SettingsPanel({ service, settings, connected, index, total, stat
       <p className="panel-addr">{service.addr}</p>
 
       <hr className="rule" />
-      <h2 className="set-label">设置</h2>
+      <h2 className="set-label">设置项</h2>
 
       {settings === null ? (
         <p className="empty">加载中…</p>
