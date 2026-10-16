@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,10 +26,11 @@ type Config struct {
 	Center            string        // 设置中心 WS 地址
 	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
 	NapCatURL         string        // NapCat 正向 WS 地址
-	NapCatToken       string        // access_token（可选）
+	NapCatToken       string        // access_token（可选；作为秘密项预设由服务自己持有）
 	Owner             string        // 主人 QQ（唯一授权私聊用户；留空则拒绝所有私聊；作为声明预设上报）
 	Reasoner          string        // 任务跳转目标（reasoner 服务名，默认 reasoner）
 	Images            string        // 图片服务名（默认 images）
+	SecretFile        string        // 秘密项（napcat.token）的本地持久化路径（空 = data/<名>-secret.json；"-" = 不落盘）
 }
 
 // Server 是 qq 服务实例（服务骨架 + NapCat 客户端）。
@@ -39,8 +41,12 @@ type Server struct {
 	logger *log.Logger
 	napcat *napcat.Client
 
-	setMu sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
-	owner string     // 当前主人 QQ（空 = 拒绝所有私聊）
+	setMu       sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
+	owner       string     // 当前主人 QQ（空 = 拒绝所有私聊）
+	napcatURL   string     // 当前 NapCat WS 地址（热改后客户端立即重连）
+	napcatToken string     // 当前 access_token（空 = 无；秘密项，值只在本服务手里）
+	reasoner    string     // 当前任务跳转目标（reasoner 服务名）
+	images      string     // 当前图片服务名
 
 	locksMu sync.Mutex
 	locks   map[string]*sync.Mutex // 会话级串行锁（防同一会话消息乱序）
@@ -54,12 +60,21 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.Images == "" {
 		cfg.Images = "images"
 	}
-	s := &Server{cfg: cfg, logger: logger, owner: cfg.Owner, locks: map[string]*sync.Mutex{}}
+	s := &Server{
+		cfg: cfg, logger: logger,
+		owner:       cfg.Owner,
+		napcatURL:   cfg.NapCatURL,
+		napcatToken: cfg.NapCatToken,
+		reasoner:    cfg.Reasoner,
+		images:      cfg.Images,
+		locks:       map[string]*sync.Mutex{},
+	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
+		SecretFile:        cfg.SecretFile,
 		Description:       "QQ 接入（NapCat/OneBot 11 · 仅私聊）：消息 → 任务链；deliver → 发回 QQ",
 		Provides: []protocol.Provide{
 			{Action: "deliver", Input: "{text, conversation_id}", Output: "回执（已发回 QQ）"},
@@ -79,6 +94,29 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setMu.Unlock()
 		return nil
 	})
+	s.HandleSetting("napcat.url", cfg.NapCatURL, func(v string) error {
+		v = strings.TrimSpace(v)
+		u, err := url.Parse(v)
+		if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" {
+			return fmt.Errorf("需要 ws:// 或 wss:// 地址，收到 %q", v)
+		}
+		s.setNapcatURL(v)
+		return nil
+	})
+	s.HandleSetting("reasoner", cfg.Reasoner, func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return errors.New("不接受空服务名")
+		}
+		s.setReasoner(v)
+		return nil
+	})
+	s.HandleSetting("images", cfg.Images, func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return errors.New("不接受空服务名")
+		}
+		s.setImages(v)
+		return nil
+	})
 	s.Handle("deliver", s.actionDeliver)
 	s.napcat = napcat.New(napcat.Config{
 		URL:       cfg.NapCatURL,
@@ -86,6 +124,20 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Logger:    logger,
 		OnMessage: s.onQQEvent,
 	})
+	// 秘密项：值不进中心，由本服务自己落盘 / 加载（Config.SecretFile）；启动参数给了也先应用一次
+	//（与 reasoner 的 llm.key 同路径；秘密文件里若有值，Start 加载时会覆盖）。
+	applyToken := func(v string) error {
+		s.setNapcatToken(v)
+		return nil
+	}
+	s.HandleSecret("napcat.token", applyToken)
+	if cfg.NapCatToken != "" {
+		_ = applyToken(cfg.NapCatToken)
+	}
+	// 只读项：启动参数带起来的，进面板可见但不可改（改它需要重启）。
+	s.HandleReadOnly("name", cfg.Name)
+	s.HandleReadOnly("addr", cfg.Listen)
+	s.HandleReadOnly("center", cfg.Center)
 	return s
 }
 
@@ -94,6 +146,52 @@ func (s *Server) ownerNow() string {
 	s.setMu.Lock()
 	defer s.setMu.Unlock()
 	return s.owner
+}
+
+// setNapcatURL 更新 NapCat 地址并让客户端立即以新地址重连（token 原样保留）。
+func (s *Server) setNapcatURL(v string) {
+	s.setMu.Lock()
+	s.napcatURL = v
+	rawURL, token := s.napcatURL, s.napcatToken
+	s.setMu.Unlock()
+	s.napcat.SetEndpoint(rawURL, token)
+}
+
+// setNapcatToken 更新 access_token 并让客户端重连（token 只在握手时用得上，不重连不生效）。
+func (s *Server) setNapcatToken(v string) {
+	s.setMu.Lock()
+	s.napcatToken = v
+	rawURL, token := s.napcatURL, s.napcatToken
+	s.setMu.Unlock()
+	s.napcat.SetEndpoint(rawURL, token)
+}
+
+// reasonerName 返回当前任务跳转目标（后续 user_message 走新名）。
+func (s *Server) reasonerName() string {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.reasoner
+}
+
+// setReasoner 更新任务跳转目标。
+func (s *Server) setReasoner(v string) {
+	s.setMu.Lock()
+	s.reasoner = v
+	s.setMu.Unlock()
+}
+
+// imagesName 返回当前图片服务名（后续存图走新名）。
+func (s *Server) imagesName() string {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.images
+}
+
+// setImages 更新图片服务名。
+func (s *Server) setImages(v string) {
+	s.setMu.Lock()
+	s.images = v
+	s.setMu.Unlock()
 }
 
 // Start 启动服务骨架，并额外启动 NapCat 连接循环（连不上会自动重试，不阻塞其余服务）。
@@ -196,7 +294,7 @@ func (s *Server) onQQEvent(ev napcat.Event) {
 func (s *Server) saveImage(url string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	data, err := s.Call(ctx, s.cfg.Images, "save", protocol.ImageSavePayload{URL: url}, protocol.NewID(), s.cfg.Name)
+	data, err := s.Call(ctx, s.imagesName(), "save", protocol.ImageSavePayload{URL: url}, protocol.NewID(), s.cfg.Name)
 	if err != nil {
 		return "", err
 	}
@@ -211,7 +309,7 @@ func (s *Server) saveImage(url string) (string, error) {
 func (s *Server) callReasoner(action string, payload any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	_, err := s.Call(ctx, s.cfg.Reasoner, action, payload, protocol.NewID(), s.cfg.Name)
+	_, err := s.Call(ctx, s.reasonerName(), action, payload, protocol.NewID(), s.cfg.Name)
 	return err
 }
 

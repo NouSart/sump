@@ -21,6 +21,7 @@ func main() {
 	owner := flag.String("owner", "", "主人 QQ（唯一授权私聊用户；留空则拒绝所有私聊）")
 	reasoner := flag.String("reasoner", "reasoner", "任务跳转目标（reasoner 服务名）")
 	images := flag.String("images", "images", "图片服务名")
+	secretFile := flag.String("secret-file", "", "秘密文件路径（空 = data/<服务名>-secret.json；\"-\" = 不落盘）")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "[qq] ", log.LstdFlags|log.Lmicroseconds)
@@ -34,6 +35,7 @@ func main() {
 		Owner:       *owner,
 		Reasoner:    *reasoner,
 		Images:      *images,
+		SecretFile:  *secretFile,
 	}, logger)
 	if err := s.Start(context.Background()); err != nil {
 		logger.Fatalf("启动失败: %v", err)
