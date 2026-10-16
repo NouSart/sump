@@ -282,7 +282,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | shell | Go | 受理即回执的命令执行（并行 + 待执行队列 + 超时终止 + 输出截断）；审批接缝（未接入 = 一律未通过）；结果由 `report_result` 补报 |
 | embedding | Python | 文本 → 向量（onnxruntime + tokenizers，CLS pooling + L2 归一）；动作 `embed`；fake 后端供测试与 CI |
 | qq | Go | 把主人私聊消息（图先存 images）打成 user_message 发给 reasoner；实现 deliver 回发私聊 |
-| frontend | TS | 设置中心可视化面板：注册为服务节点（心跳 / 名册广播）；浏览器 HTTP JSON + SSE；设置查看 / 修改 / 重置（中心受理并下发） |
+| frontend | TS | 用户交互门户（与 qq 同类）＋ 设置中心面板：对外提供 `deliver`（推给浏览器），自己跳 `user_message` 给 reasoner；浏览器 HTTP JSON + SSE；**单用户** + 浏览器信任栅栏（Host 挡 DNS rebinding、Origin 挡跨站） |
 | tests | Go | 跨服务真进程端到端（不属于任何服务） |
 
 > 非 Go 实现只需遵循本规范；`protocol/`（协议实现）与 `service/`（服务骨架：注册 / 心跳 / 重连 / 告别 / 设置）是 Go 侧的便利库，不是准入条件。

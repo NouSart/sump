@@ -4,10 +4,11 @@ import type { AddressInfo } from 'node:net';
 import type { WebSocketServer } from 'ws';
 import { createRequestHandler } from './api.ts';
 import { CenterLink } from './center.ts';
-import { attachJumpEndpoint } from './service.ts';
+import { createDeliverHub, type TrustConfig } from './portal.ts';
+import { attachJumpEndpoint, portalProvides } from './service.ts';
 
 export const frontendDescription =
-  '设置中心可视化面板：注册为服务节点（心跳 / 名册广播），向浏览器提供 HTTP JSON + SSE；界面不持业务状态';
+  '用户交互门户（与 qq 同类）：对外提供 deliver（智能体 → 用户，推给浏览器），自己跳 user_message 给 reasoner（用户 → 智能体）；另附设置中心可视化面板';
 
 export interface FrontendConfig {
   name: string;
@@ -15,6 +16,8 @@ export interface FrontendConfig {
   centerURL: string;
   webDir: string;
   heartbeatMS: number;
+  reasoner: string;
+  trustedHosts: string[];
 }
 
 export interface FrontendHandle {
@@ -44,12 +47,14 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
   const addr = `${actual.address}:${actual.port}`;
   const selfURL = `ws://${addr}/ws`;
 
+  const hub = createDeliverHub();
+  const trust: TrustConfig = { boundAddr: addr, trustedHosts: cfg.trustedHosts };
   const link = new CenterLink({
     name: cfg.name,
     centerURL: cfg.centerURL,
     selfURL,
     description: frontendDescription,
-    provides: [],
+    provides: portalProvides,
     settings: [],
     heartbeatMS: cfg.heartbeatMS,
     log,
@@ -57,9 +62,22 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
 
   server.on(
     'request',
-    createRequestHandler(link, { name: cfg.name, httpAddr: addr, selfURL, centerURL: cfg.centerURL, webDir: cfg.webDir }, log),
+    createRequestHandler(
+      link,
+      {
+        name: cfg.name,
+        httpAddr: addr,
+        selfURL,
+        centerURL: cfg.centerURL,
+        webDir: cfg.webDir,
+        reasoner: cfg.reasoner,
+        portal: { on: hub.on },
+        trust,
+      },
+      log,
+    ),
   );
-  const wss: WebSocketServer = attachJumpEndpoint(server, '/ws', cfg.name, log);
+  const wss: WebSocketServer = attachJumpEndpoint(server, '/ws', cfg.name, log, hub.publish, trust);
   link.start();
 
   return {
