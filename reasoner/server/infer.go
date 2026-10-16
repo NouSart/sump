@@ -229,8 +229,9 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 	if len(ids) == 0 {
 		return nil
 	}
-	if _, _, err := s.Resolve(s.cfg.Images); err != nil {
-		s.logger.Printf("取图失败（服务 %s）: %v", s.cfg.Images, err)
+	images := s.imagesName()
+	if _, _, err := s.Resolve(images); err != nil {
+		s.logger.Printf("取图失败（服务 %s）: %v", images, err)
 		return nil
 	}
 	out := make(map[string]string, len(ids))
@@ -240,7 +241,7 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			data, err := s.Call(ctx, s.cfg.Images, "fetch", protocol.ImageFetchPayload{ID: id}, trace, "")
+			data, err := s.Call(ctx, images, "fetch", protocol.ImageFetchPayload{ID: id}, trace, "")
 			if err != nil {
 				s.logger.Printf("取图 %s 失败: %v", id, err)
 				return
@@ -265,7 +266,7 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 // startMemoryRound 开启一轮“记忆往返”：把任务上下文（含原 boss）托管给记忆服务。
 // 记忆服务的 resume（from=memory）回来时才真正调用 LLM API（完全启动）。
 func (s *Server) startMemoryRound(env protocol.Envelope, conversationID string, messages []llm.Message) {
-	s.Fire(s.cfg.Memory, "recall", protocol.RecallPayload{Context: protocol.TaskContext{
+	s.Fire(s.memoryName(), "recall", protocol.RecallPayload{Context: protocol.TaskContext{
 		ConversationID: conversationID,
 		Messages:       messages,
 		Boss:           env.Boss,
@@ -288,7 +289,7 @@ func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in 
 	}
 
 	// 记一条用户消息（尽力送达；幂等与去重在记忆服务侧处理）。
-	s.Fire(s.cfg.Memory, "store", protocol.StorePayload{
+	s.Fire(s.memoryName(), "store", protocol.StorePayload{
 		ConversationID: cid, Role: "user", Content: p.Text,
 	}, env.Trace, s.cfg.Name)
 
@@ -303,8 +304,9 @@ func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in 
 // actionResume 是完全启动的唯一入口：仅接受来自记忆服务的 resume。
 // 记忆组装好的上下文到达后，开启任务（黑板）并立即受理——推理在后台推进（见 board.go）。
 func (s *Server) actionResume(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	if env.From != s.cfg.Memory {
-		return nil, fmt.Errorf("resume 仅接受来自记忆服务（%s）的调用，拒绝来源 %q", s.cfg.Memory, env.From)
+	mem := s.memoryName()
+	if env.From != mem {
+		return nil, fmt.Errorf("resume 仅接受来自记忆服务（%s）的调用，拒绝来源 %q", mem, env.From)
 	}
 	var p protocol.ResumePayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {

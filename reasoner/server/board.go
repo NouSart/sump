@@ -146,11 +146,12 @@ func (s *Server) boardRound(st *taskState) {
 	gen0 := st.gen
 	st.mu.Unlock()
 
-	if s.cfg.LLM == nil {
+	client := s.llmClient()
+	if client == nil {
 		s.logger.Printf("会话 %s：LLM 未配置，任务停住（等下一次事件）", st.cid)
 		return
 	}
-	resp, err := s.cfg.LLM.Chat(context.Background(), llm.ChatRequest{
+	resp, err := client.Chat(context.Background(), llm.ChatRequest{
 		Messages: snapshot,
 		Tools:    s.rosterTools(),
 		Images:   s.resolveImages(context.Background(), st.trace, snapshot),
@@ -345,7 +346,7 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 	replaced = st.closed
 	st.mu.Unlock()
 
-	s.Fire(s.cfg.Memory, "store", protocol.StorePayload{ConversationID: st.cid, Role: "assistant", Content: text}, st.trace, s.cfg.Name)
+	s.Fire(s.memoryName(), "store", protocol.StorePayload{ConversationID: st.cid, Role: "assistant", Content: text}, st.trace, s.cfg.Name)
 	s.boardClose(st)
 	if replaced {
 		s.logger.Printf("会话 %s：交付完成（在途已被新任务取代；答复已送达并记入记忆）", st.cid)
