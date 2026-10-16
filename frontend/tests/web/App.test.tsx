@@ -1,6 +1,6 @@
 // App 集成测试（逻辑层）：首屏加载 / 服务切换 / 写入→待确认→applied 事件（toast+状态回落）/
 // 失败事件（未送达+原因）/ 写入请求失败（编辑态保留）/ roster revision 触发重拉 /
-// status 事件 / toast 自动消失（假时钟）。
+// status 事件 / toast 自动消失（假时钟）/ 外观开关（属性 + 本地记忆）。
 //
 // 说明：SSE 与 fetch 都在边界处替换（假 EventSource / fetch 路由桩），App 代码零改动。
 import assert from 'node:assert/strict';
@@ -228,5 +228,35 @@ describe('App', () => {
     fireEvent.click(screen.getByText('发送'));
 
     await screen.findByText(/未送达：未知目标服务: reasoner/);
+  });
+
+  it('外观：切深色写 body[data-ds-dark-theme] 并记住，切回浅色移除', () => {
+    window.localStorage.clear();
+    delete document.body.dataset.dsDarkTheme;
+    boot({ openSettings: false });
+
+    assert.equal(document.body.hasAttribute('data-ds-dark-theme'), false, '默认浅色不带属性');
+    assert.equal(screen.getByRole('radio', { name: '浅色' }).getAttribute('aria-checked'), 'true');
+
+    fireEvent.click(screen.getByRole('radio', { name: '深色' }));
+    assert.equal(document.body.getAttribute('data-ds-dark-theme'), '', '暗色靠这个属性切令牌');
+    assert.equal(screen.getByRole('radio', { name: '深色' }).getAttribute('aria-checked'), 'true');
+    assert.equal(window.localStorage.getItem('sump.portal.theme'), 'dark');
+
+    fireEvent.click(screen.getByRole('radio', { name: '浅色' }));
+    assert.equal(document.body.hasAttribute('data-ds-dark-theme'), false);
+    assert.equal(window.localStorage.getItem('sump.portal.theme'), 'light');
+  });
+
+  it('外观：本地存过深色时挂载即生效', () => {
+    window.localStorage.setItem('sump.portal.theme', 'dark');
+    delete document.body.dataset.dsDarkTheme;
+    boot({ openSettings: false });
+
+    assert.equal(document.body.getAttribute('data-ds-dark-theme'), '');
+    assert.equal(screen.getByRole('radio', { name: '深色' }).getAttribute('aria-checked'), 'true');
+
+    window.localStorage.clear();
+    delete document.body.dataset.dsDarkTheme;
   });
 });

@@ -36,6 +36,13 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* 壳底：浅色用 bg-overlay（浅灰）衬白面板；暗色下 bg-overlay 是遮罩用的中灰
+   （rgb 97,102,107，比面板还亮，面板会显得凹陷），所以暗色换回 bg-base——也就是
+   上游自己给 body 设的那个底色。 */
+body[data-ds-dark-theme] {
+  background: var(--dsw-alias-bg-base);
+}
+
 :where(a, button, input, textarea):focus-visible {
   outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: 1px;
@@ -113,6 +120,66 @@ body {
   margin-top: auto;
   padding-top: 8px;
   border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+/* 外观开关：照抄 ui-primitives/SegmentedControl.module.css（半透明导轨 + 滑动的白药丸）。
+   语义换成 radiogroup/radio——它是二选一，不是切面板，所以文字颜色由 aria-checked 驱动。
+   上游的刻度影用 --dsw-elevation-soft，那个令牌不在我们随附的子集里；按上游自己对这条
+   描边的说明（"stroke rides inside the soft elevation shadow"）用发丝描边兜底。 */
+.theme-switch {
+  position: relative;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 2px;
+  margin-bottom: 4px;
+  padding: 4px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.theme-indicator {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: calc((100% - 8px - 2px * (var(--dsh-segment-count) - 1)) / var(--dsh-segment-count));
+  height: calc(100% - 8px);
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-1);
+  transform: translateX(calc(var(--dsh-segment-index) * (100% + 2px)));
+  transition: transform 160ms var(--ds-ease-in-out);
+  pointer-events: none;
+}
+
+.theme-tab {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 120ms var(--ds-ease-in-out);
+}
+
+.theme-tab:hover,
+.theme-tab[aria-checked='true'] {
+  color: var(--dsw-alias-label-primary);
+}
+
+.theme-tab:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
 }
 
 /* 侧栏行 = 菜单项：32 高、圆角 md、hover/active 走 interactive-* 底 */
@@ -371,6 +438,8 @@ body {
   .side-row,
   .svc-item,
   .field-reset,
+  .theme-indicator,
+  .theme-tab,
   .input,
   .composer-input {
     transition: none;
@@ -499,7 +568,7 @@ body {
   align-items: center;
   justify-content: center;
   border-radius: var(--dsw-radius-xs);
-  background: var(--dsw-alias-bg-overlay);
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
   font-family: var(--ds-font-family-code);
   font-size: 11px;
@@ -680,8 +749,10 @@ body {
   font-size: 11px;
 }
 
+/* 中性块底用 interactive-bg-hover（半透明，明暗两套都成立）——上游的分段控件
+   导轨就是这么做的；bg-overlay 在暗色下是遮罩用的中灰，压不住里面的浅字。 */
 .tag-over {
-  background: var(--dsw-alias-bg-overlay);
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
 }
 

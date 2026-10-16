@@ -51,6 +51,7 @@ npm start            # 启动（需先 build）：node dist/server/index.js -add
 ## 设计说明（节选）
 
 - **本项目没有自己的视觉设计**：观感 = DSH（deepseek-harness）的设计系统。`styles.css` 整表 `@import` 上游 `ui-theme` 的样式表（令牌、字体栈、圆角阶梯、焦点环、滚动条），下游规则**直接用 `--dsw-alias-*` 令牌**，不自建色值。
-- 组件取值照抄上游 `ui-primitives` 的 `.module.css`：输入框（`Input`、`settings-form/fields`）、按钮（`Button` 的 md/sm 与主/幽灵/描边变体）、状态点（`StateDot`）；布局几何对齐上游 `ui-layout`（侧栏 280）。
+- 组件取值照抄上游 `ui-primitives` 的 `.module.css`：输入框（`Input`、`settings-form/fields`）、按钮（`Button` 的 md/sm 与主/幽灵/描边变体）、状态点（`StateDot`）、分段开关（`SegmentedControl`）、设置字段（`settings-form`）；布局几何对齐上游 `ui-layout`（侧栏 280）。
+- **外观开关**（侧栏底部）：只切 `body[data-ds-dark-theme]`——DSH 的暗色是另一套令牌，颜色全部自动跟随，我们不出第二套色。首选项存 `localStorage`，缺省跟随系统偏好。注意 `bg-overlay` 在暗色下是**遮罩**用的中灰，块底一律用 `interactive-bg-hover`。
 - 注意令牌**作用域**：DSH 把 `--dsw-*` 定义在 `body` 上——自定义属性在「声明它的元素」上求值，所以别把这些令牌映射到 `:root`，否则整层引用会静默失效（属性变透明，CSS 不报错）。
 - 有意偏差：① 占位符用 `label-tertiary` 而非上游的 `label-dimmed`（后者在白底上几乎看不见）；② 首个连接设置中心失败不退出（持续退避重连），与其余服务“引导错误立刻可见”不同——面板优先可用性。
