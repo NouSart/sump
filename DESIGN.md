@@ -271,7 +271,7 @@ sequenceDiagram
 
 **后续批次（占名）**
 
-- `approval_request` / `approval_result`（reasoner ↔ qq/web）：审批挂起与裁决；**shell 的审批接缝已留**（`Approver` 接口 + fail-closed 默认），协议由审批服务定
+- **审批第一层已实现**：shell → approval 的 `approval_request`，PowerShell AST 规则引擎 + 执行摘要绑定 + fail-closed；裁决作为请求响应返回，后续由 shell 的 `report_result` 反馈给 reasoner。`approval_result` 这一占名未采用，没有同名动作。**第二层仅接口**（`approval/review/ports.go`）：解释请求与用户通知，消息及状态归属待定。
 - `configure`（设置中心 → 服务）：**已实现**（注册即全量下发 + 变更单键下发 + `settings` 事件回传；骨架统一承接）；“调度 = 设置行为、设计工作流”的完整形态待设计
 - **后台任务托管**（shell 的第二形态：start / status / logs / kill）：受理即回执的天然形态，本批**未做**（只做前台 `run`）
 - **输出有界引用**（PTC 式：大输出留句柄、按需分页取）：本批**未做**——shell 只按 `exec.max_output_kb` 截断并标注总数
@@ -292,7 +292,8 @@ sequenceDiagram
 | qq（QQ 接入） | Go | NapCat/OneBot 11 正向 WS；私聊（零信任）→ 任务链；deliver → 回发 | `plugins/builtin/napcat_plugin.py` | **已实现**（仅私聊；群聊/审批后续） |
 | images（图片） | Go | 图片保存（URL/base64）+ 按需转 base64 发回（llm 取图内联） | （v1 图片直通部分） | **已实现** |
 | files（文件） | Go | 文件保存（URL/base64）+ fetch 全量取回 + read 文本截取（`tool: true`，LLM 凭 id 自取）+ write 单元格级 Excel 编辑 | `assets.py`（存取部分） | **已实现**（含 Excel 读写；索引/检索与 PDF/Office 抽取后续） |
-| **shell（命令执行）** | Go | 受理即回执的命令执行：审批接缝（未接入 = 一律未通过）+ 并行/队列/超时终止/输出截断；结果由 `report_result` 补报 | `tools/builtin/`（shell 部分） | **已实现**（审批协议等审批服务定；白名单策略不在本服务） |
+| **shell（命令执行）** | Go | 受理即回执的命令执行：远程审批 + 并行/队列/超时终止/输出截断；结果由 `report_result` 补报 | `tools/builtin/`（shell 部分） | **已实现**（接通 approval 第一层；规则归审批服务） |
+| **approval（命令审批）** | Go | PowerShell AST + 不可变规则快照 + 执行摘要绑定 + fail-closed | 新服务 | **第一层已实现；第二层仅接口** |
 | web（Web 接入） | Go | 浏览器 REST/SSE 接入（不带前端） | `api/` | UI 归 frontend 服务 |
 | frontend（前端服务） | TS | 设置中心可视化面板：注册为服务节点（心跳 / 名册广播）；浏览器 HTTP JSON + SSE；设置查看 / 修改 / 重置（中心受理并下发） | `frontend/` | **已实现 v1**（错误上报视图随 v2） |
 | assets（资产） | Go | 文件资产库、索引、检索 | `assets.py` | |

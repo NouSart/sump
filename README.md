@@ -1,9 +1,14 @@
+# 命令处理与审批第一层
+
+新增 `approval` 服务，接通 shell 执行前审批和模型反馈。使用方法见 [命令审批说明](COMMAND-APPROVAL.md)，协议见 [审批协议](COMMAND-APPROVAL-PROTOCOL.md)。
+
 # SUMP v2
 
 [![CI](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml/badge.svg)](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-> 状态：M10 完成（**设置全链路**：秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传） · M9（**shell 命令执行服务**：受理即回执 + 审批接缝（未接入 = 一律未通过）+ eport_result 补报） · 长期记忆与 embedding 语义召回（M8，Python 服务） · **文件服务（含 Excel / Word 读写）** · 计时器（timer） · 前端服务 v1（设置中心可视化面板） · 设计文档：[DESIGN.md](./DESIGN.md)
+> 状态：M10 完成（**设置全链路**：秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传） · M9（**shell 命令执行服务**：受理即回执 + 审批接缝（未接入 = 一律未通过）+ 
+eport_result 补报） · 长期记忆与 embedding 语义召回（M8，Python 服务） · **文件服务（含 Excel / Word 读写）** · 计时器（timer） · 前端服务 v1（设置中心可视化面板） · 设计文档：[DESIGN.md](./DESIGN.md)
 
 SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独立运行（独立进程、独立数据库、任意语言），通过 WebSocket 按地址互相访问；智能体循环由 LLM 服务在服务网络之上自由跳转、组装。
 
@@ -40,7 +45,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - 设置面板：<http://127.0.0.1:9501/>——查看各服务声明的设置项、修改（中心受理即回执，不等待服务送达）/ 重置；设置项分三类：普通项（值 + 默认值）/ 秘密项（只显示「已设置」与否，值由服务自己保存、不回显）/ 只读项（启动值 + 不可改）；名册、连接状态与设置结果（行状态：已覆盖·待确认 / 已覆盖·未送达；提示：已生效 / 未生效 + 原因）事件驱动实时刷新（SSE，无刷新按钮）；首次运行会自动 `npm install` + `npm run build`（需要 Node ≥ 22.18，推荐 24）
 - 前端单独开发：`cd frontend; npm run build`（构建）/ `npm test`（协议 + 链路 + API + 面板组件测试）
 - 接 QQ（NapCat 正向 WS，仅私聊）：`.\scripts\run-local.ps1 -Owner 2271917353 -NapCatURL ws://192.168.11.196:3001 -NapCatToken <token>`——连不上会自动重试，不影响其余服务
-- shell（命令执行，工作目录根 = 仓库根）：**审批未接入时一律“未通过”**——命令不会被真正执行（fail-closed）；审批协议落地后由审批服务裁决。边界：工作目录越界即拒（含软链解析）、执行超时后终止整棵进程树、单流输出超上限截断并标注总数、并行上限与待执行队列上限（满即拒绝执行）。细则与设置项：[shell/README.md](./shell/README.md)
+- shell（命令执行，工作目录根 = 仓库根）：**审批未接入时一律“未通过”**——命令不会被真正执行（fail-closed）；已接通 approval 第一层，由审批服务裁决。边界：工作目录越界即拒（含软链解析）、执行超时后终止整棵进程树、单流输出超上限截断并标注总数、并行上限与待执行队列上限（满即拒绝执行）。细则与设置项：[shell/README.md](./shell/README.md)
 - embedding 与语义召回（需要 Python ≥ 3.12，首次运行脚本自动建 venv 装依赖）：模型不入库——把 `model*.onnx + tokenizer.json + config.json`（bge-small-zh-v1.5 量级）放进 `data/models/bge-small-zh-v1.5/`；**没有模型时脚本以 fake 后端启动（显著警告，语义召回不可用），放置后重启即启用**。细则与实测记录：[embedding/README.md](./embedding/README.md)
 - 数据落在 `data/`（`memory.db` / `images.db` / `images/` / `files.db` / `files/` / `settings.json`，不入库）
 - 接入真 LLM：`$env:DEEPSEEK_API_KEY='sk-...'; .\scripts\run-local.ps1`（或显式 `-LlmKey/-LlmModel/-LlmBase`）
@@ -67,7 +72,8 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - [x] embedding 服务（M8，Python）：文本 → 向量（onnxruntime + tokenizers 本地推理；fake 后端供测试与 CI）；协议 / 注册自愈 / 双后端
 - [x] 语义召回（M8）：memory 接入 embedding——向量列（派生、懒补齐）+ 余弦 ≥0.45 阈值 + **bigram 兜底**（服务缺席/超时静默回落）；跨语言真进程 e2e；query 前缀 A/B 实测（no-prefix 胜出）
 - [x] shell 命令执行服务（M9）：受理即回执（审批与执行不占响应）｜审批接缝（`Approver` 接口；未接入 = 一律未通过）｜结果以 `report_result` 补报（reasoner：在跑则注入、已收尾则开补报轮）｜护栏：工作目录根（越界即拒）+ 执行超时（终止整棵进程树）+ 输出上限（截断标注）+ 并行/队列上限（满即拒）｜8 个设置项（`exec.*` / `approval.*`）
-- [ ] 下一步：巩固线（sleep 提炼）、群聊（@ 必回 / 自主插话）、审批链路（审批服务定协议 → 接入 shell 的 `Approver`）、PDF/Office 抽取（files.read 升级）、shell 后续（后台任务托管 / 输出有界引用 / 文件工具）
+- [x] 命令审批第一层（approval）：PowerShell AST 规则引擎｜执行摘要与短期许可绑定｜shell 审批及模型反馈｜第二层仅预留接口
+- [ ] 下一步：巩固线（sleep 提炼）、群聊（@ 必回 / 自主插话）、审批第二层（LLM 解读与用户通知，明确状态归属后接入）、PDF/Office 抽取（files.read 升级）、shell 后续（后台任务托管 / 输出有界引用 / 文件工具）
 
 ## 文档
 

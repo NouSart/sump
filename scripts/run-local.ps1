@@ -1,9 +1,9 @@
-﻿# SUMP v2 本地开发：一键启动服务（settings-center + memory + embedding + images + files + qq + shell + timer + reasoner + frontend）
-# 用法：.\scripts\run-local.ps1 [-CenterAddr 127.0.0.1:9000] [-MemoryAddr 127.0.0.1:9201] [-EmbeddingAddr 127.0.0.1:9601] [-ImageAddr 127.0.0.1:9401] [-FilesAddr 127.0.0.1:9802] [-TimerAddr 127.0.0.1:9801] [-QQAddr 127.0.0.1:9301] [-ShellAddr 127.0.0.1:9701] [-TimerAddr 127.0.0.1:9801] [-ReasonerAddr 127.0.0.1:9101] [-FrontendAddr 127.0.0.1:9501]
+# SUMP v2 本地开发：一键启动服务（settings-center + memory + embedding + images + files + qq + shell + approval + timer + reasoner + frontend）
+# 用法：.\scripts\run-local.ps1 [-CenterAddr 127.0.0.1:9000] [-MemoryAddr 127.0.0.1:9201] [-EmbeddingAddr 127.0.0.1:9601] [-ImageAddr 127.0.0.1:9401] [-FilesAddr 127.0.0.1:9802] [-QQAddr 127.0.0.1:9301] [-ShellAddr 127.0.0.1:9701] [-TimerAddr 127.0.0.1:9801] [-ApprovalAddr 127.0.0.1:9901] [-ReasonerAddr 127.0.0.1:9101] [-FrontendAddr 127.0.0.1:9501]
 #       [-NapCatURL ws://127.0.0.1:3001] [-NapCatToken xxx] [-Owner 主人QQ] [-LlmKey sk-...] [-LlmModel deepseek-chat]
 # 停止：Ctrl+C（脚本会清理子进程）
 # 注：qq 连不上 NapCat 会自动重试，不影响其他服务；不填 -Owner 则拒绝所有 QQ 私聊
-# 注：shell 的工作目录根 = 仓库根；审批未接入（approval.service 留空）时一律“未通过”——命令不会被执行
+# 注：shell 的工作目录根 = 仓库根；接入 approval 第一层，使用 PowerShell 默认有限规则。
 # 注：frontend 需要 Node ≥ 22；首次运行会自动 npm install + npm run build（面板 http://127.0.0.1:9501/）
 # 注：embedding 需要 Python ≥ 3.12；首次运行自动建 venv + 装依赖；模型缺席时以 fake 后端启动（语义召回不可用，控制台会显著警告）
 param(
@@ -14,6 +14,7 @@ param(
     [string]$FilesAddr = '127.0.0.1:9802',
     [string]$QQAddr = '127.0.0.1:9301',
     [string]$ShellAddr = '127.0.0.1:9701',
+    [string]$ApprovalAddr = '127.0.0.1:9901',
     [string]$TimerAddr = '127.0.0.1:9801',
     [string]$ReasonerAddr = '127.0.0.1:9101',
     [string]$FrontendAddr = '127.0.0.1:9501',
@@ -26,6 +27,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$approvalRuntime = Get-Command pwsh -ErrorAction SilentlyContinue
+if (-not $approvalRuntime) { $approvalRuntime = Get-Command powershell -ErrorAction SilentlyContinue }
+if (-not $approvalRuntime) { throw '命令审批需要 PowerShell' }
 
 $root   = Split-Path -Parent $PSScriptRoot
 $binDir = Join-Path $env:TEMP 'sump-v2-bin'
@@ -47,7 +51,7 @@ function Wait-Port([string]$Addr, [int]$TimeoutSec) {
     return $false
 }
 
-Write-Host '[1/9] 构建 settings-center / memory / images / files / qq / shell / timer / reasoner ...' -ForegroundColor Cyan
+Write-Host '[1/9] 构建 settings-center / memory / images / files / qq / shell / approval / timer / reasoner ...' -ForegroundColor Cyan
 Push-Location $root
 try {
     go build -o (Join-Path $binDir 'settings-center.exe') 'github.com/QAQ-awa-QAQ/sump/settings-center'
@@ -64,6 +68,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'qq 构建失败' }
     go build -o (Join-Path $binDir 'shell.exe') 'github.com/QAQ-awa-QAQ/sump/shell'
     if ($LASTEXITCODE -ne 0) { throw 'shell 构建失败' }
+    go build -o (Join-Path $binDir 'sump-approval.exe') 'github.com/QAQ-awa-QAQ/sump/approval'
+    if ($LASTEXITCODE -ne 0) { throw 'approval 构建失败' }
     go build -o (Join-Path $binDir 'timer.exe') 'github.com/QAQ-awa-QAQ/sump/timer'
     if ($LASTEXITCODE -ne 0) { throw 'timer 构建失败' }
     go build -o (Join-Path $binDir 'reasoner.exe') 'github.com/QAQ-awa-QAQ/sump/reasoner'
@@ -136,6 +142,8 @@ $emb    = $null
 $img    = $null
 $qq     = $null
 $shellSvc = $null
+$approvalSvc = $null
+$timerSvc = $null
 $reasoner = $null
 $frontend = $null
 try {
@@ -162,8 +170,10 @@ try {
     $qq = Start-Process -FilePath (Join-Path $binDir 'qq.exe') -ArgumentList $qqArgs -PassThru -NoNewWindow
     if (-not (Wait-Port $QQAddr 60)) { throw 'qq 未在 60 秒内就绪' }
 
-    Write-Host '[7/9] 启动 shell / timer ...' -ForegroundColor Cyan
-    $shellSvc = Start-Process -FilePath (Join-Path $binDir 'shell.exe') -ArgumentList '-addr', $ShellAddr, '-center', "ws://$CenterAddr/ws", '-root', $root -PassThru -NoNewWindow
+    Write-Host '[7/9] 启动 approval + shell + timer ...' -ForegroundColor Cyan
+    $approvalSvc = Start-Process -FilePath (Join-Path $binDir 'sump-approval.exe') -ArgumentList 'serve', '-addr', $ApprovalAddr, '-center', "ws://$CenterAddr/ws" -PassThru -WindowStyle Hidden
+    if (-not (Wait-Port $ApprovalAddr 60)) { throw 'approval 未在 60 秒内就绪' }
+    $shellSvc = Start-Process -FilePath (Join-Path $binDir 'shell.exe') -ArgumentList '-addr', $ShellAddr, '-center', "ws://$CenterAddr/ws", '-root', ('"' + $root + '"'), '-approval', 'approval', '-shell', ('"' + $approvalRuntime.Source + '"') -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $ShellAddr 60)) { throw 'shell 未在 60 秒内就绪' }
     # -portal frontend：把在计时器推给门户展示倒计时（留空 = 不推）。
     $timerSvc = Start-Process -FilePath (Join-Path $binDir 'timer.exe') -ArgumentList '-addr', $TimerAddr, '-center', "ws://$CenterAddr/ws", '-portal', 'frontend' -PassThru -NoNewWindow
@@ -185,15 +195,16 @@ try {
     Write-Host "files:           ws://$FilesAddr/ws  (PID $($fil.Id))  db: data/files.db  dir: data/files"
     Write-Host "images:          ws://$ImageAddr/ws  (PID $($img.Id))  db: data/images.db  dir: data/images"
     Write-Host "qq:              ws://$QQAddr/ws  (PID $($qq.Id))  napcat: $NapCatURL"
-    Write-Host "shell:           ws://$ShellAddr/ws  (PID $($shellSvc.Id))  root: $root  审批: 未接入（一律未通过）"
-    Write-Host "timer:           ws://$TimerAddr/ws  (PID $($timerSvc.Id))  上限: 1h（设置项 max_ms，天花板 23h）  门户: frontend"
+    Write-Host "shell:           ws://$ShellAddr/ws  (PID $($shellSvc.Id))  root: $root  审批: approval"
+    Write-Host "approval:        ws://$ApprovalAddr/ws  (PID $($approvalSvc.Id))  PowerShell 第一层"
+    Write-Host "timer:           ws://$TimerAddr/ws  (PID $($timerSvc.Id))  门户: frontend"
     Write-Host "reasoner:       ws://$ReasonerAddr/ws  (PID $($reasoner.Id))"
     Write-Host "frontend:       http://$FrontendAddr/  (PID $($frontend.Id))  ← 设置面板" -ForegroundColor Green
     Write-Host '按 Ctrl+C 停止' -ForegroundColor Yellow
 
-    Wait-Process -Id $center.Id, $mem.Id, $emb.Id, $img.Id, $fil.Id, $qq.Id, $shellSvc.Id, $timerSvc.Id, $reasoner.Id, $frontend.Id
+    Wait-Process -Id $center.Id, $mem.Id, $emb.Id, $img.Id, $fil.Id, $qq.Id, $shellSvc.Id, $approvalSvc.Id, $timerSvc.Id, $reasoner.Id, $frontend.Id
 } finally {
-    foreach ($proc in @($center, $mem, $emb, $img, $fil, $qq, $shellSvc, $timerSvc, $reasoner, $frontend)) {
+    foreach ($proc in @($center, $mem, $emb, $img, $fil, $qq, $shellSvc, $approvalSvc, $timerSvc, $reasoner, $frontend)) {
         if ($null -ne $proc -and -not $proc.HasExited) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         }

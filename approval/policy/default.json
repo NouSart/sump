@@ -1,0 +1,10 @@
+{
+  "version": "powershell-starter-1",
+  "deny_commands": ["Remove-Item", "rm", "ri", "del", "erase", "rmdir", "rd", "Clear-Content", "Format-Volume", "Stop-Computer", "Restart-Computer", "Invoke-Expression", "iex"],
+  "rules": [
+    {"id":"location","names":["Get-Location","pwd","gl"],"max_args":0,"reason":"允许查询当前执行目录"},
+    {"id":"literal-output","names":["Write-Output","echo","write"],"max_args":32,"reason":"允许输出静态字面值；不包含动态展开、管道或重定向"},
+    {"id":"directory-list","names":["Get-ChildItem","dir","ls","gci"],"max_args":0,"reason":"允许列出当前工作目录；此规则不接受路径或递归参数"},
+    {"id":"current-time","names":["Get-Date"],"max_args":0,"reason":"允许读取当前时间"}
+  ]
+}

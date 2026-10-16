@@ -29,17 +29,32 @@ const waitDelay = 10 * time.Second
 // 共用同一个值，中途改设置不改变本次执行的口径。
 func (s *Server) runCommand(j *job, limit int64) (protocol.ShellEventData, error) {
 	res := protocol.ShellEventData{Command: j.command, WorkDir: j.workDir}
-	exe, args, err := s.commandLine(j.command)
+	var exe string
+	var args []string
+	var err error
+	if j.plan != nil {
+		exe = j.plan.ShellPath
+		args = append(append([]string{}, j.plan.Args...), j.plan.Command)
+	} else {
+		exe, args, err = s.commandLine(j.command)
+	}
 	if err != nil {
 		res.Error = err.Error()
 		return res, err
 	}
 	res.Shell = exe
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.timeoutNow())
+	timeout := s.timeoutNow()
+	if j.plan != nil {
+		timeout = time.Duration(j.plan.TimeoutMS) * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = j.workDir
+	if j.plan != nil {
+		cmd.Env = j.environment
+	}
 	cmd.SysProcAttr = sysProcAttr()
 	stdout, stderr := newLimitWriter(limit), newLimitWriter(limit)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
