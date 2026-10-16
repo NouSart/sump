@@ -118,11 +118,12 @@ type StorePayload struct {
 
 // ---------- 任务链入口 ----------
 
-// UserMessagePayload 是 user_message（链入口）的 payload：用户消息文本 + 图片引用。
+// UserMessagePayload 是 user_message（链入口）的 payload：用户消息文本 + 图片/文件引用。
 type UserMessagePayload struct {
 	Text           string   `msgpack:"text"`
 	ConversationID string   `msgpack:"conversation_id,omitempty"`
 	Images         []string `msgpack:"images,omitempty"` // 图片引用（images 服务中的 id）
+	Files          []string `msgpack:"files,omitempty"`  // 文件引用（files 服务中的 id；占位文本亦随行，供模型凭 id 调 files__read）
 }
 
 // ---------- 交付与图片 ----------
@@ -158,6 +159,93 @@ type ImageFetchResult struct {
 	Mime string `msgpack:"mime"`
 	Data string `msgpack:"data"` // base64（不含 data: 前缀）
 	Size int64  `msgpack:"size"`
+}
+
+// ---------- 文件链（files 服务） ----------
+
+// FileSavePayload 是 files.save 的 payload：URL 与 base64 二选一；filename 必填
+// （占位展示与文本类判断用——文件与图片的结构差异就在名字）。
+type FileSavePayload struct {
+	URL      string `msgpack:"url,omitempty"`
+	Data     string `msgpack:"data,omitempty"` // base64（不含 data: 前缀）
+	Filename string `msgpack:"filename"`
+	Mime     string `msgpack:"mime,omitempty"` // 可选，缺省时探测
+}
+
+// FileSaveResult 是 files.save 的结果。
+type FileSaveResult struct {
+	ID       string `msgpack:"id"`
+	Filename string `msgpack:"filename"`
+	Mime     string `msgpack:"mime"`
+	Size     int64  `msgpack:"size"`
+}
+
+// FileFetchPayload 是 files.fetch 的 payload。
+type FileFetchPayload struct {
+	ID string `msgpack:"id"`
+}
+
+// FileFetchResult 是 files.fetch 的结果（存入时二进制，取时转 base64）。
+type FileFetchResult struct {
+	ID       string `msgpack:"id"`
+	Filename string `msgpack:"filename"`
+	Mime     string `msgpack:"mime"`
+	Data     string `msgpack:"data"` // base64（不含 data: 前缀）
+	Size     int64  `msgpack:"size"`
+}
+
+// FileReadPayload 是 files.read 的 payload：读取文件的文本内容（LLM 工具，凭 id 自取）。
+type FileReadPayload struct {
+	ID string `msgpack:"id"`
+}
+
+// FileReadResult 是 files.read 的结果：文本类文件的内容（超长按 read.max_chars 截断）；
+// 二进制文件不支持阅读——以错误形式回绝，不返回本结构。
+type FileReadResult struct {
+	ID        string `msgpack:"id"`
+	Filename  string `msgpack:"filename"`
+	Text      string `msgpack:"text"`
+	Truncated bool   `msgpack:"truncated"` // true = 内容被截断，未给全（模型可据此决定后续动作）
+}
+
+// FileWriteEdit 是一次单元格写入：A1 风格坐标 + 值（v0 统一字符串）。
+type FileWriteEdit struct {
+	Cell  string `msgpack:"cell"`
+	Value string `msgpack:"value"`
+}
+
+// FileWritePayload 是 files.write 的 payload：编辑 xlsx 的单元格（就地修改权威副本）。
+type FileWritePayload struct {
+	ID    string          `msgpack:"id"`
+	Sheet string          `msgpack:"sheet"`
+	Edits []FileWriteEdit `msgpack:"edits"`
+}
+
+// FileWriteResult 是 files.write 的结果：实际写入的单元格数。
+type FileWriteResult struct {
+	ID      string `msgpack:"id"`
+	Sheet   string `msgpack:"sheet"`
+	Updated int    `msgpack:"updated"`
+}
+
+// WordEditOperation 是 files.edit_word 的一次操作。
+// v0 仅支持 op="replace"；后续可通过新增 op 类型扩展复杂编辑能力。
+type WordEditOperation struct {
+	Op  string `msgpack:"op"`            // 操作类型：replace
+	Old string `msgpack:"old,omitempty"` // replace 时被替换的文本
+	New string `msgpack:"new,omitempty"` // replace 时的新文本
+}
+
+// FileWordEditPayload 是 files.edit_word 的 payload：就地修改 .docx 正文。
+type FileWordEditPayload struct {
+	ID         string              `msgpack:"id"`
+	Operations []WordEditOperation `msgpack:"operations"`
+}
+
+// FileWordEditResult 是 files.edit_word 的结果：实际替换的条数。
+type FileWordEditResult struct {
+	ID       string `msgpack:"id"`
+	Replaced int    `msgpack:"replaced"`
 }
 
 // ---------- 设置中心：设置存取 ----------

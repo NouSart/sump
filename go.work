@@ -6,6 +6,7 @@ use (
 	./reasoner
 	./memory
 	./images
+	./files
 	./qq
 	./shell
 	./timer

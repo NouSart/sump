@@ -30,6 +30,7 @@ type Config struct {
 	Owner             string        // 主人 QQ（唯一授权私聊用户；留空则拒绝所有私聊；作为声明预设上报）
 	Reasoner          string        // 任务跳转目标（reasoner 服务名，默认 reasoner）
 	Images            string        // 图片服务名（默认 images）
+	Files             string        // 文件服务名（默认 files）
 	SecretFile        string        // 秘密项（napcat.token）的本地持久化路径（空 = data/<名>-secret.json；"-" = 不落盘）
 }
 
@@ -47,6 +48,7 @@ type Server struct {
 	napcatToken string     // 当前 access_token（空 = 无；秘密项，值只在本服务手里）
 	reasoner    string     // 当前任务跳转目标（reasoner 服务名）
 	images      string     // 当前图片服务名
+	files       string     // 当前文件服务名
 
 	locksMu sync.Mutex
 	locks   map[string]*sync.Mutex // 会话级串行锁（防同一会话消息乱序）
@@ -60,6 +62,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.Images == "" {
 		cfg.Images = "images"
 	}
+	if cfg.Files == "" {
+		cfg.Files = "files"
+	}
 	s := &Server{
 		cfg: cfg, logger: logger,
 		owner:       cfg.Owner,
@@ -67,6 +72,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		napcatToken: cfg.NapCatToken,
 		reasoner:    cfg.Reasoner,
 		images:      cfg.Images,
+		files:       cfg.Files,
 		locks:       map[string]*sync.Mutex{},
 	}
 	s.Service = service.New(service.Config{
@@ -115,6 +121,13 @@ func New(cfg Config, logger *log.Logger) *Server {
 			return errors.New("不接受空服务名")
 		}
 		s.setImages(v)
+		return nil
+	})
+	s.HandleSetting("files", cfg.Files, func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return errors.New("不接受空服务名")
+		}
+		s.setFiles(v)
 		return nil
 	})
 	s.Handle("deliver", s.actionDeliver)
@@ -191,6 +204,20 @@ func (s *Server) imagesName() string {
 func (s *Server) setImages(v string) {
 	s.setMu.Lock()
 	s.images = v
+	s.setMu.Unlock()
+}
+
+// filesName 返回当前文件服务名（files 热改后 saveFile 立刻改投新服务）。
+func (s *Server) filesName() string {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.files
+}
+
+// setFiles 更新文件服务名。
+func (s *Server) setFiles(v string) {
+	s.setMu.Lock()
+	s.files = v
 	s.setMu.Unlock()
 }
 
@@ -274,12 +301,24 @@ func (s *Server) onQQEvent(ev napcat.Event) {
 		}
 		ids = append(ids, id)
 	}
-	if strings.TrimSpace(text) == "" && len(ids) == 0 {
+	var fileIDs []string
+	for _, fr := range ev.FileRefs() {
+		id, err := s.saveFile(fr)
+		if err != nil {
+			s.logger.Printf("保存文件失败: %v", err)
+			text = appendLine(text, "[文件]")
+			continue
+		}
+		fileIDs = append(fileIDs, id)
+		// 占位必须带 id——文件是模型凭 id 调 files__read 自取的（与图片的自动内联不同）。
+		text = appendLine(text, fmt.Sprintf("[文件: %s, id=%s]", fr.Name, id))
+	}
+	if strings.TrimSpace(text) == "" && len(ids) == 0 && len(fileIDs) == 0 {
 		return
 	}
 
 	cid := "qq:private:" + uid
-	payload := protocol.UserMessagePayload{Text: text, ConversationID: cid, Images: ids}
+	payload := protocol.UserMessagePayload{Text: text, ConversationID: cid, Images: ids, Files: fileIDs}
 	if err := s.callReasoner("user_message", payload); err != nil {
 		s.logger.Printf("user_message 未受理: %v", err)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -303,6 +342,33 @@ func (s *Server) saveImage(url string) (string, error) {
 		return "", errors.New("images.save 返回无效")
 	}
 	return res.ID, nil
+}
+
+// saveFile 把文件 URL 交给 files 服务保存，返回文件 id。
+func (s *Server) saveFile(fr napcat.FileRef) (string, error) {
+	name := strings.TrimSpace(fr.Name)
+	if name == "" {
+		name = "未命名文件"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	data, err := s.Call(ctx, s.filesName(), "save", protocol.FileSavePayload{URL: fr.URL, Filename: name}, protocol.NewID(), s.cfg.Name)
+	if err != nil {
+		return "", err
+	}
+	var res protocol.FileSaveResult
+	if err := protocol.DecodeRaw(data, &res); err != nil || res.ID == "" {
+		return "", errors.New("files.save 返回无效")
+	}
+	return res.ID, nil
+}
+
+// appendLine 向文本追加一行（空文本直接起行）。
+func appendLine(text, line string) string {
+	if strings.TrimSpace(text) == "" {
+		return line
+	}
+	return text + "\n" + line
 }
 
 // callReasoner 向 reasoner 发 user_message（等受理回执；boss=本服务）。

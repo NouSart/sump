@@ -107,6 +107,22 @@ sequenceDiagram
 - 更早的图片引用不内联，序列化时转文本占位 `[图片]`（继承 v1 行为：仅最近一条内联）；
 - images 独立库（SQLite 元数据 + 文件目录），单图上限 32MiB（对齐 DeepSeek 图片限制）。
 
+### 文件链路（qq → files → llm 凭 id 自取）
+
+- qq 收到文件消息：把文件 URL 与文件名交给 files 服务保存（`save` → `{id}`），`user_message` 携带文件 id（`Files` 字段）并在文本里附加占位 `[文件: 名, id=...]`——占位必须带 id：文件不是自动内联的，是模型凭 id 自取；
+- `read` 在 `provides` 里声明 `tool: true`，经名册自动成为 LLM 工具（`files__read`），**reasoner 零改动**（同 `remember` 先例）：文本类返回截断文本（`read_max_chars` 默认 4000，`truncated` 显式标记“没给全”）；`.xlsx` 转 TSV、`.docx` 提取正文；二进制 / 旧版 Office 明确拒绝——PDF 抽取与更复杂的 Word 编辑属后续批次，届时只升级 files 内部；
+- `fetch`（id → base64 全量）与图片语义同构，v0 链上无消费者，为对称与后续检索/解析服务预留；
+- 文件 id 寿命与图片 id 一致：任务窗口内随消息链（`Message.FileIDs`），落库后只剩占位文本（`StorePayload` 只存文本）；
+- files 独立库（SQLite 元数据 + 文件目录），单文件上限默认 100MiB（`-max-mb` 可调；文件无模型侧限制）。
+
+**Excel 读写（M9，已实现）**：`read` 的类型判定从"文本类"放宽为"可文本化"——`.xlsx` 经 excelize 逐 sheet 转 TSV（`# 工作表: 名` + 制表符分列），走同一 `read_max_chars` 截断（行边界，不切断整行）；`.xls`（OLE2）明确拒绝并引导另存。新动作 `write`（`tool: true`）：`{id, sheet, edits:[{cell, value}]}` 单元格级编辑，校验链 = id 存在 → 必须 .xlsx → sheet 存在（报错附可用表清单）→ 坐标全量预检（不过则一格不写）→ 写回库内权威副本（`Overwrite` 就地更新，尺寸入台账）；全局写锁串行化 read-modify-write。值 v0 统一字符串；旧格式 / 公式重算 / 样式编辑 / 从零创建均属后续。
+
+**Word 读写（M10，已实现）**：`.docx`（OpenXML）被 `read` 识别为可文本化，按正文段落提取（段落边界截断）；`.doc`（OLE2）明确拒绝并引导另存。新动作 `edit_word`（`tool: true`）：`{id, operations:[{op, old, new}]}`，v0 仅 `op="replace"`，对 `word/document.xml` 做纯文本占位符替换（XML 安全转义，换行/制表符映射为 `<w:br/>` / `<w:tab/>`），预检查所有 `old` 存在后统一写回权威副本；同一个 `old` 出现多次则**全替换**（结果里的 `replaced` 是实际替换处数）；未知 `op` 报错。后续可通过新增 `op` 类型扩展页眉/页脚/段落/表格/样式编辑，无需改动作名。
+
+**就地覆盖的取舍（明写在案）**：`write` / `edit_word` 直接覆盖库内的**唯一权威副本**，**原字节不留**（无副本、无版本、无回收站）——这是有意的：改文件是显式动作（谁改的可从链路日志查），留副本等于把"文件服务"变成"文件版本库"，那是另一个服务的边界。代价说清楚：模型一次调用就能改掉主人的原文件且**不可回退**；要原件请在改动前 `fetch` 一份。想反过来（留副本/记 hash）再议。
+
+**解压封顶（压缩炸弹防线）**：`.xlsx` / `.docx` 都是 zip，文件本体受 `max_mb` 管，但**解压后**的大小不受它管（1MiB 的包能解出 GB 级）。两道防线：zip 目录里的实体大小预检（声明超限即拒）+ 读取时 `io.LimitReader` 兜住"头部撒谎"的包；xlsx 侧把同一上限传给 excelize 的 `UnzipSizeLimit`。上限 256MiB（远大于 `read_max_chars` 默认 4000 字符的实际需要）。
+
 ### 通信与性能约定
 
 - 服务间 WS **不做纯长连接**：默认短连接、空闲即断；访问频繁则连接保留时长上涨，冷下来回落——随实际访问频率自适应增减。
@@ -221,7 +237,7 @@ sequenceDiagram
 
 #### 任务链动作（reasoner）
 
-- `user_message`（链入口）：payload `{text, conversation_id, images}`；**发起者必须设 `boss`**；受理后立即回执，最终结果稍后经 `deliver` 送达
+- `user_message`（链入口）：payload `{text, conversation_id, images, files}`；**发起者必须设 `boss`**；受理后立即回执，最终结果稍后经 `deliver` 送达
 - `step`（自跳继续）：payload `{conversation_id}`——上下文在黑板里（任务窗口）；**发出即完**（不等待）
 - `deliver`（约定动作，**由 boss 实现**）：payload `{text}`；链终点判定结束直送 boss（交付方同步等回执）
 - **工具命名**：`<service>__<action>`——由 roster 的 `provides` 自动生成；**暴露 = provides 里显式声明 `tool: true`**（未声明的动作对模型不可见）；`user_message` / `step` / `deliver` / `recall` / `resume` / `store` / `save` / `fetch` 属链机制动作，调试动作（如 reasoner 的 `echo` / `debug_jump`）同样不暴露（第二道闸）
@@ -275,6 +291,7 @@ sequenceDiagram
 | tools（工具） | Go | 工具注册与执行（Shell 等） | `tools/registry.py`、`tools/builtin/` | 是否按类再拆待定 |
 | qq（QQ 接入） | Go | NapCat/OneBot 11 正向 WS；私聊（零信任）→ 任务链；deliver → 回发 | `plugins/builtin/napcat_plugin.py` | **已实现**（仅私聊；群聊/审批后续） |
 | images（图片） | Go | 图片保存（URL/base64）+ 按需转 base64 发回（llm 取图内联） | （v1 图片直通部分） | **已实现** |
+| files（文件） | Go | 文件保存（URL/base64）+ fetch 全量取回 + read 文本截取（`tool: true`，LLM 凭 id 自取）+ write 单元格级 Excel 编辑 | `assets.py`（存取部分） | **已实现**（含 Excel 读写；索引/检索与 PDF/Office 抽取后续） |
 | **shell（命令执行）** | Go | 受理即回执的命令执行：审批接缝（未接入 = 一律未通过）+ 并行/队列/超时终止/输出截断；结果由 `report_result` 补报 | `tools/builtin/`（shell 部分） | **已实现**（审批协议等审批服务定；白名单策略不在本服务） |
 | web（Web 接入） | Go | 浏览器 REST/SSE 接入（不带前端） | `api/` | UI 归 frontend 服务 |
 | frontend（前端服务） | TS | 设置中心可视化面板：注册为服务节点（心跳 / 名册广播）；浏览器 HTTP JSON + SSE；设置查看 / 修改 / 重置（中心受理并下发） | `frontend/` | **已实现 v1**（错误上报视图随 v2） |
@@ -306,6 +323,7 @@ sequenceDiagram
 - 各服务**独立建数据库**，数据归属到服务自身；服务之间不共享库表。
 - memory：SQLite（`data/memory.db`）——`messages` 会话消息表 + `memories` 长期记忆表（v0：kind / content / priority / source / conversation_id / status 软删 / 时间戳）；**两表共享同一 DB 句柄**（同进程同库，跨表事务可行）。
 - images：SQLite 元数据（`data/images.db`）+ 图片文件目录（`data/images/`）。
+- files：SQLite 元数据（`data/files.db`，含 `filename` 列——文件与图片的结构差异）+ 文件目录（`data/files/`）。
 - settings-center：`data/settings.json`——设置覆盖值（预设值由各服务声明，不落盘）。
 - （细化待定：其余服务存什么、跨服务数据如何流转）
 
@@ -327,8 +345,10 @@ sequenceDiagram
 
 - 跳转的超时与失败、连接保活的自适应阈值与公式（“具体再看”）。
 - 记忆缺席/失败：当前为“硬门”（链停在原地、日志可见，无重试）；重试 / 降级策略待细化。
-- qq 后续批次：群聊（@ 必回 / 自主插话 / 群聊记录）、审批推送与数字裁决、文件消息。
+- qq 后续批次：群聊（@ 必回 / 自主插话 / 群聊记录）、审批推送与数字裁决。
 - 图片：清理策略（保留期/容量）、去重；主动发送图片（表情包）能力。
+- 文件：PDF 抽取（read 升级；Excel/Word 已 M9/M10 实现）、清理策略（保留期/容量）、去重；主动向用户发文件（deliver 文件）。
+- 设置键命名（待改进，非违规）：files 的 `read_max_chars` 是裸键（与 `max_mb`/`owner`/`sweep_ms` 同族），与 SPEC §13 的 `<域>.<名>` 格式不完全一致。若统一为 `read.max_chars`：属"改名"，须按 §13 登记替代名与迁移说明；改名最佳时机是 M8 合并前（键未发布、迁移负担为零），合并后再改则需真实迁移流程。
 - 服务清单收尾：tools 是否再拆（sessions 已并入 memory）。
 - 设置 / 管理类动作是否暴露为 LLM 工具：当前靠“不写进 `provides`”规避；倾向改为 `provides` 显式声明才暴露——reasoner 的硬编码排除表覆盖不到第三方服务（见 [SPEC.md](./SPEC.md) §10）。
 - 链级失败策略：拨号失败已安全重试（+0.5s/+2s）；“送达后失败”需幂等键才能重试；失败上报 boss（降级回复）待定。

@@ -251,6 +251,19 @@ func privateImageEvent(uid int64, text, url string) map[string]any {
 	}
 }
 
+func privateFileEvent(uid int64, text, url, name string) map[string]any {
+	segs := []any{}
+	if text != "" {
+		segs = append(segs, map[string]any{"type": "text", "data": map[string]any{"text": text}})
+	}
+	segs = append(segs, map[string]any{"type": "file", "data": map[string]any{"url": url, "file": name}})
+	return map[string]any{
+		"post_type": "message", "message_type": "private", "sub_type": "friend",
+		"user_id": uid, "self_id": 2578428650, "message_id": 102, "time": time.Now().Unix(),
+		"raw_message": text, "font": 0, "message": segs,
+	}
+}
+
 // ---------- stub reasoner ----------
 
 type reasonerRequest struct {
@@ -461,6 +474,107 @@ func (im *stubImages) waitSave(t *testing.T, timeout time.Duration) string {
 	return ""
 }
 
+// ---------- stub files ----------
+
+type fileSave struct {
+	URL      string
+	Filename string
+}
+
+type stubFiles struct {
+	ln    net.Listener
+	srv   *http.Server
+	mu    sync.Mutex
+	saves []fileSave
+}
+
+func startStubFiles(t *testing.T, center *stubCenter) *stubFiles {
+	return startStubFilesNamed(t, center, "files")
+}
+
+// startStubFilesNamed 同上，但可指定注册名（测 files 设置项热改用）。
+func startStubFilesNamed(t *testing.T, center *stubCenter, name string) *stubFiles {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf := &stubFiles{ln: ln}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", sf.handleWS)
+	sf.srv = &http.Server{Handler: mux}
+	go func() { _ = sf.srv.Serve(ln) }()
+	t.Cleanup(func() { _ = sf.srv.Close() })
+
+	center.mu.Lock()
+	center.cards[name] = protocol.ServiceCard{Name: name, Addr: sf.URL(), Description: "文件测试替身"}
+	center.mu.Unlock()
+	return sf
+}
+
+func (sf *stubFiles) URL() string { return "ws://" + sf.ln.Addr().String() + "/ws" }
+
+func (sf *stubFiles) handleWS(w http.ResponseWriter, r *http.Request) {
+	ws, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	c := &stubConn{ws: ws}
+	defer ws.Close()
+	for {
+		_, data, err := ws.ReadMessage()
+		if err != nil {
+			return
+		}
+		env, err := protocol.Unmarshal(data)
+		if err != nil {
+			continue
+		}
+		if env.Type != protocol.TypeJump {
+			continue
+		}
+		var jp protocol.JumpPayload
+		if err := env.DecodePayload(&jp); err != nil {
+			continue
+		}
+		if jp.Action != "save" {
+			continue
+		}
+		var p protocol.FileSavePayload
+		_ = protocol.DecodeRaw(jp.Input, &p)
+		sf.mu.Lock()
+		sf.saves = append(sf.saves, fileSave{URL: p.URL, Filename: p.Filename})
+		sf.mu.Unlock()
+		result, _ := protocol.EncodePayload(protocol.FileSaveResult{ID: "file-1", Filename: p.Filename, Mime: "text/markdown", Size: 3})
+		resp, _ := protocol.NewResponse(env, "files", protocol.ResponsePayload{OK: true, Data: result})
+		c.send(resp)
+	}
+}
+
+// savesLen 返回已收到的 save 条数（并发安全）。
+func (sf *stubFiles) savesLen() int {
+	sf.mu.Lock()
+	defer sf.mu.Unlock()
+	return len(sf.saves)
+}
+
+func (sf *stubFiles) waitSave(t *testing.T, timeout time.Duration) fileSave {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		sf.mu.Lock()
+		if len(sf.saves) > 0 {
+			s := sf.saves[0]
+			sf.mu.Unlock()
+			return s
+		}
+		sf.mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("等待 files.save 超时")
+	return fileSave{}
+}
+
 // ---------- 启动 qq 服务 ----------
 
 func startQQ(t *testing.T, sc *stubCenter, nc *stubNapCat, owner string) *server.Server {
@@ -542,6 +656,32 @@ func TestPrivateImageFlow(t *testing.T) {
 	imgsAny, _ := req.Payload["images"].([]any)
 	if len(imgsAny) != 1 || imgsAny[0] != "img-1" {
 		t.Fatalf("图片 id 未随行: %+v", req.Payload)
+	}
+}
+
+// TestPrivateFileFlow 文件消息：先存 files 服务（URL+文件名），占位文本带 id，再随 user_message 传文件 id。
+func TestPrivateFileFlow(t *testing.T) {
+	sc := startStubCenter(t)
+	nc := startStubNapCat(t)
+	al := startStubReasoner(t, sc)
+	sf := startStubFiles(t, sc)
+	_ = startQQ(t, sc, nc, "2271917353")
+
+	nc.waitConn(t, 5*time.Second)
+	nc.sendEvent(t, privateFileEvent(2271917353, "看看这个", "http://stub/report.md", "report.md"))
+
+	save := sf.waitSave(t, 5*time.Second)
+	if save.URL != "http://stub/report.md" || save.Filename != "report.md" {
+		t.Fatalf("files.save 不符: %+v", save)
+	}
+	req := al.waitRequest(t, 5*time.Second)
+	text, _ := req.Payload["text"].(string)
+	if !strings.Contains(text, "[文件: report.md, id=file-1]") {
+		t.Fatalf("占位文本不符（须带文件名与 id）: %+v", req.Payload)
+	}
+	filesAny, _ := req.Payload["files"].([]any)
+	if len(filesAny) != 1 || filesAny[0] != "file-1" {
+		t.Fatalf("文件 id 未随行: %+v", req.Payload)
 	}
 }
 
