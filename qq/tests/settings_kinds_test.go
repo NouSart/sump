@@ -56,3 +56,40 @@ func TestSettingsKindsAndHotURL(t *testing.T) {
 		t.Fatalf("拒绝后应保持旧值，实际 %q", v)
 	}
 }
+
+// TestSettingsFilesHotChange 验证：files 是普通项——热改后文件消息真的存到新服务。
+// （files 是本次接入的新配置项，不能只声明不验。）
+func TestSettingsFilesHotChange(t *testing.T) {
+	sc := startStubCenter(t)
+	nc := startStubNapCat(t)
+	filesA := startStubFilesNamed(t, sc, "files")
+	filesB := startStubFilesNamed(t, sc, "files-b")
+	startStubImages(t, sc)
+	startStubReasoner(t, sc)
+	qq := startQQ(t, sc, nc, "2271917353")
+	nc.waitConn(t, 5*time.Second)
+
+	// 热改前：文件存到 files
+	nc.sendEvent(t, privateFileEvent(2271917353, "看看", "http://stub/a.md", "a.md"))
+	filesA.waitSave(t, 5*time.Second)
+	beforeB := filesB.savesLen()
+
+	if rp := pushConfigure(t, qq.WsURL(), protocol.ConfigurePayload{Key: "files", Value: "files-b", Default: "files", Overridden: true}); !rp.OK {
+		t.Fatalf("files 应可热改: %+v", rp)
+	}
+	if v := qq.SettingValue("files"); v != "files-b" {
+		t.Fatalf("生效值应为 files-b，实际 %q", v)
+	}
+
+	// 热改后：文件应存到 files-b
+	nc.sendEvent(t, privateFileEvent(2271917353, "再看看", "http://stub/b.md", "b.md"))
+	filesB.waitSave(t, 5*time.Second)
+	if filesB.savesLen() <= beforeB {
+		t.Fatal("热改后文件应存到新服务")
+	}
+
+	// 空服务名：拒绝
+	if rp := pushConfigure(t, qq.WsURL(), protocol.ConfigurePayload{Key: "files", Value: "  "}); rp.OK {
+		t.Fatal("空服务名应被拒绝")
+	}
+}

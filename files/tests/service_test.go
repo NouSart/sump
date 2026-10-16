@@ -44,6 +44,16 @@ func (c *stubConn) send(env protocol.Envelope) {
 type stubCenter struct {
 	ln  net.Listener
 	srv *http.Server
+
+	mu   sync.Mutex
+	regs []protocol.RegisterPayload // 收到的注册（断言名片声明用）
+}
+
+// Registers 返回收到的注册快照（并发安全）。
+func (sc *stubCenter) Registers() []protocol.RegisterPayload {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return append([]protocol.RegisterPayload(nil), sc.regs...)
 }
 
 var stubUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -83,6 +93,12 @@ func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		switch env.Type {
 		case protocol.TypeRegister:
+			var reg protocol.RegisterPayload
+			if err := env.DecodePayload(&reg); err == nil {
+				sc.mu.Lock()
+				sc.regs = append(sc.regs, reg)
+				sc.mu.Unlock()
+			}
 			roster := protocol.RosterPayload{Services: []protocol.ServiceCard{{Name: "settings-center", Addr: sc.URL()}}, Revision: 1}
 			respData, _ := protocol.EncodePayload(roster)
 			resp, _ := protocol.NewResponse(env, "settings-center", protocol.ResponsePayload{OK: true, Data: respData})

@@ -228,3 +228,33 @@ func TestEditWordErrors(t *testing.T) {
 		t.Fatalf("old 为空应报错: %+v", bad5)
 	}
 }
+
+// TestEditWordReplacesAllOccurrences 补上一个此前没覆盖的语义：同一个 old 在正文里出现
+// 多次时，edit_word 是**全替换**（Replaced 报的是实际替换处数，不是操作条数）。
+// （此前两个用例的 old 各只出现一次，所以"只替第一处"这种退化抓不住。）
+func TestEditWordReplacesAllOccurrences(t *testing.T) {
+	sc := startStubCenter(t)
+	srv := startFiles(t, sc.URL(), 4000)
+	orig := makeDocx(t, "重复内容", "中间", "重复内容")
+	id := saveDocx(t, srv.WsURL(), "重复.docx", orig)
+
+	rp := call(t, srv.WsURL(), "edit_word", protocol.FileWordEditPayload{
+		ID:         id,
+		Operations: []protocol.WordEditOperation{{Op: "replace", Old: "重复内容", New: "改过"}},
+	})
+	if !rp.OK {
+		t.Fatalf("edit_word 失败: %s", rp.Error)
+	}
+	var wr protocol.FileWordEditResult
+	if err := protocol.DecodeRaw(rp.Data, &wr); err != nil {
+		t.Fatal(err)
+	}
+	if wr.Replaced != 2 {
+		t.Fatalf("两处相同文本都应被替换（Replaced 应为 2），实际 %+v", wr)
+	}
+
+	rr := readFile(t, srv.WsURL(), id)
+	if rr.Text != "改过\n\n中间\n\n改过" {
+		t.Fatalf("全替换未生效:\n%s", rr.Text)
+	}
+}

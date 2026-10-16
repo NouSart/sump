@@ -51,11 +51,16 @@ func isLegacyDoc(mime, filename string) bool {
 }
 
 // docxToText 把 .docx 正文按段落提取为纯文本，超 maxChars 在段落边界截断。
-func docxToText(data []byte, maxChars int) (string, bool, error) {
+// budget 是**解压后**的字节上限（压缩炸弹防线）：先按 zip 目录里的实体大小预检，再用
+// LimitReader 兜住"头部撒谎"的包。
+func docxToText(data []byte, maxChars int, budget int64) (string, bool, error) {
 	r := bytes.NewReader(data)
 	zr, err := zip.NewReader(r, int64(len(data)))
 	if err != nil {
 		return "", false, fmt.Errorf("解析 docx 失败: %w", err)
+	}
+	if err := checkExpandBudget(zr, budget); err != nil {
+		return "", false, err
 	}
 	f, err := openZipFile(zr, docxDocumentXML)
 	if err != nil {
@@ -63,7 +68,7 @@ func docxToText(data []byte, maxChars int) (string, bool, error) {
 	}
 	defer f.Close()
 
-	dec := xml.NewDecoder(f)
+	dec := xml.NewDecoder(io.LimitReader(f, budget+1))
 	var paragraphs []string
 	var para strings.Builder
 	var run strings.Builder
@@ -140,7 +145,8 @@ func docxToText(data []byte, maxChars int) (string, bool, error) {
 
 // editDocx 对 .docx 正文执行操作列表，返回新字节和替换条数。
 // v0 仅支持 op="replace"；所有 Old 预检查通过后才写入，保证原子性。
-func editDocx(data []byte, ops []protocol.WordEditOperation) ([]byte, int, error) {
+// budget 是解压后 document.xml 的字节上限（压缩炸弹防线）。
+func editDocx(data []byte, ops []protocol.WordEditOperation, budget int64) ([]byte, int, error) {
 	for i, op := range ops {
 		if op.Op != "replace" {
 			return nil, 0, fmt.Errorf("第 %d 个操作不支持 op=%q（v0 仅支持 replace）", i+1, op.Op)
@@ -155,14 +161,20 @@ func editDocx(data []byte, ops []protocol.WordEditOperation) ([]byte, int, error
 	if err != nil {
 		return nil, 0, fmt.Errorf("解析 docx 失败: %w", err)
 	}
+	if err := checkExpandBudget(zr, budget); err != nil {
+		return nil, 0, err
+	}
 	docFile, err := openZipFile(zr, docxDocumentXML)
 	if err != nil {
 		return nil, 0, err
 	}
-	contentBytes, err := io.ReadAll(docFile)
+	contentBytes, err := io.ReadAll(io.LimitReader(docFile, budget+1))
 	docFile.Close()
 	if err != nil {
 		return nil, 0, fmt.Errorf("读取 document.xml 失败: %w", err)
+	}
+	if int64(len(contentBytes)) > budget {
+		return nil, 0, fmt.Errorf("document.xml 解压后超过 %d 字节上限（压缩炸弹防线）", budget)
 	}
 	content := string(contentBytes)
 
@@ -194,6 +206,19 @@ func editDocx(data []byte, ops []protocol.WordEditOperation) ([]byte, int, error
 		return nil, 0, fmt.Errorf("重建 docx 失败: %w", err)
 	}
 	return out, replaced, nil
+}
+
+// checkExpandBudget 按 zip 目录里的实体大小预检解压总量（压缩炸弹的第一道防线：
+// 目录里声明的大小不可信，所以读的时候还要有第二道 LimitReader）。
+func checkExpandBudget(zr *zip.Reader, budget int64) error {
+	var total uint64
+	for _, f := range zr.File {
+		total += f.UncompressedSize64
+		if total > uint64(budget) {
+			return fmt.Errorf("解压后总量超过 %d 字节上限（压缩炸弹防线）", budget)
+		}
+	}
+	return nil
 }
 
 // openZipFile 在 zip 中打开指定文件。

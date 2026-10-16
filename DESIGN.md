@@ -117,7 +117,11 @@ sequenceDiagram
 
 **Excel 读写（M9，已实现）**：`read` 的类型判定从"文本类"放宽为"可文本化"——`.xlsx` 经 excelize 逐 sheet 转 TSV（`# 工作表: 名` + 制表符分列），走同一 `read_max_chars` 截断（行边界，不切断整行）；`.xls`（OLE2）明确拒绝并引导另存。新动作 `write`（`tool: true`）：`{id, sheet, edits:[{cell, value}]}` 单元格级编辑，校验链 = id 存在 → 必须 .xlsx → sheet 存在（报错附可用表清单）→ 坐标全量预检（不过则一格不写）→ 写回库内权威副本（`Overwrite` 就地更新，尺寸入台账）；全局写锁串行化 read-modify-write。值 v0 统一字符串；旧格式 / 公式重算 / 样式编辑 / 从零创建均属后续。
 
-**Word 读写（M10，已实现）**：`.docx`（OpenXML）被 `read` 识别为可文本化，按正文段落提取（段落边界截断）；`.doc`（OLE2）明确拒绝并引导另存。新动作 `edit_word`（`tool: true`）：`{id, operations:[{op, old, new}]}`，v0 仅 `op="replace"`，对 `word/document.xml` 做纯文本占位符替换（XML 安全转义，换行/制表符映射为 `<w:br/>` / `<w:tab/>`），预检查所有 `old` 存在后统一写回权威副本；未知 `op` 报错。后续可通过新增 `op` 类型扩展页眉/页脚/段落/表格/样式编辑，无需改动作名。
+**Word 读写（M10，已实现）**：`.docx`（OpenXML）被 `read` 识别为可文本化，按正文段落提取（段落边界截断）；`.doc`（OLE2）明确拒绝并引导另存。新动作 `edit_word`（`tool: true`）：`{id, operations:[{op, old, new}]}`，v0 仅 `op="replace"`，对 `word/document.xml` 做纯文本占位符替换（XML 安全转义，换行/制表符映射为 `<w:br/>` / `<w:tab/>`），预检查所有 `old` 存在后统一写回权威副本；同一个 `old` 出现多次则**全替换**（结果里的 `replaced` 是实际替换处数）；未知 `op` 报错。后续可通过新增 `op` 类型扩展页眉/页脚/段落/表格/样式编辑，无需改动作名。
+
+**就地覆盖的取舍（明写在案）**：`write` / `edit_word` 直接覆盖库内的**唯一权威副本**，**原字节不留**（无副本、无版本、无回收站）——这是有意的：改文件是显式动作（谁改的可从链路日志查），留副本等于把"文件服务"变成"文件版本库"，那是另一个服务的边界。代价说清楚：模型一次调用就能改掉主人的原文件且**不可回退**；要原件请在改动前 `fetch` 一份。想反过来（留副本/记 hash）再议。
+
+**解压封顶（压缩炸弹防线）**：`.xlsx` / `.docx` 都是 zip，文件本体受 `max_mb` 管，但**解压后**的大小不受它管（1MiB 的包能解出 GB 级）。两道防线：zip 目录里的实体大小预检（声明超限即拒）+ 读取时 `io.LimitReader` 兜住"头部撒谎"的包；xlsx 侧把同一上限传给 excelize 的 `UnzipSizeLimit`。上限 256MiB（远大于 `read_max_chars` 默认 4000 字符的实际需要）。
 
 ### 通信与性能约定
 

@@ -174,3 +174,65 @@ func TestSettingsMaxMB(t *testing.T) {
 		t.Fatalf("拒绝后应保持 1，实际 %q", v)
 	}
 }
+
+// TestSettingsReadOnly 验证：db/dir/name/addr/center 是只读项——改动被明确拒绝、
+// 保持启动值；但它们照进名片（启动值作为 default），面板看得见。
+func TestSettingsReadOnly(t *testing.T) {
+	sc := startStubCenter(t)
+	dbPath := filepath.Join(t.TempDir(), "ro.db")
+	dir := filepath.Join(t.TempDir(), "ro-files")
+	st, err := store.Open(dbPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv := server.New(server.Config{
+		Name: "files", Listen: "127.0.0.1:0", Center: sc.URL(),
+		HeartbeatInterval: 200 * time.Millisecond, Store: st,
+		MaxBytes: 100 << 20, ReadMaxChars: 4000,
+		DBPath: dbPath, Dir: dir,
+	}, log.New(os.Stdout, "[files-test] ", log.LstdFlags))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv.Shutdown)
+
+	for key, want := range map[string]string{
+		"db": dbPath, "dir": dir, "name": "files", "center": sc.URL(),
+	} {
+		if rp := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: key, Value: "改我试试"}); rp.OK || !strings.Contains(rp.Error, "只读") {
+			t.Fatalf("%s 是只读项，应被拒绝: %+v", key, rp)
+		}
+		if got := srv.SettingValue(key); got != want {
+			t.Fatalf("%s 只读值应为启动值 %q，实际 %q", key, want, got)
+		}
+	}
+	// addr 的启动值是真端口（默认端口我们没法断言具体值），只验它不可改
+	if rp := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "addr", Value: "0.0.0.0:1"}); rp.OK || !strings.Contains(rp.Error, "只读") {
+		t.Fatalf("addr 是只读项，应被拒绝: %+v", rp)
+	}
+
+	// 名片里应看到这些只读项（带启动值）
+	reg := sc.Registers()
+	if len(reg) == 0 {
+		t.Fatal("未收到注册")
+	}
+	decl := map[string]protocol.Setting{}
+	for _, it := range reg[0].Settings {
+		decl[it.Key] = it
+	}
+	for _, key := range []string{"db", "dir", "name", "addr", "center"} {
+		it, ok := decl[key]
+		if !ok || !it.ReadOnly {
+			t.Fatalf("名片里 %s 应是只读项: %+v", key, it)
+		}
+	}
+	if decl["db"].Default != dbPath || decl["dir"].Default != dir {
+		t.Fatalf("只读项的 default 应为启动值: db=%q dir=%q", decl["db"].Default, decl["dir"].Default)
+	}
+	if decl["max_mb"].Key == "" || decl["read_max_chars"].Key == "" {
+		t.Fatalf("既有设置项不该丢: %+v", decl)
+	}
+}

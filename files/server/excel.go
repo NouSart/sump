@@ -77,9 +77,12 @@ func xlsxToText(f *excelize.File, maxChars int) (string, bool) {
 // editXlsx 对 xlsx 应用单元格编辑，返回写回后的完整字节与实际写入格数。
 // sheet 不存在时报错并附可用表清单；坐标非法逐格报错（不写入任何格）。
 func editXlsx(data []byte, sheet string, edits []protocol.FileWriteEdit) ([]byte, int, error) {
-	f, err := excelize.OpenReader(bytes.NewReader(data))
+	f, err := excelize.OpenReader(bytes.NewReader(data), excelize.Options{
+		UnzipSizeLimit:    maxExpandBytes,
+		UnzipXMLSizeLimit: maxExpandBytes,
+	})
 	if err != nil {
-		return nil, 0, fmt.Errorf("解析 xlsx 失败: %w", err)
+		return nil, 0, expandError(fmt.Errorf("解析 xlsx 失败: %w", err))
 	}
 	defer f.Close()
 
