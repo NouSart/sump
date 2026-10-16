@@ -37,6 +37,8 @@ type Config struct {
 	Store             *store.Store  // 文件库
 	MaxBytes          int64         // 单文件上限（默认 100MiB；作为声明预设上报）
 	ReadMaxChars      int           // read 返回的最大字符数（默认 4000；作为声明预设上报）
+	DBPath            string        // 元数据库路径（只读项展示用：换它要重启）
+	Dir               string        // 文件二进制目录（只读项展示用：换它要重启）
 }
 
 // Server 是 files 服务实例（服务骨架 + 文件库）。
@@ -107,6 +109,13 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("read", s.actionRead)
 	s.Handle("write", s.actionWrite)
 	s.Handle("edit_word", s.actionEditWord)
+	// 只读项：启动参数带起来的（换它要重启）。db/dir 是存储身份——运行中换库/换目录
+	// 意味着一批在途读写换个落点，不做（与 images 同口径）。
+	s.HandleReadOnly("db", cfg.DBPath)
+	s.HandleReadOnly("dir", cfg.Dir)
+	s.HandleReadOnly("name", cfg.Name)
+	s.HandleReadOnly("addr", cfg.Listen)
+	s.HandleReadOnly("center", cfg.Center)
 	return s
 }
 
@@ -122,6 +131,19 @@ func (s *Server) readMaxCharsNow() int {
 	s.setMu.Lock()
 	defer s.setMu.Unlock()
 	return s.readMaxChars
+}
+
+// maxExpandBytes 是**解压后**的字节上限（压缩炸弹防线）：.xlsx/.docx 都是 zip，
+// 文件本体受 max_mb 管，但解出来的大小不受它管——一个 1MiB 的包可以解出 GB 级内容。
+// 定值 256MiB：文本类文档解到这个量级已远超 read 的截断阈值（默认 4000 字符），
+// 真需要读更大的表，说明该走"拆文件"而不是把服务的内存当桶（宁可不给旋钮，也不给一个会 OOM 的旋钮）。
+//
+// 是变量而非常量：测试会临时调小它来验这道防线，不必造 256MiB 的夹具（生产代码里只读）。
+var maxExpandBytes int64 = 256 << 20
+
+// expandError 把解压超限的错误统一成一句人话（含上限值，便于排查）。
+func expandError(err error) error {
+	return fmt.Errorf("解压后内容超过 %d 字节上限（压缩炸弹防线）: %w", maxExpandBytes, err)
 }
 
 // ---------- 动作 ----------
@@ -245,9 +267,12 @@ func (s *Server) readXlsx(id string, meta store.Meta) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := excelize.OpenReader(bytes.NewReader(data))
+	f, err := excelize.OpenReader(bytes.NewReader(data), excelize.Options{
+		UnzipSizeLimit:    maxExpandBytes,
+		UnzipXMLSizeLimit: maxExpandBytes,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("read: 解析 %s 为 xlsx 失败: %w", meta.Filename, err)
+		return nil, expandError(fmt.Errorf("read: 解析 %s 为 xlsx 失败: %w", meta.Filename, err))
 	}
 	defer f.Close()
 	text, truncated := xlsxToText(f, s.readMaxCharsNow())
@@ -261,7 +286,7 @@ func (s *Server) readDocx(id string, meta store.Meta) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	text, truncated, err := docxToText(data, s.readMaxCharsNow())
+	text, truncated, err := docxToText(data, s.readMaxCharsNow(), maxExpandBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read: 解析 %s 为 docx 失败: %w", meta.Filename, err)
 	}
@@ -336,7 +361,7 @@ func (s *Server) actionEditWord(_ context.Context, _ protocol.Envelope, in proto
 	if err != nil {
 		return nil, err
 	}
-	out, n, err := editDocx(data, p.Operations)
+	out, n, err := editDocx(data, p.Operations, maxExpandBytes)
 	if err != nil {
 		return nil, err
 	}

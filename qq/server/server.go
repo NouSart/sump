@@ -48,6 +48,7 @@ type Server struct {
 	napcatToken string     // 当前 access_token（空 = 无；秘密项，值只在本服务手里）
 	reasoner    string     // 当前任务跳转目标（reasoner 服务名）
 	images      string     // 当前图片服务名
+	files       string     // 当前文件服务名
 
 	locksMu sync.Mutex
 	locks   map[string]*sync.Mutex // 会话级串行锁（防同一会话消息乱序）
@@ -71,6 +72,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		napcatToken: cfg.NapCatToken,
 		reasoner:    cfg.Reasoner,
 		images:      cfg.Images,
+		files:       cfg.Files,
 		locks:       map[string]*sync.Mutex{},
 	}
 	s.Service = service.New(service.Config{
@@ -119,6 +121,13 @@ func New(cfg Config, logger *log.Logger) *Server {
 			return errors.New("不接受空服务名")
 		}
 		s.setImages(v)
+		return nil
+	})
+	s.HandleSetting("files", cfg.Files, func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return errors.New("不接受空服务名")
+		}
+		s.setFiles(v)
 		return nil
 	})
 	s.Handle("deliver", s.actionDeliver)
@@ -195,6 +204,20 @@ func (s *Server) imagesName() string {
 func (s *Server) setImages(v string) {
 	s.setMu.Lock()
 	s.images = v
+	s.setMu.Unlock()
+}
+
+// filesName 返回当前文件服务名（files 热改后 saveFile 立刻改投新服务）。
+func (s *Server) filesName() string {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.files
+}
+
+// setFiles 更新文件服务名。
+func (s *Server) setFiles(v string) {
+	s.setMu.Lock()
+	s.files = v
 	s.setMu.Unlock()
 }
 
@@ -329,7 +352,7 @@ func (s *Server) saveFile(fr napcat.FileRef) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	data, err := s.Call(ctx, s.cfg.Files, "save", protocol.FileSavePayload{URL: fr.URL, Filename: name}, protocol.NewID(), s.cfg.Name)
+	data, err := s.Call(ctx, s.filesName(), "save", protocol.FileSavePayload{URL: fr.URL, Filename: name}, protocol.NewID(), s.cfg.Name)
 	if err != nil {
 		return "", err
 	}
