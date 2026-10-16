@@ -279,14 +279,26 @@ func TestSelfSettings(t *testing.T) {
 	if msg != "" {
 		t.Fatalf("list_settings 失败: %s", msg)
 	}
-	if len(res.Services) != 1 || len(res.Services[0].Settings) != 2 {
-		t.Fatalf("中心应声明两个设置项: %+v", res)
+	if len(res.Services) != 1 || len(res.Services[0].Settings) != 4 {
+		t.Fatalf("中心应声明四个设置项: %+v", res)
 	}
 	if res.Services[0].Settings[0].Key != "sweep_ms" || res.Services[0].Settings[0].Value != "5000" {
 		t.Fatalf("sweep_ms 预设不符: %+v", res.Services[0].Settings[0])
 	}
 	if res.Services[0].Settings[1].Key != "heartbeat_fallback_ms" || res.Services[0].Settings[1].Value != "15000" {
 		t.Fatalf("heartbeat_fallback_ms 预设不符: %+v", res.Services[0].Settings[1])
+	}
+	// 后两项是只读项：启动参数带起来的（换它要重启），进面板只为看得见
+	for _, i := range []int{2, 3} {
+		if it := res.Services[0].Settings[i]; !it.ReadOnly {
+			t.Fatalf("第 %d 项应是只读项: %+v", i, it)
+		}
+	}
+	if it := res.Services[0].Settings[2]; it.Key != "addr" || it.Value != "127.0.0.1:0" {
+		t.Fatalf("addr 只读项应显示启动值: %+v", it)
+	}
+	if _, msg := callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{Service: "settings-center", Key: "addr", Value: "0.0.0.0:1"}); msg == "" || !strings.Contains(msg, "只读") {
+		t.Fatalf("改中心的只读项应被拒: %s", msg)
 	}
 
 	// 非法值：写入成功（受理回执），但本地应用失败 → 事件 ok=false。

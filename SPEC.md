@@ -224,10 +224,12 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
   服务 `Start()` 时自己加载并应用。名片里 `set` 只说明「服务侧当前有没有值」（面板据此显示「已设置」，
   值本身永不上线）；**注册对齐不含秘密项**（中心手里没有值，推个空过去只会把服务那份抹掉）；
   `reset_setting` = 推空值过去让服务自己清。一句话：**谁消费谁持有**。
-- **只读项**（`readonly: true`，含 `-name` / `-addr` / `-center` 这类引导三要素）：进面板只读展示
+- **只读项**（`readonly: true`，含 `-name` / `-addr` / `-center` 这类引导三要素，以及各服务的存储身份
+  `db` / `dir` / 中心的 `settings`、门户的 `web`）：进面板只读展示
   （值 = 启动值，放在 `default`），`set_setting` / `reset_setting` 一律明确拒绝——**改它要重启**
-  （重启按钮另做）。
-- **面板语义**：秘密项显示「已设置 / 未设置」+ 覆盖（密码框）+ 清空；只读项显示启动值、无修改入口。- **安全边界（说清楚，不假装）**：秘密文件是**明文**（本机单用户场景，等同 `.env`；写时目录 0700、
+  （重启按钮另做）。**路径类参数默认只做只读**：运行中换库/换目录等于让在途读写换个落点，不做。
+- **面板语义**：秘密项显示「已设置 / 未设置」+ 覆盖（密码框）+ 清空；只读项显示启动值、无修改入口。
+- **安全边界（说清楚，不假装）**：秘密文件是**明文**（本机单用户场景，等同 `.env`；写时目录 0700、
   文件 0600、原子替换）；面板提交那一次的值走的是中心 ↔ 服务之间既有的本机 WS 通道（与其它协议流量同级）。
   中心侧全程不留值：不落盘、不回显、日志掩码、`settings` 事件不带值。
 - 不做 `env:` 之类二级引用写法：**不叠机制**，要换值就在面板覆盖一次。
@@ -342,5 +344,5 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §6.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting` `report_setting` `embed` `run` `report_result`；骨架保留：`configure`；timer：`sleep` `cancel` `list` |
 | 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms` `texts` `query` `vectors` `dim` `model`；设置项三类标记：`secret` `readonly` `set`；服务自报：`actual` `reported`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms`；timer：`ms` `note` `fire_at` `seq` `timers` `caller` `status` |
 | 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `qq` `shell` `timer` `frontend` `embedding` |
-| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `max_mb` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.concurrency` `exec.queue_limit` `approval.service` `approval.timeout_ms` `max_ms` `max_pending` `llm.base` `llm.model` `llm.key` `memory` `images` `name` `addr` `center` `napcat.url` `napcat.token` `reasoner` |
+| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `recall.embedding` `max_mb` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.concurrency` `exec.queue_limit` `approval.service` `approval.timeout_ms` `max_ms` `max_pending` `portal` `llm.base` `llm.model` `llm.key` `memory` `images` `name` `addr` `center` `napcat.url` `napcat.token` `reasoner` `db` `dir` `settings` `web` |
 | 名片字段（`provides[]`） | 小写下划线；跨语言一致 | `action` `input` `output` `tool` `async` |

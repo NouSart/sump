@@ -343,6 +343,37 @@ test('门户：注册载荷里带着 deliver（名册里看得见）', async (t)
   assert.ok(actions.includes('deliver'), `注册载荷应含 deliver，实际: ${JSON.stringify(actions)}`);
 });
 
+test('门户：注册名片里声明五个只读设置项（参数进面板看得见，但不接受下发）', async (t) => {
+  const stub = new StubCenter();
+  const centerURL = await stub.start();
+  const handle = await startWithCenter(centerURL);
+  t.after(async () => {
+    await handle.close();
+    await stub.stop();
+  });
+
+  await waitFor(() => stub.registrations.length > 0, 3000, '注册到达');
+  const reg = stub.registrations[0] as { name?: string; settings?: { key?: string; default?: string; readonly?: boolean }[] };
+  assert.equal(reg.name, 'frontend');
+  const items = reg.settings ?? [];
+  assert.equal(items.length, 5, `应声明 5 项，实际 ${JSON.stringify(items)}`);
+  const byKey = new Map(items.map((it) => [it.key ?? '', it]));
+  for (const [key, want] of [
+    ['name', 'frontend'],
+    ['reasoner', 'reasoner'],
+  ] as const) {
+    const it = byKey.get(key);
+    assert.equal(it?.readonly, true, `${key} 应是只读项`);
+    assert.equal(it?.default, want, `${key} 的默认值应是启动参数`);
+  }
+  // addr / center / web 是运行期才知道值（端口 0 → 实际端口；web 是临时目录）
+  for (const key of ['addr', 'center', 'web']) {
+    assert.equal(byKey.get(key)?.readonly, true, `${key} 应是只读项`);
+  }
+  assert.match(byKey.get('center')?.default ?? '', /^ws:\/\/127\.0\.0\.1:\d+\/ws$/);
+  assert.match(byKey.get('addr')?.default ?? '', /^127\.0\.0\.1:\d+$/);
+});
+
 test('门户：POST /api/message 跳 user_message 给 reasoner，只回受理回执', async (t) => {
   const reasoner = await startStubService({ ok: true, data: { item_id: 'h1', phase: 'queued' } });
   const stub = new StubCenter();

@@ -24,6 +24,7 @@ export interface Provide {
 export interface Setting {
   key: string;
   default?: string;
+  readonly?: boolean;
 }
 
 export interface RegisterPayload {

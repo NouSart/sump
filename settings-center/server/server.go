@@ -88,9 +88,12 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 		},
 	})
 	// 中心自身也是服务：声明自己的可设置项（预设 = 本次启动的引导值）。
+	// 后三项是只读项：启动参数带起来的（换它要重启），进面板只为看得见。
 	st.Declare(selfServiceName, []protocol.Setting{
 		{Key: settingSweepMS, Default: strconv.FormatInt(cfg.Sweep.Milliseconds(), 10)},
 		{Key: settingHeartbeatFallbackMS, Default: strconv.FormatInt(cfg.Heartbeat.Milliseconds(), 10)},
+		{Key: "addr", Default: cfg.Addr, ReadOnly: true},
+		{Key: "settings", Default: cfg.SettingsPath, ReadOnly: true},
 	})
 	s := &Server{cfg: cfg, hub: h, settings: st, ln: ln, logger: logger, done: make(chan struct{}), sweepWake: make(chan struct{}, 1)}
 	s.sweepMS.Store(cfg.Sweep.Milliseconds())
