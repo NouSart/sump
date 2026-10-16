@@ -24,7 +24,6 @@ export function SettingsPanel({ service, settings, connected, index, total, stat
   const den = String(total).padStart(2, '0');
   return (
     <div className="panel">
-      <div className="mark" aria-hidden="true" />
       <p className="eyebrow">
         服务 · {no} / {den}
       </p>
@@ -156,22 +155,22 @@ function SettingRow({ service, item, status, connected, onSave, onReset }: RowPr
       <span className="set-actions">
         {editing ? (
           <>
-            <button type="button" className="btn" onClick={() => void save()} disabled={busy || !connected}>
+            <button type="button" className="btn sm" onClick={() => void save()} disabled={busy || !connected}>
               保存
             </button>
-            <button type="button" className="btn ghost" onClick={() => setEditing(false)} disabled={busy}>
+            <button type="button" className="btn sm ghost" onClick={() => setEditing(false)} disabled={busy}>
               取消
             </button>
           </>
         ) : (
           <>
-            <button type="button" className="btn" onClick={startEdit} disabled={busy || !connected}>
+            <button type="button" className="btn sm" onClick={startEdit} disabled={busy || !connected}>
               修改
             </button>
             {item.overridden && (
               <button
                 type="button"
-                className={confirming ? 'btn danger' : 'btn quiet-danger'}
+                className={confirming ? 'btn sm danger' : 'btn sm quiet-danger'}
                 onClick={() => void reset()}
                 disabled={busy || !connected}
               >

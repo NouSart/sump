@@ -43,12 +43,14 @@ npm start            # 启动（需先 build）：node dist/server/index.js -add
 - `src/server/portal.ts`：门户的会话身份、投递分发（WS → SSE）与浏览器信任栅栏；
 - `src/server/service.ts`：自己的 WS 端点（对外提供 `deliver`；其余动作一律 `unknown action` 回执——注册的地址必须真实可达）；
 - `src/server/api.ts`：HTTP 层（`/api/overview`、`/api/message`、`/api/settings/set|reset`、`/api/events` SSE——事件：`status` / `roster` / `settings` / `deliver`、静态托管；每个请求先过信任栅栏）；
-- `src/web/`：React 界面（v2 版式：悬浮胶囊边栏；**主体是门户对话**，设置从侧栏底部一行进入、另起一页并自带服务导航 + 设置五列表格；唯一蓝强调；Fira Sans / Fira Code 本地打包）。
+- `src/web/`：React 界面（版式：悬浮胶囊边栏；**主体是门户对话**，设置从侧栏底部一行进入、另起一页并自带服务导航 + 设置五列表格；**视觉取自 DSH 设计系统**——见下；Fira Code 本地打包）。
 - `tests/`：`*.test.ts` = 服务端（node --test）；`tests/web/` = 面板组件测试（vitest + jsdom，
   `harness.ts` 提供假 EventSource 与 fetch 路由桩——SSE/fetch 在边界处替换，App 代码零改动；`tsconfig.test.json` 让测试进类型检查）。
 - `design/`：版式样张（specimen.html + specimen.css，纯静态、供版式评审；经 `:19531` 查看需先拷到 `dist/web/`）。
 
 ## 设计说明（节选）
 
-- 样式基线取自 ui-ux-pro-max 技能库的 Minimal/Swiss 企业工具条目（库内无 “Swedish” 词条；配色为瑞典色组合：瑞典蓝 #005B99 / 芥末黄 / 法伦红）。
-- 有意偏差：首个连接设置中心失败不退出（持续退避重连），与其余服务“引导错误立刻可见”不同——面板优先可用性。
+- **本项目没有自己的视觉设计**：观感 = DSH（deepseek-harness）的设计系统。`styles.css` 整表 `@import` 上游 `ui-theme` 的样式表（令牌、字体栈、圆角阶梯、焦点环、滚动条），下游规则**直接用 `--dsw-alias-*` 令牌**，不自建色值。
+- 组件取值照抄上游 `ui-primitives` 的 `.module.css`：输入框（`Input`、`settings-form/fields`）、按钮（`Button` 的 md/sm 与主/幽灵/描边变体）、状态点（`StateDot`）；布局几何对齐上游 `ui-layout`（侧栏 280）。
+- 注意令牌**作用域**：DSH 把 `--dsw-*` 定义在 `body` 上——自定义属性在「声明它的元素」上求值，所以别把这些令牌映射到 `:root`，否则整层引用会静默失效（属性变透明，CSS 不报错）。
+- 有意偏差：① 占位符用 `label-tertiary` 而非上游的 `label-dimmed`（后者在白底上几乎看不见）；② 首个连接设置中心失败不退出（持续退避重连），与其余服务“引导错误立刻可见”不同——面板优先可用性。
