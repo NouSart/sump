@@ -36,6 +36,8 @@ func main() {
 		Center:   *center,
 		Store:    st,
 		MaxBytes: int64(*maxMB) << 20,
+		DBPath:   *dbPath,
+		Dir:      *dir,
 	}, logger)
 	if err := s.Start(context.Background()); err != nil {
 		logger.Fatalf("启动失败: %v", err)

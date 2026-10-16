@@ -24,7 +24,6 @@ export function SettingsPanel({ service, settings, connected, index, total, stat
   const den = String(total).padStart(2, '0');
   return (
     <div className="panel">
-      <div className="mark" aria-hidden="true" />
       <p className="eyebrow">
         服务 · {no} / {den}
       </p>
@@ -33,21 +32,14 @@ export function SettingsPanel({ service, settings, connected, index, total, stat
       <p className="panel-addr">{service.addr}</p>
 
       <hr className="rule" />
-      <h2 className="set-label">设置</h2>
+      <h2 className="set-label">设置项</h2>
 
       {settings === null ? (
         <p className="empty">加载中…</p>
       ) : settings.length === 0 ? (
         <p className="empty">该服务未声明可设置项——只显示服务真实声明并消费的设置（不做假旋钮）。</p>
       ) : (
-        <div className="set-table">
-          <div className="set-headrow" aria-hidden="true">
-            <span>键</span>
-            <span>生效值</span>
-            <span>默认值</span>
-            <span>状态</span>
-            <span className="head-actions">操作</span>
-          </div>
+        <div className="form">
           {settings.map((item) => (
             <SettingRow
               key={item.key}
@@ -74,7 +66,15 @@ interface RowProps {
   onReset: (service: string, key: string) => Promise<void>;
 }
 
+// SECRET_MASK 是秘密项的展示占位：值在中心那边就是空的，面板无从回显。
+const SECRET_MASK = '••••••••';
+
 function SettingRow({ service, item, status, connected, onSave, onReset }: RowProps) {
+  const isSecret = item.secret === true;
+  const isReadOnly = item.readonly === true;
+  const clearLabel = isSecret ? '清空' : '重置';
+  // 服务侧自己变了：它回传过的实际值与中心口径的生效值不一致（秘密项永远不比自己那一列）
+  const drift = !isSecret && item.reported === true && (item.actual ?? '') !== item.value;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.value);
   const [busy, setBusy] = useState(false);
@@ -87,7 +87,8 @@ function SettingRow({ service, item, status, connected, onSave, onReset }: RowPr
   };
 
   const save = async (): Promise<void> => {
-    if (draft === item.value) {
+    // 秘密项不给值就不动它：清空走「清空」链（那里推的是空值）
+    if (draft === item.value || (isSecret && draft === '')) {
       setEditing(false);
       return;
     }
@@ -120,67 +121,97 @@ function SettingRow({ service, item, status, connected, onSave, onReset }: RowPr
   };
 
   return (
-    <div className="set-row">
-      <span className="set-key">{item.key}</span>
-      <span className="set-val">
-        {editing ? (
-          <input
-            className="input"
-            value={draft}
-            aria-label={`${item.key} 的新值`}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void save();
-              if (e.key === 'Escape') setEditing(false);
-            }}
-            autoFocus
-          />
-        ) : (
-          item.value || '—'
-        )}
-      </span>
-      <span className="set-default">{item.default || '—'}</span>
-      <span>
-        {status?.state === 'pending' ? (
-          <span className="tag-over">已覆盖 · 待确认</span>
-        ) : status?.state === 'failed' ? (
-          <span className="tag-over" title={status.error}>
-            已覆盖 · 未送达
-          </span>
-        ) : item.overridden ? (
-          <span className="tag-over">已覆盖</span>
-        ) : (
-          <span className="tag-default">默认</span>
-        )}
-      </span>
-      <span className="set-actions">
+    <div className="field">
+      <div className="field-head">
+        <span className="field-label">{item.key}</span>
+        <span className="field-badges">
+          {status?.state === 'pending' ? (
+            <span className="tag-over">已覆盖 · 待确认</span>
+          ) : status?.state === 'failed' ? (
+            <span className="tag-over" title={status.error}>
+              已覆盖 · 未送达
+            </span>
+          ) : isReadOnly ? (
+            <span className="tag-default" title="启动参数带起来的，改它需要重启这个服务">
+              不可改
+            </span>
+          ) : isSecret ? (
+            item.set ? (
+              <span className="tag-over">已设置</span>
+            ) : (
+              <span className="tag-default">未设置</span>
+            )
+          ) : item.overridden ? (
+            <span className="tag-over">已覆盖</span>
+          ) : (
+            <span className="tag-default">默认</span>
+          )}
+          {drift && (
+            <span className="tag-drift" title={`服务侧现值：${item.actual ?? ''}`}>
+              服务侧已变
+            </span>
+          )}
+          {!isReadOnly && (isSecret ? item.set : item.overridden) && !editing && (
+            <button
+              type="button"
+              className="field-reset"
+              data-armed={confirming ? 'true' : undefined}
+              onClick={() => void reset()}
+              disabled={busy || !connected}
+            >
+              {busy ? `${clearLabel}中…` : confirming ? `确认${clearLabel}` : clearLabel}
+            </button>
+          )}
+        </span>
+      </div>
+
+      <div className="field-control">
         {editing ? (
           <>
-            <button type="button" className="btn" onClick={() => void save()} disabled={busy || !connected}>
-              保存
+            <input
+              className="input"
+              type={isSecret ? 'password' : 'text'}
+              value={draft}
+              aria-label={`${item.key} 的新值`}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void save();
+                if (e.key === 'Escape') setEditing(false);
+              }}
+              autoFocus
+            />
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => void save()}
+              disabled={busy || !connected || (isSecret && draft === '')}
+            >
+              {busy ? '保存中…' : '保存'}
             </button>
-            <button type="button" className="btn ghost" onClick={() => setEditing(false)} disabled={busy}>
+            <button type="button" className="btn sm ghost" onClick={() => setEditing(false)} disabled={busy}>
               取消
             </button>
           </>
         ) : (
           <>
-            <button type="button" className="btn" onClick={startEdit} disabled={busy || !connected}>
-              修改
-            </button>
-            {item.overridden && (
-              <button
-                type="button"
-                className={confirming ? 'btn danger' : 'btn quiet-danger'}
-                onClick={() => void reset()}
-                disabled={busy || !connected}
-              >
-                {confirming ? '确认重置' : '重置'}
+            <span className="field-value">{isSecret ? (item.set ? SECRET_MASK : '—') : item.value || '—'}</span>
+            {!isReadOnly && (
+              <button type="button" className="btn sm ghost" onClick={startEdit} disabled={busy || !connected}>
+                {isSecret ? (item.set ? '覆盖' : '设置') : '修改'}
               </button>
             )}
           </>
         )}
-      </span>
+      </div>
+
+      <p className="field-hint">
+        {isReadOnly
+          ? '启动参数带起来的只读值——要改得改启动参数并重启这个服务'
+          : isSecret
+            ? '值由服务自己保存，中心不留也不回显'
+            : `默认 ${item.default || '—'}`}
+        {drift && <span> · 服务侧 {item.actual === '' ? '（空）' : item.actual}</span>}
+      </p>
     </div>
   );
 }

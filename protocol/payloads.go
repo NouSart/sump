@@ -1,6 +1,10 @@
 package protocol
 
-import "github.com/vmihailenco/msgpack/v5"
+import (
+	"math"
+
+	"github.com/vmihailenco/msgpack/v5"
+)
 
 // Provide 描述服务对外提供的一个动作（“接受什么输入、有什么输出”）。
 type Provide struct {
@@ -16,9 +20,18 @@ type Provide struct {
 }
 
 // Setting 是服务的一个可设置项。
+// 三种声明（互斥）：
+//   - 普通项：值由设置中心保管（覆盖值落盘于中心），注册时全量对齐下发；
+//   - Secret（`Secret`）：值**不进设置中心**（不落盘、不回显、list 恒回空串）——
+//     中心只转发一次，由**用它服务自己**持久化（见 service 骨架的 HandleSecret）；
+//     `Set` 表示该服务当前是否已有值（面板据此显示「已设置」，值本身永不上线）；
+//   - ReadOnly（`ReadOnly`）：启动参数带起来的只读值，进面板可见但不可改（`Default` 即启动值）。
 type Setting struct {
-	Key     string `msgpack:"key"`
-	Default string `msgpack:"default,omitempty"`
+	Key      string `msgpack:"key"`
+	Default  string `msgpack:"default,omitempty"`
+	Secret   bool   `msgpack:"secret,omitempty"`
+	ReadOnly bool   `msgpack:"readonly,omitempty"`
+	Set      bool   `msgpack:"set,omitempty"` // 仅 Secret 有意义：服务侧当前是否已有值
 }
 
 // RegisterPayload 是 register 请求的 payload：服务名片。
@@ -238,11 +251,18 @@ type FileWordEditResult struct {
 // ---------- 设置中心：设置存取 ----------
 
 // SettingView 是一个设置项的当前状态（设置中心对外呈现）。
+// Secret 项的 Value 恒为空串（中心根本没有值可回：秘密由服务自己持有）；
+// ReadOnly 项的 Value 是服务的启动值，不可改。
 type SettingView struct {
 	Key        string `msgpack:"key"`
-	Value      string `msgpack:"value"`      // 当前生效值（有覆盖值时为覆盖值，否则为默认值）
-	Default    string `msgpack:"default"`    // 服务注册时声明的默认值
-	Overridden bool   `msgpack:"overridden"` // 是否被设置中心覆盖
+	Value      string `msgpack:"value"`              // 当前生效值（中心口径：覆盖值 ?? 声明预设；Secret 恒空；ReadOnly 为启动值）
+	Default    string `msgpack:"default"`            // 服务注册时声明的默认值（Secret 恒空）
+	Overridden bool   `msgpack:"overridden"`         // 是否处于覆盖状态（Secret 恒 false）
+	Secret     bool   `msgpack:"secret,omitempty"`   // 值由服务自己持有，不回显
+	ReadOnly   bool   `msgpack:"readonly,omitempty"` // 不可改（需重启改启动参数）
+	Set        bool   `msgpack:"set,omitempty"`      // 仅 Secret：服务侧当前是否已有值
+	Actual     string `msgpack:"actual"`             // 服务侧自报的实际值（没回传过为空串）
+	Reported   bool   `msgpack:"reported,omitempty"` // 服务是否回传过实际值（Actual 为空串时靠它区分"没报过"与"报了空值"）
 }
 
 // ServiceSettings 是一个服务的设置清单（按声明顺序）。
@@ -282,6 +302,47 @@ type ConfigurePayload struct {
 	Value      string `msgpack:"value"`      // 生效值 = 覆盖值 ?? 声明默认值
 	Default    string `msgpack:"default"`    // 服务声明的默认值
 	Overridden bool   `msgpack:"overridden"` // 是否处于覆盖状态
+}
+
+// ReportSettingPayload 是「服务 → 设置中心」的设置回传（动作 report_setting）：
+// 服务侧的值**自己变了**时主动报个事实，中心据此更新服务侧实际值（面板实时可见），
+// 它**不改**中心手里的覆盖值（谁的值是谁的，两边都看得见）。
+// Secret 项 Value 恒空（值永不上线：只回「有没有值」）；Seq 服务内单调递增，
+// 中心丢弃乱序到达的旧报（补报与回传的到达顺序都没有保证）。
+type ReportSettingPayload struct {
+	Service string `msgpack:"service"`
+	Key     string `msgpack:"key"`
+	Value   string `msgpack:"value,omitempty"`
+	Set     bool   `msgpack:"set,omitempty"`
+	Seq     int64  `msgpack:"seq,omitempty"`
+}
+
+// NormalizeJSONNumbers 把 JSON 解出来的数字归一化：整数值的 float64 → int64，其余原样（递归）。
+//
+// 为什么需要它：LLM 给的工具参数是 JSON，`encoding/json` 把数字一律解成 float64，
+// 直接 msgpack 编码会写成浮点（0xcb），而服务侧载荷里的整数字段（ms、priority…）解码会
+// 直接失败（"msgpack: invalid code=cb decoding int64"）。凡是把 **LLM 给的 JSON 转成协议载荷**
+// 的地方，都先过一遍这个函数。
+func NormalizeJSONNumbers(v any) any {
+	switch t := v.(type) {
+	case float64:
+		if t == math.Trunc(t) && !math.IsInf(t, 0) && t >= -9223372036854775808 && t < 9223372036854775808 {
+			return int64(t)
+		}
+		return t
+	case map[string]any:
+		for k, val := range t {
+			t[k] = NormalizeJSONNumbers(val)
+		}
+		return t
+	case []any:
+		for i, val := range t {
+			t[i] = NormalizeJSONNumbers(val)
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 // SettingResult 是一次下发中单个设置项的结果（settings 事件用）。
@@ -388,6 +449,62 @@ type ForgetPayload struct {
 // ForgetResult 是 forget 的结果。
 type ForgetResult struct {
 	ID int64 `msgpack:"id"`
+}
+
+// ---------- timer（计时器服务） ----------
+
+// TimerSleepPayload 是 timer.sleep 的输入：多久之后把一条补报跳回调用方。
+// Note 会原样带回到点补报里（给调用方自己看的备注，长度有上限，超出截断）。
+type TimerSleepPayload struct {
+	MS   int64  `msgpack:"ms"`             // 时长（毫秒）
+	Note string `msgpack:"note,omitempty"` // 到点补报里原样带回的一句话
+}
+
+// TimerSleepResult 是 timer.sleep 的受理回执：计时已登记，到点由 report_result 补报送达。
+// Phase 与补报（AsyncResultPayload.Phase）用同一词汇：受理回执就是这次计时的第一个阶段（queued）。
+type TimerSleepResult struct {
+	ItemID string `msgpack:"item_id"` // 受理句柄（补报原样带回）
+	Phase  string `msgpack:"phase"`   // 阶段：queued
+	FireAt string `msgpack:"fire_at"` // 预计到点时刻（RFC3339，本地时区；仅供人看）
+}
+
+// TimerCancelPayload 是 timer.cancel 的输入：撤掉一次已受理、尚未到点的计时。
+type TimerCancelPayload struct {
+	ItemID string `msgpack:"item_id"`
+}
+
+// TimerCancelResult 是 timer.cancel 的回执。
+// Status：canceled（已撤销，并已发出一条 final 补报）/ unknown（没有这个句柄——早就到点、已被撤销或从不存在）。
+type TimerCancelResult struct {
+	ItemID string `msgpack:"item_id"`
+	Status string `msgpack:"status"`
+}
+
+// TimerItem 是一条在计时器的对外描述（list 与门户快照共用）。
+type TimerItem struct {
+	ItemID string `msgpack:"item_id"`
+	Caller string `msgpack:"caller"`  // 到点补报回谁
+	MS     int64  `msgpack:"ms"`      // 时长（毫秒）
+	FireAt string `msgpack:"fire_at"` // 到点时刻（RFC3339；门户据此倒计时）
+	Note   string `msgpack:"note,omitempty"`
+}
+
+// TimerListResult 是 timer.list 的输出：当前所有在计时器。
+// 门户冷启动时拉一次（之后的变动由 timer 主动推 timer_state 快照）。
+type TimerListResult struct {
+	Seq    int64       `msgpack:"seq"` // 快照序号（单调递增；门户据此丢弃乱序到达的旧快照）
+	Timers []TimerItem `msgpack:"timers"`
+}
+
+// TimerStatePayload 是 timer 主动推给门户的快照（门户据此展示倒计时）。
+// Boss 指明这批计时属于谁（信封 boss 原样带来）——门户据此认领该给哪个会话展示；
+// 空 Boss 表示无主的计时，门户可自行归到默认会话。
+// Seq 单调递增：骨架的 Fire 各自成 goroutine 投递、**到达顺序无保证**，
+// 门户只接受比已见序号大的快照，旧的自然丢弃。
+type TimerStatePayload struct {
+	Boss   string      `msgpack:"boss,omitempty"`
+	Seq    int64       `msgpack:"seq"`
+	Timers []TimerItem `msgpack:"timers"` // 空数组 = 该 boss 的计时已清空
 }
 
 // ---------- 错误上报（服务 → 设置中心） ----------

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,10 +30,14 @@ type Config struct {
 	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
 	Memory            string        // 记忆服务名（默认 memory——“完全启动”链的另一半）
 	Images            string        // 图片服务名（默认 images——推理前取图内联）
-	LLM               llm.Client    // 单步推理的 LLM 客户端（user_message 链必需；nil 时轮次停住）
+	LLM               llm.Client    // 初始 LLM 客户端（测试注入 Fake 用；启动 Key 非空时由服务按 LLMBase/LLMKey/LLMModel 重建）
+	LLMBase           string        // LLM API 地址（llm.base 的启动值）
+	LLMModel          string        // LLM 模型名（llm.model 的启动值）
+	LLMKey            string        // LLM API Key 的启动值（-llm-key / 环境变量；空 = 未配置）
 	ToolConcurrency   int           // 单会话工具并发上限（默认 10；负值 = 不限制；同一服务可并发重复）
 	ToolTimeout       time.Duration // 单个工具调用的执行超时（默认 60s）
 	NotifyMode        string        // 工具结果通知模式："each"（逐条唤醒，默认）/ "batch"（攒批唤醒）；设置中心 tool.notify_mode 覆盖此项
+	SecretFile        string        // 秘密项（llm.key）的本地持久化路径（空 = data/<name>-secret.json；"-" = 不落盘）
 }
 
 // Server 是 reasoner 服务实例（服务骨架 + 推理配置）。
@@ -51,10 +56,21 @@ type Server struct {
 	asyncMu   sync.Mutex          // 异步受理登记表锁
 	asyncJobs map[string]asyncJob // 受理句柄（item_id）→ 在途的异步工具调用（见 async.go）
 
+	entryMu sync.Mutex        // 会话入口表锁（交付失败时往哪补一条）
+	entries map[string]string // 会话 → 入口服务名（user_message 的 from）
+
 	setMu   sync.Mutex    // 运行时可设项锁（设置下发 / 拉取即时生效）
 	notify  string        // 工具结果通知模式（each / batch）
 	conc    int           // 单会话工具并发上限（-1 = 不限制）
 	timeout time.Duration // 单个工具调用的执行超时
+
+	liveMu   sync.RWMutex // 可热改运行配置快照锁（LLM 客户端 / 记忆与图片服务名）
+	llm      llm.Client   // 当前 LLM 客户端（llm.base/model/key 任一变化即重建；Key 为空 = nil）
+	llmBase  string       // 当前 LLM API 地址（重建用）
+	llmModel string       // 当前 LLM 模型名（重建用）
+	llmKey   string       // 当前 LLM API Key（重建用；空 = 无 Key）
+	memory   string       // 当前记忆服务名
+	images   string       // 当前图片服务名
 }
 
 // New 创建实例并注册动作。
@@ -79,15 +95,23 @@ func New(cfg Config, logger *log.Logger) *Server {
 		sems:      map[string]chan struct{}{},
 		board:     map[string]*taskState{},
 		asyncJobs: map[string]asyncJob{},
+		entries:   map[string]string{},
 		notify:    cfg.NotifyMode,
 		conc:      cfg.ToolConcurrency,
 		timeout:   cfg.ToolTimeout,
+
+		llm:      cfg.LLM,
+		memory:   cfg.Memory,
+		images:   cfg.Images,
+		llmBase:  cfg.LLMBase,
+		llmModel: cfg.LLMModel,
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
+		SecretFile:        cfg.SecretFile,
 		Description:       "LLM 单步推理：任务先经记忆服务托管，收到来自记忆的 resume 才完全启动（调 LLM API）",
 		Provides: []protocol.Provide{
 			{Action: "user_message", Input: "用户消息文本 {text}", Output: "受理回执（最终结果由 deliver 另行送达）"},
@@ -120,6 +144,50 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setToolTimeout(time.Duration(n) * time.Millisecond)
 		return nil
 	})
+	// 推理侧可热改项：LLM 三件套 + 记忆 / 图片服务名（预设 = main.go 的启动 flag）。
+	s.HandleSetting("llm.base", cfg.LLMBase, func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return errors.New("不接受空地址")
+		}
+		s.setLLMBase(v)
+		return nil
+	})
+	s.HandleSetting("llm.model", cfg.LLMModel, func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return errors.New("不接受空模型名")
+		}
+		s.setLLMModel(v)
+		return nil
+	})
+	s.HandleSetting("memory", cfg.Memory, func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return errors.New("不接受空服务名")
+		}
+		s.setMemoryName(v)
+		return nil
+	})
+	s.HandleSetting("images", cfg.Images, func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return errors.New("不接受空服务名")
+		}
+		s.setImagesName(v)
+		return nil
+	})
+	// 秘密项：值不进中心（面板提交那一次由中心转发过来），由本服务自己落盘 / 加载（Config.SecretFile）。
+	applyKey := func(v string) error {
+		s.setLLMKey(v)
+		return nil
+	}
+	s.HandleSecret("llm.key", applyKey)
+	if cfg.LLMKey != "" {
+		// 启动参数（flag / 环境变量）给了 Key：与下发同路径先应用一次。
+		// 秘密文件里若有值，Start 加载时会覆盖（文件才是面板提交的最新状态）。
+		_ = applyKey(cfg.LLMKey)
+	}
+	// 只读项：启动参数带起来的，进面板可见但不可改（改它需要重启）。
+	s.HandleReadOnly("name", cfg.Name)
+	s.HandleReadOnly("addr", cfg.Listen)
+	s.HandleReadOnly("center", cfg.Center)
 	s.Handle("echo", s.actionEcho)
 	s.Handle("debug_jump", s.actionDebugJump)
 	s.Handle("user_message", s.actionUserMessage)
@@ -180,6 +248,80 @@ func (s *Server) setNotifyMode(v string) {
 	s.setMu.Lock()
 	s.notify = v
 	s.setMu.Unlock()
+}
+
+// ---------- 可热改运行配置（LLM / 记忆 / 图片） ----------
+// cfg 里的 Memory / Images / LLM 只作启动初值；运行期一律走这里的快照读写。
+
+// rebuildLLMLocked 用快照里的 base/key/model 重建 LLM 客户端（Key 为空 = 置 nil，轮次停住）。
+// 调用方需持有 liveMu 写锁。
+func (s *Server) rebuildLLMLocked() {
+	if s.llmKey == "" {
+		s.llm = nil
+		return
+	}
+	s.llm = llm.NewDeepSeekClient(s.llmBase, s.llmKey, s.llmModel)
+}
+
+// llmClient 返回当前 LLM 客户端（nil = Key 未配置，轮次停住）。
+func (s *Server) llmClient() llm.Client {
+	s.liveMu.RLock()
+	defer s.liveMu.RUnlock()
+	return s.llm
+}
+
+// setLLMBase 更新 LLM API 地址并立即重建客户端。
+func (s *Server) setLLMBase(v string) {
+	s.liveMu.Lock()
+	s.llmBase = v
+	s.rebuildLLMLocked()
+	s.liveMu.Unlock()
+}
+
+// setLLMModel 更新 LLM 模型名并立即重建客户端。
+func (s *Server) setLLMModel(v string) {
+	s.liveMu.Lock()
+	s.llmModel = v
+	s.rebuildLLMLocked()
+	s.liveMu.Unlock()
+}
+
+// setLLMKey 更新 LLM API Key 并立即重建客户端（空值 = 清除，客户端置 nil）。
+// 用回调参数 v 而不是 SettingValue("llm.key")：骨架在回调返回之后才更新生效值表，
+// 回调里读 SettingValue 只会拿到旧值。
+func (s *Server) setLLMKey(v string) {
+	s.liveMu.Lock()
+	s.llmKey = v
+	s.rebuildLLMLocked()
+	s.liveMu.Unlock()
+}
+
+// memoryName 返回当前记忆服务名（recall / store / resume 来源校验用）。
+func (s *Server) memoryName() string {
+	s.liveMu.RLock()
+	defer s.liveMu.RUnlock()
+	return s.memory
+}
+
+// setMemoryName 更新记忆服务名（后续调用走新名）。
+func (s *Server) setMemoryName(v string) {
+	s.liveMu.Lock()
+	s.memory = v
+	s.liveMu.Unlock()
+}
+
+// imagesName 返回当前图片服务名（取图前解析用）。
+func (s *Server) imagesName() string {
+	s.liveMu.RLock()
+	defer s.liveMu.RUnlock()
+	return s.images
+}
+
+// setImagesName 更新图片服务名（后续取图走新名）。
+func (s *Server) setImagesName(v string) {
+	s.liveMu.Lock()
+	s.images = v
+	s.liveMu.Unlock()
 }
 
 // ---------- 调试 / 测试动作 ----------

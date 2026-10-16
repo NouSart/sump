@@ -9,6 +9,7 @@ use (
 	./files
 	./qq
 	./shell
+	./timer
 	./settings-center
 	./tests
 )

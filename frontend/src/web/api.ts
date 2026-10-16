@@ -37,3 +37,12 @@ export async function resetSetting(service: string, key: string): Promise<Servic
   });
   return r.services ?? [];
 }
+
+// sendMessage 把用户消息交给门户——只等**受理回执**，最终回答由 deliver 经 SSE 送回来。
+export function sendMessage(text: string): Promise<{ conversationId: string }> {
+  return request<{ conversationId: string }>('/api/message', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+}

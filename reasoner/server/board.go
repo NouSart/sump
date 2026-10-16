@@ -146,11 +146,12 @@ func (s *Server) boardRound(st *taskState) {
 	gen0 := st.gen
 	st.mu.Unlock()
 
-	if s.cfg.LLM == nil {
+	client := s.llmClient()
+	if client == nil {
 		s.logger.Printf("会话 %s：LLM 未配置，任务停住（等下一次事件）", st.cid)
 		return
 	}
-	resp, err := s.cfg.LLM.Chat(context.Background(), llm.ChatRequest{
+	resp, err := client.Chat(context.Background(), llm.ChatRequest{
 		Messages: snapshot,
 		Tools:    s.rosterTools(),
 		Images:   s.resolveImages(context.Background(), st.trace, snapshot),
@@ -345,7 +346,7 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 	replaced = st.closed
 	st.mu.Unlock()
 
-	s.Fire(s.cfg.Memory, "store", protocol.StorePayload{ConversationID: st.cid, Role: "assistant", Content: text}, st.trace, s.cfg.Name)
+	s.Fire(s.memoryName(), "store", protocol.StorePayload{ConversationID: st.cid, Role: "assistant", Content: text}, st.trace, s.cfg.Name)
 	s.boardClose(st)
 	if replaced {
 		s.logger.Printf("会话 %s：交付完成（在途已被新任务取代；答复已送达并记入记忆）", st.cid)
@@ -355,16 +356,53 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 }
 
 // deliverToBoss 把最终结果直达 boss（短响应；Call 内部只对“拨号失败”安全重试）。
+// 送不出去时给**入口方**补一条失败信息——boss 认错了/丢了的时候，那条是唯一的回声。
 func (s *Server) deliverToBoss(st *taskState, text string) error {
 	if st.boss == "" {
-		return errors.New("无 boss，结果无法交付")
+		return s.notifyDeliveryFailure(st, errors.New("无 boss，结果无法交付"))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if _, err := s.Call(ctx, st.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: st.cid}, st.trace, ""); err != nil {
-		return fmt.Errorf("交付 boss(%s) 失败: %w", st.boss, err)
+		return s.notifyDeliveryFailure(st, fmt.Errorf("交付 boss(%s) 失败: %w", st.boss, err))
 	}
 	return nil
+}
+
+// noteEntry 记下会话的入口服务（user_message 的 from）——交付失败时的另一条回家路。
+func (s *Server) noteEntry(cid, from string) {
+	if cid == "" || from == "" {
+		return
+	}
+	s.entryMu.Lock()
+	s.entries[cid] = from
+	s.entryMu.Unlock()
+}
+
+// entryOf 返回会话的入口服务名（没记过返回空）。
+func (s *Server) entryOf(cid string) string {
+	s.entryMu.Lock()
+	defer s.entryMu.Unlock()
+	return s.entries[cid]
+}
+
+// notifyDeliveryFailure 交付失败时按“最后失败了再补一条给 A”的规矩通知入口方：
+// 入口就是 boss 时没必要重试同一地址（刚报过），但 boss 认错/丢了时这条是唯一能让用户
+// 看见“任务失败了”的信息。它不改交付结果——失败仍是失败（返回 cause 供上层记日志）。
+func (s *Server) notifyDeliveryFailure(st *taskState, cause error) error {
+	entry := s.entryOf(st.cid)
+	if entry == "" || entry == st.boss {
+		return cause
+	}
+	text := fmt.Sprintf("[交付失败] 上一轮任务的结果没能送回来：%v", cause)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := s.Call(ctx, entry, "deliver", protocol.DeliverPayload{Text: text, ConversationID: st.cid}, st.trace, ""); err != nil {
+		s.logger.Printf("会话 %s：失败补报也送不出去（入口 %s）: %v", st.cid, entry, err)
+		return cause
+	}
+	s.logger.Printf("会话 %s：交付失败已补报给入口 %s", st.cid, entry)
+	return cause
 }
 
 // ---------- 自跳入口 ----------

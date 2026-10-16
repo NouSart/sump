@@ -100,7 +100,7 @@ class CenterLink:
         ws = self._ws
         if ws is not None:
             try:
-                env = new_envelope(TYPE_HEARTBEAT, self.name, "settings-center", "", {"status": "bye"})
+                env = self.heartbeat_envelope("bye")
                 await ws.send(encode(env))
             except Exception:
                 pass  # 尽力
@@ -117,6 +117,27 @@ class CenterLink:
 
     # ---------- 内部 ----------
 
+    def register_envelope(self) -> dict:
+        """注册这封消息；线路键名即契约（tests/test_protocol.py 对固化夹具做锚定）。"""
+        return new_envelope(
+            TYPE_REGISTER,
+            self.name,
+            "settings-center",
+            "",
+            {
+                "name": self.name,
+                "addr": self.self_url,
+                "description": self.description,
+                "provides": self.provides,
+                "settings": self.settings,
+                "heartbeat_ms": self.heartbeat_ms,
+            },
+        )
+
+    def heartbeat_envelope(self, status: str) -> dict:
+        """心跳这封消息；status 是线路键名，同上锚定。"""
+        return new_envelope(TYPE_HEARTBEAT, self.name, "settings-center", "", {"status": status})
+
     async def _connect_and_register(self) -> None:
         """连接 + 注册；成功后在后台跑会话（读循环 + 心跳），本方法等待注册结果后返回。"""
         ws = await websockets.connect(self.center_url, max_size=None)
@@ -124,20 +145,7 @@ class CenterLink:
         # 先起读循环：注册响应要由它按 id 派发——必须先于注册请求存在。
         self._session_task = asyncio.create_task(self._run_session(ws))
         try:
-            env = new_envelope(
-                TYPE_REGISTER,
-                self.name,
-                "settings-center",
-                "",
-                {
-                    "name": self.name,
-                    "addr": self.self_url,
-                    "description": self.description,
-                    "provides": self.provides,
-                    "settings": self.settings,
-                    "heartbeat_ms": self.heartbeat_ms,
-                },
-            )
+            env = self.register_envelope()
             resp = await self._request(ws, env, REGISTER_TIMEOUT)
             if not resp.get("ok"):
                 raise RuntimeError(f"注册被拒: {resp.get('error', '')}")
@@ -210,7 +218,7 @@ class CenterLink:
         try:
             while True:
                 await asyncio.sleep(self.heartbeat_ms / 1000)
-                env = new_envelope(TYPE_HEARTBEAT, self.name, "settings-center", "", {"status": "ok"})
+                env = self.heartbeat_envelope("ok")
                 await ws.send(encode(env))
         except asyncio.CancelledError:
             raise

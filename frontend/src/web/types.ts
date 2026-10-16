@@ -20,6 +20,14 @@ export interface SettingViewData {
   value: string;
   default: string;
   overridden: boolean;
+  // 秘密项：值由服务自己持有，中心只回「有没有值」（secret/set），Value 恒空；
+  // 只读项：值来自服务启动参数，面板只展示不可改（readonly）；
+  // actual：服务自报的实际值（与 value 不一致 = 服务侧自己变了）；reported 区分"没报过"与"报了空值"。
+  secret?: boolean;
+  set?: boolean;
+  readonly?: boolean;
+  actual?: string;
+  reported?: boolean;
 }
 
 // SettingResultViewData 是一次下发中单个设置项的结果（settings 事件）。
@@ -61,4 +69,20 @@ export interface Overview {
   settings: { services: ServiceSettingsView[] } | null;
   error?: string;
   fetchedAt: string;
+}
+
+// PortalMessage 是门户对话里的一条消息：用户发的（本地回显）或智能体经 deliver 送来的。
+export interface PortalMessage {
+  author: 'user' | 'agent';
+  text: string;
+  at: string;
+}
+
+// TimerView 是一条在计时器（timer 经 timer_state 快照推来）：门户据此画倒计时。
+export interface TimerView {
+  itemId: string;
+  caller: string;
+  ms: number;
+  fireAt: string; // RFC3339：门户拿它与本地时间算剩余
+  note: string;
 }

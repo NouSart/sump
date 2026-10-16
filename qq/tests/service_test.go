@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -576,6 +577,8 @@ func startQQ(t *testing.T, sc *stubCenter, nc *stubNapCat, owner string) *server
 		Owner:             owner,
 		Reasoner:          "reasoner",
 		Images:            "images",
+		// 秘密项落盘：指到临时目录，别写进仓库工作目录
+		SecretFile: filepath.Join(t.TempDir(), "qq-secret.json"),
 	}, logger)
 	// t.Context()：随测试结束取消——napcat 连接循环需要活的 ctx，不能用 defer cancel()。
 	if err := srv.Start(t.Context()); err != nil {
