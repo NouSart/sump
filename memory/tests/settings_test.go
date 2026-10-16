@@ -45,20 +45,34 @@ func pushConfigure(t *testing.T, addr string, p protocol.ConfigurePayload) proto
 	return rp
 }
 
-// TestSettingsLive 验证：名片声明 5 项；configure 合法值即时生效（recall 只带最近一条历史）；
-// 非法值与未声明键被拒且保持旧值。
+// TestSettingsLive 验证：名片声明 10 项（5 个 recall.* 普通项 + relation 热改 + 4 个只读）；
+// configure 合法值即时生效（recall 只带最近一条历史）；非法值与未声明键被拒且保持旧值。
 func TestSettingsLive(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
 
-	// 名片声明（按声明顺序）。
+	// 名片声明（按声明顺序）：5 个 recall.* 普通项 + recall.embedding 普通项 + 4 个只读项
 	declared := sc.DeclaredSettings("memory")
-	if len(declared) != 5 {
-		t.Fatalf("名片应声明 5 个设置项: %+v", declared)
+	if len(declared) != 10 {
+		t.Fatalf("名片应声明 10 个设置项: %+v", declared)
 	}
 	if declared[0].Key != "recall.history_limit" || declared[0].Default != "12" {
 		t.Fatalf("recall.history_limit 声明不符: %+v", declared[0])
+	}
+	if it := declared[5]; it.Key != "recall.embedding" || it.Default != "embedding" || it.ReadOnly {
+		t.Fatalf("recall.embedding 声明不符（应为普通项）：%+v", it)
+	}
+	for _, key := range []string{"db", "name", "addr", "center"} {
+		found := false
+		for _, it := range declared {
+			if it.Key == key {
+				found = it.ReadOnly
+			}
+		}
+		if !found {
+			t.Fatalf("%s 应是只读项: %+v", key, declared)
+		}
 	}
 
 	// 预置三条历史。
@@ -80,6 +94,45 @@ func TestSettingsLive(t *testing.T) {
 	ghost := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "ghost", Value: "1"})
 	if ghost.OK || !strings.Contains(ghost.Error, "未声明的设置项") {
 		t.Fatalf("未声明键应被拒绝: %+v", ghost)
+	}
+
+	// 只读项：改动被明确拒绝（启动参数带起来的，换它要重启）。
+	if ro := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "db", Value: "改我试试"}); ro.OK || !strings.Contains(ro.Error, "只读") {
+		t.Fatalf("只读项应被拒绝: %+v", ro)
+	}
+
+	// recall.embedding 热改：换成另一个名字的服务 → 语义召回真的改叫新服务（行为断言，
+	// 不是只读 SettingValue）。前提：有长期记忆条目 + 名册里能看到新名字。
+	embB := startStubEmbeddingNamed(t, sc, "embedding-b")
+	remember(t, caller, srv, "偏好", "爱吃苹果")
+	waitRosterName(t, srv, "embedding-b")
+	if emb := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "recall.embedding", Value: "embedding-b", Default: "embedding", Overridden: true}); !emb.OK {
+		t.Fatalf("recall.embedding 应可热改: %+v", emb)
+	}
+	if v := srv.SettingValue("recall.embedding"); v != "embedding-b" {
+		t.Fatalf("生效值应为 embedding-b，实际 %q", v)
+	}
+	recallBlock(t, caller, srv, "苹果偏好") // 触发一次 recall（内部会向 embedding 发 embed）
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(embB.Requests()) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(embB.Requests()) == 0 {
+		t.Fatal("热改后新 embedding 服务应收到 embed 请求")
+	}
+
+	// 空值 = 关闭语义召回（静默回落 bigram），改回默认再验一次
+	before := len(embB.Requests())
+	if emb := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "recall.embedding", Value: ""}); !emb.OK {
+		t.Fatalf("清空 embedding 名应被接受: %+v", emb)
+	}
+	if v := srv.SettingValue("recall.embedding"); v != "" {
+		t.Fatalf("清空后生效值应为空，实际 %q", v)
+	}
+	recallBlock(t, caller, srv, "苹果偏好")
+	time.Sleep(300 * time.Millisecond)
+	if after := len(embB.Requests()); after != before {
+		t.Fatalf("关掉 embedding 后不该再发 embed 请求: %d → %d", before, after)
 	}
 
 	// 合法值：立即生效。

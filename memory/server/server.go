@@ -30,6 +30,7 @@ type Config struct {
 	Longterm          *longterm.Store // 长期记忆库（与会话库共享同一 SQLite 句柄）
 	HistoryLimit      int             // recall 返回的最近消息条数（默认 12；作为声明预设上报）
 	Embedding         string          // embedding 服务名（默认 embedding；语义召回不可用时静默回落 bigram）
+	DBPath            string          // 数据库路径（只读项展示用：换它要重启）
 }
 
 // v0 注入预算的默认值（对齐 v1 量级；作为声明预设，可被设置中心覆盖）。
@@ -60,6 +61,21 @@ type Server struct {
 	coreMaxChars int        // 核心记忆字符预算
 	relLimit     int        // 相关记忆条数上限
 	relMaxChars  int        // 相关记忆字符预算
+	embedding    string     // 当前 embedding 服务名（recall.embedding 热改）
+}
+
+// embeddingName 返回当前 embedding 服务名（空 = 语义召回关闭，回落 bigram）。
+func (s *Server) embeddingName() string {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.embedding
+}
+
+// setEmbeddingName 更新 embedding 服务名（设置下发 / 拉取调用）。
+func (s *Server) setEmbeddingName(v string) {
+	s.setMu.Lock()
+	s.embedding = v
+	s.setMu.Unlock()
 }
 
 // New 创建实例并注册动作。
@@ -77,6 +93,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		coreMaxChars: defaultCoreMaxChars,
 		relLimit:     defaultRelLimit,
 		relMaxChars:  defaultRelMaxChars,
+		embedding:    cfg.Embedding,
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
@@ -146,6 +163,16 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("store", s.actionStore)
 	s.Handle("remember", s.actionRemember)
 	s.Handle("forget", s.actionForget)
+	// embedding 服务名：热改（空 = 关闭语义召回，静默回落 bigram）。
+	s.HandleSetting("recall.embedding", cfg.Embedding, func(v string) error {
+		s.setEmbeddingName(strings.TrimSpace(v))
+		return nil
+	})
+	// 只读项：启动参数带起来的（换它要重启）。db 是库身份——运行中换库不做。
+	s.HandleReadOnly("db", cfg.DBPath)
+	s.HandleReadOnly("name", cfg.Name)
+	s.HandleReadOnly("addr", cfg.Listen)
+	s.HandleReadOnly("center", cfg.Center)
 	return s
 }
 
@@ -381,12 +408,13 @@ func (s *Server) maxBatchHint() int { return 16 }
 // embedTexts 调用 embedding 服务：批量文本 → 向量（限时；失败即返回错误）。
 // 线路上的向量是 float64（Python 原生）；这里转成 float32 供存储（派生数据的存储格式）。
 func (s *Server) embedTexts(ctx context.Context, env protocol.Envelope, texts []string, query bool) ([][]float32, string, error) {
-	if s.cfg.Embedding == "" {
+	name := s.embeddingName()
+	if name == "" {
 		return nil, "", errors.New("未配置 embedding 服务")
 	}
 	cctx, cancel := context.WithTimeout(ctx, embedTimeout)
 	defer cancel()
-	data, err := s.Call(cctx, s.cfg.Embedding, "embed", protocol.EmbedPayload{Texts: texts, Query: query}, env.Trace, s.cfg.Name)
+	data, err := s.Call(cctx, name, "embed", protocol.EmbedPayload{Texts: texts, Query: query}, env.Trace, s.cfg.Name)
 	if err != nil {
 		return nil, "", err
 	}

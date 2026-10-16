@@ -7,13 +7,25 @@ import type { Server as HttpServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { RawData } from 'ws';
 import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type TimerItem, type TimerState, type TrustConfig } from './portal.ts';
-import { type Provide, TypeJump, decodeEnvelope, encodeEnvelope, frameBytes, newResponse } from './protocol.ts';
+import { type Provide, type Setting, TypeJump, decodeEnvelope, encodeEnvelope, frameBytes, newResponse } from './protocol.ts';
 
 // portalProvides 是注册时上报的动作清单——名册里因此看得见门户能收 deliver 与计时快照。
 export const portalProvides: Provide[] = [
   { action: 'deliver', input: '{text, conversation_id}', output: '回执（已送达面板）' },
   { action: 'timer_state', input: '{boss?, seq, timers[]}', output: '回执（已登记展示；accepted 说明这条快照有没有被采纳）' },
 ];
+
+// portalSettings 是门户声明的设置项：**全是只读项**——门户的参数是启动参数（改它要重启），
+// 进面板只为看得见。门户不消费 configure（只读项中心也不会下发），所以这里不发明一套设置机制。
+export function portalSettings(cfg: { name: string; addr: string; centerURL: string; reasoner: string; webDir?: string }): Setting[] {
+  return [
+    { key: 'name', default: cfg.name, readonly: true },
+    { key: 'addr', default: cfg.addr, readonly: true },
+    { key: 'center', default: cfg.centerURL, readonly: true },
+    { key: 'reasoner', default: cfg.reasoner, readonly: true },
+    { key: 'web', default: cfg.webDir ?? '', readonly: true },
+  ];
+}
 
 // parseTimerItems 逐条校验 timer 推来的计时项：外部输入不可信，形状不对的单条丢弃
 // （丢一条不影响整批——宁可少画一个倒计时，也不画一个错的）。
