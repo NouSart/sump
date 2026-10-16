@@ -85,3 +85,4 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 | [shell/README.md](./shell/README.md) | shell 服务：边界、审批接缝、设置项、补报时序 |
 | [embedding/README.md](./embedding/README.md) | embedding 服务：模型放置、A/B 实测与阈值来源 |
 | [files/README.md](./files/README.md) | files 服务：文件存取、Excel 读写、设置项、错误处理 |
+| [MCP-ACCEPTANCE.md](./MCP-ACCEPTANCE.md) | MCP 接口验收标准（先 B 后 A）：边界 / 暴露白名单 / 鉴权 / 登记与测试要求 |
