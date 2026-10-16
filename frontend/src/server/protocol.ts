@@ -172,7 +172,7 @@ export function decodeEnvelope(bytes: Uint8Array): Envelope {
 }
 
 // newEnvelope 构造一条消息：自动填协议版本与 id（trace 为空时自动生成）。
-export function newEnvelope(type: string, from: string, to: string, trace: string, payload?: unknown): Envelope {
+export function newEnvelope(type: string, from: string, to: string, trace: string, payload?: unknown, boss?: string): Envelope {
   return {
     v: ProtocolVersion,
     id: newID(),
@@ -180,6 +180,7 @@ export function newEnvelope(type: string, from: string, to: string, trace: strin
     type,
     from,
     to,
+    boss: boss || undefined,
     payload,
   };
 }

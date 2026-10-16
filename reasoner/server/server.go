@@ -56,6 +56,9 @@ type Server struct {
 	asyncMu   sync.Mutex          // 异步受理登记表锁
 	asyncJobs map[string]asyncJob // 受理句柄（item_id）→ 在途的异步工具调用（见 async.go）
 
+	entryMu sync.Mutex        // 会话入口表锁（交付失败时往哪补一条）
+	entries map[string]string // 会话 → 入口服务名（user_message 的 from）
+
 	setMu   sync.Mutex    // 运行时可设项锁（设置下发 / 拉取即时生效）
 	notify  string        // 工具结果通知模式（each / batch）
 	conc    int           // 单会话工具并发上限（-1 = 不限制）
@@ -92,6 +95,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		sems:      map[string]chan struct{}{},
 		board:     map[string]*taskState{},
 		asyncJobs: map[string]asyncJob{},
+		entries:   map[string]string{},
 		notify:    cfg.NotifyMode,
 		conc:      cfg.ToolConcurrency,
 		timeout:   cfg.ToolTimeout,

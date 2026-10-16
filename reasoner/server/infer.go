@@ -297,6 +297,8 @@ func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in 
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: p.Text, ImageIDs: p.Images},
 	}
+	// 记下入口：交付失败时往它补一条（boss 认错了/丢了的时候，入口是唯一还能回声的地方）。
+	s.noteEntry(cid, env.From)
 	s.startMemoryRound(env, cid, messages)
 	return map[string]any{"status": "accepted"}, nil
 }

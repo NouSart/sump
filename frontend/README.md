@@ -12,7 +12,7 @@ TS 服务节点 + 浏览器界面：既做**用户与智能体之间的门户**�
 | 方向 | 机制 |
 | --- | --- |
 | **出站**（智能体 → 用户） | 对外**提供 `deliver`**（`{text, conversation_id}`）→ 回执"已送达面板" → 经 SSE `deliver` 事件推给浏览器。回执**不表示用户看过**（同 shell 的"受理即回执"） |
-| **入站**（用户 → 智能体） | `POST /api/message {text}` → 直连跳转到 `-reasoner` 的 `user_message` → 只回**受理回执**；最终回答经 `deliver` 送回来 |
+| **入站**（用户 → 智能体） | `POST /api/message {text}` → 直连跳转到 `-reasoner` 的 `user_message`（信封 **boss = 门户自己**，否则回答回不来）→ 只回**受理回执**；最终回答经 `deliver` 送回来；reasoner 交付失败时会补一条 `[交付失败] …` 走同一条 `deliver` 通路 |
 | **身份** | 单用户：固定会话 id `web:private:owner`（多用户留待以后）；形状与 qq 的 `qq:private:<uid>` 一致 |
 | **访问控制** | 浏览器信任栅栏（`src/server/portal.ts`）：Host 必须是回环 / 绑定地址 / `-trusted-hosts`（挡 DNS rebinding），带 Origin 时必须受信（挡跨站）。**HTTP 与 WS 端点都过这道栅栏**——服务之间的 WS 连接不带 Origin（放行），浏览器发起的握手必带（拦截），否则恶意页面能直连 `/ws` 往门户里塞假投递。栅栏只证明"请求来自受信地址"，**不建立身份** |
 

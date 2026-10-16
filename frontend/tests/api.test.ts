@@ -37,17 +37,22 @@ async function startWithCenter(centerURL: string, heartbeatMS = 50): Promise<Fro
 // startStubService：冒充一个目标服务（真 WS 端点），记录收到的 jump 并按固定答复回执。
 async function startStubService(reply: { ok: boolean; data?: unknown; error?: string }): Promise<{
   url: string;
-  jumps: { action: string; input: unknown }[];
+  jumps: { action: string; input: unknown; from: string; boss: string }[];
   stop: () => Promise<void>;
 }> {
   const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
-  const jumps: { action: string; input: unknown }[] = [];
+  const jumps: { action: string; input: unknown; from: string; boss: string }[] = [];
   wss.on('connection', (ws) => {
     ws.on('message', (data: RawData) => {
       const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : new Uint8Array(data);
-      const env = decode(bytes) as { id: string; from: string; payload?: { action?: string; input?: unknown } };
+      const env = decode(bytes) as {
+        id: string;
+        from: string;
+        boss?: string;
+        payload?: { action?: string; input?: unknown };
+      };
       if (env.payload === undefined) return;
-      jumps.push({ action: env.payload.action ?? '', input: env.payload.input });
+      jumps.push({ action: env.payload.action ?? '', input: env.payload.input, from: env.from, boss: env.boss ?? '' });
       ws.send(encode({ v: 1, id: env.id, type: 'response', from: 'reasoner', to: env.from, payload: reply }));
     });
   });
@@ -364,6 +369,9 @@ test('门户：POST /api/message 跳 user_message 给 reasoner，只回受理回
   assert.equal(reasoner.jumps.length, 1, '应恰好跳一次');
   assert.equal(reasoner.jumps[0]?.action, 'user_message');
   assert.deepEqual(reasoner.jumps[0]?.input, { text: '你好', conversation_id: 'web:private:owner' });
+  // boss 必须是门户自己：answer 由 reasoner 经 deliver 直达 boss，少了它回答就没有回来的路
+  assert.equal(reasoner.jumps[0]?.from, 'frontend');
+  assert.equal(reasoner.jumps[0]?.boss, 'frontend');
 });
 
 test('门户：deliver 从 WS 端点进来 → 回执 + SSE 推给浏览器', async (t) => {

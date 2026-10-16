@@ -168,12 +168,15 @@ export class CenterLink {
   }
 
   // jumpTo 跳转到名册里的另一个服务并等响应——门户的"用户 → 智能体"这一跳走它。
+  // boss 带发起方自己：一跳的结果归属就是发起的服务（对方最终经 deliver 直达 boss）——
+  // 少了它，请求照样送达，但回答会找不到回来的路（reasoner 只认 boss）。
   async jumpTo(to: string, action: string, input?: unknown, timeoutMS: number = callTimeoutDefault): Promise<unknown> {
     const card = this.rosterValue?.services?.find((c) => c.name === to);
     if (!card || !card.addr) throw new Error(`未知目标服务: ${to}（不在名册里）`);
     const body: Record<string, unknown> = { action };
     if (input !== undefined) body.input = input;
-    return dialOnce(card.addr, newEnvelope(TypeJump, this.opts.name, card.name, '', body), timeoutMS);
+    const env = newEnvelope(TypeJump, this.opts.name, card.name, '', body, this.opts.name);
+    return dialOnce(card.addr, env, timeoutMS);
   }
 
   private connect(): void {
