@@ -1,6 +1,8 @@
 # 构建产物
 *.exe
 bin/
+command-runtime/
+command-work/
 
 # 本地配置（密钥等，不入库）
 local.yaml
