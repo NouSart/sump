@@ -327,22 +327,6 @@ body {
   background: var(--dsw-alias-interactive-bg-active);
 }
 
-/* 危险动作分两级：未确认是描边提示，确认后是红底 */
-.btn.quiet-danger {
-  background: transparent;
-  color: var(--dsw-alias-state-error-primary);
-}
-
-.btn.quiet-danger:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover-danger);
-}
-
-.btn.danger {
-  border: 0.5px solid var(--dsw-alias-state-error-primary);
-  background: var(--dsw-alias-interactive-bg-hover-danger);
-  color: var(--dsw-alias-state-error-primary);
-}
-
 .btn.sm {
   height: 28px;
   padding: 0 10px;
@@ -359,6 +343,7 @@ body {
 .page-close,
 .side-row,
 .svc-item,
+.field-reset,
 .input,
 .composer-input {
   transition:
@@ -368,14 +353,9 @@ body {
     opacity var(--ds-transition-duration) var(--ds-ease-in-out);
 }
 
-.btn:not(.ghost, .quiet-danger, .danger):active:not(:disabled),
+.btn:not(.ghost):active:not(:disabled),
 .composer-send:active:not(:disabled) {
   background: var(--dsw-static-neutral-bluish-800);
-}
-
-.btn.quiet-danger:active:not(:disabled),
-.btn.danger:active:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover-accent);
 }
 
 .page-close:active,
@@ -390,6 +370,7 @@ body {
   .page-close,
   .side-row,
   .svc-item,
+  .field-reset,
   .input,
   .composer-input {
     transition: none;
@@ -582,49 +563,93 @@ body {
   color: var(--dsw-alias-label-secondary);
 }
 
-.set-table {
+/* 每个设置项 = 上游 settings-form 的一个字段：标签行（键 + 状态 + 重置）→ 控件行 → 默认值。
+   取值来自 fields.module.css 的 .field/.head/.label/.badges/.reset/.input/.hint。 */
+.form {
   display: flex;
   flex-direction: column;
 }
 
-/* 每个设置项 = 一个字段：行间 0.5px 分隔，与上游 fields.module.css 同构 */
-.set-headrow,
-.set-row {
-  display: grid;
-  grid-template-columns: minmax(100px, 1.3fr) minmax(120px, 1.6fr) minmax(100px, 1fr) 108px 132px;
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0;
+}
+
+.field + .field {
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.field-head {
+  display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 
-.set-headrow {
-  padding-bottom: 6px;
-  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
-  font-size: 12px;
-  color: var(--dsw-alias-label-secondary);
-}
-
-.set-row {
-  padding: 10px 0;
-  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
-}
-
-.set-key {
+.field-label {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 500;
+  line-height: 1.5;
+}
+
+.field-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 重置是文字链（上游 .reset 的做法），确认那一步转红 */
+.field-reset {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.field-reset:hover:not(:disabled) {
+  color: var(--dsw-alias-label-primary);
+}
+
+.field-reset:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.field-reset[data-armed='true'] {
+  color: var(--dsw-alias-state-error-primary);
+  font-weight: 500;
+}
+
+.field-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-value {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
 
-.set-val {
-  min-width: 0;
-  font-size: 13px;
-}
-
-.set-default {
+.field-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--dsw-alias-label-secondary);
 }
 
 .input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 34px;
   padding: 0 12px;
   border: 0.5px solid var(--dsw-alias-border-l4);
@@ -662,12 +687,6 @@ body {
 
 .tag-default {
   color: var(--dsw-alias-label-secondary);
-}
-
-.set-actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
 }
 
 /* ---------- 提示条 ---------- */
