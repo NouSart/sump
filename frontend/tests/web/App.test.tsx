@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { describe, it, expect, vi } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { App } from '../../src/web/App';
+import { remainingText } from '../../src/web/components/PortalView';
 import type { RosterView } from '../../src/web/types';
 import {
   countCalls,
@@ -246,6 +247,32 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('radio', { name: '浅色' }));
     assert.equal(document.body.hasAttribute('data-ds-dark-theme'), false);
     assert.equal(window.localStorage.getItem('sump.portal.theme'), 'light');
+  });
+
+  it('门户：timer 快照画成倒计时；到点显示「到点…」，空快照即消失', async () => {
+    boot({ openSettings: false });
+    await screen.findByRole('heading', { name: /门户/ });
+
+    const soon = new Date(Date.now() + 90_000).toISOString();
+    await emitSSE('timers', [{ itemId: 'job-1', caller: 'reasoner', ms: 90000, fireAt: soon, note: '等构建' }]);
+    await screen.findByText(/\d{2}:\d{2} 后唤醒/);
+    assert.ok(screen.getByText('等构建'), '备注要显示出来');
+
+    // 到点（fire_at 已过去）但快照还没更新 → 显示「到点…」，不假装没有计时。
+    await emitSSE('timers', [
+      { itemId: 'job-1', caller: 'reasoner', ms: 1000, fireAt: new Date(Date.now() - 1000).toISOString(), note: '' },
+    ]);
+    await screen.findByText('到点…');
+
+    // timer 推来不含它的快照 → 倒计时消失。
+    await emitSSE('timers', []);
+    await waitFor(() => assert.equal(screen.queryByText('到点…'), null));
+  });
+
+  it('倒计时读数格式：不到一小时 mm:ss，超过带小时，已过归零', () => {
+    assert.equal(remainingText(90_000), '01:30');
+    assert.equal(remainingText(3_600_000), '1:00:00');
+    assert.equal(remainingText(-5), '00:00');
   });
 
   it('外观：本地存过深色时挂载即生效', () => {

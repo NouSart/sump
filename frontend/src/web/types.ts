@@ -69,3 +69,12 @@ export interface PortalMessage {
   text: string;
   at: string;
 }
+
+// TimerView 是一条在计时器（timer 经 timer_state 快照推来）：门户据此画倒计时。
+export interface TimerView {
+  itemId: string;
+  caller: string;
+  ms: number;
+  fireAt: string; // RFC3339：门户拿它与本地时间算剩余
+  note: string;
+}

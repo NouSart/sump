@@ -40,7 +40,7 @@ jobs:
 
       - name: 各模块测试
         run: |
-          for m in protocol service settings-center reasoner memory images qq shell; do
+          for m in protocol service settings-center reasoner memory images qq shell timer; do
             echo "== 模块: $m =="
             (cd "$m" && go test ./... -count=1 -timeout 300s)
           done
@@ -52,7 +52,7 @@ jobs:
 
       - name: 脱离工作区构建（GOWORK=off）
         run: |
-          for m in protocol service settings-center reasoner memory images qq shell tests; do
+          for m in protocol service settings-center reasoner memory images qq shell timer tests; do
             echo "== $m =="
             (cd "$m" && GOWORK=off go build ./...)
           done

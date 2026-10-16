@@ -1,19 +1,46 @@
 import { useEffect, useRef, useState } from 'react';
-import type { PortalMessage } from '../types';
+import type { PortalMessage, TimerView } from '../types';
 
 interface Props {
   connected: boolean;
   messages: PortalMessage[];
+  timers: TimerView[];
   error: string | null;
   onSend: (text: string) => Promise<void>;
 }
 
+// 倒计时读数：只在有计时的时候每秒重绘（没计时就不跑定时器）。
+function useTick(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => {
+      clearInterval(id);
+    };
+  }, [active]);
+  return now;
+}
+
+// remainingText 把剩余毫秒写成人读的读数：mm:ss，超过一小时才带小时。
+export function remainingText(leftMS: number): string {
+  const total = Math.max(0, Math.ceil(leftMS / 1000));
+  const two = (n: number): string => String(n).padStart(2, '0');
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return h > 0 ? `${String(h)}:${two(m)}:${two(s)}` : `${two(m)}:${two(s)}`;
+}
+
 // PortalView 是门户的对话面：上方消息流，下方输入行。
 // 消息只有两条来源——本地回显的输入，与 SSE 送来的 deliver。
-export function PortalView({ connected, messages, error, onSend }: Props) {
+export function PortalView({ connected, messages, timers, error, onSend }: Props) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const listRef = useRef<HTMLOListElement>(null);
+  const now = useTick(timers.length > 0);
 
   // 新消息落下后把视图带到底部（jsdom 没有 scrollTo，测试环境跳过）。
   useEffect(() => {
@@ -40,6 +67,23 @@ export function PortalView({ connected, messages, error, onSend }: Props) {
         门户
         <span className="portal-sub">与智能体对话 · 单用户</span>
       </h1>
+
+      {/* 在计时器：timer 推来全量快照，这里只负责画读数。
+          到点后不清屏——timer 会推一条不含它的快照过来；快照还没到就显示「到点…」，
+          绝不假装"没有计时"。 */}
+      {timers.length > 0 && (
+        <ol className="timer-strip" aria-label="在计时器">
+          {timers.map((t) => {
+            const left = new Date(t.fireAt).getTime() - now;
+            return (
+              <li key={t.itemId} className="timer-item">
+                <span className="timer-left">{left <= 0 ? '到点…' : `${remainingText(left)} 后唤醒`}</span>
+                {t.note !== '' && <span className="timer-note">{t.note}</span>}
+              </li>
+            );
+          })}
+        </ol>
+      )}
 
       <ol className="portal-list" ref={listRef}>
         {messages.length === 0 ? (
