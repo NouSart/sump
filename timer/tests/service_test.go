@@ -50,6 +50,14 @@ type stubCenter struct {
 	mu    sync.Mutex
 	cards map[string]protocol.ServiceCard
 	conns map[*stubConn]struct{}
+	decl  map[string][]protocol.Setting // 服务 → 注册时声明的设置项（断言名片用）
+}
+
+// DeclaredSettings 返回某服务注册时声明的设置项（并发安全快照）。
+func (sc *stubCenter) DeclaredSettings(name string) []protocol.Setting {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return append([]protocol.Setting(nil), sc.decl[name]...)
 }
 
 func startStubCenter(t *testing.T) *stubCenter {
@@ -100,6 +108,10 @@ func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			sc.mu.Lock()
 			sc.cards[reg.Name] = reg.Card()
+			if sc.decl == nil {
+				sc.decl = map[string][]protocol.Setting{}
+			}
+			sc.decl[reg.Name] = reg.Settings
 			sc.conns[c] = struct{}{}
 			roster := sc.snapshotLocked()
 			sc.mu.Unlock()
@@ -454,6 +466,13 @@ func (p *portalStub) handleWS(w http.ResponseWriter, r *http.Request) {
 		resp, _ := protocol.NewResponse(env, "portal-stub", protocol.ResponsePayload{OK: false, Error: "unknown action: " + jp.Action})
 		writeWS(ws, resp)
 	}
+}
+
+// snapCount 返回该门户已收到的快照条数（并发安全）。
+func (p *portalStub) snapCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.got)
 }
 
 // waitState 等第 n 条快照（n 从 1 数）；到达顺序无保证，但快照带 seq，按 seq 取第 n 小的。

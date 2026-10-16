@@ -19,6 +19,7 @@ import (
 	"log"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,11 +61,26 @@ type Server struct {
 	setMu       sync.Mutex
 	maxDuration time.Duration
 	maxPending  int
+	portal      string // 门户服务名（timer.portal 热改；空 = 不推）
 
 	mu      sync.Mutex
 	pending map[string]*timing // item → 在计时器
 	seq     int64              // 计时表的状态版本（每次受理/到点/撤销都 ++；快照与 list 都带它）
 	pushed  map[string]bool    // 上一轮推过门户的 boss（本轮没有的要补一条空快照）
+}
+
+// portalName 返回当前门户服务名（空 = 不推快照）。
+func (s *Server) portalName() string {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.portal
+}
+
+// setPortalName 更新门户服务名（设置下发 / 拉取调用）。
+func (s *Server) setPortalName(v string) {
+	s.setMu.Lock()
+	s.portal = v
+	s.setMu.Unlock()
 }
 
 // timing 是一条在计时器（受理后、到点前）。
@@ -93,6 +109,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 
 		maxDuration: cfg.MaxDuration,
 		maxPending:  cfg.MaxPending,
+		portal:      cfg.Portal,
 
 		pending: map[string]*timing{},
 		pushed:  map[string]bool{},
@@ -152,6 +169,15 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("sleep", s.actionSleep)
 	s.Handle("cancel", s.actionCancel)
 	s.Handle("list", s.actionList)
+	// 门户服务名：热改（空 = 不推快照；改名后下一次状态变化就推给新门户）。
+	s.HandleSetting("portal", cfg.Portal, func(v string) error {
+		s.setPortalName(strings.TrimSpace(v))
+		return nil
+	})
+	// 只读项：启动参数带起来的（换它要重启）。
+	s.HandleReadOnly("name", cfg.Name)
+	s.HandleReadOnly("addr", cfg.Listen)
+	s.HandleReadOnly("center", cfg.Center)
 	return s
 }
 
@@ -328,7 +354,8 @@ func (s *Server) actionList(_ context.Context, _ protocol.Envelope, _ protocol.J
 //   - 每条快照带单调递增的 seq——骨架的 Fire 各自成 goroutine，**到达顺序无保证**
 //     （shell 的测试里就实测到过倒序到达），门户只认序号更大的。
 func (s *Server) pushPortalState(trace string) {
-	if s.cfg.Portal == "" {
+	portal := s.portalName()
+	if portal == "" {
 		return
 	}
 	s.mu.Lock()
@@ -344,11 +371,11 @@ func (s *Server) pushPortalState(trace string) {
 	s.mu.Unlock()
 
 	for boss, items := range groups {
-		s.Fire(s.cfg.Portal, "timer_state", protocol.TimerStatePayload{Boss: boss, Seq: seq, Timers: items}, trace, boss)
+		s.Fire(portal, "timer_state", protocol.TimerStatePayload{Boss: boss, Seq: seq, Timers: items}, trace, boss)
 	}
 	for boss := range prev {
 		if !cur[boss] {
-			s.Fire(s.cfg.Portal, "timer_state", protocol.TimerStatePayload{Boss: boss, Seq: seq}, trace, boss)
+			s.Fire(portal, "timer_state", protocol.TimerStatePayload{Boss: boss, Seq: seq}, trace, boss)
 		}
 	}
 }
