@@ -26,15 +26,16 @@ run 受理（立即回执 {item_id, phase:"queued"}）
 **同步拒绝 vs 补报拒绝**：请求本身不合法（命令为空、工作目录越界）→ 同步 `{ok:false}`；
 由不可控因素决定的（审批未通过、队列满、超时、shell 缺失）→ 受理后补报。
 
-## 审批接缝（等审批服务定协议）
+## 审批接缝（本副本已接入 approval v1）
 
 审批是 shell 自己的活儿，但“谁裁、按什么协议裁”由审批服务定义。代码里只剩**一个入口 + 一个出口**：
 
-- 入口：[`shell/server/approval.go`](./server/approval.go) 的 `Approver` 接口——执行前调用，`nil` = 通过；
-- 出口：未通过的原因**原文**进补报的 `error` 与 `text`。
+- 生产入口：[`remote_approval.go`](./server/remote_approval.go) 构造执行描述，调用 `approval_request`，核验裁决、摘要与有效期；
+- 出口：裁决包进入 `data.approval`，原因、规则与未知结构进入补报 `text`。
 
-当前实现是 `FailClosed`：**未接入审批就一律不执行**（`approval.service` 只接受空值，填别的会被设置校验拒绝并说明原因）。
-审批协议落地后：实现 `Approver`（或经 `Config.Approver` 注入），其余代码不动。
+`approval.service` 支持服务名；集成启动器设为 `approval` 并显式使用相同 PowerShell。留空仍 `FailClosed`，本次不执行。`Config.Approver` 保留为测试／自定义的显式注入接缝，会绕过远程审批，不应在生产中注入 allow-all。
+
+命令超过 16 KiB、请求超过 64 KiB 或待审批任务达到 64 条，会同步拒绝。审批通过后固定本次的解释器、目录、参数、环境、超时和输出上限，执行前复核；排队超过短期许可则拒绝。完整范围见 [命令审批说明](../COMMAND-APPROVAL.md)。
 
 ## 补报时序（`report_result`）
 
@@ -42,12 +43,12 @@ run 受理（立即回执 {item_id, phase:"queued"}）
 
 | phase | 含义 | final |
 | ---- | ---- | ---- |
-| `approved` | 审批通过，已开始执行 / 已排队（文本里写明） | 否 |
+| `approved` | 审批通过，准备执行 / 已排队（文本里写明） | 否 |
 | `rejected` | 未执行（审批未通过 / 队列已满） | 是 |
 | `done` | 执行结束（含超时：看 `timed_out` / `exit_code` / `error`——超时且终止失败时 `error` 写明原因） | 是 |
 | `failed` | 没能跑起来 / 没能跑完（如解释器缺失、进程启动失败） | 是 |
 
-补报发往**发起跳转时的 `from`**（调用方）；调用方离线 = 发不出去，只记日志（不排队补发）。
+补报发往**发起跳转时的 `from`**（调用方）；调用方离线时记日志并上报投递故障，不做持久队列。只有明确 ignored 的早到补报在 3 秒窗口内重试，网络错误不盲目重发。
 `data` 字段带结构化结果（`command` / `work_dir` / `exit_code` / `stdout` / `stderr` / `stdout_bytes` / `stderr_bytes` / `timed_out` / `truncated` / `duration_ms` / `error`）。
 
 ## 设置项一览
@@ -60,7 +61,7 @@ run 受理（立即回执 {item_id, phase:"queued"}）
 | `exec.max_output_kb` | `256` | 单流输出上限（KB，≥1） |
 | `exec.concurrency` | `8` | 并行执行上限（≥1） |
 | `exec.queue_limit` | `32` | 待执行队列上限（≥1） |
-| `approval.service` | 空 | 审批服务名；**当前只接受空值**（协议未定） |
+| `approval.service` | 空；集成启动器设为 approval | 审批服务名，留空不执行 |
 | `approval.timeout_ms` | `60000` | 等审批超时（≥1000；超时按未通过处理） |
 
 ## 测试

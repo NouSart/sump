@@ -472,8 +472,8 @@ func TestQueueLimitRejectsWhenFull(t *testing.T) {
 	third := run(t, c, sleep, "")
 
 	// 前两条：一条立即执行、一条排队。
-	if p := waitReport(t, cl, "approved"); !strings.Contains(p.Text, "开始执行") {
-		t.Fatalf("第一条应已开始执行: %q", p.Text)
+	if p := waitReport(t, cl, "approved"); !strings.Contains(p.Text, "准备执行") {
+		t.Fatalf("第一条应已取得执行槽位: %q", p.Text)
 	}
 	if p := waitReport(t, cl, "approved"); !strings.Contains(p.Text, "已排队") {
 		t.Fatalf("第二条应已排队: %q", p.Text)

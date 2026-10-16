@@ -1,9 +1,8 @@
 // 审批接缝：审批是 shell 自己的活儿（谁裁、按什么协议裁由审批服务定义），
 // 但执行前必须先拿到裁决——未通过就不执行。
 //
-// 现在只有一种实现：未接入（FailClosed）——一律“未通过”。
-// 队友把审批服务的协议定下来后，实现本文件的 Approver 接口（或在 Config 注入自己的实现）即可，
-// 其余代码不用动：裁决只有一个入口（process → Approver.Approve），一个出口（补报 rejected 的原因原文）。
+// 生产环境由 remote_approval.go 通过公共协议调用审批服务。
+// Approver 保留为显式的测试/自定义注入接缝；没有注入且没有配置服务时 FailClosed。
 package server
 
 import (
@@ -31,12 +30,4 @@ type FailClosed struct{}
 // Approve 一律拒绝。
 func (FailClosed) Approve(context.Context, ApprovalRequest) error {
 	return errors.New("未接入审批服务（approval.service 为空），命令不执行")
-}
-
-// approver 返回当前生效的裁决实现（未注入 = FailClosed）。
-func (s *Server) approver() Approver {
-	if s.cfg.Approver != nil {
-		return s.cfg.Approver
-	}
-	return FailClosed{}
 }

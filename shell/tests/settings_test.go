@@ -35,7 +35,8 @@ func TestSettingsValidation(t *testing.T) {
 		{"exec.concurrency", "2", true},
 		{"exec.queue_limit", "0", false},
 		{"exec.queue_limit", "4", true},
-		{"approval.service", "approval", false}, // 协议未定：只接受空值
+		{"approval.service", "approval", true}, // 已接入第一层命令审批协议。
+		{"approval.service", "invalid service!", false},
 		{"approval.service", "", true},
 		{"approval.timeout_ms", "10", false},
 		{"unknown.key", "1", false}, // 未声明的设置项

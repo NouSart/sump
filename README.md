@@ -1,3 +1,7 @@
+# 命令处理与审批第一层
+
+新增 `approval` 服务，接通 shell 执行前审批和模型反馈。使用方法见 [命令审批说明](COMMAND-APPROVAL.md)，协议见 [审批协议](COMMAND-APPROVAL-PROTOCOL.md)。
+
 # SUMP v2
 
 [![CI](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml/badge.svg)](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml)

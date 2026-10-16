@@ -262,18 +262,19 @@ type ShellRunResult struct {
 
 // ShellEventData 是 shell 补报的结构化补充（report_result 的 data）。
 type ShellEventData struct {
-	Command     string `msgpack:"command,omitempty"`
-	WorkDir     string `msgpack:"work_dir,omitempty"`
-	Shell       string `msgpack:"shell,omitempty"` // 实际使用的 shell 可执行文件
-	ExitCode    int    `msgpack:"exit_code"`       // 退出码（未执行 / 超时终止时为 0 / -1）
-	Stdout      string `msgpack:"stdout,omitempty"`
-	Stderr      string `msgpack:"stderr,omitempty"`
-	StdoutBytes int64  `msgpack:"stdout_bytes,omitempty"` // 实际收到多少字节（截断前的总数）
-	StderrBytes int64  `msgpack:"stderr_bytes,omitempty"`
-	TimedOut    bool   `msgpack:"timed_out,omitempty"`
-	Truncated   bool   `msgpack:"truncated,omitempty"` // 输出超过上限被截断
-	DurationMS  int64  `msgpack:"duration_ms,omitempty"`
-	Error       string `msgpack:"error,omitempty"` // 未执行 / 未能执行完的原因
+	Approval    *CommandApprovalResult `msgpack:"approval,omitempty"` // 第一层裁决及完整 LLM 反馈
+	Command     string                 `msgpack:"command,omitempty"`
+	WorkDir     string                 `msgpack:"work_dir,omitempty"`
+	Shell       string                 `msgpack:"shell,omitempty"` // 实际使用的 shell 可执行文件
+	ExitCode    int                    `msgpack:"exit_code"`       // 退出码（未执行 / 超时终止时为 0 / -1）
+	Stdout      string                 `msgpack:"stdout,omitempty"`
+	Stderr      string                 `msgpack:"stderr,omitempty"`
+	StdoutBytes int64                  `msgpack:"stdout_bytes,omitempty"` // 实际收到多少字节（截断前的总数）
+	StderrBytes int64                  `msgpack:"stderr_bytes,omitempty"`
+	TimedOut    bool                   `msgpack:"timed_out,omitempty"`
+	Truncated   bool                   `msgpack:"truncated,omitempty"` // 输出超过上限被截断
+	DurationMS  int64                  `msgpack:"duration_ms,omitempty"`
+	Error       string                 `msgpack:"error,omitempty"` // 未执行 / 未能执行完的原因
 }
 
 // ---------- 长期记忆（memory） ----------
