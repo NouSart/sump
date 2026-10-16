@@ -156,7 +156,7 @@ function SettingRow({ service, item, status, connected, onSave, onReset }: RowPr
         {editing ? (
           <>
             <button type="button" className="btn sm" onClick={() => void save()} disabled={busy || !connected}>
-              保存
+              {busy ? '保存中…' : '保存'}
             </button>
             <button type="button" className="btn sm ghost" onClick={() => setEditing(false)} disabled={busy}>
               取消
@@ -174,7 +174,7 @@ function SettingRow({ service, item, status, connected, onSave, onReset }: RowPr
                 onClick={() => void reset()}
                 disabled={busy || !connected}
               >
-                {confirming ? '确认重置' : '重置'}
+                {busy ? '重置中…' : confirming ? '确认重置' : '重置'}
               </button>
             )}
           </>

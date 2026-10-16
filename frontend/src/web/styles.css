@@ -2,7 +2,12 @@
    - 令牌与基线：整表 @import 上游 ui-theme 的样式表（逐字节原样，见 third_party/dsh/README.md）
    - 组件取值：照抄上游 ui-primitives 的 Button / Input / settings-form 的 .module.css
    - 布局几何：对齐上游 ui-layout 的侧栏 280px
-   本文件只写「我们的界面由哪些 DSH 部件拼成」，不发明新的观感。 */
+   本文件只写「我们的界面由哪些 DSH 部件拼成」，不发明新的观感。
+
+   两处有意偏差（都为达标，且不动上游文件）：
+   1. 文字一律用 label-secondary，不用上游的 label-tertiary——后者在白底只有 3.71:1，
+      达不到 4.5:1；label-tertiary 只留给非文字（图标、圆点）。
+   2. 实心主按钮补了按下态（上游只给幽灵按钮定义 :active），按原色阶顺延一档。 */
 
 @import '../../../third_party/dsh/client/ui-theme/src/styles/base.css';
 @import '../../../third_party/dsh/client/ui-theme/src/styles/design-platform.css';
@@ -71,7 +76,7 @@ body {
   font-family: var(--dsw-font-family);
   font-size: 12px;
   font-weight: 400;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .side-status {
@@ -178,7 +183,7 @@ body {
 .portal-sub {
   font-size: 12px;
   font-weight: 400;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .portal-list {
@@ -195,7 +200,7 @@ body {
 
 .portal-empty {
   font-size: 13px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .msg {
@@ -230,7 +235,7 @@ body {
   margin-top: 4px;
   font-family: var(--ds-font-family-code);
   font-size: 11px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .composer {
@@ -257,9 +262,9 @@ body {
   resize: none;
 }
 
-/* 上游占位符用 label-dimmed（neutral-bluish-200），在白底上几乎看不见；这里取深一级。 */
+/* 上游占位符用 label-dimmed（neutral-bluish-200，白底上 1.16:1），这里取到能读的一档。 */
 .composer-input::placeholder {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .composer-input:focus-visible {
@@ -345,6 +350,52 @@ body {
   font-size: 12px;
 }
 
+/* ---------- 交互态：过渡 + 按下反馈 ----------
+   过渡用上游的曲线与时长（--ds-ease-in-out / --ds-transition-duration，200ms）。
+   按下反馈：幽灵/列表项与上游一致走 interactive-bg-active；实心主按钮上游没定义
+   active，这里按它的原色阶顺延一档（hover 750 → active 800）。 */
+.btn,
+.composer-send,
+.page-close,
+.side-row,
+.svc-item,
+.input,
+.composer-input {
+  transition:
+    background-color var(--ds-transition-duration) var(--ds-ease-in-out),
+    border-color var(--ds-transition-duration) var(--ds-ease-in-out),
+    color var(--ds-transition-duration) var(--ds-ease-in-out),
+    opacity var(--ds-transition-duration) var(--ds-ease-in-out);
+}
+
+.btn:not(.ghost, .quiet-danger, .danger):active:not(:disabled),
+.composer-send:active:not(:disabled) {
+  background: var(--dsw-static-neutral-bluish-800);
+}
+
+.btn.quiet-danger:active:not(:disabled),
+.btn.danger:active:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-accent);
+}
+
+.page-close:active,
+.side-row:active,
+.svc-item:active {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .composer-send,
+  .page-close,
+  .side-row,
+  .svc-item,
+  .input,
+  .composer-input {
+    transition: none;
+  }
+}
+
 /* ---------- 设置页：标题行 + 服务导航 + 内容列（DSH 的设置面板结构） ---------- */
 
 .settings-page {
@@ -404,7 +455,7 @@ body {
   margin: 0 0 6px;
   padding: 0 8px;
   font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .settings-content {
@@ -468,7 +519,7 @@ body {
   justify-content: center;
   border-radius: var(--dsw-radius-xs);
   background: var(--dsw-alias-bg-overlay);
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-family: var(--ds-font-family-code);
   font-size: 11px;
 }
@@ -477,7 +528,7 @@ body {
   margin: 0;
   padding: 0 8px;
   font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 /* ---------- 服务详情与设置项：DSH 的表单字段语法 ---------- */
@@ -490,7 +541,7 @@ body {
 .eyebrow {
   margin: 0 0 4px;
   font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .panel-title {
@@ -509,7 +560,7 @@ body {
   margin: 4px 0 0;
   font-family: var(--ds-font-family-code);
   font-size: 11px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .rule {
@@ -528,7 +579,7 @@ body {
   margin: 0;
   padding: 8px 0;
   font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .set-table {
@@ -549,7 +600,7 @@ body {
   padding-bottom: 6px;
   border-bottom: 0.5px solid var(--dsw-alias-border-l2);
   font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .set-row {
@@ -610,7 +661,7 @@ body {
 }
 
 .tag-default {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .set-actions {

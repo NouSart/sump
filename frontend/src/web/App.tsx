@@ -4,6 +4,7 @@ import { PortalView } from './components/PortalView';
 import { ServiceList } from './components/ServiceList';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Toasts, type Toast } from './components/Toasts';
+import { IconSettings } from './components/icons';
 import type {
   Overview,
   PortalMessage,
@@ -242,7 +243,7 @@ export function App() {
               setView('settings');
             }}
           >
-            <span aria-hidden="true">⚙</span>
+            <IconSettings />
             设置
           </button>
         </div>
