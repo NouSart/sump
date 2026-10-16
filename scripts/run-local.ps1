@@ -1,4 +1,4 @@
-# SUMP v2 本地开发：一键启动服务（settings-center + memory + embedding + images + files + qq + shell + approval + timer + reasoner + frontend）
+﻿# SUMP v2 本地开发：一键启动服务（settings-center + memory + embedding + images + files + qq + shell + approval + timer + reasoner + frontend）
 # 用法：.\scripts\run-local.ps1 [-CenterAddr 127.0.0.1:9000] [-MemoryAddr 127.0.0.1:9201] [-EmbeddingAddr 127.0.0.1:9601] [-ImageAddr 127.0.0.1:9401] [-FilesAddr 127.0.0.1:9802] [-QQAddr 127.0.0.1:9301] [-ShellAddr 127.0.0.1:9701] [-TimerAddr 127.0.0.1:9801] [-ApprovalAddr 127.0.0.1:9901] [-ReasonerAddr 127.0.0.1:9101] [-FrontendAddr 127.0.0.1:9501]
 #       [-NapCatURL ws://127.0.0.1:3001] [-NapCatToken xxx] [-Owner 主人QQ] [-LlmKey sk-...] [-LlmModel deepseek-chat]
 # 停止：Ctrl+C（脚本会清理子进程）
