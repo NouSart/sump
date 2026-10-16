@@ -4,8 +4,8 @@ import type { AddressInfo } from 'node:net';
 import type { WebSocketServer } from 'ws';
 import { createRequestHandler } from './api.ts';
 import { CenterLink } from './center.ts';
-import { createDeliverHub, type TrustConfig } from './portal.ts';
-import { attachJumpEndpoint, portalProvides } from './service.ts';
+import { createDeliverHub, createTimerStore, type TrustConfig } from './portal.ts';
+import { attachJumpEndpoint, parseTimerItems, portalProvides } from './service.ts';
 
 export const frontendDescription =
   '用户交互门户（与 qq 同类）：对外提供 deliver（智能体 → 用户，推给浏览器），自己跳 user_message 给 reasoner（用户 → 智能体）；另附设置中心可视化面板';
@@ -48,6 +48,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
   const selfURL = `ws://${addr}/ws`;
 
   const hub = createDeliverHub();
+  const timers = createTimerStore();
   const trust: TrustConfig = { boundAddr: addr, trustedHosts: cfg.trustedHosts };
   const link = new CenterLink({
     name: cfg.name,
@@ -72,13 +73,40 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
         webDir: cfg.webDir,
         reasoner: cfg.reasoner,
         portal: { on: hub.on },
+        timers: { current: timers.current, on: timers.on },
         trust,
       },
       log,
     ),
   );
-  const wss: WebSocketServer = attachJumpEndpoint(server, '/ws', cfg.name, log, hub.publish, trust);
+  const wss: WebSocketServer = attachJumpEndpoint(server, '/ws', cfg.name, log, hub.publish, timers.apply, trust);
   link.start();
+
+  // 冷启动兜一次：门户重启后 timer 不会主动重推在计时器，这里拉一次 list 补上。
+  // 失败不影响任何功能（下一次变动 timer 会推快照过来），所以只记日志、不重试。
+  let seeded = false;
+  const seedTimers = (): void => {
+    if (seeded || !(link.roster?.services ?? []).some((s) => s.name === 'timer')) return;
+    seeded = true;
+    void link
+      .jumpTo('timer', 'list', {}, 5000)
+      .then((data) => {
+        const r = data as { seq?: unknown; timers?: unknown };
+        const accepted = timers.apply({
+          boss: '',
+          seq: typeof r.seq === 'number' ? r.seq : 0,
+          items: parseTimerItems(r.timers, log),
+        });
+        log(`启动兜底：拉到在计时器（采纳=${String(accepted)}）`);
+      })
+      .catch((err: unknown) => {
+        log(`启动兜底拉取在计时器失败（不影响使用）: ${String(err)}`);
+      });
+  };
+  link.on((e) => {
+    if (e.kind === 'roster') seedTimers();
+  });
+  seedTimers();
 
   return {
     link,

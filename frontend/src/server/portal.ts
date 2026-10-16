@@ -31,6 +31,69 @@ export function createDeliverHub(): DeliverHub {
   };
 }
 
+// ---------- 计时器快照（timer → 门户 → 浏览器）----------
+//
+// timer 在每次受理 / 到点 / 撤销之后推一条**快照**过来（不是事件），门户据此展示倒计时。
+// 存快照而不是攒事件：门户重启、浏览器新开标签，拿到的都是当前真相，不会因为错过一条
+// 事件就漂。快照带单调递增的 seq——timer 用的是骨架的 Fire（各自成 goroutine，**到达顺序
+// 无保证**），门户只采纳比已见序号大的那条。
+//
+// boss 是这批计时的归属（信封 boss 原样带来）：门户据此认领该给谁看；空 boss 归默认会话。
+
+export interface TimerItem {
+  itemId: string;
+  caller: string;
+  ms: number;
+  fireAt: string; // RFC3339（门户用它与本地时间算剩余）
+  note: string;
+}
+
+export interface TimerState {
+  boss: string;
+  seq: number;
+  items: TimerItem[];
+}
+
+export interface TimerStore {
+  /** apply 收下一条快照；序号不比已见的旧才采纳（乱序到达的自然丢弃）。 */
+  apply(state: TimerState): boolean;
+  /** current 返回当前所有在计时器（按到点时刻升序）。 */
+  current(): TimerItem[];
+  /** on 订阅变化（只推变化；初值请先取一次 current）。 */
+  on(fn: (items: TimerItem[]) => void): () => void;
+}
+
+export function createTimerStore(): TimerStore {
+  const byBoss = new Map<string, TimerState>();
+  const listeners = new Set<(items: TimerItem[]) => void>();
+
+  const flatten = (): TimerItem[] =>
+    [...byBoss.values()]
+      .flatMap((s) => s.items)
+      .sort((a, b) => a.fireAt.localeCompare(b.fireAt));
+
+  const emit = (): void => {
+    const items = flatten();
+    for (const fn of [...listeners]) fn(items);
+  };
+
+  return {
+    apply: (state) => {
+      const prev = byBoss.get(state.boss);
+      if (prev !== undefined && state.seq <= prev.seq) return false;
+      // 空快照也留着（记住序号，继续拒旧），只是不再贡献计时。
+      byBoss.set(state.boss, state);
+      emit();
+      return true;
+    },
+    current: flatten,
+    on: (fn) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+  };
+}
+
 // ---------- 浏览器信任栅栏 ----------
 //
 // 为什么需要它：门户一旦能驱动智能体（而智能体手里有 shell），它就是一个"能执行命令的入口"。

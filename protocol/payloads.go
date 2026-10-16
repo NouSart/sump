@@ -302,6 +302,62 @@ type ForgetResult struct {
 	ID int64 `msgpack:"id"`
 }
 
+// ---------- timer（计时器服务） ----------
+
+// TimerSleepPayload 是 timer.sleep 的输入：多久之后把一条补报跳回调用方。
+// Note 会原样带回到点补报里（给调用方自己看的备注，长度有上限，超出截断）。
+type TimerSleepPayload struct {
+	MS   int64  `msgpack:"ms"`             // 时长（毫秒）
+	Note string `msgpack:"note,omitempty"` // 到点补报里原样带回的一句话
+}
+
+// TimerSleepResult 是 timer.sleep 的受理回执：计时已登记，到点由 report_result 补报送达。
+// Phase 与补报（AsyncResultPayload.Phase）用同一词汇：受理回执就是这次计时的第一个阶段（queued）。
+type TimerSleepResult struct {
+	ItemID string `msgpack:"item_id"` // 受理句柄（补报原样带回）
+	Phase  string `msgpack:"phase"`   // 阶段：queued
+	FireAt string `msgpack:"fire_at"` // 预计到点时刻（RFC3339，本地时区；仅供人看）
+}
+
+// TimerCancelPayload 是 timer.cancel 的输入：撤掉一次已受理、尚未到点的计时。
+type TimerCancelPayload struct {
+	ItemID string `msgpack:"item_id"`
+}
+
+// TimerCancelResult 是 timer.cancel 的回执。
+// Status：canceled（已撤销，并已发出一条 final 补报）/ unknown（没有这个句柄——早就到点、已被撤销或从不存在）。
+type TimerCancelResult struct {
+	ItemID string `msgpack:"item_id"`
+	Status string `msgpack:"status"`
+}
+
+// TimerItem 是一条在计时器的对外描述（list 与门户快照共用）。
+type TimerItem struct {
+	ItemID string `msgpack:"item_id"`
+	Caller string `msgpack:"caller"`  // 到点补报回谁
+	MS     int64  `msgpack:"ms"`      // 时长（毫秒）
+	FireAt string `msgpack:"fire_at"` // 到点时刻（RFC3339；门户据此倒计时）
+	Note   string `msgpack:"note,omitempty"`
+}
+
+// TimerListResult 是 timer.list 的输出：当前所有在计时器。
+// 门户冷启动时拉一次（之后的变动由 timer 主动推 timer_state 快照）。
+type TimerListResult struct {
+	Seq    int64       `msgpack:"seq"` // 快照序号（单调递增；门户据此丢弃乱序到达的旧快照）
+	Timers []TimerItem `msgpack:"timers"`
+}
+
+// TimerStatePayload 是 timer 主动推给门户的快照（门户据此展示倒计时）。
+// Boss 指明这批计时属于谁（信封 boss 原样带来）——门户据此认领该给哪个会话展示；
+// 空 Boss 表示无主的计时，门户可自行归到默认会话。
+// Seq 单调递增：骨架的 Fire 各自成 goroutine 投递、**到达顺序无保证**，
+// 门户只接受比已见序号大的快照，旧的自然丢弃。
+type TimerStatePayload struct {
+	Boss   string      `msgpack:"boss,omitempty"`
+	Seq    int64       `msgpack:"seq"`
+	Timers []TimerItem `msgpack:"timers"` // 空数组 = 该 boss 的计时已清空
+}
+
 // ---------- 错误上报（服务 → 设置中心） ----------
 
 // ReportPayload 是 report 的 payload：一条错误上报。

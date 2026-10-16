@@ -6,13 +6,36 @@
 import type { Server as HttpServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { RawData } from 'ws';
-import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type TrustConfig } from './portal.ts';
+import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type TimerItem, type TimerState, type TrustConfig } from './portal.ts';
 import { type Provide, TypeJump, decodeEnvelope, encodeEnvelope, frameBytes, newResponse } from './protocol.ts';
 
-// portalProvides 是注册时上报的动作清单——名册里因此看得见门户能收 deliver。
+// portalProvides 是注册时上报的动作清单——名册里因此看得见门户能收 deliver 与计时快照。
 export const portalProvides: Provide[] = [
   { action: 'deliver', input: '{text, conversation_id}', output: '回执（已送达面板）' },
+  { action: 'timer_state', input: '{boss?, seq, timers[]}', output: '回执（已登记展示；accepted 说明这条快照有没有被采纳）' },
 ];
+
+// parseTimerItems 逐条校验 timer 推来的计时项：外部输入不可信，形状不对的单条丢弃
+// （丢一条不影响整批——宁可少画一个倒计时，也不画一个错的）。
+export function parseTimerItems(raw: unknown, log: (m: string) => void): TimerItem[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TimerItem[] = [];
+  for (const it of raw) {
+    const o = it as { item_id?: unknown; caller?: unknown; ms?: unknown; fire_at?: unknown; note?: unknown };
+    if (typeof o?.item_id !== 'string' || o.item_id === '' || typeof o.fire_at !== 'string' || typeof o.ms !== 'number') {
+      log('timer_state 里有形状不符的计时项（丢弃一条）');
+      continue;
+    }
+    out.push({
+      itemId: o.item_id,
+      caller: typeof o.caller === 'string' ? o.caller : '',
+      ms: o.ms,
+      fireAt: o.fire_at,
+      note: typeof o.note === 'string' ? o.note : '',
+    });
+  }
+  return out;
+}
 
 export function attachJumpEndpoint(
   server: HttpServer,
@@ -20,6 +43,7 @@ export function attachJumpEndpoint(
   name: string,
   log: (m: string) => void,
   onDeliver: (m: DeliverMessage) => void,
+  onTimers: (s: TimerState) => boolean,
   trust: TrustConfig,
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
@@ -50,6 +74,16 @@ export function attachJumpEndpoint(
             : PORTAL_CONVERSATION_ID;
         onDeliver({ text: input.text, conversationId, at: new Date().toISOString() });
         ws.send(encodeEnvelope(newResponse(env, name, { ok: true, data: { delivered: true } })));
+        return;
+      }
+      if (jp?.action === 'timer_state') {
+        const input = (jp.input ?? {}) as { boss?: unknown; seq?: unknown; timers?: unknown };
+        const accepted = onTimers({
+          boss: typeof input.boss === 'string' ? input.boss : '',
+          seq: typeof input.seq === 'number' ? input.seq : 0,
+          items: parseTimerItems(input.timers, log),
+        });
+        ws.send(encodeEnvelope(newResponse(env, name, { ok: true, data: { accepted } })));
         return;
       }
       ws.send(encodeEnvelope(newResponse(env, name, { ok: false, error: `unknown action: ${jp?.action ?? ''}` })));

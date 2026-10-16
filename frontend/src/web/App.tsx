@@ -13,6 +13,7 @@ import type {
   RowStatus,
   ServiceSettingsView,
   SettingsEventViewData,
+  TimerView,
 } from './types';
 
 let toastSeq = 0;
@@ -49,6 +50,7 @@ export function App() {
   // 视图：门户（默认，主体）与设置（从侧栏底部进入的独立页）。
   const [view, setView] = useState<'portal' | 'settings'>('portal');
   const [messages, setMessages] = useState<PortalMessage[]>([]);
+  const [timers, setTimers] = useState<TimerView[]>([]);
   const [portalError, setPortalError] = useState<string | null>(null);
   const pendingKeysRef = useRef(new Set<string>());
   const rosterRevRef = useRef(-1);
@@ -138,6 +140,10 @@ export function App() {
     es.addEventListener('deliver', (ev) => {
       const d = JSON.parse((ev as MessageEvent).data) as { text: string; at: string };
       setMessages((prev) => [...prev, { author: 'agent', text: d.text, at: d.at }]);
+    });
+    // 计时快照：timer 受理/到点/撤销后推来的**全量列表**（不是增量），直接覆盖。
+    es.addEventListener('timers', (ev) => {
+      setTimers(JSON.parse((ev as MessageEvent).data) as TimerView[]);
     });
     return () => es.close();
   }, []);
@@ -311,7 +317,7 @@ export function App() {
         )}
 
         {view === 'portal' ? (
-          <PortalView connected={connected} messages={messages} error={portalError} onSend={onSend} />
+          <PortalView connected={connected} messages={messages} timers={timers} error={portalError} onSend={onSend} />
         ) : (
           <section className="settings-page" aria-label="设置">
             <header className="page-head">

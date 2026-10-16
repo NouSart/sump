@@ -399,6 +399,7 @@ test('门户：deliver 从 WS 端点进来 → 回执 + SSE 推给浏览器', as
   };
   await readEvent(); // status
   await readEvent(); // roster
+  await readEvent(); // timers（冷启动补的空快照）
 
   const ws = new WebSocket(`ws://${handle.addr}/ws`);
   t.after(() => ws.terminate());
@@ -430,6 +431,86 @@ test('门户：deliver 从 WS 端点进来 → 回执 + SSE 推给浏览器', as
   assert.match(ev, /event: deliver/);
   assert.match(ev, /任务完成/);
   assert.match(ev, /web:private:owner/, '未给 conversation_id 时用单用户默认会话');
+});
+
+test('门户：timer 推来快照 → 回执 + SSE 全量推给浏览器；旧序号的快照被丢弃', async (t) => {
+  const stub = new StubCenter();
+  const centerURL = await stub.start();
+  const handle = await startWithCenter(centerURL);
+  const ctrl = new AbortController();
+  t.after(async () => {
+    ctrl.abort();
+    await handle.close();
+    await stub.stop();
+  });
+  await waitFor(() => handle.link.connected, 3000, '前端接入中心');
+
+  const res = await fetch(`http://${handle.addr}/api/events`, { signal: ctrl.signal });
+  const reader = res.body?.getReader();
+  assert.ok(reader, 'SSE 响应应有 body');
+  const decoder = new TextDecoder();
+  let buf = '';
+  const readEvent = async (): Promise<string> => {
+    for (;;) {
+      const idx = buf.indexOf('\n\n');
+      if (idx >= 0) {
+        const ev = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        return ev;
+      }
+      const { value, done } = await reader.read();
+      if (done) throw new Error('SSE 提前结束');
+      buf += decoder.decode(value, { stream: true });
+    }
+  };
+  await readEvent(); // status
+  await readEvent(); // roster
+  assert.match(await readEvent(), /event: timers\ndata: \[\]/, '冷启动补一条空的计时快照');
+
+  const ws = new WebSocket(`ws://${handle.addr}/ws`);
+  t.after(() => ws.terminate());
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve());
+    ws.once('error', reject);
+  });
+  const push = (id: string, seq: number): Promise<{ ok: boolean; data?: { accepted?: boolean } }> =>
+    new Promise((resolve) => {
+      ws.once('message', (data: RawData) => {
+        const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : new Uint8Array(data);
+        resolve((decode(bytes) as { payload: { ok: boolean; data?: { accepted?: boolean } } }).payload);
+      });
+      ws.send(
+        encode({
+          v: 1,
+          id,
+          type: 'jump',
+          from: 'timer',
+          to: 'frontend',
+          payload: {
+            action: 'timer_state',
+            input: {
+              boss: 'web:private:owner',
+              seq,
+              timers: [{ item_id: 'job-1', caller: 'reasoner', ms: 30000, fire_at: '2030-01-01T00:00:00Z', note: '等构建' }],
+            },
+          },
+        }),
+      );
+    });
+
+  const first = await push('ts-1', 7);
+  assert.equal(first.ok, true, 'timer_state 应被受理');
+  assert.equal(first.data?.accepted, true);
+
+  const ev = await readEvent();
+  assert.match(ev, /event: timers/);
+  assert.match(ev, /"itemId":"job-1"/);
+  assert.match(ev, /2030-01-01T00:00:00Z/, '倒计时要用到 fire_at');
+  assert.match(ev, /等构建/);
+
+  // 乱序到达的迟到快照（序号更小）必须被丢弃——否则倒计时会倒回旧状态。
+  const late = await push('ts-2', 6);
+  assert.equal(late.data?.accepted, false, '旧序号快照应被丢弃');
 });
 
 test('门户：deliver 缺 text 时明确拒绝（不静默吞掉）', async (t) => {

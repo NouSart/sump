@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import type { CenterEvent, CenterLink } from './center.ts';
 import { RemoteError } from './center.ts';
-import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type TrustConfig } from './portal.ts';
+import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type TimerItem, type TrustConfig } from './portal.ts';
 import type { RosterPayload, ServiceSettings, SettingsResult } from './protocol.ts';
 
 export interface ApiConfig {
@@ -19,6 +19,8 @@ export interface ApiConfig {
   reasoner: string;
   /** 投递订阅（deliver → SSE）。 */
   portal: { on: (fn: (m: DeliverMessage) => void) => () => void };
+  /** 计时快照订阅（timer_state → SSE）：新连接先补当前值，再推变化。 */
+  timers: { current: () => TimerItem[]; on: (fn: (items: TimerItem[]) => void) => () => void };
   /** 浏览器信任栅栏的放行范围。 */
   trust: TrustConfig;
 }
@@ -172,6 +174,7 @@ export function createRequestHandler(
     };
     send('status', { connected: center.connected, center: cfg.centerURL });
     send('roster', center.roster ?? { services: [], revision: 0 });
+    send('timers', cfg.timers.current()); // 冷启动先补一次当前快照（浏览器新开标签也能立刻看到倒计时）
     const unsubscribe = center.on((e: CenterEvent) => {
       if (e.kind === 'status') send('status', { connected: e.connected, center: cfg.centerURL });
       else if (e.kind === 'roster') send('roster', e.roster as RosterPayload);
@@ -180,6 +183,9 @@ export function createRequestHandler(
     const unsubscribeDeliver = cfg.portal.on((m: DeliverMessage) => {
       send('deliver', m);
     });
+    const unsubscribeTimers = cfg.timers.on((items) => {
+      send('timers', items);
+    });
     const keepalive = setInterval(() => {
       res.write(': ping\n\n');
     }, 20_000);
@@ -187,6 +193,7 @@ export function createRequestHandler(
       clearInterval(keepalive);
       unsubscribe();
       unsubscribeDeliver();
+      unsubscribeTimers();
     });
   };
 
