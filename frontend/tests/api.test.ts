@@ -37,17 +37,22 @@ async function startWithCenter(centerURL: string, heartbeatMS = 50): Promise<Fro
 // startStubService：冒充一个目标服务（真 WS 端点），记录收到的 jump 并按固定答复回执。
 async function startStubService(reply: { ok: boolean; data?: unknown; error?: string }): Promise<{
   url: string;
-  jumps: { action: string; input: unknown }[];
+  jumps: { action: string; input: unknown; from: string; boss: string }[];
   stop: () => Promise<void>;
 }> {
   const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
-  const jumps: { action: string; input: unknown }[] = [];
+  const jumps: { action: string; input: unknown; from: string; boss: string }[] = [];
   wss.on('connection', (ws) => {
     ws.on('message', (data: RawData) => {
       const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : new Uint8Array(data);
-      const env = decode(bytes) as { id: string; from: string; payload?: { action?: string; input?: unknown } };
+      const env = decode(bytes) as {
+        id: string;
+        from: string;
+        boss?: string;
+        payload?: { action?: string; input?: unknown };
+      };
       if (env.payload === undefined) return;
-      jumps.push({ action: env.payload.action ?? '', input: env.payload.input });
+      jumps.push({ action: env.payload.action ?? '', input: env.payload.input, from: env.from, boss: env.boss ?? '' });
       ws.send(encode({ v: 1, id: env.id, type: 'response', from: 'reasoner', to: env.from, payload: reply }));
     });
   });
@@ -338,6 +343,37 @@ test('门户：注册载荷里带着 deliver（名册里看得见）', async (t)
   assert.ok(actions.includes('deliver'), `注册载荷应含 deliver，实际: ${JSON.stringify(actions)}`);
 });
 
+test('门户：注册名片里声明五个只读设置项（参数进面板看得见，但不接受下发）', async (t) => {
+  const stub = new StubCenter();
+  const centerURL = await stub.start();
+  const handle = await startWithCenter(centerURL);
+  t.after(async () => {
+    await handle.close();
+    await stub.stop();
+  });
+
+  await waitFor(() => stub.registrations.length > 0, 3000, '注册到达');
+  const reg = stub.registrations[0] as { name?: string; settings?: { key?: string; default?: string; readonly?: boolean }[] };
+  assert.equal(reg.name, 'frontend');
+  const items = reg.settings ?? [];
+  assert.equal(items.length, 5, `应声明 5 项，实际 ${JSON.stringify(items)}`);
+  const byKey = new Map(items.map((it) => [it.key ?? '', it]));
+  for (const [key, want] of [
+    ['name', 'frontend'],
+    ['reasoner', 'reasoner'],
+  ] as const) {
+    const it = byKey.get(key);
+    assert.equal(it?.readonly, true, `${key} 应是只读项`);
+    assert.equal(it?.default, want, `${key} 的默认值应是启动参数`);
+  }
+  // addr / center / web 是运行期才知道值（端口 0 → 实际端口；web 是临时目录）
+  for (const key of ['addr', 'center', 'web']) {
+    assert.equal(byKey.get(key)?.readonly, true, `${key} 应是只读项`);
+  }
+  assert.match(byKey.get('center')?.default ?? '', /^ws:\/\/127\.0\.0\.1:\d+\/ws$/);
+  assert.match(byKey.get('addr')?.default ?? '', /^127\.0\.0\.1:\d+$/);
+});
+
 test('门户：POST /api/message 跳 user_message 给 reasoner，只回受理回执', async (t) => {
   const reasoner = await startStubService({ ok: true, data: { item_id: 'h1', phase: 'queued' } });
   const stub = new StubCenter();
@@ -364,6 +400,9 @@ test('门户：POST /api/message 跳 user_message 给 reasoner，只回受理回
   assert.equal(reasoner.jumps.length, 1, '应恰好跳一次');
   assert.equal(reasoner.jumps[0]?.action, 'user_message');
   assert.deepEqual(reasoner.jumps[0]?.input, { text: '你好', conversation_id: 'web:private:owner' });
+  // boss 必须是门户自己：answer 由 reasoner 经 deliver 直达 boss，少了它回答就没有回来的路
+  assert.equal(reasoner.jumps[0]?.from, 'frontend');
+  assert.equal(reasoner.jumps[0]?.boss, 'frontend');
 });
 
 test('门户：deliver 从 WS 端点进来 → 回执 + SSE 推给浏览器', async (t) => {

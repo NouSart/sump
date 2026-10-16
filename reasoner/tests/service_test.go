@@ -44,7 +44,8 @@ type stubCenter struct {
 	mu       sync.Mutex
 	cards    map[string]protocol.ServiceCard
 	conns    map[*stubConn]struct{}
-	settings *protocol.SettingsResult // 非 nil 时响应 list_settings
+	settings *protocol.SettingsResult   // 非 nil 时响应 list_settings
+	regs     []protocol.RegisterPayload // 收到的注册（按到达顺序；重注册会再次出现）
 }
 
 var stubUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -107,6 +108,7 @@ func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			sc.mu.Lock()
 			sc.cards[reg.Name] = reg.Card()
+			sc.regs = append(sc.regs, reg)
 			sc.conns[c] = struct{}{}
 			roster := sc.snapshotLocked()
 			sc.mu.Unlock()
@@ -170,6 +172,15 @@ func (sc *stubCenter) broadcast(roster protocol.RosterPayload) {
 			c.send(env)
 		}
 	}
+}
+
+// Registers 返回收到的注册 payload 快照（按到达顺序；重注册会再次出现）。
+func (sc *stubCenter) Registers() []protocol.RegisterPayload {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	out := make([]protocol.RegisterPayload, len(sc.regs))
+	copy(out, sc.regs)
+	return out
 }
 
 // withSettings 让替身响应 list_settings：注册“settings-center”名片并给出设置结果

@@ -81,6 +81,33 @@ func (ev Event) ImageURLs() []string {
 	return urls
 }
 
+// FileRef 是一条文件附件的引用（下载 URL + 文件名）。
+type FileRef struct {
+	URL  string
+	Name string
+}
+
+// FileRefs 提取文件附件（OneBot 11 file 段：data.url 下载地址；
+// 文件名各实现不一——data.file / data.name 都认）。
+func (ev Event) FileRefs() []FileRef {
+	var out []FileRef
+	for _, seg := range ParseSegments(ev.Message) {
+		if seg.Type != "file" {
+			continue
+		}
+		u, _ := seg.Data["url"].(string)
+		if u == "" {
+			continue
+		}
+		name, _ := seg.Data["file"].(string)
+		if n, ok := seg.Data["name"].(string); ok && n != "" {
+			name = n
+		}
+		out = append(out, FileRef{URL: u, Name: name})
+	}
+	return out
+}
+
 // Client 是 NapCat 客户端。
 type Client struct {
 	cfg Config
@@ -127,14 +154,39 @@ func (c *Client) Run(ctx context.Context) {
 	}
 }
 
+// endpoint 返回当前端点的原始地址与 token（加锁读：地址 / token 可被 SetEndpoint 热改）。
+func (c *Client) endpoint() (rawURL, token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cfg.URL, c.cfg.Token
+}
+
+// SetEndpoint 热更新 NapCat 地址与 access_token（设置下发用）：地址或 token 变化时断开当前连接，
+// 让连接循环以新值重连（token 只在握手时用得上，光换字段不重连不会生效）。
+func (c *Client) SetEndpoint(rawURL, token string) {
+	c.mu.Lock()
+	if c.cfg.URL == rawURL && c.cfg.Token == token {
+		c.mu.Unlock()
+		return
+	}
+	c.cfg.URL = rawURL
+	c.cfg.Token = token
+	conn := c.conn
+	c.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close() // 触发重连（Run 的退避从 1s 档起）
+	}
+}
+
 func (c *Client) serve(ctx context.Context) error {
-	addr := c.cfg.URL
-	if c.cfg.Token != "" {
+	rawURL, token := c.endpoint()
+	addr := rawURL
+	if token != "" {
 		sep := "?"
 		if strings.Contains(addr, "?") {
 			sep = "&"
 		}
-		addr = addr + sep + "access_token=" + url.QueryEscape(c.cfg.Token)
+		addr = addr + sep + "access_token=" + url.QueryEscape(token)
 	}
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, addr, nil)
 	if err != nil {
@@ -143,7 +195,7 @@ func (c *Client) serve(ctx context.Context) error {
 	c.mu.Lock()
 	c.conn = conn
 	c.mu.Unlock()
-	c.cfg.Logger.Printf("napcat 已连接：%s", c.cfg.URL)
+	c.cfg.Logger.Printf("napcat 已连接：%s", rawURL)
 	defer c.dropConn()
 
 	for {

@@ -12,7 +12,7 @@ func TestTaskContextRoundTrip(t *testing.T) {
 		Boss:           "qq",
 		Messages: []Message{
 			{Role: "system", Content: "sys"},
-			{Role: "user", Content: "你好", ImageIDs: []string{"img-1", "img-2"}},
+			{Role: "user", Content: "你好", ImageIDs: []string{"img-1", "img-2"}, FileIDs: []string{"file-1"}},
 			{Role: "assistant", ToolCalls: []ToolCall{{
 				ID: "c1", Type: "function",
 				Function: FunctionCall{Name: "svc__act", Arguments: `{"a":1}`},
@@ -52,6 +52,9 @@ func TestTaskContextRoundTrip(t *testing.T) {
 	if len(out.Context.Messages[1].ImageIDs) != 2 || out.Context.Messages[1].ImageIDs[0] != "img-1" {
 		t.Fatalf("ImageIDs 丢失: %+v", out.Context.Messages[1])
 	}
+	if len(out.Context.Messages[1].FileIDs) != 1 || out.Context.Messages[1].FileIDs[0] != "file-1" {
+		t.Fatalf("FileIDs 丢失: %+v", out.Context.Messages[1])
+	}
 
 	// Resume 与 Store 同构走一遍。
 	rp := ResumePayload{Context: out.Context}
@@ -72,6 +75,17 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 	}{
 		{"deliver", DeliverPayload{Text: "hi", ConversationID: "qq:private:10001"}, &DeliverPayload{}},
 		{"userMessage", UserMessagePayload{Text: "hi", ConversationID: "qq:private:10001", Images: []string{"img-1"}}, &UserMessagePayload{}},
+		{"userMessageFiles", UserMessagePayload{Text: "hi", Files: []string{"file-1", "file-2"}}, &UserMessagePayload{}},
+		{"fileSave", FileSavePayload{URL: "http://x/a.pdf", Filename: "a.pdf", Mime: "application/pdf"}, &FileSavePayload{}},
+		{"fileSaveResult", FileSaveResult{ID: "01J", Filename: "a.pdf", Mime: "application/pdf", Size: 123}, &FileSaveResult{}},
+		{"fileFetch", FileFetchPayload{ID: "01J"}, &FileFetchPayload{}},
+		{"fileFetchResult", FileFetchResult{ID: "01J", Filename: "a.pdf", Mime: "application/pdf", Data: "AA==", Size: 1}, &FileFetchResult{}},
+		{"fileRead", FileReadPayload{ID: "01J"}, &FileReadPayload{}},
+		{"fileReadResult", FileReadResult{ID: "01J", Filename: "a.md", Text: "内容", Truncated: true}, &FileReadResult{}},
+		{"fileWrite", FileWritePayload{ID: "01J", Sheet: "Sheet1", Edits: []FileWriteEdit{{Cell: "A1", Value: "姓名"}, {Cell: "B2", Value: "30"}}}, &FileWritePayload{}},
+		{"fileWriteResult", FileWriteResult{ID: "01J", Sheet: "Sheet1", Updated: 2}, &FileWriteResult{}},
+		{"fileWordEdit", FileWordEditPayload{ID: "01J", Operations: []WordEditOperation{{Op: "replace", Old: "旧", New: "新"}}}, &FileWordEditPayload{}},
+		{"fileWordEditResult", FileWordEditResult{ID: "01J", Replaced: 1}, &FileWordEditResult{}},
 		{"save", ImageSavePayload{URL: "http://x/i.png", Mime: "image/png"}, &ImageSavePayload{}},
 		{"saveResult", ImageSaveResult{ID: "01J", Mime: "image/png", Size: 123}, &ImageSaveResult{}},
 		{"fetch", ImageFetchPayload{ID: "01J"}, &ImageFetchPayload{}},

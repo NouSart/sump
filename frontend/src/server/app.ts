@@ -5,7 +5,7 @@ import type { WebSocketServer } from 'ws';
 import { createRequestHandler } from './api.ts';
 import { CenterLink } from './center.ts';
 import { createDeliverHub, createTimerStore, type TrustConfig } from './portal.ts';
-import { attachJumpEndpoint, parseTimerItems, portalProvides } from './service.ts';
+import { attachJumpEndpoint, parseTimerItems, portalProvides, portalSettings } from './service.ts';
 
 export const frontendDescription =
   '用户交互门户（与 qq 同类）：对外提供 deliver（智能体 → 用户，推给浏览器），自己跳 user_message 给 reasoner（用户 → 智能体）；另附设置中心可视化面板';
@@ -56,7 +56,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
     selfURL,
     description: frontendDescription,
     provides: portalProvides,
-    settings: [],
+    settings: portalSettings(cfg),
     heartbeatMS: cfg.heartbeatMS,
     log,
   });

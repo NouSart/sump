@@ -114,6 +114,24 @@ describe('App', () => {
     expect(calls.some((c) => c.url === '/api/settings/set' && c.init?.method === 'POST')).toBe(true);
   });
 
+  it('服务自报事件（report_setting）不冒充推送回执：待确认状态不被动，视图照旧重拉', async () => {
+    const { calls } = boot();
+    await screen.findByRole('heading', { name: 'images' });
+
+    writeNewValue('2');
+    await screen.findByText('已写入 images.max_mb（待服务确认）');
+
+    await emitSSE('settings', {
+      cause: 'report_setting',
+      service: 'images',
+      results: [{ key: 'max_mb', ok: true }],
+    });
+    // 不 toast、不清状态：那一条不是我们这次推送的回执
+    await waitFor(() => expect(countCalls(calls, '/api/overview')).toBeGreaterThanOrEqual(2));
+    assert.ok(screen.getByText('已覆盖 · 待确认'));
+    assert.equal(screen.queryByText(/已生效 images\.max_mb/), null);
+  });
+
   it('失败事件：未送达 + 原因（行状态与 toast）', async () => {
     boot();
     await screen.findByRole('heading', { name: 'images' });

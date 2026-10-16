@@ -23,16 +23,24 @@ type stubImages struct {
 	srv *http.Server
 
 	mu      sync.Mutex
+	name    string // 服务名（默认 images；服务名热改测试用别的名字）
 	fetched []string
 }
 
+// startStubImages 起一个服务名为 "images" 的图片替身。
 func startStubImages(t *testing.T, center *stubCenter) *stubImages {
+	t.Helper()
+	return startStubImagesNamed(t, center, "images")
+}
+
+// startStubImagesNamed 起一个自定义服务名的图片替身（服务名热改测试用）。
+func startStubImagesNamed(t *testing.T, center *stubCenter, name string) *stubImages {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &stubImages{ln: ln}
+	m := &stubImages{ln: ln, name: name}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", m.handleWS)
 	m.srv = &http.Server{Handler: mux}
@@ -40,8 +48,8 @@ func startStubImages(t *testing.T, center *stubCenter) *stubImages {
 	t.Cleanup(func() { _ = m.srv.Close() })
 
 	center.mu.Lock()
-	center.cards["images"] = protocol.ServiceCard{
-		Name:        "images",
+	center.cards[name] = protocol.ServiceCard{
+		Name:        name,
 		Addr:        m.URL(),
 		Description: "图片测试替身",
 		Provides:    []protocol.Provide{{Action: "save"}, {Action: "fetch"}},
@@ -101,7 +109,7 @@ func (m *stubImages) handleWS(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		resp, _ := protocol.NewResponse(env, "images", protocol.ResponsePayload{OK: true, Data: resultData})
+		resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true, Data: resultData})
 		c.send(resp)
 	}
 }

@@ -23,7 +23,7 @@ cd sump
 
 # 跑某一个模块的测试（推荐先跑一遍确认环境正常）
 cd protocol; go test ./... -count=1; cd ..
-# 模块共 12 个（Go）：protocol / service / settings-center / reasoner / memory / images / qq / shell / timer / tests / approval / approval-integration；另有 embedding（Python，见下）
+# 模块共 13 个（Go）：protocol / service / settings-center / reasoner / memory / images / files / qq / shell / timer / tests / approval / approval-integration；另有 embedding（Python，见下）
 
 # 前端服务（TS，Node ≥ 22.18）：类型检查 + 构建 + 测试
 cd frontend; npm install; npm test; cd ..

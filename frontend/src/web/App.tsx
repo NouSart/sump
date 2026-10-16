@@ -88,7 +88,9 @@ export function App() {
   const handleSettingsEvent = useCallback(
     (e: SettingsEventViewData) => {
       const svc = e.service ?? '';
-      for (const r of e.results ?? []) {
+      // 服务自报（report_setting）不是"我们推下去的那一次"的回执：不能拿它去确认/否决用户刚提交的修改
+      const results = e.cause === 'report_setting' ? [] : (e.results ?? []);
+      for (const r of results) {
         const k = `${svc}.${r.key}`;
         const wasPending = pendingKeysRef.current.delete(k);
         if (r.ok === true) {

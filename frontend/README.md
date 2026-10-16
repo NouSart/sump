@@ -12,7 +12,7 @@ TS 服务节点 + 浏览器界面：既做**用户与智能体之间的门户**�
 | 方向 | 机制 |
 | --- | --- |
 | **出站**（智能体 → 用户） | 对外**提供 `deliver`**（`{text, conversation_id}`）→ 回执"已送达面板" → 经 SSE `deliver` 事件推给浏览器。回执**不表示用户看过**（同 shell 的"受理即回执"） |
-| **入站**（用户 → 智能体） | `POST /api/message {text}` → 直连跳转到 `-reasoner` 的 `user_message` → 只回**受理回执**；最终回答经 `deliver` 送回来 |
+| **入站**（用户 → 智能体） | `POST /api/message {text}` → 直连跳转到 `-reasoner` 的 `user_message`（信封 **boss = 门户自己**，否则回答回不来）→ 只回**受理回执**；最终回答经 `deliver` 送回来；reasoner 交付失败时会补一条 `[交付失败] …` 走同一条 `deliver` 通路 |
 | **身份** | 单用户：固定会话 id `web:private:owner`（多用户留待以后）；形状与 qq 的 `qq:private:<uid>` 一致 |
 | **访问控制** | 浏览器信任栅栏（`src/server/portal.ts`）：Host 必须是回环 / 绑定地址 / `-trusted-hosts`（挡 DNS rebinding），带 Origin 时必须受信（挡跨站）。**HTTP 与 WS 端点都过这道栅栏**——服务之间的 WS 连接不带 Origin（放行），浏览器发起的握手必带（拦截），否则恶意页面能直连 `/ws` 往门户里塞假投递。栅栏只证明"请求来自受信地址"，**不建立身份** |
 
@@ -21,7 +21,7 @@ TS 服务节点 + 浏览器界面：既做**用户与智能体之间的门户**�
 但 Host 头写着攻击者的域名；Host 是重绑伪造不了的那个头，所以钉它。
 
 - 面板本体注册为服务节点（在名册中可见自己）；**不持业务状态**：每次请求现翻成中心跳转，回执翻回 JSON。
-- v1 范围：服务名册 + 设置查看 / 修改（中心受理并下发 `configure`）/ 重置；名册、连接状态与设置结果事件驱动实时刷新（SSE，**无刷新按钮**）；设置行状态：默认 / 已覆盖 / 已覆盖·待确认（本会话写入等待服务确认）/ 已覆盖·未送达（悬浮看原因）。错误上报视图留待 v2。
+- v1 范围：服务名册 + 设置查看 / 修改（中心受理并下发 `configure`）/ 重置；三类设置项各有各的界面——**普通项**（值 + 默认值 + 覆盖 / 重置两步确认）、**秘密项**（只显示「已设置 / 未设置」，覆盖走密码框、清空走两步确认，值不回显）、**只读项**（显示启动值 + `不可改`，没有修改入口）；服务自报的实际值另起一列，与中心口径不一致时给「服务侧已变」标记（悬浮看服务侧现值）；名册、连接状态与设置结果事件驱动实时刷新（SSE，**无刷新按钮**）；设置行状态：默认 / 已覆盖 / 已覆盖·待确认（本会话写入等待服务确认）/ 已覆盖·未送达（悬浮看原因）。错误上报视图留待 v2。
 
 ## 命令
 
@@ -43,7 +43,7 @@ npm start            # 启动（需先 build）：node dist/server/index.js -add
 - `src/server/portal.ts`：门户的会话身份、投递分发（WS → SSE）与浏览器信任栅栏；
 - `src/server/service.ts`：自己的 WS 端点（对外提供 `deliver`；其余动作一律 `unknown action` 回执——注册的地址必须真实可达）；
 - `src/server/api.ts`：HTTP 层（`/api/overview`、`/api/message`、`/api/settings/set|reset`、`/api/events` SSE——事件：`status` / `roster` / `settings` / `deliver`、静态托管；每个请求先过信任栅栏）；
-- `src/web/`：React 界面（版式：悬浮胶囊边栏；**主体是门户对话**，设置从侧栏底部一行进入、另起一页并自带服务导航 + 设置五列表格；**视觉取自 DSH 设计系统**——见下；Fira Code 本地打包）。
+- `src/web/`：React 界面（版式：悬浮胶囊边栏；**主体是门户对话**，设置从侧栏底部一行进入、另起一页并自带服务导航 + 设置字段列表（纵排：键 + 状态标签 + 生效值 + 修改/重置，秘密项与只读项各有各的控件）；**视觉取自 DSH 设计系统**——见下；Fira Code 本地打包）。
 - `tests/`：`*.test.ts` = 服务端（node --test）；`tests/web/` = 面板组件测试（vitest + jsdom，
   `harness.ts` 提供假 EventSource 与 fetch 路由桩——SSE/fetch 在边界处替换，App 代码零改动；`tsconfig.test.json` 让测试进类型检查）。
 - `design/`：版式样张（specimen.html + specimen.css，纯静态、供版式评审；经 `:19531` 查看需先拷到 `dist/web/`）。
