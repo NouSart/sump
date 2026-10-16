@@ -8,6 +8,7 @@ use (
 	./images
 	./files
 	./qq
+	./shell
 	./settings-center
 	./tests
 )

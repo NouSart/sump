@@ -29,6 +29,7 @@ type Config struct {
 	Store             *store.Store    // 会话库
 	Longterm          *longterm.Store // 长期记忆库（与会话库共享同一 SQLite 句柄）
 	HistoryLimit      int             // recall 返回的最近消息条数（默认 12；作为声明预设上报）
+	Embedding         string          // embedding 服务名（默认 embedding；语义召回不可用时静默回落 bigram）
 }
 
 // v0 注入预算的默认值（对齐 v1 量级；作为声明预设，可被设置中心覆盖）。
@@ -39,6 +40,12 @@ const (
 	defaultRelLimit     = 5   // 相关记忆条数上限
 	defaultRelMaxChars  = 800 // 相关记忆字符预算
 )
+
+// recallMinScore 是语义召回的最小余弦分（实测分数带——正例 ≥0.49、干扰 p95 ≤0.41；见 embedding/README）。
+const recallMinScore = 0.45
+
+// embedTimeout 是单次 embed 调用的超时：超时视为不可用，静默回落 bigram（不阻塞 recall）。
+const embedTimeout = 3 * time.Second
 
 // Server 是 memory 服务实例（服务骨架 + 会话库）。
 type Server struct {
@@ -60,6 +67,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.HistoryLimit <= 0 {
 		cfg.HistoryLimit = defaultHistoryLimit
 	}
+	if cfg.Embedding == "" {
+		cfg.Embedding = "embedding"
+	}
 	s := &Server{
 		cfg: cfg, logger: logger,
 		historyLimit: cfg.HistoryLimit,
@@ -73,7 +83,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
-		Description:       "记忆服务：会话历史 + 长期记忆（remember/forget；bigram 召回 + 核心注入）与上下文组装（recall 后向调用方回发 resume）",
+		Description:       "记忆服务：会话历史 + 长期记忆（remember/forget；语义召回 + bigram 兜底 + 核心注入）与上下文组装（recall 后向调用方回发 resume）",
 		Provides: []protocol.Provide{
 			{Action: "recall", Input: "任务上下文 {conversation_id, messages, boss}", Output: "受理回执；随后向调用方发送 resume（注入记忆后的上下文）"},
 			{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
@@ -177,7 +187,8 @@ func (s *Server) actionStore(_ context.Context, _ protocol.Envelope, in protocol
 }
 
 // actionRemember 写一条长期记忆（内容重复时幂等跳过）；来源记调用方服务名。
-func (s *Server) actionRemember(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+// 新建条目顺带算一次向量（派生数据；失败仅记日志——召回时会懒补齐）。
+func (s *Server) actionRemember(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p protocol.RememberPayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
@@ -188,6 +199,13 @@ func (s *Server) actionRemember(_ context.Context, env protocol.Envelope, in pro
 	id, created, err := s.cfg.Longterm.Add(p.Kind, p.Content, p.Priority, p.ConversationID, env.From)
 	if err != nil {
 		return nil, fmt.Errorf("remember: %w", err)
+	}
+	if created {
+		if vecs, model, err := s.embedTexts(ctx, env, []string{p.Content}, false); err != nil {
+			s.logger.Printf("remember 向量化失败（召回时将懒补齐）: %v", err)
+		} else if err := s.cfg.Longterm.SetEmbedding(id, vecs[0], model); err != nil {
+			s.logger.Printf("remember 向量落库失败（召回时将懒补齐）: %v", err)
+		}
 	}
 	return protocol.RememberResult{ID: id, Created: created}, nil
 }
@@ -225,7 +243,7 @@ func recallQuery(messages []protocol.Message) string {
 }
 
 // actionRecall 是“完全启动”链的上半段：收下任务上下文 → 组装（注入记忆）→ 以 resume 发回调用方。
-func (s *Server) actionRecall(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+func (s *Server) actionRecall(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p protocol.RecallPayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
@@ -248,7 +266,7 @@ func (s *Server) actionRecall(_ context.Context, env protocol.Envelope, in proto
 	// 去重：历史尾部与任务上下文尾部的对话消息相同时裁掉——任务链里已有的消息不重复注入。
 	history = compose.TrimOverlap(history, compose.ConversationTail(tc.Messages))
 
-	// 长期记忆：核心条目（priority>0，不看相关性）+ bigram 相关召回（以最新用户消息为查询）。
+	// 长期记忆：核心条目（priority>0，不看相关性）+ 相关召回（语义为主、bigram 兜底）。
 	var core, relevant []string
 	if s.cfg.Longterm != nil {
 		entries, err := s.cfg.Longterm.ListActive()
@@ -267,7 +285,7 @@ func (s *Server) actionRecall(_ context.Context, env protocol.Envelope, in proto
 				rest = append(rest, e)
 			}
 		}
-		for _, e := range longterm.Rank(rest, recallQuery(tc.Messages), relLimit, relMaxChars) {
+		for _, e := range s.rankRelevant(ctx, env, rest, recallQuery(tc.Messages), relLimit, relMaxChars) {
 			relevant = append(relevant, compose.EntryLine(e.Kind, e.Content))
 		}
 	}
@@ -283,6 +301,111 @@ func (s *Server) actionRecall(_ context.Context, env protocol.Envelope, in proto
 	}
 
 	return map[string]any{"status": "accepted"}, nil
+}
+
+// rankRelevant 返回"相关记忆"条目：语义召回为主、bigram 兜底（embedding 缺失/失败/超时 → 静默回落）。
+func (s *Server) rankRelevant(ctx context.Context, env protocol.Envelope, entries []longterm.Entry, query string, limit, maxChars int) []longterm.Entry {
+	if strings.TrimSpace(query) == "" || len(entries) == 0 {
+		return nil
+	}
+	if ranked, ok := s.semanticRank(ctx, env, entries, query, limit, maxChars); ok {
+		return ranked
+	}
+	return longterm.Rank(entries, query, limit, maxChars)
+}
+
+// semanticRank：查询向量 + 条目向量（缺失/换模型后懒补齐）→ 余弦排序。
+// 返回 ok=false 表示"语义召回不可用"（调用方回落 bigram）；此时不得返回部分结果。
+func (s *Server) semanticRank(ctx context.Context, env protocol.Envelope, entries []longterm.Entry, query string, limit, maxChars int) ([]longterm.Entry, bool) {
+	qvecs, model, err := s.embedTexts(ctx, env, []string{query}, true)
+	if err != nil {
+		s.logger.Printf("语义召回不可用（回落 bigram）: %v", err)
+		return nil, false
+	}
+	if err := s.backfillEmbeddings(ctx, env, entries, model); err != nil {
+		s.logger.Printf("条目向量补齐部分失败（已有向量的条目照常参与）: %v", err)
+	}
+	return longterm.RankSemantic(entries, qvecs[0], limit, maxChars, recallMinScore), true
+}
+
+// backfillEmbeddings 为缺失/失效（模型不一致）的条目补算向量并落库（就地更新 entries）。
+// 派生数据原则：补齐失败不影响已有向量条目；失败仅记录（下次召回再试）。
+func (s *Server) backfillEmbeddings(ctx context.Context, env protocol.Envelope, entries []longterm.Entry, model string) error {
+	var missing []int
+	for i := range entries {
+		if len(entries[i].Embedding) == 0 || entries[i].EmbeddingModel != model {
+			missing = append(missing, i)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	const chunk = 16
+	var firstErr error
+	for start := 0; start < len(missing); start += chunk {
+		end := start + chunk
+		if end > len(missing) {
+			end = len(missing)
+		}
+		if end-start > s.maxBatchHint() {
+			end = start + s.maxBatchHint()
+		}
+		idx := missing[start:end]
+		texts := make([]string, 0, len(idx))
+		for _, i := range idx {
+			texts = append(texts, entries[i].Content)
+		}
+		vecs, vecModel, err := s.embedTexts(ctx, env, texts, false)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			break
+		}
+		for j, i := range idx {
+			entries[i].Embedding = vecs[j]
+			entries[i].EmbeddingModel = vecModel
+			if err := s.cfg.Longterm.SetEmbedding(entries[i].ID, vecs[j], vecModel); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+	}
+	return firstErr
+}
+
+// maxBatchHint 每次 embed 的批大小（embedding 服务默认上限 32；这里取保守值）。
+func (s *Server) maxBatchHint() int { return 16 }
+
+// embedTexts 调用 embedding 服务：批量文本 → 向量（限时；失败即返回错误）。
+// 线路上的向量是 float64（Python 原生）；这里转成 float32 供存储（派生数据的存储格式）。
+func (s *Server) embedTexts(ctx context.Context, env protocol.Envelope, texts []string, query bool) ([][]float32, string, error) {
+	if s.cfg.Embedding == "" {
+		return nil, "", errors.New("未配置 embedding 服务")
+	}
+	cctx, cancel := context.WithTimeout(ctx, embedTimeout)
+	defer cancel()
+	data, err := s.Call(cctx, s.cfg.Embedding, "embed", protocol.EmbedPayload{Texts: texts, Query: query}, env.Trace, s.cfg.Name)
+	if err != nil {
+		return nil, "", err
+	}
+	var res protocol.EmbedResult
+	if err := protocol.DecodeRaw(data, &res); err != nil {
+		return nil, "", fmt.Errorf("embed 结果解析失败: %w", err)
+	}
+	if len(res.Vectors) != len(texts) {
+		return nil, "", fmt.Errorf("embed 返回向量数不符: %d != %d", len(res.Vectors), len(texts))
+	}
+	vecs := make([][]float32, len(res.Vectors))
+	for i, v := range res.Vectors {
+		out := make([]float32, len(v))
+		for j, f := range v {
+			out[j] = float32(f)
+		}
+		vecs[i] = out
+	}
+	return vecs, res.Model, nil
 }
 
 // fireResume 向调用方发送组装完成的上下文——记忆往返期间 boss 是调用方。

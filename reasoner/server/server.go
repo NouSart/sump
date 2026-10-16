@@ -48,6 +48,9 @@ type Server struct {
 	boardMu sync.Mutex            // 黑板锁
 	board   map[string]*taskState // 会话 → 进行中的任务（窗口 = 任务在跑期）
 
+	asyncMu   sync.Mutex          // 异步受理登记表锁
+	asyncJobs map[string]asyncJob // 受理句柄（item_id）→ 在途的异步工具调用（见 async.go）
+
 	setMu   sync.Mutex    // 运行时可设项锁（设置下发 / 拉取即时生效）
 	notify  string        // 工具结果通知模式（each / batch）
 	conc    int           // 单会话工具并发上限（-1 = 不限制）
@@ -73,11 +76,12 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}
 	s := &Server{
 		cfg: cfg, logger: logger,
-		sems:    map[string]chan struct{}{},
-		board:   map[string]*taskState{},
-		notify:  cfg.NotifyMode,
-		conc:    cfg.ToolConcurrency,
-		timeout: cfg.ToolTimeout,
+		sems:      map[string]chan struct{}{},
+		board:     map[string]*taskState{},
+		asyncJobs: map[string]asyncJob{},
+		notify:    cfg.NotifyMode,
+		conc:      cfg.ToolConcurrency,
+		timeout:   cfg.ToolTimeout,
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
@@ -121,6 +125,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("user_message", s.actionUserMessage)
 	s.Handle("step", s.actionStep)
 	s.Handle("resume", s.actionResume)
+	s.Handle("report_result", s.actionReportResult)
 	return s
 }
 

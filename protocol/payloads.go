@@ -10,6 +10,9 @@ type Provide struct {
 	// Tool 显式声明该动作是否作为 LLM 工具暴露给模型（默认 false）。
 	// 工具名 = <service>__<action>；链机制保留动作与调试动作即便声明也不暴露（第二道闸）。
 	Tool bool `msgpack:"tool,omitempty"`
+	// Async 显式声明该动作是“受理即回执”：响应只表示已受理（带回句柄 item_id），
+	// 后续进展由该服务以 report_result 补报送达（可能晚于调用方收尾）。
+	Async bool `msgpack:"async,omitempty"`
 }
 
 // Setting 是服务的一个可设置项。
@@ -275,6 +278,70 @@ type SettingsEventPayload struct {
 	Cause   string          `msgpack:"cause"`
 	Service string          `msgpack:"service"`
 	Results []SettingResult `msgpack:"results,omitempty"`
+}
+
+// ---------- embedding（文本 → 向量） ----------
+
+// EmbedPayload 是 embed 的输入：一批文本；Query 标记查询侧（服务按模型建议决定是否加指令前缀）。
+type EmbedPayload struct {
+	Texts []string `msgpack:"texts"`
+	Query bool     `msgpack:"query,omitempty"`
+}
+
+// EmbedResult 是 embed 的输出：与 texts 一一对应的向量（L2 归一化）+ 维度 + 模型标识
+// （模型标识用于判定已存向量是否失效）。向量在线路上是 float64（Python/JS 原生数字），
+// Go 消费侧按需转 float32。
+type EmbedResult struct {
+	Vectors [][]float64 `msgpack:"vectors"`
+	Dim     int         `msgpack:"dim"`
+	Model   string      `msgpack:"model"`
+}
+
+// ---------- 异步受理的补报（report_result） ----------
+
+// AsyncResultPayload 是 report_result 的载荷：一个“受理即回执”（Provide.Async）的动作
+// 在受理之后发回的后续消息（补报）。方向与服务 → 调用方（信封 to = 原先的调用方）。
+// ItemID 是受理回执里给出的句柄（调用方据此把补报配回自己的记账）；
+// Phase 是进展阶段（服务自定，如 approved / rejected / done / failed）；
+// Text 是可直接阅读的文本（调用方注入模型上下文 / 呈现给用户）；Data 是服务自定的结构化补充；
+// Final 标记这是该次受理的最后一条（调用方收到后释放记账）。
+type AsyncResultPayload struct {
+	ItemID string             `msgpack:"item_id"`
+	Phase  string             `msgpack:"phase"`
+	Text   string             `msgpack:"text,omitempty"`
+	Data   msgpack.RawMessage `msgpack:"data,omitempty"`
+	Final  bool               `msgpack:"final,omitempty"`
+}
+
+// ---------- shell（命令执行服务） ----------
+
+// ShellRunPayload 是 shell.run 的输入：一条待执行的命令。
+type ShellRunPayload struct {
+	Command string `msgpack:"command"`            // 命令行（交给服务选定的 shell 解释）
+	WorkDir string `msgpack:"work_dir,omitempty"` // 工作目录（默认服务根目录；越界即拒）
+}
+
+// ShellRunResult 是 shell.run 的受理回执：命令已入队列，执行结果由 report_result 补报送达。
+// Phase 与补报（AsyncResultPayload.Phase）用同一词汇：受理回执就是这条命令的第一个阶段（queued）。
+type ShellRunResult struct {
+	ItemID string `msgpack:"item_id"` // 受理句柄（补报原样带回）
+	Phase  string `msgpack:"phase"`   // 阶段：queued
+}
+
+// ShellEventData 是 shell 补报的结构化补充（report_result 的 data）。
+type ShellEventData struct {
+	Command     string `msgpack:"command,omitempty"`
+	WorkDir     string `msgpack:"work_dir,omitempty"`
+	Shell       string `msgpack:"shell,omitempty"` // 实际使用的 shell 可执行文件
+	ExitCode    int    `msgpack:"exit_code"`       // 退出码（未执行 / 超时终止时为 0 / -1）
+	Stdout      string `msgpack:"stdout,omitempty"`
+	Stderr      string `msgpack:"stderr,omitempty"`
+	StdoutBytes int64  `msgpack:"stdout_bytes,omitempty"` // 实际收到多少字节（截断前的总数）
+	StderrBytes int64  `msgpack:"stderr_bytes,omitempty"`
+	TimedOut    bool   `msgpack:"timed_out,omitempty"`
+	Truncated   bool   `msgpack:"truncated,omitempty"` // 输出超过上限被截断
+	DurationMS  int64  `msgpack:"duration_ms,omitempty"`
+	Error       string `msgpack:"error,omitempty"` // 未执行 / 未能执行完的原因
 }
 
 // ---------- 长期记忆（memory） ----------

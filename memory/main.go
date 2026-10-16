@@ -21,6 +21,7 @@ func main() {
 	center := flag.String("center", "ws://127.0.0.1:9000/ws", "设置中心 WS 地址")
 	dbPath := flag.String("db", "data/memory.db", "SQLite 数据文件路径")
 	history := flag.Int("history", 12, "recall 返回的最近消息条数")
+	embedding := flag.String("embedding", "embedding", "embedding 服务名（语义召回；不可用时静默回落 bigram）")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "[memory] ", log.LstdFlags|log.Lmicroseconds)
@@ -44,6 +45,7 @@ func main() {
 		Store:        st,
 		Longterm:     lt,
 		HistoryLimit: *history,
+		Embedding:    *embedding,
 	}, logger)
 	if err := s.Start(context.Background()); err != nil {
 		logger.Fatalf("启动失败: %v", err)

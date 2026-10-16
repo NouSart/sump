@@ -222,6 +222,7 @@ func (s *Server) dispatchToolCalls(st *taskState, resp llm.Message) {
 }
 
 // waitPending 阻塞等待本任务的工具全部结束（上限 waitCap）。
+// 异步受理（Provide.Async）不在等待之列——受理已完成，但它尚未回报：如实披露，不假装“都完成了”。
 func (s *Server) waitPending(st *taskState) string {
 	deadline := time.Now().Add(waitCap)
 	for {
@@ -234,7 +235,12 @@ func (s *Server) waitPending(st *taskState) string {
 		names := pendingNames(st.pending)
 		st.mu.Unlock()
 		if n == 0 {
-			return "全部工具任务已完成；结果已作为 [工具结果] 消息写入对话。"
+			text := "全部工具任务已完成；结果已作为 [工具结果] 消息写入对话。"
+			if async := s.outstandingAsync(st.cid); len(async) > 0 {
+				text += fmt.Sprintf("另有 %d 个已受理的异步任务尚未回报（%s）：受理只表示已排队，其结果的到达方式是以 [后续补报] 开头的消息——在那之前不要断言执行结果。",
+					len(async), strings.Join(async, ", "))
+			}
+			return text
 		}
 		if time.Now().After(deadline) {
 			return fmt.Sprintf("等待超时：仍有 %d 个工具任务在运行（%s）；结果到达后会再次唤醒你。", n, names)
@@ -257,7 +263,7 @@ func (s *Server) runToolJob(st *taskState, call llm.ToolCall) {
 			return
 		}
 	}
-	content, err := s.runToolCall(ctx, st.trace, call)
+	content, err := s.runToolCall(ctx, st, call)
 	if err != nil {
 		s.logger.Printf("工具 %s 失败: %v", call.Function.Name, err)
 		content = "错误: " + err.Error()

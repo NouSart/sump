@@ -4,6 +4,7 @@
 package longterm
 
 import (
+	"math"
 	"sort"
 	"strings"
 	"unicode"
@@ -145,4 +146,67 @@ func Core(entries []Entry, limit, maxChars int) []Entry {
 		out = append(out, e)
 	}
 	return out
+}
+
+// RankSemantic 按查询向量与条目向量的余弦相似度排序（语义召回）：
+// 只保留 score ≥ minScore 的条目（无向量 / 维度不符的条目跳过）；
+// 同分按 priority 大、新近（id 大）优先；受条数与字符预算约束（与 Rank 一致）。
+func RankSemantic(entries []Entry, queryVec []float32, limit, maxChars int, minScore float32) []Entry {
+	if len(queryVec) == 0 {
+		return nil
+	}
+	type scored struct {
+		e Entry
+		s float32
+	}
+	var hits []scored
+	for _, e := range entries {
+		if len(e.Embedding) != len(queryVec) {
+			continue
+		}
+		s := cosine(queryVec, e.Embedding)
+		if s < minScore {
+			continue
+		}
+		hits = append(hits, scored{e: e, s: s})
+	}
+	sort.SliceStable(hits, func(i, j int) bool {
+		a, b := hits[i], hits[j]
+		if a.s != b.s {
+			return a.s > b.s
+		}
+		if a.e.Priority != b.e.Priority {
+			return a.e.Priority > b.e.Priority
+		}
+		return a.e.ID > b.e.ID
+	})
+
+	var out []Entry
+	used := 0
+	for _, h := range hits {
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+		cost := len([]rune(h.e.Content))
+		if maxChars > 0 && used+cost > maxChars {
+			continue
+		}
+		used += cost
+		out = append(out, h.e)
+	}
+	return out
+}
+
+// cosine 两个等长向量的余弦相似度（调用方通常已归一化；仍做规范化兜底）。
+func cosine(a, b []float32) float32 {
+	var dot, na, nb float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+		na += float64(a[i]) * float64(a[i])
+		nb += float64(b[i]) * float64(b[i])
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return float32(dot / math.Sqrt(na*nb))
 }

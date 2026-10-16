@@ -99,7 +99,7 @@ SUMP 是“服务的互联网”：每个服务是一个独立进程、独立数
 ### 6.1 保留动作名（链机制，语义不可改）
 
 `user_message`（链入口）/ `step`（自跳继续）/ `deliver`（终点直达 boss）/
-`recall` `resume` `store`（记忆往返）/ `save` `fetch`（图片/文件链）。
+`recall` `resume` `store`（记忆往返）/ `save` `fetch`（图片/文件链）/ `report_result`（异步受理的补报，§6.5）。
 
 这些是**协议级词汇**：即便某个服务提供了同名动作，也**不作为 LLM 工具**暴露。
 另有**骨架保留动作** `configure`（设置下发专用，由 `service/` 骨架统一承接，见 §7）——同样不进 `provides`、不作 LLM 工具。
@@ -138,6 +138,37 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 - **黑板（任务窗口）**：进行中任务的最新消息链 + 在跑工具表存于 reasoner 进程内（唯一副本）；任务被同会话新消息取代时旧任务关闭、在跑结果丢弃（日志可见）。窗口 = 任务在跑期，交付即释放——不落盘、不跨重启（这是 §2.4 的唯一例外）。
 - **轮次衔接**：`step`（自跳）payload 只带 `conversation_id`（上下文在黑板里）；轮次由事件驱动（派发 / 结果注入 / 等待 / 收尾门禁），不驻留循环。
 
+### 6.5 受理即回执与补报（`async`，已实现）
+
+有些动作的耗时不可预期（跑一条命令、跑一次训练）——让调用方等结果既会撞上工具超时，也违反“边界”：等待不该跨服务传递。
+
+**声明**：`provides` 里 `async: true` 表示该动作**受理即回执**——响应只表示“已受理”，并给一个句柄：
+
+```jsonc
+// 调用方 → 服务（jump）
+{ "action": "run", "input": { "command": "ls -la" } }
+// 服务的响应（只表示已受理）
+{ "ok": true, "data": { "item_id": "01J…", "phase": "queued" } }
+```
+
+**补报**：后续每条进展都是服务 → 调用方的一次独立 `jump`（`action: "report_result"`，`to` = 原先的调用方）：
+
+```jsonc
+{ "item_id": "01J…", "phase": "approved", "text": "审批通过，已开始执行\n$ ls -la", "final": false }
+{ "item_id": "01J…", "phase": "done", "text": "命令执行完成（退出码 0，耗时 12ms）…", "final": true,
+  "data": { "exit_code": 0, "stdout": "…", "stderr": "", "duration_ms": 12 } }
+```
+
+- `item_id`：受理回执里的句柄（调用方据此把补报配回自己的记账）；补报的 `phase` 与 `data` 内容由服务自定；
+  受理回执里的 `phase` 与补报同一词汇（受理就是第一个阶段；shell 当前：`queued`）；
+  `text` 是可直接阅读的正文（调用方据此注入上下文 / 呈现）；`final: true` = 该次受理的最后一条。
+- **零阻塞**：受理回执不等审批、不等执行；补报各自独立一跳；调用方离线 = 补报发不出去（服务只记日志，不排队补发）。
+- 调用方缺失句柄对应关系时的补报（重复 / 服务重启过）**忽略即可**，不是错误。
+- **reasoner 侧行为**：受理回执即该次工具调用的结果位（配对已闭合），补报不进入任务的“在跑工具”表——
+  模型的收尾不该被一条长命令扣住；补报到达时：任务在跑 → 注入黑板并唤醒；任务已收尾 → 以补报开一轮“补报轮”
+  （结果不丢，模型据此给 boss 补一句，boss 为空则记日志丢弃）。内置工具 `wait` 会如实披露“已受理未回报”的条数，但不阻塞等待它们。
+- **与“工具超时”的关系**：异步动作的受理是瞬时动作，单次工具超时（默认 60s）不再约束实际执行时长（由服务自己的执行超时管）。
+
 ---
 
 ## 7. 名片：`provides` 与 `settings`
@@ -147,7 +178,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
   "name": "images",
   "addr": "ws://127.0.0.1:9401/ws",
   "description": "图片服务：保存图片（URL/base64），按需转 base64 发回调用方",
-  "provides": [                                  // 我对外提供哪些动作（"tool": true 才作为 LLM 工具暴露）
+  "provides": [                                  // 我对外提供哪些动作（"tool": true 才作为 LLM 工具暴露；"async": true = 受理即回执，见 §6.5）
     { "action": "save",  "input": "{url} 或 {data(base64), mime}", "output": "{id, mime, size}" },
     { "action": "fetch", "input": "{id}", "output": "{id, mime, data(base64), size}" }
   ],
@@ -230,11 +261,12 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | 3 | 连接自愈 | **已实现**（`service/` 骨架）：指数退避重连 + 重新注册 + 注册去重 | — |
 | 4 | 设置热链 | **已实现 M7**：注册即全量下发（异步、不等待）+ set/reset 单键下发 + `settings` 事件回传结果；骨架通用接收（`HandleSetting` + 注册后拉取兜底）；各服务设置项（reasoner 3 / memory 5 / images 1 / qq 1 / 中心自身 2） | “调度 = 设置行为、设计工作流”的完整形态 |
 | 5 | 连接时长自适应 | 全短连接（注释已标注） | 热保留 / 冷回落，参数可配置（实现前不声明设置项） |
-| 6 | 审批链路 | 占名未实现 | `approval_request` / `approval_result` |
+| 6 | 审批链路 | **接缝已就位**：`shell` 的审批只有一个入口（`Approver` 接口）+ 一个出口（补报未通过的原因）；未接入审批时一律未通过（fail-closed） | 审批服务定义协议（`approval_request` / `approval_result`）；shell 据协议实现 `Approver` |
+| 6.1 | 命令执行的护栏（shell） | **已实现**：工作目录根 + 越界即拒（含软链解析）、执行超时、单流输出上限、并行上限、待执行队列上限（满即拒）；命令白名单 / 用户审批策略**未做** | 护栏归审批服务与设置项演进，服务只报事实 |
 | 7 | 服务骨架复用 | **已实现**：`service/` 薄骨架库（注册/心跳/名册/自愈/告别），四服务共用 | — |
 | 8 | 链级失败策略 | 拨号失败已安全重试；送达后失败不重试（无幂等键）；工具超时 / 任务取代的结果丢弃已定义 | 幂等键；失败上报 boss（降级回复） |
 | 9 | 工具结果通知模式 | **已实现**：设置项 `tool.notify_mode`（each 默认 / batch）+ 注册下发 + 拉取兜底 + `-tool-notify` | — |
-| 10 | 长期记忆 | **已实现 v0**：`remember`/`forget`（软删）+ bigram 召回（1~2 字中文可命中）+ 核心注入（priority）；`remember` 在 provides 里（自动暴露为 LLM 工具），`forget` 不在 | embedding 语义召回；自动提炼与巩固线（sleep）；去重 / 冲突 |
+| 10 | 长期记忆 | **已实现**：`remember`/`forget`（软删）+ 核心注入（priority）+ **语义召回（embedding 服务，余弦 ≥0.45）+ bigram 兜底**；`remember` 在 provides 里（自动暴露为 LLM 工具），`forget` 不在 | 自动提炼与巩固线（sleep）；去重 / 冲突 |
 | 11 | 错误上报（服务 → 中心） | **已实现·留接口**：`report` 动作 + 中心日志 + `OnReport` 挂点；上报方退避防刷（1s 起翻倍、封顶 30s）；无队列（中心视为永远在线）；当前接入点：骨架 Fire 未送达 | 前端 / 落盘 / 富日志接入挂点；更多上报点按需接入 |
 
 ---
@@ -248,6 +280,8 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | memory | Go | 会话消息的唯一保管者；recall 取最近历史 + 长期记忆（核心注入 + bigram 召回）组装为记忆块后 resume 回调用方；remember 写入（幂等）/ forget 软删 |
 | images | Go | save（URL/base64 落盘）返回 id；fetch（id → base64） |
 | files | Go | save（URL/base64 + filename 落盘）返回 id；fetch（id → base64）；read（id → 截断文本 / .xlsx 转 TSV，`tool: true`）；write（`{id, sheet, edits:[{cell, value}]}` 单元格编辑，`tool: true`——就地修改 .xlsx 权威副本） |
+| shell | Go | 受理即回执的命令执行（并行 + 待执行队列 + 超时终止 + 输出截断）；审批接缝（未接入 = 一律未通过）；结果由 `report_result` 补报 |
+| embedding | Python | 文本 → 向量（onnxruntime + tokenizers，CLS pooling + L2 归一）；动作 `embed`；fake 后端供测试与 CI |
 | qq | Go | 把主人私聊消息（图先存 images）打成 user_message 发给 reasoner；实现 deliver 回发私聊 |
 | frontend | TS | 设置中心可视化面板：注册为服务节点（心跳 / 名册广播）；浏览器 HTTP JSON + SSE；设置查看 / 修改 / 重置（中心受理并下发） |
 | tests | Go | 跨服务真进程端到端（不属于任何服务） |
@@ -263,7 +297,8 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | 类别 | 规则 | 现有值 |
 | ---- | ---- | ------ |
 | 消息类型（`type`） | 裸名词；请求 / 响应 / 事件方向固定（事件型只由中心广播） | `register` `response` `roster` `jump` `heartbeat`；事件：`roster` `settings` |
-| 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §6.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting`；骨架保留：`configure`；服务自定义（已实现）：`remember` `forget` `read` `write` |
-| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms` `filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated` |
-| 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `files` `qq` `frontend` |
-| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `max_mb` `read_max_chars` `owner` `sweep_ms` `heartbeat_fallback_ms` |
+| 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §6.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting` `embed` `run` `report_result`；骨架保留：`configure`；服务自定义（已实现）：`remember` `forget` `read` `write` |
+| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms`；文件链：`filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated`；embedding：`texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms` |
+| 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `files` `qq` `shell` `frontend` `embedding` |
+| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `max_mb` `read_max_chars` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.concurrency` `exec.queue_limit` `approval.service` `approval.timeout_ms` |
+| 名片字段（`provides[]`） | 小写下划线；跨语言一致 | `action` `input` `output` `tool` `async` |

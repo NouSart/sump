@@ -99,6 +99,10 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 		{"settingsEventNoResults", SettingsEventPayload{Cause: "register", Service: "svc-a"}, &SettingsEventPayload{}},
 		{"report", ReportPayload{Kind: "fire", Message: "跳转失败"}, &ReportPayload{}},
 		{"reportNoKind", ReportPayload{Message: "boom"}, &ReportPayload{}},
+		{"remember", RememberPayload{Kind: "偏好", Content: "爱吃苹果", Priority: 1, ConversationID: "c1"}, &RememberPayload{}},
+		{"rememberResult", RememberResult{ID: 7, Created: true}, &RememberResult{}},
+		{"embed", EmbedPayload{Texts: []string{"苹果", "爱吃苹果"}, Query: true}, &EmbedPayload{}},
+		{"embedResult", EmbedResult{Vectors: [][]float64{{0.5, 0.5}, {1, 0}}, Dim: 2, Model: "bge-small-zh-v1.5"}, &EmbedResult{}},
 		{"settingsResult", SettingsResult{Services: []ServiceSettings{{
 			Service: "svc-a",
 			Settings: []SettingView{{
