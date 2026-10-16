@@ -49,7 +49,7 @@
 2. shell 固定本次的命令、目录、解释器、参数、环境、超时和输出限额，再请求 `approval.approval_request`。
 3. approval 校验上下文，用原生 AST 提取结构，按不可变规则快照返回一份裁决，附模型反馈。
 4. shell 核验任务、摘要和有效期。仅 allow 可以进入执行队列；deny、review、服务失联或响应不完整都停止本次命令。
-5. shell 先发送 approved，再执行，再发送 done/failed；拒绝则发送 final rejected。补报含结构化裁决，以及 reasoner 可直接读到的原因、命中规则与未知结构。
+5. shell 发送 approved 的同时可执行命令；approved 的投递尝试结束后再发送 done/failed；拒绝则发送 final rejected。补报含结构化裁决，以及 reasoner 可直接读到的原因、命中规则与未知结构。
 6. 原 reasoner 把补报加入当前模型上下文，或在任务收尾后启动补报轮；用户输出沿原有 deliver 通道返回。
 
 approval 不绕过工具再额外直发同一条模型反馈，因此不会因双通道重复触发模型。第二层“并行解释请求＋用户通知”尚未启用，接口位于 `approval/review/ports.go`。

@@ -93,6 +93,13 @@ type job struct {
 	approval      *protocol.CommandApprovalResult
 	approvedUntil time.Time
 	progressReady chan struct{} // 先完成 approved 的投递尝试，再允许执行结果发出。
+	progressOnce  sync.Once
+}
+
+func (j *job) finishProgress() {
+	if j.progressReady != nil {
+		j.progressOnce.Do(func() { close(j.progressReady) })
+	}
 }
 
 // New 创建实例并注册动作与设置项。
@@ -310,6 +317,17 @@ func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol
 // process 走完一条命令的全程：审批 → 排队 / 执行 → 补报。
 func (s *Server) process(j *job) {
 	defer func() { <-s.pendingApprovals }()
+	enqueued := false
+	defer func() {
+		// 不能因进展投递异常把终态反馈永久挂住。
+		defer j.finishProgress()
+		if r := recover(); r != nil {
+			s.Report("shell_internal", "审批或进展处理发生内部异常；item="+j.item)
+			if !enqueued {
+				s.report(j, "failed", "审批处理发生内部异常，本次未执行", protocol.ShellEventData{Error: "internal error"})
+			}
+		}
+	}()
 	svc := s.approvalServiceNow()
 	actx, cancel := context.WithTimeout(context.Background(), s.approvalWaitNow())
 	verr := s.approveJob(actx, j, svc)
@@ -327,9 +345,9 @@ func (s *Server) process(j *job) {
 			protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: err.Error()})
 		return
 	}
+	enqueued = true
 	s.report(j, "approved", fmt.Sprintf("审批通过，%s\n$ %s", state, j.command),
 		protocol.ShellEventData{Command: j.command, WorkDir: j.workDir})
-	close(j.progressReady)
 }
 
 // ---------- 调度：并行上限 + 待执行队列 ----------
@@ -357,13 +375,17 @@ func (s *Server) enqueue(j *job) (string, error) {
 
 // execute 执行一条命令并补报结果；结束后让出槽位、拉起下一条等待中的命令。
 func (s *Server) execute(j *job) {
-	if j.progressReady != nil {
-		<-j.progressReady
-	}
+	// 执行槽只覆盖执行过程；反馈慢或暂未认领不能占住槽位。
+	phase, text, data := func() (string, string, protocol.ShellEventData) {
+		defer s.next()
+		return s.executeAndCollect(j)
+	}()
+	s.reportAfterProgress(j, phase, text, data)
+}
+
+func (s *Server) executeAndCollect(j *job) (string, string, protocol.ShellEventData) {
 	if err := j.validateBeforeExecution(); err != nil {
-		s.report(j, "rejected", err.Error(), protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: err.Error()})
-		s.next()
-		return
+		return "rejected", err.Error(), protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: err.Error()}
 	}
 	start := time.Now()
 	limit := s.maxOutputNow() // 每次执行只读一次上限：截断与补报文案共用，杜绝两次读数不一致
@@ -377,11 +399,18 @@ func (s *Server) execute(j *job) {
 		if res.Error == "" {
 			res.Error = err.Error()
 		}
-		s.report(j, "failed", fmt.Sprintf("未能执行：%v\n$ %s", err, j.command), res)
+		return "failed", fmt.Sprintf("未能执行：%v\n$ %s", err, j.command), res
 	default:
-		s.report(j, "done", renderDone(j, res, limit), res)
+		return "done", renderDone(j, res, limit), res
 	}
-	s.next()
+}
+
+// 只门控终态的投递顺序，实际命令无需等待 approved 的网络往返。
+func (s *Server) reportAfterProgress(j *job, phase, text string, data protocol.ShellEventData) {
+	if j.progressReady != nil {
+		<-j.progressReady
+	}
+	s.report(j, phase, text, data)
 }
 
 // next 结束一条命令的执行：让出槽位；有等待中的命令就立即补位（保持并行度）。
@@ -436,6 +465,7 @@ func (s *Server) report(j *job, phase, text string, data protocol.ShellEventData
 // 受理回执与后台补报走不同连接，补报可能先到。只有明确 ignored
 // （对端尚未登记 item）才短暂重试；网络状态不明时不重发，避免重复启动模型轮次。
 func (s *Server) deliverReport(ctx context.Context, j *job, p protocol.AsyncResultPayload) error {
+	delay := 50 * time.Millisecond
 	for {
 		raw, err := s.Call(ctx, j.caller, "report_result", p, j.trace, j.boss)
 		if err != nil {
@@ -450,12 +480,15 @@ func (s *Server) deliverReport(ctx context.Context, j *job, p protocol.AsyncResu
 		if receipt.Status != "ignored" {
 			return nil
 		}
-		timer := time.NewTimer(25 * time.Millisecond)
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
 		case <-timer.C:
+		}
+		if delay < 400*time.Millisecond {
+			delay *= 2
 		}
 	}
 }

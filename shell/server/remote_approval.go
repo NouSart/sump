@@ -53,10 +53,15 @@ func (s *Server) approveJob(ctx context.Context, j *job, svc string) error {
 func (s *Server) preparePlan(j *job) (protocol.ExecutionPlan, []string, error) {
 	exe := s.shellNow()
 	if exe == "" {
-		var ok bool
-		exe, ok = detectShell(s.logger)
-		if !ok {
-			return protocol.ExecutionPlan{}, nil, errors.New("未找到解释器")
+		// 首版审批支持 PowerShell；显式 exec.shell 仍优先，自动选择与解析器一致。
+		for _, name := range []string{"pwsh", "powershell"} {
+			if path, err := lookShell(name); err == nil {
+				exe = path
+				break
+			}
+		}
+		if exe == "" {
+			return protocol.ExecutionPlan{}, nil, errors.New("审批需要 PowerShell，但未找到 pwsh 或 powershell；请安装或显式配置 exec.shell")
 		}
 	}
 	exe, err := lookShell(exe)

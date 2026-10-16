@@ -60,9 +60,9 @@
 终端工具 ──report_result──> reasoner ──模型上下文──> LLM
 ```
 
-`ShellEventData.approval` 保存完整裁决包；`AsyncResultPayload.text` 含可读原因、规则和未知结构，因为原 reasoner 读取 text。通过先报 approved（非终态），结束报 done/failed（终态）；拒绝/review 报 rejected（终态）。原始命令保留在工具反馈中，approval 自身故障上报不含原始命令。
+`ShellEventData.approval` 保存完整裁决包；`AsyncResultPayload.text` 含可读原因、规则和未知结构，因为原 reasoner 读取 text。通过先报 approved（非终态），结束报 done/failed（终态）；执行可与 approved 投递并行，执行槽在命令结束后释放，终态反馈等待 approved 投递尝试结束；拒绝/review 报 rejected（终态）。原始命令保留在工具反馈中，approval 自身故障上报不含原始命令。
 
-工具在后台顺序投递，每次最多等 3 秒。只有明确 `status=ignored` 才每 25ms 短暂重试，用于解决受理回执与补报先后到达的竞争；网络错误不确定对端是否已接收，因此不盲目重发。超过期限上报 `shell_feedback`，执行流程仍按已有裁决继续，不声称反馈已送达。若业务要求“模型必须收到才执行”，应另定强交付协议，不改写当前语义。
+工具在后台顺序投递，每次最多等 3 秒。只有明确 `status=ignored` 才按 50、100、200、400ms 退避重试，用于解决受理回执与补报先后到达的竞争；网络错误不确定对端是否已接收，因此不盲目重发。超过期限上报 `shell_feedback`，执行流程仍按已有裁决继续，不声称反馈已送达。若业务要求“模型必须收到才执行”，应另定强交付协议，不改写当前语义。
 
 调用 `shell.run` 两次会创建两个任务；没有跨请求幂等键。调用方遇到网络错误不得自动重提交具有副作用的命令。第二层人工批准时必须明确任务生命周期与重提规则。
 
@@ -81,7 +81,11 @@
 
 默认规则在 `approval/policy/default.json`。规则包定义版本、禁止命令名、允许命令名与静态参数数量上限；禁止规则优先。别名只接受显式列入配置的名称。命令名不是自然语言敏感词，不翻译用户内容，也不按语言封禁字面参数。
 
-首版只批准完整 AST 中的单一静态命令。对参数带路径、写文件、网络访问、外部程序等业务，应增加相应事实提取与专门参数规则，而不是简单扩大命令名前缀允许范围。新增方言时实现 Parser，并同时定义执行 profile、路径身份和正反例测试；不能只修改 `dialect` 字符串就套用 PowerShell 结果。
+首版只批准完整 AST 中的单一静态命令。对参数带路径、写文件、网络访问、外部程序等业务，应增加相应事实提取与专门参数规则，而不是简单扩大命令名前缀允许范围。
+
+**新增 shell 方言（仍属于 exec 域）**：实现 Parser，并同时定义执行 profile、路径身份和正反例测试；不能只修改 `dialect` 字符串就套用 PowerShell 结果。
+
+**新增执行域（例如 fs、http、后台任务）**：先定义独立域判别字段（建议 `kind`），不让 `dialect` 兼任域名。各域声明自己的执行字段组、上下文校验、事实提取器和规则段；事实提取器注册在 approval 侧，不能接受调用方自报“安全”结论。裁决包、摘要绑定、有效期和 fail-closed 原则共用。当前 `plan` 的 command/work_dir/shell_path/args/dialect/platform/profile/timeout_ms/max_output_bytes 都是 exec 域字段；本次只约定扩展方向，没有新增域判别字段或执行域实现，见 SPEC.md §13。
 
 ## 第二层钩子
 

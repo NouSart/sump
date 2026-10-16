@@ -29,6 +29,11 @@ jobs:
       - name: 安装 embedding 依赖（根 e2e 需要 Python 服务）
         run: pip install ./embedding
 
+      - name: 确认审批测试所需 PowerShell 可用
+        run: |
+          command -v pwsh
+          pwsh -NoLogo -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()'
+
       - name: gofmt 检查
         run: |
           out=$(gofmt -l $(git ls-files '*.go'))
@@ -40,9 +45,13 @@ jobs:
 
       - name: 各模块测试
         run: |
-          for m in protocol service settings-center reasoner memory images qq shell; do
+          for m in protocol service settings-center reasoner memory images qq shell approval approval-integration; do
             echo "== 模块: $m =="
-            (cd "$m" && go test ./... -count=1 -timeout 300s)
+            if [[ "$m" == approval* ]]; then
+              (cd "$m" && go test -v ./... -count=1 -timeout 300s)
+            else
+              (cd "$m" && go test ./... -count=1 -timeout 300s)
+            fi
           done
 
       - name: 端到端测试（真进程）
@@ -52,7 +61,7 @@ jobs:
 
       - name: 脱离工作区构建（GOWORK=off）
         run: |
-          for m in protocol service settings-center reasoner memory images qq shell tests; do
+          for m in protocol service settings-center reasoner memory images qq shell tests approval approval-integration; do
             echo "== $m =="
             (cd "$m" && GOWORK=off go build ./...)
           done
