@@ -24,7 +24,6 @@ export function SettingsPanel({ service, settings, connected, index, total, stat
   const den = String(total).padStart(2, '0');
   return (
     <div className="panel">
-      <div className="mark" aria-hidden="true" />
       <p className="eyebrow">
         服务 · {no} / {den}
       </p>
@@ -33,21 +32,14 @@ export function SettingsPanel({ service, settings, connected, index, total, stat
       <p className="panel-addr">{service.addr}</p>
 
       <hr className="rule" />
-      <h2 className="set-label">设置</h2>
+      <h2 className="set-label">设置项</h2>
 
       {settings === null ? (
         <p className="empty">加载中…</p>
       ) : settings.length === 0 ? (
         <p className="empty">该服务未声明可设置项——只显示服务真实声明并消费的设置（不做假旋钮）。</p>
       ) : (
-        <div className="set-table">
-          <div className="set-headrow" aria-hidden="true">
-            <span>键</span>
-            <span>生效值</span>
-            <span>默认值</span>
-            <span>状态</span>
-            <span className="head-actions">操作</span>
-          </div>
+        <div className="form">
           {settings.map((item) => (
             <SettingRow
               key={item.key}
@@ -120,67 +112,67 @@ function SettingRow({ service, item, status, connected, onSave, onReset }: RowPr
   };
 
   return (
-    <div className="set-row">
-      <span className="set-key">{item.key}</span>
-      <span className="set-val">
-        {editing ? (
-          <input
-            className="input"
-            value={draft}
-            aria-label={`${item.key} 的新值`}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void save();
-              if (e.key === 'Escape') setEditing(false);
-            }}
-            autoFocus
-          />
-        ) : (
-          item.value || '—'
-        )}
-      </span>
-      <span className="set-default">{item.default || '—'}</span>
-      <span>
-        {status?.state === 'pending' ? (
-          <span className="tag-over">已覆盖 · 待确认</span>
-        ) : status?.state === 'failed' ? (
-          <span className="tag-over" title={status.error}>
-            已覆盖 · 未送达
-          </span>
-        ) : item.overridden ? (
-          <span className="tag-over">已覆盖</span>
-        ) : (
-          <span className="tag-default">默认</span>
-        )}
-      </span>
-      <span className="set-actions">
+    <div className="field">
+      <div className="field-head">
+        <span className="field-label">{item.key}</span>
+        <span className="field-badges">
+          {status?.state === 'pending' ? (
+            <span className="tag-over">已覆盖 · 待确认</span>
+          ) : status?.state === 'failed' ? (
+            <span className="tag-over" title={status.error}>
+              已覆盖 · 未送达
+            </span>
+          ) : item.overridden ? (
+            <span className="tag-over">已覆盖</span>
+          ) : (
+            <span className="tag-default">默认</span>
+          )}
+          {item.overridden && !editing && (
+            <button
+              type="button"
+              className="field-reset"
+              data-armed={confirming ? 'true' : undefined}
+              onClick={() => void reset()}
+              disabled={busy || !connected}
+            >
+              {busy ? '重置中…' : confirming ? '确认重置' : '重置'}
+            </button>
+          )}
+        </span>
+      </div>
+
+      <div className="field-control">
         {editing ? (
           <>
-            <button type="button" className="btn" onClick={() => void save()} disabled={busy || !connected}>
-              保存
+            <input
+              className="input"
+              value={draft}
+              aria-label={`${item.key} 的新值`}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void save();
+                if (e.key === 'Escape') setEditing(false);
+              }}
+              autoFocus
+            />
+            <button type="button" className="btn sm" onClick={() => void save()} disabled={busy || !connected}>
+              {busy ? '保存中…' : '保存'}
             </button>
-            <button type="button" className="btn ghost" onClick={() => setEditing(false)} disabled={busy}>
+            <button type="button" className="btn sm ghost" onClick={() => setEditing(false)} disabled={busy}>
               取消
             </button>
           </>
         ) : (
           <>
-            <button type="button" className="btn" onClick={startEdit} disabled={busy || !connected}>
+            <span className="field-value">{item.value || '—'}</span>
+            <button type="button" className="btn sm ghost" onClick={startEdit} disabled={busy || !connected}>
               修改
             </button>
-            {item.overridden && (
-              <button
-                type="button"
-                className={confirming ? 'btn danger' : 'btn quiet-danger'}
-                onClick={() => void reset()}
-                disabled={busy || !connected}
-              >
-                {confirming ? '确认重置' : '重置'}
-              </button>
-            )}
           </>
         )}
-      </span>
+      </div>
+
+      <p className="field-hint">默认 {item.default || '—'}</p>
     </div>
   );
 }

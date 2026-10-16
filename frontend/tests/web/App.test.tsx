@@ -1,6 +1,6 @@
 // App 集成测试（逻辑层）：首屏加载 / 服务切换 / 写入→待确认→applied 事件（toast+状态回落）/
 // 失败事件（未送达+原因）/ 写入请求失败（编辑态保留）/ roster revision 触发重拉 /
-// status 事件 / toast 自动消失（假时钟）。
+// status 事件 / toast 自动消失（假时钟）/ 外观开关（属性 + 本地记忆）。
 //
 // 说明：SSE 与 fetch 都在边界处替换（假 EventSource / fetch 路由桩），App 代码零改动。
 import assert from 'node:assert/strict';
@@ -24,11 +24,17 @@ const okOverview = (r: RosterView) =>
 
 // boot 安装替身并挂载 App：
 //   - setResponse 可替换 set_setting 的应答（默认成功）；
+//   - messageResponse 可替换 /api/message 的应答（默认受理）；
+//   - openSettings=false 停在门户视图（设置现在要从侧栏底部进入）；
 //   - 返回的 setRoster 用于让 overview 桩跟随名册推进（与服务端一致：名册更新后重拉应见到新名册）。
-function boot(over: { setResponse?: () => Response } = {}) {
+function boot(over: { setResponse?: () => Response; messageResponse?: () => Response; openSettings?: boolean } = {}) {
   let currentRoster = rosterOf(['images', 'qq']);
   const calls = stubFetch((url) => {
     if (url === '/api/overview') return jsonResponse(okOverview(currentRoster));
+    if (url === '/api/message') {
+      if (over.messageResponse) return over.messageResponse();
+      return jsonResponse({ ok: true, conversationId: 'web:private:owner' });
+    }
     if (url === '/api/settings/set') {
       if (over.setResponse) return over.setResponse();
       return jsonResponse({
@@ -46,6 +52,9 @@ function boot(over: { setResponse?: () => Response } = {}) {
   });
   installFakeEventSource();
   render(<App />);
+  if (over.openSettings !== false) {
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+  }
   return {
     calls,
     setRoster: (r: RosterView) => {
@@ -176,5 +185,78 @@ describe('App', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('门户：首屏在门户视图，设置从侧栏底部进入并可关闭', async () => {
+    boot({ openSettings: false });
+    await screen.findByRole('heading', { name: /门户/ });
+    assert.equal(screen.queryByRole('heading', { name: '设置' }), null, '首屏不该直接是设置页');
+
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    assert.ok(screen.getByRole('heading', { name: '设置' }));
+    assert.ok(screen.getByText('服务 · 2'), '设置页里应有服务导航');
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    assert.ok(screen.getByRole('heading', { name: /门户/ }));
+  });
+
+  it('门户：deliver 事件把智能体的消息落进对话', async () => {
+    boot({ openSettings: false });
+    await screen.findByRole('heading', { name: /门户/ });
+
+    await emitSSE('deliver', { text: '任务完成', conversationId: 'web:private:owner', at: '2026-10-16T08:00:00Z' });
+    await screen.findByText('任务完成');
+  });
+
+  it('门户：发送 → POST /api/message + 本地回显', async () => {
+    const { calls } = boot({ openSettings: false });
+    await screen.findByRole('heading', { name: /门户/ });
+
+    fireEvent.change(screen.getByLabelText('消息'), { target: { value: '你好' } });
+    fireEvent.click(screen.getByText('发送'));
+
+    await screen.findByText('你好'); // 本地回显（受理回执不代表已有回复）
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/message' && c.init?.method === 'POST')).toBe(true));
+    assert.equal(screen.queryByRole('alert'), null, '受理成功不应留下错误提示');
+  });
+
+  it('门户：发送未被受理 → 明确提示未送达', async () => {
+    boot({ openSettings: false, messageResponse: () => jsonResponse({ error: '未知目标服务: reasoner（不在名册里）' }, 503) });
+    await screen.findByRole('heading', { name: /门户/ });
+
+    fireEvent.change(screen.getByLabelText('消息'), { target: { value: '你好' } });
+    fireEvent.click(screen.getByText('发送'));
+
+    await screen.findByText(/未送达：未知目标服务: reasoner/);
+  });
+
+  it('外观：切深色写 body[data-ds-dark-theme] 并记住，切回浅色移除', () => {
+    window.localStorage.clear();
+    delete document.body.dataset.dsDarkTheme;
+    boot({ openSettings: false });
+
+    assert.equal(document.body.hasAttribute('data-ds-dark-theme'), false, '默认浅色不带属性');
+    assert.equal(screen.getByRole('radio', { name: '浅色' }).getAttribute('aria-checked'), 'true');
+
+    fireEvent.click(screen.getByRole('radio', { name: '深色' }));
+    assert.equal(document.body.getAttribute('data-ds-dark-theme'), '', '暗色靠这个属性切令牌');
+    assert.equal(screen.getByRole('radio', { name: '深色' }).getAttribute('aria-checked'), 'true');
+    assert.equal(window.localStorage.getItem('sump.portal.theme'), 'dark');
+
+    fireEvent.click(screen.getByRole('radio', { name: '浅色' }));
+    assert.equal(document.body.hasAttribute('data-ds-dark-theme'), false);
+    assert.equal(window.localStorage.getItem('sump.portal.theme'), 'light');
+  });
+
+  it('外观：本地存过深色时挂载即生效', () => {
+    window.localStorage.setItem('sump.portal.theme', 'dark');
+    delete document.body.dataset.dsDarkTheme;
+    boot({ openSettings: false });
+
+    assert.equal(document.body.getAttribute('data-ds-dark-theme'), '');
+    assert.equal(screen.getByRole('radio', { name: '深色' }).getAttribute('aria-checked'), 'true');
+
+    window.localStorage.clear();
+    delete document.body.dataset.dsDarkTheme;
   });
 });

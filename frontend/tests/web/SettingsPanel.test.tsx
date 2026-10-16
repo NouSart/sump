@@ -1,4 +1,4 @@
-// SettingsPanel：空态 / 表格五列 / 行状态（默认·已覆盖·待确认·未送达）/
+// SettingsPanel：空态 / 字段布局 / 行状态（默认·已覆盖·待确认·未送达）/
 // 编辑保存 / 值未变 / Escape 取消 / 重置两步确认与超时复位 / 未连接禁用。
 import assert from 'node:assert/strict';
 import { describe, it, expect, vi } from 'vitest';
@@ -42,17 +42,17 @@ describe('SettingsPanel', () => {
     assert.ok(screen.getByText(/该服务未声明可设置项/));
   });
 
-  it('表格五列 + 行内容：值 / 默认值（空回落 —）/ 状态标签', () => {
-    renderPanel();
-    for (const head of ['键', '生效值', '默认值', '状态', '操作']) {
-      assert.ok(screen.getByText(head), `缺表头: ${head}`);
-    }
+  it('字段布局：标签行（键 + 状态标签 + 重置链）→ 控件行 → 默认值提示', () => {
+    const { container } = renderPanel();
+    assert.equal(container.querySelectorAll('.field').length, 2);
     assert.ok(screen.getByText('max_mb'));
-    assert.ok(screen.getAllByText('32').length >= 1);
-    assert.ok(screen.getByText('默认'));
-    // 覆盖行：无默认值显示 —；状态为已覆盖；重置按钮只在覆盖行出现
-    assert.ok(screen.getByText('—'));
+    assert.ok(screen.getByText('owner'));
+    assert.ok(screen.getByText('32')); // 生效值
+    assert.ok(screen.getByText('默认 32')); // 默认值提示
+    assert.ok(screen.getByText('默认')); // 状态标签
     assert.ok(screen.getByText('已覆盖'));
+    assert.ok(screen.getByText('默认 —')); // 空默认值回落 —
+    // 重置是覆盖行上的文字链，只在覆盖行出现
     assert.equal(screen.getAllByText('重置').length, 1);
   });
 
