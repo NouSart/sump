@@ -24,20 +24,28 @@ export function App() {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4200);
   }, []);
 
+  // applyRoster 应用名册：只接受"不更旧"的修订，返回是否发生了修订变化。
+  // 首屏 fetch 与 SSE 是两条独立路径，旧响应可能后到——无条件覆盖会让界面回退到旧名册
+  // （并且把守卫水位一起倒退）。相同修订重复应用是幂等的，放行。
+  const applyRoster = useCallback((r: RosterView): boolean => {
+    if (r.revision < rosterRevRef.current) return false;
+    const changed = r.revision !== rosterRevRef.current;
+    rosterRevRef.current = r.revision;
+    setRoster(r);
+    return changed;
+  }, []);
+
   const load = useCallback(async () => {
     try {
       const o = await fetchOverview();
       setOverview(o);
       setConnected(o.connected);
-      if (o.roster) {
-        setRoster(o.roster);
-        rosterRevRef.current = o.roster.revision;
-      }
+      if (o.roster) applyRoster(o.roster);
       setLoadError(null);
     } catch (err) {
       setLoadError((err as Error).message);
     }
-  }, []);
+  }, [applyRoster]);
 
   const loadRef = useRef(load);
   useEffect(() => {
@@ -84,17 +92,18 @@ export function App() {
     es.addEventListener('status', (ev) => {
       const d = JSON.parse((ev as MessageEvent).data) as { connected: boolean };
       setConnected(d.connected);
-      if (d.connected && !wasConnectedRef.current) void loadRef.current();
+      if (d.connected && !wasConnectedRef.current) {
+        // 重连：中心可能重启过（revision 从头计）→ 松开修订守卫，让新名册能进来。
+        rosterRevRef.current = -1;
+        void loadRef.current();
+      }
       wasConnectedRef.current = d.connected;
     });
     es.addEventListener('roster', (ev) => {
       const d = JSON.parse((ev as MessageEvent).data) as RosterView;
-      setRoster(d);
-      // 名册修订变化（含服务重启重注册、声明变化）→ 重新拉取设置视图。
-      if (rosterRevRef.current !== d.revision) {
-        rosterRevRef.current = d.revision;
-        void loadRef.current();
-      }
+      // 名册修订变化（含服务重启重注册、声明变化）→ 重新拉取设置视图；
+      // 更旧的修订（迟到事件）直接丢弃，不覆盖、也不触发重拉。
+      if (applyRoster(d)) void loadRef.current();
     });
     es.addEventListener('settings', (ev) => {
       settingsHandlerRef.current(JSON.parse((ev as MessageEvent).data) as SettingsEventViewData);
