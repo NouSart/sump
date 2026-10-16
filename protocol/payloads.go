@@ -215,6 +215,26 @@ type FileWriteResult struct {
 	Updated int    `msgpack:"updated"`
 }
 
+// WordEditOperation 是 files.edit_word 的一次操作。
+// v0 仅支持 op="replace"；后续可通过新增 op 类型扩展复杂编辑能力。
+type WordEditOperation struct {
+	Op  string `msgpack:"op"`            // 操作类型：replace
+	Old string `msgpack:"old,omitempty"` // replace 时被替换的文本
+	New string `msgpack:"new,omitempty"` // replace 时的新文本
+}
+
+// FileWordEditPayload 是 files.edit_word 的 payload：就地修改 .docx 正文。
+type FileWordEditPayload struct {
+	ID         string              `msgpack:"id"`
+	Operations []WordEditOperation `msgpack:"operations"`
+}
+
+// FileWordEditResult 是 files.edit_word 的结果：实际替换的条数。
+type FileWordEditResult struct {
+	ID       string `msgpack:"id"`
+	Replaced int    `msgpack:"replaced"`
+}
+
 // ---------- 设置中心：设置存取 ----------
 
 // SettingView 是一个设置项的当前状态（设置中心对外呈现）。

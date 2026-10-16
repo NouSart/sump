@@ -75,8 +75,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Provides: []protocol.Provide{
 			{Action: "save", Input: "{url} 或 {data(base64), filename, mime}", Output: "{id, filename, mime, size}"},
 			{Action: "fetch", Input: "{id}", Output: "{id, filename, mime, data(base64), size}"},
-			{Action: "read", Input: "{id}", Output: "{id, filename, text, truncated}（文本类与 .xlsx 转 TSV；其余二进制报错）", Tool: true},
+			{Action: "read", Input: "{id}", Output: "{id, filename, text, truncated}（文本类 / .xlsx 转 TSV / .docx 提取正文；其余二进制报错）", Tool: true},
 			{Action: "write", Input: "{id, sheet, edits:[{cell, value}]}", Output: "{id, sheet, updated}（就地修改 .xlsx；先 read 看清坐标再改）", Tool: true},
+			{Action: "edit_word", Input: "{id, operations:[{op, old, new}]}", Output: "{id, replaced}（就地修改 .docx 正文；v0 仅 op='replace'）", Tool: true},
 		},
 		Logger: logger,
 	})
@@ -105,6 +106,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("fetch", s.actionFetch)
 	s.Handle("read", s.actionRead)
 	s.Handle("write", s.actionWrite)
+	s.Handle("edit_word", s.actionEditWord)
 	return s
 }
 
@@ -193,7 +195,7 @@ func (s *Server) actionFetch(_ context.Context, _ protocol.Envelope, in protocol
 }
 
 // actionRead 读取文件的可文本化内容（LLM 工具）：先 Stat 判定类型再读本体。
-// 文本类直接读取；.xlsx 逐 sheet 转 TSV；.xls 与其余二进制明确拒绝。
+// 文本类直接读取；.xlsx 逐 sheet 转 TSV；.docx 提取正文段落；.xls/.doc 与其余二进制明确拒绝。
 // 截断阈值 = read_max_chars（截断置 truncated——“没给全”必须显式告知模型）。
 func (s *Server) actionRead(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p protocol.FileReadPayload
@@ -210,12 +212,16 @@ func (s *Server) actionRead(_ context.Context, _ protocol.Envelope, in protocol.
 	switch {
 	case isLegacyXls(meta.Mime, meta.Filename):
 		return nil, errors.New("read: 旧版 .xls 不支持，请另存为 .xlsx 后重试")
+	case isLegacyDoc(meta.Mime, meta.Filename):
+		return nil, errors.New("read: 旧版 .doc 不支持，请另存为 .docx 后重试")
 	case isExcelFile(meta.Mime, meta.Filename):
 		return s.readXlsx(p.ID, meta)
+	case isWordFile(meta.Mime, meta.Filename):
+		return s.readDocx(p.ID, meta)
 	case isTextual(meta.Mime, meta.Filename):
 		return s.readText(p.ID, meta)
 	default:
-		return nil, fmt.Errorf("read: 该文件类型（%s）暂不支持阅读，仅支持文本类与 .xlsx", meta.Mime)
+		return nil, fmt.Errorf("read: 该文件类型（%s）暂不支持阅读，仅支持文本类、.xlsx 与 .docx", meta.Mime)
 	}
 }
 
@@ -246,6 +252,20 @@ func (s *Server) readXlsx(id string, meta store.Meta) (any, error) {
 	defer f.Close()
 	text, truncated := xlsxToText(f, s.readMaxCharsNow())
 	s.logger.Printf("已读取 xlsx %s（%s, %d 字节, 截断=%v）", id, meta.Filename, len(data), truncated)
+	return protocol.FileReadResult{ID: id, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
+}
+
+// readDocx .docx 读取：提取正文段落文本（段落边界截断）。
+func (s *Server) readDocx(id string, meta store.Meta) (any, error) {
+	data, _, err := s.cfg.Store.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	text, truncated, err := docxToText(data, s.readMaxCharsNow())
+	if err != nil {
+		return nil, fmt.Errorf("read: 解析 %s 为 docx 失败: %w", meta.Filename, err)
+	}
+	s.logger.Printf("已读取 docx %s（%s, %d 字节, 截断=%v）", id, meta.Filename, len(data), truncated)
 	return protocol.FileReadResult{ID: id, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
 }
 
@@ -288,6 +308,43 @@ func (s *Server) actionWrite(_ context.Context, _ protocol.Envelope, in protocol
 	}
 	s.logger.Printf("已编辑 xlsx %s（%s, 表 %s, %d 格）", p.ID, meta.Filename, p.Sheet, n)
 	return protocol.FileWriteResult{ID: p.ID, Sheet: p.Sheet, Updated: n}, nil
+}
+
+// actionEditWord 编辑 .docx 正文（LLM 工具，就地修改权威副本）。
+// 校验链：id 存在 → 必须 .docx → operations 非空 → 预检查所有 old 存在 → 写回库。
+func (s *Server) actionEditWord(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.FileWordEditPayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	if p.ID == "" {
+		return nil, errors.New("edit_word: id 必填")
+	}
+	if len(p.Operations) == 0 {
+		return nil, errors.New("edit_word: operations 至少一条")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	meta, err := s.cfg.Store.Stat(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !isWordFile(meta.Mime, meta.Filename) {
+		return nil, fmt.Errorf("edit_word: 仅支持编辑 .docx 文件（%s 的类型是 %s）", meta.Filename, meta.Mime)
+	}
+	data, _, err := s.cfg.Store.Load(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	out, n, err := editDocx(data, p.Operations)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.cfg.Store.Overwrite(p.ID, out); err != nil {
+		return nil, fmt.Errorf("edit_word: 写回库失败: %w", err)
+	}
+	s.logger.Printf("已编辑 docx %s（%s, %d 处）", p.ID, meta.Filename, n)
+	return protocol.FileWordEditResult{ID: p.ID, Replaced: n}, nil
 }
 
 // ---------- 文本类判定与截断 ----------
