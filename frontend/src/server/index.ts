@@ -1,6 +1,7 @@
-// frontend：SUMP v2 的前端服务（设置中心可视化面板）。
-// 服务节点：把面板自己注册进设置中心（心跳 / 名册）；浏览器侧：HTTP JSON + SSE。
-// 用法：node dist/server/index.js [-addr 127.0.0.1:9501] [-center ws://127.0.0.1:9000/ws] [-name frontend] [-web dist/web] [-heartbeat-ms 15000]
+// frontend：SUMP v2 的用户交互门户（与 qq 同类）＋ 设置中心可视化面板。
+// 服务节点：把自己注册进设置中心（心跳 / 名册）；浏览器侧：HTTP JSON + SSE。
+// 用法：node dist/server/index.js [-addr 127.0.0.1:9501] [-center ws://127.0.0.1:9000/ws] [-name frontend]
+//        [-web dist/web] [-heartbeat-ms 15000] [-reasoner reasoner] [-trusted-hosts a.example,b.example]
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFrontend, type FrontendConfig } from './app.ts';
@@ -40,6 +41,11 @@ function resolveFlags(argv: string[]): FrontendConfig {
     name: raw.name ?? 'frontend',
     webDir: raw.web ?? resolve(here, '../web'),
     heartbeatMS,
+    reasoner: raw.reasoner ?? 'reasoner',
+    trustedHosts: (raw['trusted-hosts'] ?? '')
+      .split(',')
+      .map((h) => h.trim())
+      .filter((h) => h !== ''),
   };
 }
 

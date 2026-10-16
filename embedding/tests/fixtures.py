@@ -1,8 +1,9 @@
 """Go 侧 protocol 包产出的字节夹具（跨语言锚点）。
 
-与 frontend/tests/protocol.test.ts 使用的同一批 base64（由 Go 程序一次性生成后固化）：
-本服务解码这些字节并逐字段断言——任何一侧的键名 / 编码漂移都会立刻被抓住。
-反向锚定（Python 编码 → Go 解码）由根 tests/ 的跨语言真进程 e2e 承担。
+由 Go 程序一次性生成后固化（同一批 base64 也给了 frontend/tests/protocol.test.ts 一份）。
+本服务**双向**使用它们：解码后逐字段断言（Go 编码 → Python 解码），
+并用同样的输入反向重编码比对（Python 编码 → 与夹具一致，见 test_protocol.py 末组用例）。
+任一方向的键名 / 结构漂移都会被抓住。
 """
 
 GO_REGISTER = (

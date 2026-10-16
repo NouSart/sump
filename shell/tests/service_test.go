@@ -4,6 +4,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -156,6 +157,7 @@ type caller struct {
 	ln      net.Listener
 	srv     *http.Server
 	reports chan protocol.AsyncResultPayload
+	seen    []protocol.AsyncResultPayload // 已到但当前断言还用不上的补报（不能丢，见 waitReportItem）
 }
 
 func startCaller(t *testing.T, sc *stubCenter, name string) *caller {
@@ -242,17 +244,66 @@ func writeWS(ws *websocket.Conn, env protocol.Envelope) {
 }
 
 // waitReport 取一条指定阶段的补报（超时即失败）。
+// 只有一条命令在跑时用它；并存多条命令时必须用 waitReportItem 认句柄。
 func waitReport(t *testing.T, c *caller, phase string) protocol.AsyncResultPayload {
+	t.Helper()
+	return takeReport(t, c, phase, "")
+}
+
+// waitReportItem 取指定条目（句柄）的指定阶段补报。
+//
+// 为什么按句柄等：补报由骨架的 Fire 各自成 goroutine 投递，**条目之间的到达顺序没有保证**
+// （CI 上实测到过：第三条的「被拒」早于第二条的「已排队」）。所以这里
+//   - 不匹配的补报留着而不丢掉——丢掉会把后面还要用的那条吃掉，最后一条等待必然超时；
+//   - 断言认句柄，不认「第几条到」。
+func waitReportItem(t *testing.T, c *caller, phase, itemID string) protocol.AsyncResultPayload {
+	t.Helper()
+	return takeReport(t, c, phase, itemID)
+}
+
+func takeReport(t *testing.T, c *caller, phase, itemID string) protocol.AsyncResultPayload {
 	t.Helper()
 	deadline := time.After(15 * time.Second)
 	for {
-		select {
-		case p := <-c.reports:
-			if p.Phase == phase {
+		for i, p := range c.seen {
+			if p.Phase == phase && (itemID == "" || p.ItemID == itemID) {
+				c.seen = append(c.seen[:i], c.seen[i+1:]...)
 				return p
 			}
+		}
+		select {
+		case p := <-c.reports:
+			c.seen = append(c.seen, p)
 		case <-deadline:
-			t.Fatalf("等待 phase=%s 的补报超时", phase)
+			t.Fatalf("等待补报超时：phase=%s item=%q；已收到 %v", phase, itemID, phasesOf(c.seen))
+		}
+	}
+}
+
+// phasesOf 列出已到的补报，超时时一眼看出是谁先到了。
+func phasesOf(ps []protocol.AsyncResultPayload) []string {
+	out := make([]string, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, fmt.Sprintf("%s/%s", p.Phase, p.ItemID))
+	}
+	return out
+}
+
+// TestWaitReportItemIgnoresArrivalOrder：补报按**倒序**到达（CI 上真实发生过），
+// 三条仍应各自认领得到——旧写法（不匹配即丢）在这里会丢掉 a 的"被拒"，然后卡在等待。
+func TestWaitReportItemIgnoresArrivalOrder(t *testing.T) {
+	c := &caller{reports: make(chan protocol.AsyncResultPayload, 8)}
+	c.reports <- protocol.AsyncResultPayload{ItemID: "c", Phase: "rejected", Text: "队列已满"}
+	c.reports <- protocol.AsyncResultPayload{ItemID: "b", Phase: "approved", Text: "已排队"}
+	c.reports <- protocol.AsyncResultPayload{ItemID: "a", Phase: "approved", Text: "开始执行"}
+
+	for _, tc := range []struct{ item, phase, text string }{
+		{"a", "approved", "开始执行"},
+		{"b", "approved", "已排队"},
+		{"c", "rejected", "队列已满"},
+	} {
+		if p := waitReportItem(t, c, tc.phase, tc.item); p.Text != tc.text {
+			t.Fatalf("%s 的补报认错: %+v", tc.item, p)
 		}
 	}
 }
@@ -467,28 +518,23 @@ func TestQueueLimitRejectsWhenFull(t *testing.T) {
 	s := startShell(t, sc, server.Config{Root: t.TempDir(), Shell: sh, Approver: allowAll{}, Concurrency: 1, QueueLimit: 1})
 	c := dial(t, s.WsURL())
 
-	run(t, c, sleep, "")
-	run(t, c, sleep, "")
+	first := run(t, c, sleep, "")
+	second := run(t, c, sleep, "")
 	third := run(t, c, sleep, "")
 
-	// 前两条：一条立即执行、一条排队。
-	if p := waitReport(t, cl, "approved"); !strings.Contains(p.Text, "准备执行") {
+	// 三条都有补报，按句柄认领（到达顺序不保证，见 waitReportItem）。
+	if p := waitReportItem(t, cl, "approved", first.ItemID); !strings.Contains(p.Text, "准备执行") {
 		t.Fatalf("第一条应已取得执行槽位: %q", p.Text)
 	}
-	if p := waitReport(t, cl, "approved"); !strings.Contains(p.Text, "已排队") {
+	if p := waitReportItem(t, cl, "approved", second.ItemID); !strings.Contains(p.Text, "已排队") {
 		t.Fatalf("第二条应已排队: %q", p.Text)
 	}
-	// 第三条：队列已满 → 拒绝执行（句柄对得上）。
-	p := waitReport(t, cl, "rejected")
-	if p.ItemID != third.ItemID {
-		t.Fatalf("被拒的应是第三条: %s != %s", p.ItemID, third.ItemID)
-	}
-	if !strings.Contains(p.Text, "队列已满") {
+	if p := waitReportItem(t, cl, "rejected", third.ItemID); !strings.Contains(p.Text, "队列已满") {
 		t.Fatalf("拒绝原因应为队列已满: %q", p.Text)
 	}
 	// 前两条最终都跑完（排队的那条会被补位）。
-	waitReport(t, cl, "done")
-	waitReport(t, cl, "done")
+	waitReportItem(t, cl, "done", first.ItemID)
+	waitReportItem(t, cl, "done", second.ItemID)
 }
 
 // TestTimeoutTerminates：执行超时 → 记录 timed_out 与退出码 -1；命令被终止（不是任它跑完）。

@@ -25,6 +25,8 @@
 
 启动器只运行设置中心（19000）、approval（19801）、shell（19701）。工作目录为 `command-work/`，设置和日志在 `command-runtime/`，停止按 Ctrl+C。三个端口均可通过启动参数修改；若改中心端口，提交时同步指定 `-Center ws://127.0.0.1:新端口/ws`。这个观察客户端不模拟模型思考，是真实工具链的命令行入口。
 
+主项目的 `scripts/run-local.ps1` 同时启动 approval 和 timer：approval 默认 `127.0.0.1:9901`（与 `approval serve` 一致），timer 保留 `127.0.0.1:9801`。可分别通过 `-ApprovalAddr`、`-TimerAddr` 修改；独立演示启动器的 19801 不受影响。
+
 停止启动器会停止三个服务；沿用原 shell 的退出语义，已经启动的命令子进程不保证同时终止。因此维护者扩展为长时间操作后，需要另外处理运行任务的停止与恢复。
 
 若系统执行策略阻止 `.ps1`，可在此次启动进程使用 `powershell -NoProfile -ExecutionPolicy Bypass -File .\start-command-approval.ps1`；这不会修改系统执行策略。提交也可直接使用 `bin/sump-approval.exe send -center ws://127.0.0.1:19000/ws -command "Get-Location"`。

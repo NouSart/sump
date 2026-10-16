@@ -65,7 +65,7 @@ func newEngine(path string) (*engine.Engine, string, error) {
 
 func serve(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	addr := fs.String("addr", "127.0.0.1:9801", "监听地址")
+	addr := fs.String("addr", "127.0.0.1:9901", "监听地址")
 	center := fs.String("center", "ws://127.0.0.1:9000/ws", "设置中心")
 	name := fs.String("name", "approval", "服务名")
 	path := fs.String("policy", "", "本地 JSON 规则包；中心 policy.json 可覆盖")

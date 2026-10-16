@@ -45,7 +45,7 @@ jobs:
 
       - name: 各模块测试
         run: |
-          for m in protocol service settings-center reasoner memory images qq shell approval approval-integration; do
+          for m in protocol service settings-center reasoner memory images qq shell timer approval approval-integration; do
             echo "== 模块: $m =="
             if [[ "$m" == approval* ]]; then
               (cd "$m" && go test -v ./... -count=1 -timeout 300s)
@@ -61,7 +61,7 @@ jobs:
 
       - name: 脱离工作区构建（GOWORK=off）
         run: |
-          for m in protocol service settings-center reasoner memory images qq shell tests approval approval-integration; do
+          for m in protocol service settings-center reasoner memory images qq shell timer tests approval approval-integration; do
             echo "== $m =="
             (cd "$m" && GOWORK=off go build ./...)
           done
