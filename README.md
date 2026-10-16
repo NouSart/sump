@@ -3,7 +3,7 @@
 [![CI](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml/badge.svg)](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-> 状态：M9 完成（**shell 命令执行服务**：受理即回执 + 审批接缝（未接入 = 一律未通过）+ `report_result` 补报） · 长期记忆与 embedding 语义召回（M8，Python 服务） · 前端服务 v1（设置中心可视化面板） · 设计文档：[DESIGN.md](./DESIGN.md)
+> 状态：M10 完成（**设置全链路**：秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传 + reasoner 全参数可热改） · M9（**shell 命令执行服务**：受理即回执 + 审批接缝（未接入 = 一律未通过）+ `report_result` 补报） · 长期记忆与 embedding 语义召回（M8，Python 服务） · 前端服务 v1（设置中心可视化面板） · 设计文档：[DESIGN.md](./DESIGN.md)
 
 SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独立运行（独立进程、独立数据库、任意语言），通过 WebSocket 按地址互相访问；智能体循环由 LLM 服务在服务网络之上自由跳转、组装。
 
@@ -36,7 +36,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 ```
 
 - 自定义地址：`.\scripts\run-local.ps1 -CenterAddr 127.0.0.1:9000 -MemoryAddr 127.0.0.1:9201 -EmbeddingAddr 127.0.0.1:9601 -ImageAddr 127.0.0.1:9401 -QQAddr 127.0.0.1:9301 -ShellAddr 127.0.0.1:9701 -ReasonerAddr 127.0.0.1:9101 -FrontendAddr 127.0.0.1:9501`
-- 设置面板：<http://127.0.0.1:9501/>——查看各服务声明的设置项、修改（中心受理即回执，不等待服务送达）/ 重置；名册、连接状态与设置结果（行状态：已覆盖·待确认 / 已覆盖·未送达；提示：已生效 / 未生效 + 原因）事件驱动实时刷新（SSE，无刷新按钮）；首次运行会自动 `npm install` + `npm run build`（需要 Node ≥ 22.18，推荐 24）
+- 设置面板：<http://127.0.0.1:9501/>——查看各服务声明的设置项、修改（中心受理即回执，不等待服务送达）/ 重置；设置项分三类：普通项（值 + 默认值）/ 秘密项（只显示「已设置」与否，值由服务自己保存、不回显）/ 只读项（启动值 + 不可改）；名册、连接状态与设置结果（行状态：已覆盖·待确认 / 已覆盖·未送达；提示：已生效 / 未生效 + 原因）事件驱动实时刷新（SSE，无刷新按钮）；首次运行会自动 `npm install` + `npm run build`（需要 Node ≥ 22.18，推荐 24）
 - 前端单独开发：`cd frontend; npm run build`（构建）/ `npm test`（协议 + 链路 + API + 面板组件测试）
 - 接 QQ（NapCat 正向 WS，仅私聊）：`.\scripts\run-local.ps1 -Owner 2271917353 -NapCatURL ws://192.168.11.196:3001 -NapCatToken <token>`——连不上会自动重试，不影响其余服务
 - shell（命令执行，工作目录根 = 仓库根）：**审批未接入时一律“未通过”**——命令不会被真正执行（fail-closed）；审批协议落地后由审批服务裁决。边界：工作目录越界即拒（含软链解析）、执行超时后终止整棵进程树、单流输出超上限截断并标注总数、并行上限与待执行队列上限（满即拒绝执行）。细则与设置项：[shell/README.md](./shell/README.md)
@@ -60,6 +60,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - [x] 长期记忆（M6）：`remember`（provides → 自动成为 LLM 工具）/ `forget` 软删；核心注入（priority）；recall 组装三节（最近对话 / 核心 / 相关）
 - [x] 工具暴露显式声明（`provides` 里 `tool: true`）+ 设置下发（`configure`）：中心 set/reset 后推送生效值，reasoner 实时应用（启动拉取兜底）
 - [x] 设置热链（M7）：注册即全量下发（受理回执不等待送达）｜`settings` 事件回传结果（ok=true / ok=false + 原因）｜骨架通用接收（`HandleSetting` 声明 + 校验 + 应用；注册后异步拉取兜底）｜设置项接入全部服务（reasoner 3 / memory 5 / images 1 / qq 1 / 中心 2）｜面板事件驱动自动刷新（无刷新按钮）
+- [x] 设置全链路（M10）：**秘密项**（`HandleSecret`：值不进中心——不落盘、不回显，只在提交那一次转发给服务，服务自己持久化 `data/<名>-secret.json` 并在启动时加载；名片只报「有没有值」；注册对齐不含它）｜**只读项**（`HandleReadOnly`：进面板展示启动值、改动明确拒绝）｜**服务自报**（`AnnounceSetting` → `report_setting`：服务侧的值自己变了实时回传，中心不改覆盖值，面板同时显示「中心口径」与「服务侧」两列，不一致给「服务侧已变」标记）｜面板三类渲染（秘密项密码框覆盖 / 清空；只读项无修改入口）｜reasoner 参数全部入面板（`llm.*` / `memory` / `images` 热改 + `name`/`addr`/`center` 只读）
 - [x] 前端服务 v1（`frontend`）：设置中心可视化面板——TS 服务节点（注册 / 心跳 / 名册）+ HTTP JSON + SSE；设置查看 / 修改（configure 下发）/ 重置；瑞典极简界面（React/Vite + 系统无衬线字体）；协议以 Go 产出夹具做跨语言字节级锚定
 - [x] embedding 服务（M8，Python）：文本 → 向量（onnxruntime + tokenizers 本地推理；fake 后端供测试与 CI）；协议 / 注册自愈 / 双后端
 - [x] 语义召回（M8）：memory 接入 embedding——向量列（派生、懒补齐）+ 余弦 ≥0.45 阈值 + **bigram 兜底**（服务缺席/超时静默回落）；跨语言真进程 e2e；query 前缀 A/B 实测（no-prefix 胜出）

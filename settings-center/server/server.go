@@ -265,11 +265,14 @@ func (c *serverConn) handleRegister(env protocol.Envelope) {
 	} else {
 		c.logger.Printf("重连: %s（名片无变化，不广播）", reg.Name)
 	}
-	// 注册即对齐（不阻塞注册响应）：声明非空 → 全量逐键下发（异步、有界重试）；
-	// 声明清空但有变化 → 只广播一次事件（面板刷新）。
+	// 注册即对齐（不阻塞注册响应）：声明的普通项 → 全量逐键下发（异步、有界重试）；
+	// 只有秘密项 / 只读项（没有可对齐的普通项）→ 只广播一次事件（面板刷新）。
 	if len(reg.Settings) > 0 {
-		items := c.settings.Items(reg.Name)
-		go c.srv.pushSettings(reg.Name, items, "register")
+		if items := c.settings.PushItems(reg.Name); len(items) > 0 {
+			go c.srv.pushSettings(reg.Name, items, "register")
+		} else if declChanged {
+			c.srv.broadcastSettings(protocol.SettingsEventPayload{Cause: "register", Service: reg.Name})
+		}
 	} else if declChanged {
 		c.srv.broadcastSettings(protocol.SettingsEventPayload{Cause: "register", Service: reg.Name})
 	}
@@ -309,6 +312,8 @@ func (c *serverConn) handleJump(env protocol.Envelope) {
 		c.handleSetSetting(env, jp)
 	case "reset_setting":
 		c.handleResetSetting(env, jp)
+	case "report_setting":
+		c.handleReportSetting(env, jp)
 	case "report":
 		c.handleReport(env, jp)
 	default:
@@ -361,8 +366,13 @@ func (c *serverConn) handleSetSetting(env protocol.Envelope, jp protocol.JumpPay
 		c.replyError(env, err.Error())
 		return
 	}
-	c.logger.Printf("设置变更: %s.%s = %q（来自 %s）", p.Service, p.Key, p.Value, env.From)
-	c.srv.applyOrPush(p.Service, ss, p.Key, "set_setting")
+	item, hasItem := viewOf(ss, p.Key)
+	if hasItem && item.Secret {
+		c.logger.Printf("设置变更: %s.%s（秘密，不回显）（来自 %s）", p.Service, p.Key, env.From)
+	} else {
+		c.logger.Printf("设置变更: %s.%s = %q（来自 %s）", p.Service, p.Key, p.Value, env.From)
+	}
+	c.srv.applyOrPush(p.Service, ss, p.Key, "set_setting", p.Value)
 	c.replyData(env, protocol.SettingsResult{Services: []protocol.ServiceSettings{ss}})
 }
 
@@ -379,21 +389,41 @@ func (c *serverConn) handleResetSetting(env protocol.Envelope, jp protocol.JumpP
 		return
 	}
 	c.logger.Printf("设置重置: %s.%s → 预设值（来自 %s）", p.Service, p.Key, env.From)
-	c.srv.applyOrPush(p.Service, ss, p.Key, "reset_setting")
+	// 秘密项的重置 = 推一个空值过去，让服务自己清掉本地那份。
+	c.srv.applyOrPush(p.Service, ss, p.Key, "reset_setting", "")
+	c.replyData(env, protocol.SettingsResult{Services: []protocol.ServiceSettings{ss}})
+}
+
+// handleReportSetting 承接「服务自报实际值」（服务侧的值自己变了）：只更新服务侧那一列，
+// **不动**中心手里的覆盖值；秘密项只认「有没有值」。结果以 settings 事件广播（面板实时刷新）。
+func (c *serverConn) handleReportSetting(env protocol.Envelope, jp protocol.JumpPayload) {
+	var p protocol.ReportSettingPayload
+	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
+		c.replyError(env, "bad report_setting payload")
+		return
+	}
+	ss, err := c.settings.Report(p.Service, p.Key, p.Value, p.Set, p.Seq)
+	if err != nil {
+		c.replyError(env, err.Error())
+		return
+	}
+	if item, found := viewOf(ss, p.Key); found && item.Secret {
+		c.logger.Printf("设置回传: %s.%s（秘密，只回有没有值）（来自 %s）", p.Service, p.Key, env.From)
+	} else {
+		c.logger.Printf("设置回传: %s.%s = %q（来自 %s）", p.Service, p.Key, p.Value, env.From)
+	}
+	c.srv.broadcastSettings(protocol.SettingsEventPayload{
+		Cause: "report_setting", Service: p.Service,
+		Results: []protocol.SettingResult{{Key: p.Key, OK: true}},
+	})
 	c.replyData(env, protocol.SettingsResult{Services: []protocol.ServiceSettings{ss}})
 }
 
 // applyOrPush 落地一次设置变更：设置中心自身 → 本地应用并广播结果；
 // 其余服务 → 异步逐键下发（不阻塞调用方，结果与失败以 settings 事件回传）。
-func (s *Server) applyOrPush(service string, ss protocol.ServiceSettings, key, cause string) {
-	var item protocol.SettingView
-	found := false
-	for _, v := range ss.Settings {
-		if v.Key == key {
-			item, found = v, true
-			break
-		}
-	}
+// submitted 是调用方这次提交的原文：秘密项的值只在这里透传一下，中心不保存它。
+func (s *Server) applyOrPush(service string, ss protocol.ServiceSettings, key, cause, submitted string) {
+	item, found := viewOf(ss, key)
 	if !found {
 		return
 	}
@@ -409,7 +439,20 @@ func (s *Server) applyOrPush(service string, ss protocol.ServiceSettings, key, c
 		s.broadcastSettings(protocol.SettingsEventPayload{Cause: cause, Service: service, Results: []protocol.SettingResult{res}})
 		return
 	}
+	if item.Secret {
+		item.Value = submitted
+	}
 	go s.pushSettings(service, []protocol.SettingView{item}, cause)
+}
+
+// viewOf 在设置视图里按 key 找一项。
+func viewOf(ss protocol.ServiceSettings, key string) (protocol.SettingView, bool) {
+	for _, v := range ss.Settings {
+		if v.Key == key {
+			return v, true
+		}
+	}
+	return protocol.SettingView{}, false
 }
 
 // pushSettings 把某服务的设置项逐键以 configure 下发（有界重试：+0.5s、+2s），
@@ -443,8 +486,25 @@ func (s *Server) pushSettings(service string, items []protocol.SettingView, caus
 		results[i].Error = deliverErr
 	}
 
+	// 秘密项：下发成功才算「服务侧有值」——中心据此显示 已设置/未设置（值本身永不上线）。
+	secret := map[string]string{}
+	for _, it := range items {
+		if it.Secret {
+			secret[it.Key] = it.Value
+		}
+	}
 	for _, r := range results {
+		if v, isSecret := secret[r.Key]; isSecret {
+			if r.OK {
+				s.settings.MarkSecretSet(service, r.Key, v != "")
+				s.logger.Printf("configure 已推送: %s.%s（秘密，不回显）", service, r.Key)
+			} else {
+				s.logger.Printf("configure 推送未生效: %s.%s（秘密）: %s", service, r.Key, r.Error)
+			}
+			continue
+		}
 		if r.OK {
+			s.settings.NotePushed(service, r.Key, r.Value)
 			s.logger.Printf("configure 已推送: %s.%s = %q", service, r.Key, r.Value)
 		} else {
 			s.logger.Printf("configure 推送未生效: %s.%s: %s", service, r.Key, r.Error)
@@ -502,7 +562,9 @@ func (s *Server) pushAttempt(service string, items []protocol.SettingView, idxs 
 			continue
 		}
 		results[i].OK = true
-		results[i].Value = it.Value
+		if !it.Secret {
+			results[i].Value = it.Value
+		}
 	}
 	return remaining, lastErr
 }

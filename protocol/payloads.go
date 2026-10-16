@@ -16,9 +16,18 @@ type Provide struct {
 }
 
 // Setting 是服务的一个可设置项。
+// 三种声明（互斥）：
+//   - 普通项：值由设置中心保管（覆盖值落盘于中心），注册时全量对齐下发；
+//   - Secret（`Secret`）：值**不进设置中心**（不落盘、不回显、list 恒回空串）——
+//     中心只转发一次，由**用它服务自己**持久化（见 service 骨架的 HandleSecret）；
+//     `Set` 表示该服务当前是否已有值（面板据此显示「已设置」，值本身永不上线）；
+//   - ReadOnly（`ReadOnly`）：启动参数带起来的只读值，进面板可见但不可改（`Default` 即启动值）。
 type Setting struct {
-	Key     string `msgpack:"key"`
-	Default string `msgpack:"default,omitempty"`
+	Key      string `msgpack:"key"`
+	Default  string `msgpack:"default,omitempty"`
+	Secret   bool   `msgpack:"secret,omitempty"`
+	ReadOnly bool   `msgpack:"readonly,omitempty"`
+	Set      bool   `msgpack:"set,omitempty"` // 仅 Secret 有意义：服务侧当前是否已有值
 }
 
 // RegisterPayload 是 register 请求的 payload：服务名片。
@@ -150,11 +159,18 @@ type ImageFetchResult struct {
 // ---------- 设置中心：设置存取 ----------
 
 // SettingView 是一个设置项的当前状态（设置中心对外呈现）。
+// Secret 项的 Value 恒为空串（中心根本没有值可回：秘密由服务自己持有）；
+// ReadOnly 项的 Value 是服务的启动值，不可改。
 type SettingView struct {
 	Key        string `msgpack:"key"`
-	Value      string `msgpack:"value"`      // 当前生效值（有覆盖值时为覆盖值，否则为默认值）
-	Default    string `msgpack:"default"`    // 服务注册时声明的默认值
-	Overridden bool   `msgpack:"overridden"` // 是否被设置中心覆盖
+	Value      string `msgpack:"value"`              // 当前生效值（中心口径：覆盖值 ?? 声明预设；Secret 恒空；ReadOnly 为启动值）
+	Default    string `msgpack:"default"`            // 服务注册时声明的默认值（Secret 恒空）
+	Overridden bool   `msgpack:"overridden"`         // 是否处于覆盖状态（Secret 恒 false）
+	Secret     bool   `msgpack:"secret,omitempty"`   // 值由服务自己持有，不回显
+	ReadOnly   bool   `msgpack:"readonly,omitempty"` // 不可改（需重启改启动参数）
+	Set        bool   `msgpack:"set,omitempty"`      // 仅 Secret：服务侧当前是否已有值
+	Actual     string `msgpack:"actual"`             // 服务侧自报的实际值（没回传过为空串）
+	Reported   bool   `msgpack:"reported,omitempty"` // 服务是否回传过实际值（Actual 为空串时靠它区分"没报过"与"报了空值"）
 }
 
 // ServiceSettings 是一个服务的设置清单（按声明顺序）。
@@ -194,6 +210,19 @@ type ConfigurePayload struct {
 	Value      string `msgpack:"value"`      // 生效值 = 覆盖值 ?? 声明默认值
 	Default    string `msgpack:"default"`    // 服务声明的默认值
 	Overridden bool   `msgpack:"overridden"` // 是否处于覆盖状态
+}
+
+// ReportSettingPayload 是「服务 → 设置中心」的设置回传（动作 report_setting）：
+// 服务侧的值**自己变了**时主动报个事实，中心据此更新服务侧实际值（面板实时可见），
+// 它**不改**中心手里的覆盖值（谁的值是谁的，两边都看得见）。
+// Secret 项 Value 恒空（值永不上线：只回「有没有值」）；Seq 服务内单调递增，
+// 中心丢弃乱序到达的旧报（补报与回传的到达顺序都没有保证）。
+type ReportSettingPayload struct {
+	Service string `msgpack:"service"`
+	Key     string `msgpack:"key"`
+	Value   string `msgpack:"value,omitempty"`
+	Set     bool   `msgpack:"set,omitempty"`
+	Seq     int64  `msgpack:"seq,omitempty"`
 }
 
 // SettingResult 是一次下发中单个设置项的结果（settings 事件用）。

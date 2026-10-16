@@ -798,6 +798,18 @@ body[data-ds-dark-theme] {
   color: var(--dsw-alias-label-secondary);
 }
 
+/* 服务侧自报的值与中心口径不一致（服务自己变了）：用描边区别于「已覆盖」的实底 */
+.tag-drift {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 6px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-xs);
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+}
+
 /* ---------- 提示条 ---------- */
 
 .toasts {

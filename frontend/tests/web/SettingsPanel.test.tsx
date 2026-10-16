@@ -11,6 +11,26 @@ const svc = { name: 'images', addr: 'ws://127.0.0.1:9401/ws', description: '图�
 
 const defaultRow: SettingViewData = { key: 'max_mb', value: '32', default: '32', overridden: false };
 const overriddenRow: SettingViewData = { key: 'owner', value: '10001', default: '', overridden: true };
+// 秘密项：中心手里没有值，只有一个「服务侧有没有值」的标记
+const secretRow: SettingViewData = { key: 'llm.key', value: '', default: '', overridden: false, secret: true, set: true };
+const secretUnsetRow: SettingViewData = { key: 'napcat.token', value: '', default: '', overridden: false, secret: true };
+// 只读项：值是服务启动参数
+const readOnlyRow: SettingViewData = {
+  key: 'addr',
+  value: '127.0.0.1:9101',
+  default: '127.0.0.1:9101',
+  overridden: false,
+  readonly: true,
+};
+// 服务侧自己变了：服务回传的实际值与中心口径的生效值不一致
+const driftedRow: SettingViewData = {
+  key: 'demo.mode',
+  value: 'batch',
+  default: 'each',
+  overridden: true,
+  actual: 'self-changed',
+  reported: true,
+};
 
 function renderPanel(over: Partial<ComponentProps<typeof SettingsPanel>> = {}) {
   return render(
@@ -54,6 +74,72 @@ describe('SettingsPanel', () => {
     assert.ok(screen.getByText('默认 —')); // 空默认值回落 —
     // 重置是覆盖行上的文字链，只在覆盖行出现
     assert.equal(screen.getAllByText('重置').length, 1);
+  });
+
+  it('秘密项已设置：只显示占位不当默认值，覆盖走密码框，值原样交给 onSave', async () => {
+    const onSave = vi.fn(async () => {});
+    renderPanel({ settings: [secretRow], onSave });
+    assert.ok(screen.getByText('已设置'));
+    assert.ok(screen.getByText('••••••••'));
+    assert.ok(screen.getByText(/值由服务自己保存/)); // 不是「默认 —」
+    assert.ok(screen.getByText('清空')); // 有值才有清空链
+
+    fireEvent.click(screen.getByText('覆盖'));
+    const input = screen.getByLabelText('llm.key 的新值') as HTMLInputElement;
+    assert.equal(input.type, 'password'); // 输入期也不明文露脸
+    assert.equal(input.value, ''); // 中心本来就没有值可回填
+    // 不给值不让保存：清空是另一条链
+    assert.equal((screen.getByText('保存').closest('button') as HTMLButtonElement).disabled, true);
+    fireEvent.change(input, { target: { value: 'sk-2f9c' } });
+    fireEvent.click(screen.getByText('保存'));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'llm.key', 'sk-2f9c'));
+  });
+
+  it('秘密项未设置：未设置 + 设置按钮，不出现清空链', () => {
+    renderPanel({ settings: [secretUnsetRow] });
+    assert.ok(screen.getByText('未设置'));
+    assert.ok(screen.getByText('设置'));
+    assert.equal(screen.queryByText('清空'), null);
+    assert.equal(screen.queryByText('覆盖'), null);
+  });
+
+  it('秘密项清空：两步确认后调 onReset（中心据此推空值给服务）', async () => {
+    const onReset = vi.fn(async () => {});
+    renderPanel({ settings: [secretRow], onReset });
+    fireEvent.click(screen.getByText('清空'));
+    assert.ok(screen.getByText('确认清空'));
+    expect(onReset).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('确认清空'));
+    await waitFor(() => expect(onReset).toHaveBeenCalledWith('images', 'llm.key'));
+  });
+
+  it('只读项：显示启动值且没有可改入口', () => {
+    renderPanel({ settings: [readOnlyRow] });
+    assert.ok(screen.getByText('127.0.0.1:9101')); // 启动值照面
+    const tag = screen.getByText('不可改');
+    assert.ok(tag.getAttribute('title')?.includes('重启')); // 说清楚为什么不能改
+    assert.ok(screen.getByText(/启动参数带起来的只读值/));
+    assert.equal(screen.queryByText('修改'), null);
+    assert.equal(screen.queryByText('重置'), null);
+  });
+
+  it('服务侧自报值不一致：加「服务侧已变」标签 + 实际值走提示行', () => {
+    renderPanel({ settings: [driftedRow] });
+    const tag = screen.getByText('服务侧已变');
+    assert.equal(tag.getAttribute('title'), '服务侧现值：self-changed');
+    assert.ok(screen.getByText('默认 each')); // 提示行仍是默认值
+    assert.ok(screen.getByText(/服务侧 self-changed/)); // 服务侧那一列
+    assert.ok(screen.getByText('已覆盖')); // 中心口径的状态标签没被顶掉
+  });
+
+  it('回传过但一致 / 从没回传过：都不显示「服务侧已变」', () => {
+    const { unmount } = renderPanel({ settings: [{ ...driftedRow, actual: 'batch' }] });
+    assert.equal(screen.queryByText('服务侧已变'), null);
+    unmount();
+    renderPanel({
+      settings: [{ key: 'demo.mode', value: 'batch', default: 'each', overridden: true, actual: '', reported: false }],
+    });
+    assert.equal(screen.queryByText('服务侧已变'), null);
   });
 
   it('行状态：待确认 / 未送达（带原因 title）优先于覆盖态', () => {

@@ -20,6 +20,14 @@ export interface SettingViewData {
   value: string;
   default: string;
   overridden: boolean;
+  // 秘密项：值由服务自己持有，中心只回「有没有值」（secret/set），Value 恒空；
+  // 只读项：值来自服务启动参数，面板只展示不可改（readonly）；
+  // actual：服务自报的实际值（与 value 不一致 = 服务侧自己变了）；reported 区分"没报过"与"报了空值"。
+  secret?: boolean;
+  set?: boolean;
+  readonly?: boolean;
+  actual?: string;
+  reported?: boolean;
 }
 
 // SettingResultViewData 是一次下发中单个设置项的结果（settings 事件）。
