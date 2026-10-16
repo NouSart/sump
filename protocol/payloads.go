@@ -1,6 +1,10 @@
 package protocol
 
-import "github.com/vmihailenco/msgpack/v5"
+import (
+	"math"
+
+	"github.com/vmihailenco/msgpack/v5"
+)
 
 // Provide 描述服务对外提供的一个动作（“接受什么输入、有什么输出”）。
 type Provide struct {
@@ -223,6 +227,34 @@ type ReportSettingPayload struct {
 	Value   string `msgpack:"value,omitempty"`
 	Set     bool   `msgpack:"set,omitempty"`
 	Seq     int64  `msgpack:"seq,omitempty"`
+}
+
+// NormalizeJSONNumbers 把 JSON 解出来的数字归一化：整数值的 float64 → int64，其余原样（递归）。
+//
+// 为什么需要它：LLM 给的工具参数是 JSON，`encoding/json` 把数字一律解成 float64，
+// 直接 msgpack 编码会写成浮点（0xcb），而服务侧载荷里的整数字段（ms、priority…）解码会
+// 直接失败（"msgpack: invalid code=cb decoding int64"）。凡是把 **LLM 给的 JSON 转成协议载荷**
+// 的地方，都先过一遍这个函数。
+func NormalizeJSONNumbers(v any) any {
+	switch t := v.(type) {
+	case float64:
+		if t == math.Trunc(t) && !math.IsInf(t, 0) && t >= -9223372036854775808 && t < 9223372036854775808 {
+			return int64(t)
+		}
+		return t
+	case map[string]any:
+		for k, val := range t {
+			t[k] = NormalizeJSONNumbers(val)
+		}
+		return t
+	case []any:
+		for i, val := range t {
+			t[i] = NormalizeJSONNumbers(val)
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 // SettingResult 是一次下发中单个设置项的结果（settings 事件用）。

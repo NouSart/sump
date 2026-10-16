@@ -103,7 +103,9 @@ func argsToRaw(args string) (msgpack.RawMessage, error) {
 	if err := json.Unmarshal([]byte(args), &v); err != nil {
 		return nil, fmt.Errorf("参数不是合法 JSON: %w", err)
 	}
-	return protocol.EncodePayload(v)
+	// LLM 的 JSON 数字是 float64：先归一成整数，否则服务侧的整数字段解码会失败
+	// （msgpack: invalid code=cb decoding int64 —— 实测 timer.sleep.ms / memory.remember.priority 都中过）。
+	return protocol.EncodePayload(protocol.NormalizeJSONNumbers(v))
 }
 
 // rawToJSONText 把 msgpack 原始数据转为 JSON 文本（给 LLM 阅读）。
