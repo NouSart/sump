@@ -279,7 +279,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | reasoner | Go | 单步推理器：任务入口经 memory 托管、收到 resume 才调 LLM；工具异步派发（即时回执 → 结果注入 → 唤醒），收尾门禁保护，结果 deliver 直达 boss |
 | memory | Go | 会话消息的唯一保管者；recall 取最近历史 + 长期记忆（核心注入 + bigram 召回）组装为记忆块后 resume 回调用方；remember 写入（幂等）/ forget 软删 |
 | images | Go | save（URL/base64 落盘）返回 id；fetch（id → base64） |
-| files | Go | save（URL/base64 + filename 落盘）返回 id；fetch（id → base64）；read（id → 截断文本 / .xlsx 转 TSV，`tool: true`）；write（`{id, sheet, edits:[{cell, value}]}` 单元格编辑，`tool: true`——就地修改 .xlsx 权威副本） |
+| files | Go | save（URL/base64 + filename 落盘）返回 id；fetch（id → base64）；read（id → 截断文本 / .xlsx 转 TSV / .docx 提取正文，`tool: true`）；write（`{id, sheet, edits:[{cell, value}]}` 单元格编辑，`tool: true`——就地修改 .xlsx 权威副本）；edit_word（`{id, operations:[{op, old, new}]}` 纯文本替换，`tool: true`——就地修改 .docx 正文） |
 | shell | Go | 受理即回执的命令执行（并行 + 待执行队列 + 超时终止 + 输出截断）；审批接缝（未接入 = 一律未通过）；结果由 `report_result` 补报 |
 | embedding | Python | 文本 → 向量（onnxruntime + tokenizers，CLS pooling + L2 归一）；动作 `embed`；fake 后端供测试与 CI |
 | qq | Go | 把主人私聊消息（图先存 images）打成 user_message 发给 reasoner；实现 deliver 回发私聊 |
@@ -297,8 +297,8 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | 类别 | 规则 | 现有值 |
 | ---- | ---- | ------ |
 | 消息类型（`type`） | 裸名词；请求 / 响应 / 事件方向固定（事件型只由中心广播） | `register` `response` `roster` `jump` `heartbeat`；事件：`roster` `settings` |
-| 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §6.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting` `embed` `run` `report_result`；骨架保留：`configure`；服务自定义（已实现）：`remember` `forget` `read` `write` |
-| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms`；文件链：`filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated`；embedding：`texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms` |
+| 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §6.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting` `embed` `run` `report_result`；骨架保留：`configure`；服务自定义（已实现）：`remember` `forget` `read` `write` `edit_word` |
+| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms`；文件链：`filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated` `operations` `op` `old` `new` `replaced`；embedding：`texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms` |
 | 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `files` `qq` `shell` `frontend` `embedding` |
 | 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `max_mb` `read_max_chars` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.concurrency` `exec.queue_limit` `approval.service` `approval.timeout_ms` |
 | 名片字段（`provides[]`） | 小写下划线；跨语言一致 | `action` `input` `output` `tool` `async` |
