@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { PendingApprovalView, PortalMessage, TimerView } from '../types';
 import { ApprovalStrip } from './ApprovalStrip';
 import type { Translate } from '../i18n';
-import { IconPaperclip, IconSend, IconSliders, IconTerminal } from './icons';
+import { IconAnswer, IconOutput, IconPaperclip, IconSend, IconSliders, IconSparkle, IconTerminal, IconUser } from './icons';
+import { Markdown } from './markdown';
 
 interface Props {
   connected: boolean;
@@ -41,53 +42,104 @@ export function remainingText(leftMS: number): string {
   return h > 0 ? `${String(h)}:${two(m)}:${two(s)}` : `${two(m)}:${two(s)}`;
 }
 
-// MessageItem 按记录类型画：对话是气泡；思考 / 终端命令 / 终端输出是轨迹条目
-// （思考与输出默认折叠——它们是过程，不该盖过结论；命令单行常显，一眼能看出跑了什么）。
-function MessageItem({ m, t }: { m: PortalMessage; t: Translate }) {
+// Step 是对话里的一步：左边一个图标 + 竖线（把相邻图标连起来），右边是这一步的内容。
+// 图标按步骤类型分：我 / 深度思考 / 命令 / 输出 / 答复——一眼能看出这条链走到哪了。
+function Step({ m, t }: { m: PortalMessage; t: Translate }) {
   const time = m.at === '' ? '' : m.at.slice(11, 19);
-  if (m.kind === 'reasoning') {
+  const kind = m.kind ?? (m.author === 'user' ? 'user' : 'assistant');
+
+  if (kind === 'user') {
     return (
-      <li className="msg-trace trace-reasoning">
-        <details>
-          <summary>
-            <span className="trace-kind">{t('ui.trace.thinking', '深度思考')}</span>
-            <span className="trace-preview">{firstLine(m.text)}</span>
-          </summary>
-          <p className="trace-text">{m.text}</p>
-        </details>
+      <li className="step step-user">
+        <span className="step-mark">
+          <IconUser />
+        </span>
+        <div className="step-body">
+          <div className="step-head">
+            <span className="step-title">{t('ui.me.name', '本机用户')}</span>
+            <time className="step-time">{time}</time>
+          </div>
+          <p className="step-text">{m.text}</p>
+        </div>
       </li>
     );
   }
-  if (m.kind === 'tool_call') {
+
+  if (kind === 'reasoning') {
     return (
-      <li className="msg-trace trace-cmd">
-        <span className="trace-kind">{m.meta?.tool ?? t('ui.trace.command', '命令')}</span>
-        <code className="trace-cmd-text">{m.text}</code>
-        {m.meta?.truncated === true && <span className="trace-note">{t('ui.trace.truncated', '已截断')}</span>}
+      <li className="step step-reasoning">
+        <span className="step-mark">
+          <IconSparkle />
+        </span>
+        <div className="step-body">
+          <details className="step-details">
+            <summary className="step-head">
+              <span className="step-title">{t('ui.trace.thinking', '深度思考')}</span>
+              <span className="step-preview">{firstLine(m.text)}</span>
+              <time className="step-time">{time}</time>
+            </summary>
+            <p className="trace-text">{m.text}</p>
+          </details>
+        </div>
       </li>
     );
   }
-  if (m.kind === 'tool_result') {
+
+  if (kind === 'tool_call') {
+    return (
+      <li className="step step-call">
+        <span className="step-mark">
+          <IconTerminal />
+        </span>
+        <div className="step-body">
+          <div className="step-head">
+            <span className="step-title">{m.meta?.tool ?? t('ui.trace.command', '命令')}</span>
+            <code className="step-cmd">{m.text}</code>
+            {m.meta?.truncated === true && <span className="step-note">{t('ui.trace.truncated', '已截断')}</span>}
+            <time className="step-time">{time}</time>
+          </div>
+        </div>
+      </li>
+    );
+  }
+
+  if (kind === 'tool_result') {
     const lines = m.text.split('\n').length;
     return (
-      <li className="msg-trace trace-output">
-        <details>
-          <summary>
-            <span className="trace-kind">{m.meta?.tool ?? t('ui.trace.output', '终端输出')}</span>
-            <span className="trace-preview">
-              {String(lines)} {t('ui.trace.lines', '行')}
-              {m.meta?.truncated === true ? ` · ${t('ui.trace.truncated', '已截断')}` : ''}
-            </span>
-          </summary>
-          <pre className="trace-pre">{m.text}</pre>
-        </details>
+      <li className="step step-result">
+        <span className="step-mark">
+          <IconOutput />
+        </span>
+        <div className="step-body">
+          <details className="step-details">
+            <summary className="step-head">
+              <span className="step-title">{m.meta?.tool ?? t('ui.trace.output', '终端输出')}</span>
+              <span className="step-preview">
+                {String(lines)} {t('ui.trace.lines', '行')}
+                {m.meta?.truncated === true ? ` · ${t('ui.trace.truncated', '已截断')}` : ''}
+              </span>
+              <time className="step-time">{time}</time>
+            </summary>
+            <pre className="trace-pre">{m.text}</pre>
+          </details>
+        </div>
       </li>
     );
   }
+
+  // 最终答复：图标收口，正文按 Markdown 渲染（代码块、列表、表格都画出来）。
   return (
-    <li className={m.author === 'user' ? 'msg msg-user' : 'msg msg-agent'}>
-      <p className="msg-text">{m.text}</p>
-      <time className="msg-time">{time}</time>
+    <li className="step step-answer">
+      <span className="step-mark">
+        <IconAnswer />
+      </span>
+      <div className="step-body">
+        <div className="step-head">
+          <span className="step-title">SUMP</span>
+          <time className="step-time">{time}</time>
+        </div>
+        <Markdown text={m.text} />
+      </div>
     </li>
   );
 }
@@ -97,7 +149,6 @@ function firstLine(text: string): string {
   const line = text.split('\n').find((l) => l.trim() !== '') ?? '';
   return line.length > 80 ? `${line.slice(0, 80)}…` : line;
 }
-
 // PortalView 是门户的对话面：消息流铺满整个面板，输入区（含待审/计时器/报错）作为浮层压在底部——
 // 所以输入框是悬浮的，消息能滚到它背后透出来。消息只有两条来源：本地回显，与 SSE 送来的 deliver。
 export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend, onOpenSettings, t }: Props) {
@@ -153,7 +204,7 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
           <li className="portal-empty">{t('ui.portal.empty', '发一条消息开始。回复会经 deliver 实时送回来。')}</li>
         ) : (
           messages.map((m, i) => (
-            <MessageItem key={`${String(m.seq ?? 0)}-${m.at}-${String(i)}`} m={m} t={t} />
+            <Step key={`${String(m.seq ?? 0)}-${m.at}-${String(i)}`} m={m} t={t} />
           ))
         )}
       </ol>

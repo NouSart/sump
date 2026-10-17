@@ -256,65 +256,74 @@ button { font: inherit; }
   flex: 1; min-height: 0; overflow-y: auto; scroll-behavior: smooth;
   /* 底部留出浮层高度（--dock-space 由 PortalView 量出来喂进来）：最后一条消息能滚到输入框上方 */
   margin: 0; padding: var(--gap-6) max(var(--gap-5), calc((100% - var(--col)) / 2)) var(--dock-space, var(--gap-4));
-  list-style: none; display: flex; flex-direction: column; gap: var(--gap-5);
+  list-style: none; display: flex; flex-direction: column;
 }
 .portal-empty { color: var(--text-3); font-size: var(--fs-meta); text-align: center; margin-top: 12vh; }
 
-.msg { display: flex; flex-direction: column; gap: 4px; }
-.msg-user { align-items: flex-end; }
-.msg-agent { align-items: flex-start; }
-.msg-text {
-  margin: 0;
-  max-width: min(62%, 560px);
-  padding: 12px 16px;
-  border-radius: var(--r-xl) var(--r-xl) var(--r-sm) var(--r-xl);
-  background: var(--accent-soft);
-  -webkit-backdrop-filter: blur(22px) saturate(150%);
-  backdrop-filter: blur(22px) saturate(150%);
-  border: 1px solid var(--accent-line);
-  box-shadow: var(--shadow-1);
-  white-space: pre-wrap; overflow-wrap: anywhere;
+/* ---------- 对话：一条时间线（每步一个图标，图标之间连线） ---------- */
+.step {
+  position: relative;
+  display: grid; grid-template-columns: 24px minmax(0, 1fr); column-gap: 10px;
+  padding-bottom: var(--gap-4);
 }
-/* agent：不带颜色的一丢丢云母 —— 不画气泡，只落在 L2 上 */
-.msg-agent .msg-text {
-  max-width: 68ch;
-  padding: 2px 4px;
-  background: transparent; border: 0; box-shadow: none;
-  -webkit-backdrop-filter: none; backdrop-filter: none;
-  border-radius: 0;
-}
-.msg-time {
-  font-family: var(--font-mono); font-size: var(--fs-micro);
-  color: var(--text-3); font-variant-numeric: tabular-nums; padding: 0 6px;
-}
-
-/* ---------- 过程轨迹（思考 / 终端命令 / 终端输出） ----------
-   它们是过程不是结论：细一号、灰一档、靠左，不抢气泡的视觉权重。 */
-.msg-trace {
-  max-width: 68ch;
-  font-size: var(--fs-micro);
+.step:last-child { padding-bottom: 0; }
+.step-mark {
+  position: relative; align-self: stretch;
+  display: flex; justify-content: center; padding-top: 1px;
   color: var(--text-3);
 }
-.msg-trace > details > summary {
-  display: flex; align-items: baseline; gap: 8px;
-  cursor: pointer; list-style: none;
-  padding: 3px 6px; border-left: 1px solid var(--border);
+/* 连线：从这一步的图标下沿画到下一步的图标（落在 step 的 padding 里，所以用负 bottom） */
+.step-mark::before {
+  content: ''; position: absolute; left: 50%; top: 22px; bottom: calc(-1 * var(--gap-4));
+  width: 1px; background: var(--text-3); opacity: 0.5; transform: translateX(-0.5px);
 }
-.msg-trace > details > summary::-webkit-details-marker { display: none; }
-.msg-trace > details > summary::before { content: '▸'; color: var(--text-3); }
-.msg-trace > details[open] > summary::before { content: '▾'; }
-.msg-trace > details > summary:hover { color: var(--text-2); }
-.trace-kind {
+.step:last-child .step-mark::before { display: none; }
+.step-answer .step-mark { color: var(--accent); }
+.step-body { min-width: 0; max-width: 78ch; }
+.step-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.step-title {
   flex: none; font-family: var(--font-mono); font-size: var(--fs-micro);
   color: var(--text-2); letter-spacing: 0.02em;
 }
-.trace-preview {
-  min-width: 0; color: var(--text-3);
+.step-preview {
+  min-width: 0; color: var(--text-3); font-size: var(--fs-micro);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.step-time {
+  margin-left: auto; flex: none;
+  font-family: var(--font-mono); font-size: var(--fs-micro); color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.step-note { flex: none; font-size: var(--fs-micro); color: var(--text-3); }
+
+/* 我：一块淡色底，和过程条目区分开（时间线是给"发生的事"，自己的话略突出） */
+.step-text {
+  margin: 6px 0 0; max-width: 68ch;
+  padding: 10px 14px; border-radius: var(--r-md);
+  background: var(--accent-soft); border: 1px solid var(--accent-line);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* 命令：等宽，一行，超长省略 */
+.step-cmd {
+  min-width: 0; color: var(--text-2);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 折叠的过程条目（思考 / 输出） */
+.step-details > summary {
+  cursor: pointer; list-style: none;
+}
+.step-details > summary::-webkit-details-marker { display: none; }
+.step-details > summary::before {
+  content: '▸'; flex: none; color: var(--text-3); font-size: var(--fs-micro);
+}
+.step-details[open] > summary::before { content: '▾'; }
+.step-details > summary:hover .step-title { color: var(--text); }
 .trace-text,
 .trace-pre {
-  margin: 4px 0 0 14px; padding: 8px 10px;
+  margin: 6px 0 0 12px; padding: 8px 10px;
   border-left: 1px solid var(--border);
   color: var(--text-2);
   white-space: pre-wrap; overflow-wrap: anywhere;
@@ -322,17 +331,43 @@ button { font: inherit; }
   font-family: var(--font-mono); font-size: var(--fs-micro); line-height: 1.6;
 }
 .trace-text { font-family: inherit; }
-.trace-cmd {
-  display: flex; align-items: baseline; gap: 8px;
-  padding: 3px 6px; border-left: 1px solid var(--border);
-}
-.trace-cmd-text {
-  min-width: 0; color: var(--text-2);
-  font-family: var(--font-mono); font-size: var(--fs-micro);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.trace-note { flex: none; color: var(--text-3); }
 
+/* ---------- Markdown（最终答复）：正文内联排版 ---------- */
+.md { max-width: 70ch; font-size: 15px; line-height: 1.65; color: var(--text); overflow-wrap: anywhere; }
+.md > *:first-child { margin-top: 6px; }
+.md > *:last-child { margin-bottom: 0; }
+.md p { margin: 0 0 8px; }
+.md h1, .md h2, .md h3, .md h4 { margin: 14px 0 6px; line-height: 1.35; font-weight: 600; }
+.md h1 { font-size: 20px; }
+.md h2 { font-size: 17px; }
+.md h3, .md h4 { font-size: 15px; }
+.md ul, .md ol { margin: 0 0 8px; padding-left: 22px; }
+.md li { margin: 3px 0; }
+.md li > p { margin: 0; }
+.md code {
+  font-family: var(--font-mono); font-size: 0.9em;
+  padding: 1px 5px; border-radius: 4px;
+  background: var(--surface-strong); border: 1px solid var(--border);
+}
+.md pre {
+  margin: 8px 0; padding: 10px 12px;
+  background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--r-sm);
+  overflow-x: auto;
+}
+.md pre code {
+  padding: 0; border: 0; background: transparent;
+  font-size: var(--fs-micro); line-height: 1.6;
+  white-space: pre;
+}
+.md blockquote {
+  margin: 8px 0; padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--border-strong); color: var(--text-2);
+}
+.md table { margin: 8px 0; border-collapse: collapse; font-size: var(--fs-meta); }
+.md th, .md td { padding: 4px 10px; border: 1px solid var(--border); text-align: left; }
+.md th { color: var(--text-2); font-weight: 500; background: var(--surface-strong); }
+.md a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.md hr { margin: 12px 0; border: 0; border-top: 1px solid var(--border); }
 /* ---------- 计时器（输入框上方一条极轻读数） ---------- */
 .timer-strip {
   width: min(var(--col), calc(100% - var(--gap-5) * 2));

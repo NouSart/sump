@@ -395,6 +395,20 @@ describe('App', () => {
     await screen.findByText('任务完成');
   });
 
+  it('对话：答复按 Markdown 渲染（代码块 / 列表 / 行内代码）', async () => {
+    boot({ openSettings: false });
+    await screen.findByRole('region', { name: '对话' });
+
+    const md = ['结论如下：', '', '```ts', 'const a = 1;', '```', '', '- 第一条', '- 第二条', '', '执行 `npm test` 即可。'].join('\n');
+    await emitSSE('deliver', { text: md, conversationId: 'web:private:owner', at: '2026-10-17T10:00:00Z' });
+
+    await screen.findByText('const a = 1;');
+    assert.ok(document.querySelector('.md pre code'), '代码块应渲染成 pre > code');
+    assert.equal(document.querySelectorAll('.md li').length, 2);
+    assert.equal(document.querySelector('.md')?.textContent?.includes('```'), false, '不该把围栏原样印出来');
+    assert.ok(document.querySelector('.md p code')?.textContent === 'npm test');
+  });
+
   it('对话：progress 事件把思考 / 终端命令 / 终端输出画成轨迹条目', async () => {
     boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
@@ -419,10 +433,12 @@ describe('App', () => {
     assert.equal(document.querySelector('.trace-text')?.textContent, '先看看现在几点，再决定要不要定闹钟。');
     assert.ok(screen.getByText('Get-Date'));
     assert.equal(screen.getAllByText('shell__run').length, 2, '命令与输出各带一次工具名');
-    const output = document.querySelector('.trace-output details') as HTMLDetailsElement;
+    const output = document.querySelector('.step-result details') as HTMLDetailsElement;
     assert.equal(output.open, false, '输出默认折叠');
     assert.equal(output.querySelector('.trace-pre')?.textContent, '2026-10-17 10:00:02\n第二行');
     assert.match(output.querySelector('summary')?.textContent ?? '', /2 行/);
+    // 每一步都有自己的图标（时间线靠它定位，图标之间由 CSS 连线）
+    assert.equal(document.querySelectorAll('.step-mark svg').length, 3);
 
     // 同一 seq 再推一遍（重连/补发）→ 不画第二遍
     await emitSSE('progress', {

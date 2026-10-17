@@ -116,3 +116,39 @@ export function IconChevronDown(): ReactElement {
     </svg>
   );
 }
+
+// ---------- 对话轨迹用的图标（每步一个，按步骤类型区分） ----------
+
+export function IconUser(): ReactElement {
+  return (
+    <svg {...box}>
+      <circle cx="8" cy="5.8" r="2.2" />
+      <path d="M3.9 12.8c.5-2 2.1-3.2 4.1-3.2s3.6 1.2 4.1 3.2" />
+    </svg>
+  );
+}
+
+export function IconSparkle(): ReactElement {
+  return (
+    <svg {...box}>
+      <path d="M8 2.8 9.1 6.9 13.2 8 9.1 9.1 8 13.2 6.9 9.1 2.8 8 6.9 6.9Z" />
+    </svg>
+  );
+}
+
+export function IconOutput(): ReactElement {
+  return (
+    <svg {...box}>
+      <path d="M3.6 4.8h8.8M3.6 8h8.8M3.6 11.2h5.4" />
+    </svg>
+  );
+}
+
+// IconAnswer 是最终答复的标记：一个菱形（与字标同一套几何，收口用）。
+export function IconAnswer(): ReactElement {
+  return (
+    <svg {...box}>
+      <path d="M8 3.1 12.9 8 8 12.9 3.1 8Z" />
+    </svg>
+  );
+}
