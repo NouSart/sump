@@ -60,12 +60,12 @@ type taskState struct {
 	running  bool                  // 是否有一轮 LLM 在跑（每会话同时至多一轮）
 	closed   bool                  // 已交付 / 被取代：残留事件一律丢弃
 
-	taskID    string // 这次工作所属的任务（记忆服务在 recall 时确定）
-	taskName  string // 任务名（写进系统提示，也是历史列表的标题）
-	judged    bool   // 本轮是否已用 task_status 判定过完成与否
-	judgedDone bool  // 判定结果：true = 任务完成
+	taskID      string // 这次工作所属的任务（记忆服务在 recall 时确定）
+	taskName    string // 任务名（写进系统提示，也是历史列表的标题）
+	judged      bool   // 本轮是否已用 task_status 判定过完成与否
+	judgedDone  bool   // 判定结果：true = 任务完成
 	judgedTitle string // 判定时顺带修正的任务名（空 = 不改）
-	judgeAsks int     // 已经为"必须先判定"催过几次（上限 2，防死循环）
+	judgeAsks   int    // 已经为"必须先判定"催过几次（上限 2，防死循环）
 }
 
 // ---------- 黑板操作 ----------

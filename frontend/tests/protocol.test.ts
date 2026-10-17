@@ -41,7 +41,7 @@ test('信封 roundtrip：键名与 Go 对齐、空字段不出现', () => {
 
 // Go 侧 protocol 包生成的字节（由 protocol/tmpgen 生成后固化；ULID 形态 id 固定）。
 const goRegister =
-  'h6F2AaJpZLowMUZJWFJFR0lTVEVSMDAwMDAwMDAwMDAwMKV0cmFjZadUUkFDRS0xpHR5cGWocmVnaXN0ZXKkZnJvbaVzdmMtYaJ0b69zZXR0aW5ncy1jZW50ZXKncGF5bG9hZIakbmFtZaVzdmMtYaRhZGRytndzOi8vMTI3LjAuMC4xOjk5OTkvd3OrZGVzY3JpcHRpb26s5aS55YW35pyN5YqhqHByb3ZpZGVzkYOmYWN0aW9upHBpbmemb3V0cHV0pHBvbmekdG9vbMOoc2V0dGluZ3ORgqNrZXmsZGVtby5zZXR0aW5np2RlZmF1bHSiNW2saGVhcnRiZWF0X21z0wAAAAAAADqY';
+  'h6F2AaJpZLowMUZJWFJFR0lTVEVSMDAwMDAwMDAwMDAwMKV0cmFjZadUUkFDRS0xpHR5cGWocmVnaXN0ZXKkZnJvbaVzdmMtYaJ0b69zZXR0aW5ncy1jZW50ZXKncGF5bG9hZIekbmFtZaVzdmMtYaRhZGRytndzOi8vMTI3LjAuMC4xOjk5OTkvd3OldGl0bGWm5ZCR6YePq2Rlc2NyaXB0aW9urOWkueWFt+acjeWKoahwcm92aWRlc5GDpmFjdGlvbqRwaW5npm91dHB1dKRwb25npHRvb2zDqHNldHRpbmdzkYKja2V5rGRlbW8uc2V0dGluZ6dkZWZhdWx0ojVtrGhlYXJ0YmVhdF9tc9MAAAAAAAA6mA==';
 const goRoster =
   'h6F2AaJpZLowMUZJWFJPU1RFUjAwMDAwMDAwMDAwMDAwMKV0cmFjZadUUkFDRS0ypHR5cGWmcm9zdGVypGZyb22vc2V0dGluZ3MtY2VudGVyonRvpXN2Yy1hp3BheWxvYWSCqHNlcnZpY2VzkYSkbmFtZaVzdmMtYaRhZGRytndzOi8vMTI3LjAuMC4xOjk5OTkvd3OrZGVzY3JpcHRpb26s5aS55YW35pyN5YqhrGhlYXJ0YmVhdF9tc9MAAAAAAAA6mKhyZXZpc2lvbtMAAAAAAAAAAw==';
 const goResponse =
@@ -62,6 +62,7 @@ test('解析 Go 产出的 register 信封（字段逐项）', () => {
   const p = env.payload as {
     name?: string;
     addr?: string;
+    title?: string;
     description?: string;
     provides?: { action?: string; output?: string; tool?: boolean }[];
     settings?: { key?: string; default?: string }[];
@@ -69,6 +70,7 @@ test('解析 Go 产出的 register 信封（字段逐项）', () => {
   };
   assert.equal(p?.name, 'svc-a');
   assert.equal(p?.addr, 'ws://127.0.0.1:9999/ws');
+  assert.equal(p?.title, '向量');
   assert.equal(p?.description, '夹具服务');
   assert.equal(p?.provides?.[0]?.action, 'ping');
   assert.equal(p?.provides?.[0]?.output, 'pong');
