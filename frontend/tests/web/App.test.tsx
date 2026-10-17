@@ -26,7 +26,7 @@ const okOverview = (r: RosterView) =>
 // boot 安装替身并挂载 App：
 //   - setResponse 可替换 set_setting 的应答（默认成功）；
 //   - messageResponse 可替换 /api/message 的应答（默认受理）；
-//   - openSettings=false 停在门户视图（设置现在要从侧栏底部进入）；
+//   - openSettings=false 停在对话视图（设置从输入框的「设置」进入）；
 //   - 返回的 setRoster 用于让 overview 桩跟随名册推进（与服务端一致：名册更新后重拉应见到新名册）。
 function boot(over: { setResponse?: () => Response; messageResponse?: () => Response; openSettings?: boolean } = {}) {
   let currentRoster = rosterOf(['images', 'qq']);
@@ -83,7 +83,7 @@ describe('App', () => {
     boot();
     await screen.findByRole('heading', { name: 'images' }); // 默认选中第一个服务
     assert.ok(screen.getByText('服务 · 2'));
-    assert.ok(screen.getByText('已连接'));
+    assert.ok(screen.getByRole('img', { name: '已连接设置中心' }));
     assert.ok(screen.getByTitle('1 个设置项')); // images 有 1 个设置项 → 角标
 
     fireEvent.click(screen.getByText('qq'));
@@ -256,10 +256,10 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'images' });
 
     await emitSSE('status', { connected: false });
-    await screen.findByText('未连接');
+    await screen.findByRole('img', { name: '未连接设置中心' });
 
     await emitSSE('status', { connected: true });
-    await screen.findByText('已连接');
+    await screen.findByRole('img', { name: '已连接设置中心' });
     await waitFor(() => expect(countCalls(calls, '/api/overview')).toBeGreaterThanOrEqual(2));
   });
 
@@ -287,30 +287,39 @@ describe('App', () => {
     }
   });
 
-  it('门户：首屏在门户视图，设置从侧栏底部进入并可关闭', async () => {
+  it('对话：首屏在对话视图，设置从输入框进入并可关闭', async () => {
     boot({ openSettings: false });
-    await screen.findByRole('heading', { name: /门户/ });
+    await screen.findByRole('region', { name: '对话' });
     assert.equal(screen.queryByRole('heading', { name: '设置' }), null, '首屏不该直接是设置页');
 
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
     assert.ok(screen.getByRole('heading', { name: '设置' }));
-    assert.ok(screen.getByText('服务 · 2'), '设置页里应有服务导航');
+    assert.ok(screen.getByText('服务 · 2'), '设置抽屉里应有服务导航');
 
-    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
-    assert.ok(screen.getByRole('heading', { name: /门户/ }));
+    fireEvent.click(screen.getByRole('button', { name: '关闭设置' }));
+    assert.ok(screen.getByRole('region', { name: '对话' }));
+    assert.equal(screen.queryByRole('heading', { name: '设置' }), null);
   });
 
-  it('门户：deliver 事件把智能体的消息落进对话', async () => {
+  it('对话：Esc 关闭设置抽屉', async () => {
+    boot();
+    await screen.findByRole('heading', { name: '设置' });
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => assert.equal(screen.queryByRole('heading', { name: '设置' }), null));
+  });
+
+  it('对话：deliver 事件把智能体的消息落进对话', async () => {
     boot({ openSettings: false });
-    await screen.findByRole('heading', { name: /门户/ });
+    await screen.findByRole('region', { name: '对话' });
 
     await emitSSE('deliver', { text: '任务完成', conversationId: 'web:private:owner', at: '2026-10-16T08:00:00Z' });
     await screen.findByText('任务完成');
   });
 
-  it('门户：发送 → POST /api/message + 本地回显', async () => {
+  it('对话：发送 → POST /api/message + 本地回显', async () => {
     const { calls } = boot({ openSettings: false });
-    await screen.findByRole('heading', { name: /门户/ });
+    await screen.findByRole('region', { name: '对话' });
 
     fireEvent.change(screen.getByLabelText('消息'), { target: { value: '你好' } });
     fireEvent.click(screen.getByText('发送'));
@@ -320,9 +329,9 @@ describe('App', () => {
     assert.equal(screen.queryByRole('alert'), null, '受理成功不应留下错误提示');
   });
 
-  it('门户：发送未被受理 → 明确提示未送达', async () => {
+  it('对话：发送未被受理 → 明确提示未送达', async () => {
     boot({ openSettings: false, messageResponse: () => jsonResponse({ error: '未知目标服务: reasoner（不在名册里）' }, 503) });
-    await screen.findByRole('heading', { name: /门户/ });
+    await screen.findByRole('region', { name: '对话' });
 
     fireEvent.change(screen.getByLabelText('消息'), { target: { value: '你好' } });
     fireEvent.click(screen.getByText('发送'));
@@ -330,27 +339,27 @@ describe('App', () => {
     await screen.findByText(/未送达：未知目标服务: reasoner/);
   });
 
-  it('外观：切深色写 body[data-ds-dark-theme] 并记住，切回浅色移除', () => {
+  it('外观：切深色写 <html data-theme> 并记住，切回浅色移除', () => {
     window.localStorage.clear();
-    delete document.body.dataset.dsDarkTheme;
-    boot({ openSettings: false });
+    delete document.documentElement.dataset.theme;
+    boot(); // 主题开关在设置抽屉里
 
-    assert.equal(document.body.hasAttribute('data-ds-dark-theme'), false, '默认浅色不带属性');
+    assert.equal(document.documentElement.dataset.theme, 'light', '默认浅色');
     assert.equal(screen.getByRole('radio', { name: '浅色' }).getAttribute('aria-checked'), 'true');
 
     fireEvent.click(screen.getByRole('radio', { name: '深色' }));
-    assert.equal(document.body.getAttribute('data-ds-dark-theme'), '', '暗色靠这个属性切令牌');
+    assert.equal(document.documentElement.dataset.theme, 'dark', '暗色靠这个属性切令牌');
     assert.equal(screen.getByRole('radio', { name: '深色' }).getAttribute('aria-checked'), 'true');
     assert.equal(window.localStorage.getItem('sump.portal.theme'), 'dark');
 
     fireEvent.click(screen.getByRole('radio', { name: '浅色' }));
-    assert.equal(document.body.hasAttribute('data-ds-dark-theme'), false);
+    assert.equal(document.documentElement.dataset.theme, 'light');
     assert.equal(window.localStorage.getItem('sump.portal.theme'), 'light');
   });
 
-  it('门户：timer 快照画成倒计时；到点显示「到点…」，空快照即消失', async () => {
+  it('对话：timer 快照画成倒计时；到点显示「到点…」，空快照即消失', async () => {
     boot({ openSettings: false });
-    await screen.findByRole('heading', { name: /门户/ });
+    await screen.findByRole('region', { name: '对话' });
 
     const soon = new Date(Date.now() + 90_000).toISOString();
     await emitSSE('timers', [{ itemId: 'job-1', caller: 'reasoner', ms: 90000, fireAt: soon, note: '等构建' }]);
@@ -376,13 +385,13 @@ describe('App', () => {
 
   it('外观：本地存过深色时挂载即生效', () => {
     window.localStorage.setItem('sump.portal.theme', 'dark');
-    delete document.body.dataset.dsDarkTheme;
-    boot({ openSettings: false });
+    delete document.documentElement.dataset.theme;
+    boot();
 
-    assert.equal(document.body.getAttribute('data-ds-dark-theme'), '');
+    assert.equal(document.documentElement.dataset.theme, 'dark');
     assert.equal(screen.getByRole('radio', { name: '深色' }).getAttribute('aria-checked'), 'true');
 
     window.localStorage.clear();
-    delete document.body.dataset.dsDarkTheme;
+    delete document.documentElement.dataset.theme;
   });
 });

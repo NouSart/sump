@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
 import { decideApproval, fetchOverview, resetSetting, sendMessage, setSetting } from './api';
 import { PortalView } from './components/PortalView';
 import { ServiceList } from './components/ServiceList';
 import { SettingsPanel } from './components/SettingsPanel';
+import { SettingsSheet } from './components/SettingsSheet';
 import { Toasts, type Toast } from './components/Toasts';
-import { IconDark, IconLight, IconSettings } from './components/icons';
 import type {
   Overview,
   PendingApprovalView,
@@ -19,8 +18,7 @@ import type {
 
 let toastSeq = 0;
 
-// 外观：DSH 的暗色是令牌级的 body[data-ds-dark-theme]，我们只切这一个属性，
-// 颜色全部由 --dsw-* 自动跟随，不另画一套色。首选项存本地，没有就用系统偏好。
+// 外观：整站只有一套令牌，深/浅由 <html data-theme> 切换（见 styles.css）。首选项存本地，没有就跟系统。
 type Theme = 'light' | 'dark';
 const ThemeKey = 'sump.portal.theme';
 
@@ -43,13 +41,13 @@ export function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
 
   useEffect(() => {
-    if (theme === 'dark') document.body.dataset.dsDarkTheme = '';
-    else delete document.body.dataset.dsDarkTheme;
+    document.documentElement.dataset.theme = theme;
     window.localStorage.setItem(ThemeKey, theme);
   }, [theme]);
   const [rowStates, setRowStates] = useState<Record<string, RowStatus>>({});
-  // 视图：门户（默认，主体）与设置（从侧栏底部进入的独立页）。
-  const [view, setView] = useState<'portal' | 'settings'>('portal');
+  // 视图：对话是主体；设置是右侧抽屉（从输入框的「设置」进入）。
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [rail, setRail] = useState(false);
   const [messages, setMessages] = useState<PortalMessage[]>([]);
   const [timers, setTimers] = useState<TimerView[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
@@ -251,6 +249,12 @@ export function App() {
     [overview],
   );
 
+  // 会话侧栏的时间戳：取这条对话的第一条消息；没有就是占位符（不编造时间）。
+  const threadLabel = useMemo(() => {
+    const first = messages[0];
+    return first ? first.at.slice(11, 16) : '—:—';
+  }, [messages]);
+
   const onSend = useCallback(async (text: string) => {
     setPortalError(null);
     // 本地先回显（受理回执只说明消息已交给 reasoner，不代表已有回复）。
@@ -274,121 +278,94 @@ export function App() {
   }, []);
 
   return (
-    <div className="app">
+    <div className="app" data-rail={rail ? '1' : undefined}>
+      <div className="aurora" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </div>
+
       <aside className="sidebar">
-        <div className="brand">
-          SUMP
-          <span className="brand-sub">门户</span>
-        </div>
-        <div className="side-status">
+        <div className="brand-row">
+          <div className="brand">SUMP</div>
           <span
-            className={connected ? 'status status-on' : 'status status-off'}
-            title={overview ? `设置中心 ${overview.center}` : '设置中心'}
-          >
-            <span className="status-dot" aria-hidden="true" />
-            {connected ? '已连接' : '未连接'}
-          </span>
+            className={connected ? 'dot dot-on' : 'dot dot-off'}
+            role="img"
+            aria-label={connected ? '已连接设置中心' : '未连接设置中心'}
+            title={overview ? `设置中心 ${overview.center} · ${connected ? '已连接' : '未连接'}` : '设置中心'}
+          />
         </div>
-        {/* 侧栏底部：外观开关 + 设置入口（设置入口与 DSH 的设置页同一位置）。 */}
-        <div className="side-foot">
-          <div
-            className="theme-switch"
-            role="radiogroup"
-            aria-label="外观"
-            style={{ '--dsh-segment-count': 2, '--dsh-segment-index': theme === 'dark' ? 1 : 0 } as CSSProperties}
-          >
-            <span className="theme-indicator" aria-hidden="true" />
-            <button
-              type="button"
-              role="radio"
-              aria-checked={theme === 'light'}
-              className="theme-tab"
-              onClick={() => {
-                setTheme('light');
-              }}
-            >
-              <IconLight />
-              浅色
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={theme === 'dark'}
-              className="theme-tab"
-              onClick={() => {
-                setTheme('dark');
-              }}
-            >
-              <IconDark />
-              深色
-            </button>
-          </div>
+        <nav className="threads" aria-label="会话">
+          {/* 目前 reasoner 只有单会话（web:private:owner）：列表如实只显示这一条，
+              不做假的多会话条目——等多会话能力落地再长出来。 */}
+          <button type="button" className="thread is-active" aria-current="true" title="当前会话">
+            <span className="t-time">{threadLabel}</span>
+            <span className="t-title">当前会话</span>
+          </button>
+        </nav>
+        <div className="me">
+          <span className="avatar" aria-hidden="true">我</span>
+          <span className="me-name">本机用户</span>
           <button
             type="button"
-            className="side-row"
-            aria-current={view === 'settings' ? 'page' : undefined}
+            className="icon-btn"
+            aria-label={rail ? '展开侧栏' : '收起侧栏'}
+            title={rail ? '展开侧栏' : '收起侧栏'}
             onClick={() => {
-              setView('settings');
+              setRail((v) => !v);
             }}
           >
-            <IconSettings />
-            设置
+            {rail ? '→' : '←'}
           </button>
         </div>
       </aside>
 
-      <main className="content">
+      <main className="stage">
         {loadError && (
           <p className="inline-error" role="alert">
             加载失败：{loadError}
           </p>
         )}
-
-        {view === 'portal' ? (
-          <PortalView
-            connected={connected}
-            messages={messages}
-            timers={timers}
-            approvals={approvals}
-            onDecide={onDecide}
-            error={portalError}
-            onSend={onSend}
-          />
-        ) : (
-          <section className="settings-page" aria-label="设置">
-            <header className="page-head">
-              <h1>设置</h1>
-              <button
-                type="button"
-                className="page-close"
-                onClick={() => {
-                  setView('portal');
-                }}
-              >
-                关闭
-              </button>
-            </header>
-            <div className="settings-body">
-              <nav aria-label="服务列表">
-                <p className="section-label">服务 · {services.length}</p>
-                <ServiceList services={services} selected={selected} onSelect={setSelected} settingsCountOf={settingsCountOf} />
-              </nav>
-              <div className="settings-content">
-                <SettingsPanel
-                  service={selectedService}
-                  settings={selectedSettings}
-                  connected={connected}
-                  index={svcIndex}
-                  total={services.length}
-                  statusOf={(service, key) => rowStates[`${service}.${key}`]}
-                  onSave={onSave}
-                  onReset={onReset}
-                />
-              </div>
-            </div>
-          </section>
-        )}
+        <PortalView
+          connected={connected}
+          messages={messages}
+          timers={timers}
+          approvals={approvals}
+          onDecide={onDecide}
+          error={portalError}
+          onSend={onSend}
+          onOpenSettings={() => {
+            setSettingsOpen(true);
+          }}
+        />
       </main>
+
+      {settingsOpen && (
+        <SettingsSheet
+          theme={theme}
+          onTheme={setTheme}
+          onClose={() => {
+            setSettingsOpen(false);
+          }}
+        >
+          <nav className="sheet-nav" aria-label="服务列表">
+            <p className="section-label">服务 · {services.length}</p>
+            <ServiceList services={services} selected={selected} onSelect={setSelected} settingsCountOf={settingsCountOf} />
+          </nav>
+          <div className="sheet-content">
+            <SettingsPanel
+              service={selectedService}
+              settings={selectedSettings}
+              connected={connected}
+              index={svcIndex}
+              total={services.length}
+              statusOf={(service, key) => rowStates[`${service}.${key}`]}
+              onSave={onSave}
+              onReset={onReset}
+            />
+          </div>
+        </SettingsSheet>
+      )}
 
       <Toasts items={toasts} />
     </div>
