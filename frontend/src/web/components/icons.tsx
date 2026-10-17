@@ -51,23 +51,6 @@ export function IconSend(): ReactElement {
   );
 }
 
-export function IconSun(): ReactElement {
-  return (
-    <svg {...box}>
-      <circle cx="8" cy="8" r="2.5" />
-      <path d="M8 2.1v1.2M8 12.7v1.2M2.1 8h1.2M12.7 8h1.2M3.85 3.85l.85.85M11.3 11.3l.85.85M12.15 3.85l-.85.85M4.7 11.3l-.85.85" />
-    </svg>
-  );
-}
-
-export function IconMoon(): ReactElement {
-  return (
-    <svg {...box}>
-      <path d="M12.8 9.5A5.3 5.3 0 0 1 6.5 3.2a5.3 5.3 0 1 0 6.3 6.3Z" />
-    </svg>
-  );
-}
-
 export function IconClose(): ReactElement {
   return (
     <svg {...box}>

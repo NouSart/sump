@@ -29,11 +29,12 @@ const okOverview = (r: RosterView) =>
 //   - history 可替换 /api/history 的历史（默认空）；
 //   - openSettings=false 停在对话视图（设置从输入框的「设置」进入）；
 //   - 返回的 setRoster 用于让 overview 桩跟随名册推进（与服务端一致：名册更新后重拉应见到新名册）。
-function boot(
+async function boot(
   over: {
     setResponse?: () => Response;
     messageResponse?: () => Response;
     openSettings?: boolean;
+    select?: string | null;
     history?: { role: string; content: string; at: string; task_id?: string }[];
     tasks?: { id: string; name: string; status: 'active' | 'done'; updated_at: string }[];
   } = {},
@@ -76,6 +77,14 @@ function boot(
   render(<App />);
   if (over.openSettings !== false) {
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    // 门户现在排第一并默认选中；多数用例仍以 images 的设置项为主体，这里代为切换。
+    // select=null 时留在门户页，等外观设置渲染出来再返回。
+    const select = over.select === undefined ? 'images' : over.select;
+    if (select === null) {
+      await screen.findByRole('slider', { name: '主题时段' });
+    } else {
+      fireEvent.click(await screen.findByText(select));
+    }
   }
   return {
     calls,
@@ -100,12 +109,13 @@ async function emitSSE(type: string, data: unknown): Promise<void> {
 }
 
 describe('App', () => {
-  it('首屏：名册/状态/角标；切换服务联动面板', async () => {
-    boot();
-    await screen.findByRole('heading', { name: 'images' }); // 默认选中第一个服务
-    assert.ok(screen.getByText('服务 · 2'));
+  it('首屏：门户排第一并默认选中；名册/状态/角标；切换服务联动面板', async () => {
+    await boot({ select: null });
+    await screen.findByRole('heading', { name: 'frontend' }); // 门户默认选中
+    assert.ok(screen.getByText('服务 · 3'));
     assert.ok(screen.getByRole('img', { name: '已连接设置中心' }));
     assert.ok(screen.getByTitle('1 个设置项')); // images 有 1 个设置项 → 角标
+    assert.ok(screen.getByRole('slider', { name: '主题时段' }), '门户页里有外观设置');
 
     fireEvent.click(screen.getByText('qq'));
     assert.ok(screen.getByRole('heading', { name: 'qq' }));
@@ -116,8 +126,43 @@ describe('App', () => {
     assert.ok(screen.getByText('max_mb'));
   });
 
+  it('设置默认页：名册先到也回门户；重新进设置仍回门户', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    stubFetch((url) => {
+      if (url === '/api/overview') {
+        return gate.then(() => jsonResponse(okOverview(rosterOf(['approval', 'images'], 1))));
+      }
+      return undefined;
+    });
+    installFakeEventSource();
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+
+    // 名册先到、overview.self 还没回来：临时退回第一个服务。
+    await emitSSE('roster', rosterOf(['approval', 'images'], 2));
+    assert.ok(await screen.findByRole('heading', { name: 'approval' }));
+
+    // overview 回来后知道门户是谁，默认页必须切回门户。
+    await act(async () => {
+      release();
+      await Promise.resolve();
+    });
+    assert.ok(await screen.findByRole('heading', { name: 'frontend' }), '默认页应为门户');
+    assert.ok(screen.getByRole('slider', { name: '主题时段' }));
+
+    // 手动点过别的服务 → 关闭再进设置，仍回到门户默认页。
+    fireEvent.click(screen.getByText('images'));
+    assert.ok(screen.getByRole('heading', { name: 'images' }));
+    fireEvent.click(screen.getByRole('button', { name: '关闭设置' }));
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    assert.ok(await screen.findByRole('heading', { name: 'frontend' }));
+  });
+
   it('写入：受理后待确认 → applied 事件 → 已生效 toast + 状态回落 + 重拉视图', async () => {
-    const { calls } = boot();
+    const { calls } = await boot();
     await screen.findByRole('heading', { name: 'images' });
 
     writeNewValue('2');
@@ -136,7 +181,7 @@ describe('App', () => {
   });
 
   it('服务自报事件（report_setting）不冒充推送回执：待确认状态不被动，视图照旧重拉', async () => {
-    const { calls } = boot();
+    const { calls } = await boot();
     await screen.findByRole('heading', { name: 'images' });
 
     writeNewValue('2');
@@ -154,7 +199,7 @@ describe('App', () => {
   });
 
   it('失败事件：未送达 + 原因（行状态与 toast）', async () => {
-    boot();
+    await boot();
     await screen.findByRole('heading', { name: 'images' });
 
     writeNewValue('2');
@@ -171,7 +216,7 @@ describe('App', () => {
   });
 
   it('写入请求被中心拒绝：写入失败 toast，编辑态保留', async () => {
-    boot({ setResponse: () => jsonResponse({ error: '设置项未声明' }, 400) });
+    await boot({ setResponse: () => jsonResponse({ error: '设置项未声明' }, 400) });
     await screen.findByRole('heading', { name: 'images' });
 
     writeNewValue('9');
@@ -181,13 +226,13 @@ describe('App', () => {
   });
 
   it('roster revision 变化：名册更新并触发设置视图重拉', async () => {
-    const { calls, setRoster } = boot();
+    const { calls, setRoster } = await boot();
     await screen.findByRole('heading', { name: 'images' });
 
     const r2 = rosterOf(['images', 'qq', 'memory'], 2);
     setRoster(r2); // 服务端侧名册已推进（重拉 overview 应见到新名册）
     await emitSSE('roster', r2);
-    await screen.findByText('服务 · 3');
+    await screen.findByText('服务 · 4');
     await waitFor(() => expect(countCalls(calls, '/api/overview')).toBeGreaterThanOrEqual(2));
   });
 
@@ -209,16 +254,16 @@ describe('App', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: '设置' })); // 服务计数在设置页（门户视图没有它）
 
-    // SSE 先到：rev 2，三个服务。
+    // SSE 先到：rev 2，三个服务（此时 overview 还没回来，门户自身还没补进列表）。
     await emitSSE('roster', rosterOf(['images', 'qq', 'memory'], 2));
     await screen.findByText('服务 · 3');
 
-    // 旧响应此时才回来（rev 1，两个服务）——必须被丢弃。
+    // 旧响应此时才回来（rev 1，两个服务）——必须被丢弃；门户自身补进列表后变为 4。
     await act(async () => {
       release();
       await Promise.resolve();
     });
-    assert.ok(screen.getByText('服务 · 3'), '更旧 revision 的名册不得覆盖新名册');
+    assert.ok(await screen.findByText('服务 · 4'), '更旧 revision 的名册不得覆盖新名册');
 
     // 守卫水位未倒退：再次收到 rev 2（与当前相同）→ 不触发多余重拉。
     await emitSSE('roster', rosterOf(['images', 'qq', 'memory'], 2));
@@ -273,7 +318,7 @@ describe('App', () => {
   });
 
   it('status 事件：连接状态切换；重连（false→true）触发重拉', async () => {
-    const { calls } = boot();
+    const { calls } = await boot();
     await screen.findByRole('heading', { name: 'images' });
 
     await emitSSE('status', { connected: false });
@@ -285,9 +330,9 @@ describe('App', () => {
   });
 
   it('toast 4200ms 后自动消失（假时钟；不用 waitFor——其内部靠真实 interval 检测假时钟）', async () => {
+    await boot({ setResponse: () => jsonResponse({ error: '设置项未声明' }, 400) });
     vi.useFakeTimers();
     try {
-      boot({ setResponse: () => jsonResponse({ error: '设置项未声明' }, 400) });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10); // 冲掉首屏加载的微任务
       });
@@ -309,7 +354,7 @@ describe('App', () => {
   });
 
   it('对话：首屏在对话视图，设置从输入框进入并可关闭', async () => {
-    boot({ openSettings: false });
+    await boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
     assert.equal(screen.queryByRole('region', { name: '设置' }), null, '首屏不该直接是设置页');
 
@@ -322,7 +367,7 @@ describe('App', () => {
   });
 
   it('设置：独占 agent 面板的位置，左边栏换成服务名导览', async () => {
-    boot({ openSettings: false });
+    await boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
     assert.ok(screen.getByRole('navigation', { name: '会话与任务' }));
     assert.equal(screen.queryByRole('navigation', { name: '服务列表' }), null);
@@ -335,14 +380,17 @@ describe('App', () => {
     // 左边栏改放服务名（字标、连接点、收起按钮都还在）
     assert.ok(screen.getByRole('navigation', { name: '服务列表' }));
     assert.equal(screen.queryByRole('navigation', { name: '会话与任务' }), null);
-    assert.ok(screen.getByText('服务 · 2'));
+    assert.ok(await screen.findByText('服务 · 3'));
     assert.ok(screen.getByText('SUMP'));
     assert.ok(screen.getByRole('button', { name: '收起侧栏' }));
+    assert.ok(await screen.findByRole('heading', { name: 'frontend' }), '门户排第一并默认选中');
+    assert.ok(await screen.findByRole('slider', { name: '主题时段' }), '门户自己的外观设置');
+    fireEvent.click(screen.getByText('images'));
     assert.ok(screen.getByText('max_mb'), '设置正文照旧渲染选中服务的设置项');
   });
 
   it('设置：Esc 关闭', async () => {
-    boot();
+    await boot();
     await screen.findByRole('heading', { name: '设置' });
 
     fireEvent.keyDown(window, { key: 'Escape' });
@@ -350,7 +398,7 @@ describe('App', () => {
   });
 
   it('侧栏：收起是向上塌成只剩字标的一小块，点块即可展开', async () => {
-    boot({ openSettings: false });
+    await boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
     assert.ok(screen.getByRole('navigation', { name: '会话与任务' }));
     const brand = screen.getByText('SUMP');
@@ -368,7 +416,7 @@ describe('App', () => {
   });
 
   it('对话：启动时向服务要历史回填；同一条重复推送不画两遍', async () => {
-    const { calls } = boot({
+    const { calls } = await boot({
       openSettings: false,
       history: [
         { role: 'user', content: '早先的问题', at: '2026-10-17T10:00:00Z' },
@@ -391,14 +439,14 @@ describe('App', () => {
   });
 
   it('对话：历史取不到只提示，不阻断对话', async () => {
-    boot({ openSettings: false });
+    await boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
     // 默认桩已改过 /api/history（空列表）：不该出现任何错误提示
     assert.equal(screen.queryByRole('alert'), null);
   });
 
   it('对话：deliver 事件把智能体的消息落进对话', async () => {
-    boot({ openSettings: false });
+    await boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
 
     await emitSSE('deliver', { text: '任务完成', conversationId: 'web:private:owner', at: '2026-10-16T08:00:00Z' });
@@ -406,7 +454,7 @@ describe('App', () => {
   });
 
   it('对话：答复按 Markdown 渲染（代码块 / 列表 / 行内代码）', async () => {
-    boot({ openSettings: false });
+    await boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
 
     const md = ['结论如下：', '', '```ts', 'const a = 1;', '```', '', '- 第一条', '- 第二条', '', '执行 `npm test` 即可。'].join('\n');
@@ -420,7 +468,7 @@ describe('App', () => {
   });
 
   it('任务：会话下面按任务展开，点任务跳回那一段；面板仍是一整段会话', async () => {
-    boot({
+    await boot({
       openSettings: false,
       tasks: [
         { id: 'task-done', name: '上一次的活', status: 'done', updated_at: '2026-10-17T10:00:00Z' },
@@ -466,7 +514,7 @@ describe('App', () => {
   });
 
   it('对话：progress 事件把思考 / 终端命令 / 终端输出画成轨迹条目', async () => {
-    boot({ openSettings: false });
+    await boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
 
     for (const p of [
@@ -508,7 +556,7 @@ describe('App', () => {
     assert.equal(screen.getAllByText('Get-Date').length, 1);
   });
   it('对话：发送 → POST /api/message + 本地回显', async () => {
-    const { calls } = boot({ openSettings: false });
+    const { calls } = await boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
 
     fireEvent.change(screen.getByLabelText('消息'), { target: { value: '你好' } });
@@ -520,7 +568,7 @@ describe('App', () => {
   });
 
   it('对话：发送未被受理 → 明确提示未送达', async () => {
-    boot({ openSettings: false, messageResponse: () => jsonResponse({ error: '未知目标服务: reasoner（不在名册里）' }, 503) });
+    await boot({ openSettings: false, messageResponse: () => jsonResponse({ error: '未知目标服务: reasoner（不在名册里）' }, 503) });
     await screen.findByRole('region', { name: '对话' });
 
     fireEvent.change(screen.getByLabelText('消息'), { target: { value: '你好' } });
@@ -530,7 +578,7 @@ describe('App', () => {
   });
 
   it('对话：输入区是浮层（消息流在它背后穿过），不是坐在流里的占位', async () => {
-    boot({ openSettings: false });
+    await boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
 
     const dock = document.querySelector('.dock');
@@ -539,41 +587,30 @@ describe('App', () => {
     assert.equal(dock.contains(document.querySelector('.portal-list')), false, '消息流不能被塞进浮层');
   });
 
-  it('外观：切深色写 <html data-theme> 并记住，切回浅色移除', () => {
+  it('外观：拖动主题时段会切换整站深浅、整体底色与强调色，并记住偏好；开关可恢复跟随', async () => {
     window.localStorage.clear();
-    delete document.documentElement.dataset.theme;
-    boot(); // 主题开关在设置抽屉里
+    await boot({ select: null }); // 门户排第一并默认选中，外观设置就在门户页里
 
-    assert.equal(document.documentElement.dataset.theme, 'light', '默认浅色');
-    assert.equal(screen.getByRole('radio', { name: '浅色' }).getAttribute('aria-checked'), 'true');
-
-    fireEvent.click(screen.getByRole('radio', { name: '深色' }));
-    assert.equal(document.documentElement.dataset.theme, 'dark', '暗色靠这个属性切令牌');
-    assert.equal(screen.getByRole('radio', { name: '深色' }).getAttribute('aria-checked'), 'true');
-    assert.equal(window.localStorage.getItem('sump.portal.theme'), 'dark');
-
-    fireEvent.click(screen.getByRole('radio', { name: '浅色' }));
-    assert.equal(document.documentElement.dataset.theme, 'light');
-    assert.equal(window.localStorage.getItem('sump.portal.theme'), 'light');
-  });
-
-  it('外观：拖动背景时段滑块会固定时段、立即换色并记住；开关可恢复跟随', () => {
-    window.localStorage.clear();
-    boot(); // 设置页已打开
-
-    const slider = screen.getByRole('slider', { name: '背景时段' }) as HTMLInputElement;
+    const slider = screen.getByRole('slider', { name: '主题时段' }) as HTMLInputElement;
     const follow = screen.getByRole('switch', { name: '跟随时间' });
     assert.equal(follow.getAttribute('aria-checked'), 'true');
 
-    fireEvent.change(slider, { target: { value: '8' } });
+    fireEvent.change(slider, { target: { value: '12' } });
 
     assert.equal(follow.getAttribute('aria-checked'), 'false');
-    assert.equal(slider.value, '8');
-    assert.equal(document.documentElement.style.getPropertyValue('--aurora-1'), '#B9DCFF');
+    assert.equal(slider.value, '12');
+    assert.equal(document.documentElement.dataset.theme, 'light');
+    assert.equal(document.documentElement.style.getPropertyValue('--bg-0'), '#FBF7EA');
+    assert.equal(document.documentElement.style.getPropertyValue('--accent'), '#B45309');
     assert.deepEqual(JSON.parse(window.localStorage.getItem('sump.portal.background') ?? 'null'), {
       auto: false,
-      hour: 8,
+      hour: 12,
     });
+
+    fireEvent.change(slider, { target: { value: '22' } });
+    assert.equal(document.documentElement.dataset.theme, 'dark');
+    assert.equal(document.documentElement.style.getPropertyValue('--bg-0'), '#0A0C14');
+    assert.equal(document.documentElement.style.getPropertyValue('--accent'), '#A78BFA');
 
     fireEvent.click(follow);
     assert.equal(follow.getAttribute('aria-checked'), 'true');
@@ -581,7 +618,7 @@ describe('App', () => {
   });
 
   it('对话：timer 快照画成倒计时；到点显示「到点…」，空快照即消失', async () => {
-    boot({ openSettings: false });
+    await boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
 
     const soon = new Date(Date.now() + 90_000).toISOString();
@@ -604,17 +641,5 @@ describe('App', () => {
     assert.equal(remainingText(90_000), '01:30');
     assert.equal(remainingText(3_600_000), '1:00:00');
     assert.equal(remainingText(-5), '00:00');
-  });
-
-  it('外观：本地存过深色时挂载即生效', () => {
-    window.localStorage.setItem('sump.portal.theme', 'dark');
-    delete document.documentElement.dataset.theme;
-    boot();
-
-    assert.equal(document.documentElement.dataset.theme, 'dark');
-    assert.equal(screen.getByRole('radio', { name: '深色' }).getAttribute('aria-checked'), 'true');
-
-    window.localStorage.clear();
-    delete document.documentElement.dataset.theme;
   });
 });

@@ -7,7 +7,7 @@ import { TaskList } from './components/TaskList';
 import { SettingsView } from './components/SettingsView';
 import { useLocalePack } from './i18n';
 import { Toasts, type Toast } from './components/Toasts';
-import { useTimeBackground } from './timeBackground';
+import { useTimeTheme } from './timeTheme';
 import type {
   Overview,
   PendingApprovalView,
@@ -22,10 +22,6 @@ import type {
 } from './types';
 
 let toastSeq = 0;
-
-// 外观：整站只有一套令牌，深/浅由 <html data-theme> 切换（见 styles.css）。首选项存本地，没有就跟系统。
-type Theme = 'light' | 'dark';
-const ThemeKey = 'sump.portal.theme';
 
 // appendMessage 追加一条消息：
 //  - 有 seq（落库过的记录）就按 seq 去重与插入——实时推送与历史回填可能同时到，seq 是同一把尺子；
@@ -51,29 +47,16 @@ function mergeMessages(history: PortalMessage[], live: PortalMessage[]): PortalM
   return out;
 }
 
-function initialTheme(): Theme {
-  const saved = window.localStorage.getItem(ThemeKey);
-  if (saved === 'light' || saved === 'dark') return saved;
-  // jsdom 没有 matchMedia，没有就按浅色
-  const prefersDark =
-    typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
-  return prefersDark ? 'dark' : 'light';
-}
-
 export function App() {  const [overview, setOverview] = useState<Overview | null>(null);
   const [roster, setRoster] = useState<RosterView | null>(null);
   const [connected, setConnected] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  // 用户是否亲手点过服务项：点过就尊重选择；没点过则每次进设置都回门户。
+  const selectedByUserRef = useRef(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [theme, setTheme] = useState<Theme>(initialTheme);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem(ThemeKey, theme);
-  }, [theme]);
-  // 背景光斑跟随本地时间取色；只改 .aurora 的三层颜色，不动 UI 令牌。
-  const timeBackground = useTimeBackground(theme);
+  // 整站配色（底色 / 光斑 / 强调色 / 深浅面板）跟随本地时间；设置页只保留跟随开关与时段滑块。
+  const timeTheme = useTimeTheme();
   const [rowStates, setRowStates] = useState<Record<string, RowStatus>>({});
   // 视图：对话是主体；设置是右侧抽屉（从输入框的「设置」进入）。
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -221,16 +204,31 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     return () => es.close();
   }, []);
 
-  const services = useMemo(() => roster?.services ?? [], [roster]);
+  const portalName = overview?.self.name ?? null;
+  // 门户排在最上面：它承载自己的外观设置，也方便用户一进来就改主题。
+  // 名册还没到（或中心断线）时，用 overview.self 补一条，保证门户页仍可进入。
+  const services = useMemo(() => {
+    const list = roster?.services ?? [];
+    if (portalName === null) return list;
+    const portal = list.find((s) => s.name === portalName);
+    const rest = list.filter((s) => s.name !== portalName);
+    return [portal ?? { name: portalName, addr: overview?.self.ws ?? '' }, ...rest];
+  }, [roster, portalName, overview?.self.ws]);
 
   useEffect(() => {
     if (services.length === 0) {
       setSelected(null);
       return;
     }
-    if (selected !== null && services.some((s) => s.name === selected)) return;
-    setSelected(services[0]?.name ?? null);
-  }, [services, selected]);
+    // 未手动选过时始终回门户；名册先到、overview 后到时也不会被“审批”占住默认页。
+    setSelected((current) => {
+      if (selectedByUserRef.current && current !== null && services.some((s) => s.name === current)) {
+        return current;
+      }
+      const portal = portalName !== null && services.some((s) => s.name === portalName) ? portalName : null;
+      return portal ?? services[0]?.name ?? null;
+    });
+  }, [services, portalName]);
 
   const selectedService = useMemo(() => services.find((s) => s.name === selected) ?? null, [services, selected]);
   const selectedSettings = useMemo(() => {
@@ -428,7 +426,10 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
               <ServiceList
                 services={services}
                 selected={selected}
-                onSelect={setSelected}
+                onSelect={(name) => {
+                  selectedByUserRef.current = true;
+                  setSelected(name);
+                }}
                 settingsCountOf={settingsCountOf}
                 t={t}
               />
@@ -463,9 +464,8 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
         )}
         {settingsOpen ? (
           <SettingsView
-            theme={theme}
-            onTheme={setTheme}
-            timeBackground={timeBackground}
+            timeTheme={timeTheme}
+            portalName={portalName}
             onClose={() => {
               setSettingsOpen(false);
             }}
@@ -491,6 +491,9 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
             error={portalError}
             onSend={onSend}
             onOpenSettings={() => {
+              // 每次进设置页都回门户默认页（除非之后在页内亲手点了别的服务）。
+              selectedByUserRef.current = false;
+              if (portalName !== null) setSelected(portalName);
               setSettingsOpen(true);
             }}
             tasks={tasks}

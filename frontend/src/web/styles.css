@@ -42,14 +42,14 @@
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --dur: 180ms;
 
-  /* 背景光斑兜底色：深色观感（原样保留），也是 data-theme 尚未写入时的第一帧颜色；
-     实际值由 timeBackground.ts 按本地时间覆盖。 */
+  /* 首帧兜底色（深色观感）：timeTheme.ts 在首个 layout effect 里就把实际值写死到
+     <html style> 与 data-theme 上，这里只负责 JS 尚未执行的那一瞬间不出现透明底。 */
   --aurora-1: #3a47a8;
   --aurora-2: #1c6e78;
   --aurora-3: #6d4fa8;
 }
 
-/* 深色（默认） */
+/* 深色令牌（时段底色进入暗端时自动启用） */
 [data-theme='dark'] {
   --bg-0: #0a0b0e;
   --surface: rgba(255, 255, 255, 0.055);
@@ -76,7 +76,7 @@
   --glass-focus: rgba(18, 20, 27, 0.86);
 }
 
-/* 浅色 */
+/* 浅色令牌（时段底色进入亮端时自动启用） */
 [data-theme='light'] {
   --bg-0: #e9edf4;
   --surface: rgba(255, 255, 255, 0.62);
@@ -528,17 +528,7 @@ button { font: inherit; }
   padding: var(--gap-6) max(var(--gap-5), calc((100% - var(--col)) / 2)) var(--gap-5);
 }
 
-/* 主题切换（设置头部） */
-.theme-switch { display: flex; gap: 2px; padding: 2px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); }
-.theme-tab {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; padding: 0; border-radius: 999px; border: 0; background: transparent;
-  color: var(--text-2); cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.theme-tab[aria-checked='true'] { background: var(--surface-strong); color: var(--text); }
-
-/* 背景：门户自己的设置项，与服务的设置项共用同一种卡片。 */
+/* 外观：门户自己的设置项，与服务的设置项共用同一种卡片。 */
 .appearance {
   margin-bottom: var(--gap-5); padding-bottom: var(--gap-4);
   border-bottom: 1px solid var(--border);
@@ -708,13 +698,13 @@ button { font: inherit; }
 .range::-webkit-slider-thumb {
   appearance: none; -webkit-appearance: none;
   width: 18px; height: 18px; border-radius: 50%;
-  border: 2px solid var(--bg-0);
+  border: 2px solid var(--text);
   background: var(--accent);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
 }
 .range::-moz-range-thumb {
   width: 18px; height: 18px; border-radius: 50%;
-  border: 2px solid var(--bg-0);
+  border: 2px solid var(--text);
   background: var(--accent);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
 }

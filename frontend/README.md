@@ -52,7 +52,7 @@ npm start            # 启动（需先 build）：node dist/server/index.js -add
 
 - **本项目没有自己的视觉设计**：观感 = DSH（deepseek-harness）的设计系统。`styles.css` 整表 `@import` 上游 `ui-theme` 的样式表（令牌、字体栈、圆角阶梯、焦点环、滚动条），下游规则**直接用 `--dsw-alias-*` 令牌**，不自建色值。
 - 组件取值照抄上游 `ui-primitives` 的 `.module.css`：输入框（`Input`、`settings-form/fields`）、按钮（`Button` 的 md/sm 与主/幽灵/描边变体）、状态点（`StateDot`）、分段开关（`SegmentedControl`）、设置字段（`settings-form`）；布局几何对齐上游 `ui-layout`（侧栏 280）。
-- **外观开关**（侧栏底部）：只切 `body[data-ds-dark-theme]`——DSH 的暗色是另一套令牌，颜色全部自动跟随，我们不出第二套色。首选项存 `localStorage`，缺省跟随系统偏好。注意 `bg-overlay` 在暗色下是**遮罩**用的中灰，块底一律用 `interactive-bg-hover`。
+- **外观**：不再有手动深/浅开关；`<html data-theme>` 由时段主题按本地时间自动写入，深/浅两套令牌随之切换。
 - 注意令牌**作用域**：DSH 把 `--dsw-*` 定义在 `body` 上——自定义属性在「声明它的元素」上求值，所以别把这些令牌映射到 `:root`，否则整层引用会静默失效（属性变透明，CSS 不报错）。
 - 有意偏差：① 占位符用 `label-tertiary` 而非上游的 `label-dimmed`（后者在白底上几乎看不见）；② 首个连接设置中心失败不退出（持续退避重连），与其余服务“引导错误立刻可见”不同——面板优先可用性。
-- **背景随时段变化**：`.aurora` 三层光斑的颜色由 `src/web/timeBackground.ts` 按本地时间在 8 个锚点间连续插值（深/浅各一套色板），每分钟刷新；只改背景光斑，UI 令牌、玻璃层级与文字对比度不变。设置页「背景」区可关闭「跟随时间」，用带色带轨道的滑块固定/预览时段（偏好存 `localStorage`）。
+- **整站时段主题**：`src/web/timeTheme.ts` 按本地时间在 17 个锚点间插值整体底色、三层光斑与全局强调色（底色走 RGB，光斑/强调色走 HSL），并按底色亮度自动切换深/浅面板令牌，每分钟刷新。设置页里「门户」排服务列表第一，每次进入设置都默认回到门户；它的「外观」区只保留「跟随时间」开关与「主题时段」滑块（15 分钟细分色带，偏好存 `localStorage`）；其它服务页不显示这组设置。

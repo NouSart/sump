@@ -1,8 +1,9 @@
 // SettingsPanel 是"设置正文"：以**人**为单位呈现，而不是以键值为单位。
 //  - 服务给的中文名/说明/控件类型（或语言包里的同名键）决定怎么画；
 //  - 能改的和只读启动参数分两组，后者默认折叠，不占主视觉；
-//  - 状态说人话：默认值 / 已改过 / 待服务确认 / 未送达 / 已设置。
-import { useState } from 'react';
+//  - 状态说人话：默认值 / 已改过 / 待服务确认 / 未送达 / 已设置；
+//  - portalExtra：门户页在标题下注入自己的外观设置（本地偏好，不走服务设置协议）。
+import { useState, type ReactNode } from 'react';
 import type { RowStatus, SettingViewData, ServiceCardView } from '../types';
 import type { Translate } from '../i18n';
 import { IconCheck, IconClose, IconPencil, IconUndo } from './icons';
@@ -10,6 +11,8 @@ import { IconCheck, IconClose, IconPencil, IconUndo } from './icons';
 interface Props {
   service: ServiceCardView | null;
   settings: SettingViewData[] | null;
+  /** 门户自己的外观设置：只在“门户”这个服务页里出现。 */
+  portalExtra?: ReactNode;
   /** 名册里的服务名：给「服务名」这类设置项当候选（只是候选，校验权仍在服务）。 */
   peers: string[];
   connected: boolean;
@@ -19,7 +22,7 @@ interface Props {
   t: Translate;
 }
 
-export function SettingsPanel({ service, settings, peers, connected, statusOf, onSave, onReset, t }: Props) {
+export function SettingsPanel({ service, settings, portalExtra, peers, connected, statusOf, onSave, onReset, t }: Props) {
   if (!service) {
     return <p className="empty">{t('ui.settings.emptyAll', '还没有收到任何服务的设置声明')}</p>;
   }
@@ -33,6 +36,7 @@ export function SettingsPanel({ service, settings, peers, connected, statusOf, o
   return (
     <div className="panel">
       <h1 className="panel-title">{title}</h1>
+      {portalExtra}
       <details className="ro-group about">
         <summary>{t('ui.settings.about', '关于这个服务')}</summary>
         {(() => {
