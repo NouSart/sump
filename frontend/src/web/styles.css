@@ -232,6 +232,8 @@ button { font: inherit; }
   color: var(--text); font: inherit;
 }
 .sidebar-bar:hover { background: var(--surface-hover); }
+/* 收起态：对话面板四边各外扩一圈（12 → 4），于是它和字标块边缘错开 8px，不再贴成一条线 */
+.app[data-collapsed='1'] { padding: 4px; }
 
 /* ---------- L2 交互面板 ---------- */
 .stage {
