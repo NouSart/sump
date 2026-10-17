@@ -186,6 +186,7 @@ describe('App', () => {
     });
     installFakeEventSource();
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '设置' })); // 服务计数在设置页（门户视图没有它）
 
     // SSE 先到：rev 2，三个服务。
     await emitSSE('roster', rosterOf(['images', 'qq', 'memory'], 2));
