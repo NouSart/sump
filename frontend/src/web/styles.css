@@ -163,21 +163,31 @@ button { font: inherit; }
   box-shadow: var(--shadow-1);
   transition: width var(--dur) var(--ease), padding var(--dur) var(--ease);
 }
-.brand-row { display: flex; align-items: center; gap: var(--gap-2); padding: 4px 6px 8px; }
+/* 字标与连接点：位置/尺寸一律按展开态左边栏实测值定死（1440 视口量得
+   字标 31,29 / 61.78×31，连接点 100.78,42 / 7×7），任何页面、任何状态都不重新布局。
+   它们挂在 .app 上（.app 是 position:relative），不参与侧栏/抽屉/终端的任何流。 */
 .brand {
+  position: absolute; left: 31px; top: 29px;
+  width: 61.78px; height: 31px; line-height: 31px;
+  z-index: 2; pointer-events: none;
   font-family: var(--font-brand);
   font-weight: 500;
   font-size: var(--fs-brand);
   /* 字标规格（files/SUMP字标-规格记录.md）：只缩放字号，字重/字距/字形一律不动。 */
   letter-spacing: normal;
+  white-space: nowrap;
   color: var(--text);
   user-select: none;
 }
-/* 连接状态缩成一枚点：不占一整行，hover 才说明 */
+/* 连接状态缩成一枚点：定死在同一坐标，hover 才说明；收起态隐藏（草图：收起后只剩字标） */
 .dot {
-  width: 7px; height: 7px; border-radius: 50%; flex: none; margin-top: 2px;
+  position: absolute; left: 100.78px; top: 42px;
+  width: 7px; height: 7px; border-radius: 50%;
+  z-index: 2; pointer-events: none;
   transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
+/* 侧栏里给字标留出的空位：高度等于原来那行（4 + 31 + 8），会话列表不会往上顶 */
+.brand-slot { height: 43px; flex: none; }
 .dot-on { background: #46c07a; box-shadow: 0 0 0 3px rgba(70, 192, 122, 0.16); }
 .dot-off { background: var(--text-3); box-shadow: none; }
 
@@ -215,9 +225,12 @@ button { font: inherit; }
 .app[data-collapsed='1'] { flex-direction: column; }
 .sidebar-bar {
   align-self: flex-start;
-  width: auto;
-  padding: 10px 12px;
-  cursor: pointer; text-align: left;
+  /* 围绕定死的字标均匀留白：19 = 12(app) + 12(侧栏) + 6(原字标行) + 1(border)，
+     17 = 12 + 12 + 4 + 1 —— 于是字标在块里正好落在 (31,29)，与展开态一个像素都不差。 */
+  width: calc(61.78px + 19px + 19px);
+  height: calc(31px + 17px + 17px);
+  padding: 0;
+  cursor: pointer;
   color: var(--text); font: inherit;
 }
 .sidebar-bar:hover { background: var(--surface-hover); }

@@ -278,16 +278,6 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     }
   }, []);
 
-  // 连接状态缩成一枚点：展开态在字标旁，收起态也跟着字标留在条上。
-  const statusDot = (
-    <span
-      className={connected ? 'dot dot-on' : 'dot dot-off'}
-      role="img"
-      aria-label={connected ? '已连接设置中心' : '未连接设置中心'}
-      title={overview ? `设置中心 ${overview.center} · ${connected ? '已连接' : '未连接'}` : '设置中心'}
-    />
-  );
-
   return (
     <div className="app" data-collapsed={collapsed ? '1' : undefined}>
       <div className="aurora" aria-hidden="true">
@@ -295,6 +285,18 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
         <span />
         <span />
       </div>
+
+      {/* 字标与连接点挂在壳上（见 styles.css 里定死的坐标）：侧栏展开/收起、
+          设置抽屉、终端都动不了它们的位置。 */}
+      <span className="brand">SUMP</span>
+      {!collapsed && (
+        <span
+          className={connected ? 'dot dot-on' : 'dot dot-off'}
+          role="img"
+          aria-label={connected ? '已连接设置中心' : '未连接设置中心'}
+          title={overview ? `设置中心 ${overview.center} · ${connected ? '已连接' : '未连接'}` : '设置中心'}
+        />
+      )}
 
       {collapsed ? (
         <button
@@ -306,15 +308,10 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
           onClick={() => {
             setCollapsed(false);
           }}
-        >
-          <span className="brand">SUMP</span>
-        </button>
+        />
       ) : (
         <aside className="sidebar">
-          <div className="brand-row">
-            <div className="brand">SUMP</div>
-            {statusDot}
-          </div>
+          <div className="brand-slot" aria-hidden="true" />
           <nav className="threads" aria-label="会话">
             {/* 目前 reasoner 只有单会话（web:private:owner）：列表如实只显示这一条，
                 不做假的多会话条目——等多会话能力落地再长出来。 */}
