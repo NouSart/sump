@@ -75,7 +75,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		ActionTimeout:     60 * time.Second, // save 含下载，放宽动作超时
 		Description:       "文件服务：保存文件（URL/base64），按需取回（fetch）或读取文本内容（read）",
 		Provides: []protocol.Provide{
-			{Action: "save", Input: "{url} 或 {data(base64), filename, mime}", Output: "{id, filename, mime, size}"},
+			{Action: "save", Tool: true, Input: "{url} 或 {data(base64), filename, mime}", Output: "{id, filename, mime, size}"},
 			{Action: "fetch", Input: "{id}", Output: "{id, filename, mime, data(base64), size}"},
 			{Action: "read", Input: "{id}", Output: "{id, filename, text, truncated}（文本类 / .xlsx 转 TSV / .docx 提取正文；其余二进制报错）", Tool: true},
 			{Action: "write", Input: "{id, sheet, edits:[{cell, value}]}", Output: "{id, sheet, updated}（就地修改 .xlsx；先 read 看清坐标再改）", Tool: true},

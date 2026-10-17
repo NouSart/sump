@@ -42,6 +42,7 @@ function resolveFlags(argv: string[]): FrontendConfig {
     webDir: raw.web ?? resolve(here, '../web'),
     heartbeatMS,
     reasoner: raw.reasoner ?? 'reasoner',
+    approval: raw.approval ?? 'approval',
     trustedHosts: (raw['trusted-hosts'] ?? '')
       .split(',')
       .map((h) => h.trim())

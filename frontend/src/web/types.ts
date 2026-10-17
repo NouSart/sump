@@ -86,3 +86,17 @@ export interface TimerView {
   fireAt: string; // RFC3339：门户拿它与本地时间算剩余
   note: string;
 }
+
+// PendingApprovalView 是一条等用户裁决的命令（approval 经 approval_pending 推来）。
+export interface PendingApprovalView {
+  itemId: string;
+  command: string;
+  workDir: string;
+  requestedBy: string;
+  reasonCode: string;
+  summary: string;
+  unknowns: string[];
+  ruleIds: string[];
+  createdMs: number;
+  expiresMs: number;
+}

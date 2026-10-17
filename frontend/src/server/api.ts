@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import type { CenterEvent, CenterLink } from './center.ts';
 import { RemoteError } from './center.ts';
-import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type TimerItem, type TrustConfig } from './portal.ts';
+import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type PendingApprovalItem, type TimerItem, type TrustConfig } from './portal.ts';
 import type { RosterPayload, ServiceSettings, SettingsResult } from './protocol.ts';
 
 export interface ApiConfig {
@@ -21,6 +21,14 @@ export interface ApiConfig {
   portal: { on: (fn: (m: DeliverMessage) => void) => () => void };
   /** 计时快照订阅（timer_state → SSE）：新连接先补当前值，再推变化。 */
   timers: { current: () => TimerItem[]; on: (fn: (items: TimerItem[]) => void) => () => void };
+  /** 待审命令：approval 推来的挂起项（approval_pending），以及用户裁决后的移除。 */
+  approvals: {
+    current: () => PendingApprovalItem[];
+    on: (fn: (items: PendingApprovalItem[]) => void) => () => void;
+    remove: (itemId: string) => void;
+  };
+  /** 审批服务名（裁决经 jumpTo 送到它那里；默认 approval）。 */
+  approval: string;
   /** 浏览器信任栅栏的放行范围。 */
   trust: TrustConfig;
 }
@@ -162,6 +170,23 @@ export function createRequestHandler(
     sendJSON(res, 200, { ok: true, conversationId: PORTAL_CONVERSATION_ID });
   };
 
+  // decideApproval 把用户的裁决送回 approval。裁决权在用户手里，门户只是搬运工：
+  // 这里不判断该不该批准，也不缓存结果——approval 认不认（待审项还在不在）由它自己决定。
+  const decideApproval = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const body = asObject(await readJSON(req)) ?? {};
+    const itemId = requiredString(body, 'item_id');
+    const decision = requiredString(body, 'decision');
+    if (decision !== 'allow' && decision !== 'deny') throw new HttpError(400, 'decision 只能是 allow 或 deny');
+    const note = typeof body.note === 'string' ? body.note : '';
+    try {
+      await center.jumpTo(cfg.approval, 'approval_decide', { item_id: itemId, decision, note });
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    cfg.approvals.remove(itemId);
+    sendJSON(res, 200, { ok: true, itemId, decision });
+  };
+
   const events = (req: IncomingMessage, res: ServerResponse): void => {
     setSecurityHeaders(res);
     res.writeHead(200, {
@@ -175,6 +200,9 @@ export function createRequestHandler(
     send('status', { connected: center.connected, center: cfg.centerURL });
     send('roster', center.roster ?? { services: [], revision: 0 });
     send('timers', cfg.timers.current()); // 冷启动先补一次当前快照（浏览器新开标签也能立刻看到倒计时）
+    // 待审项同理：新标签打开就能看到在等的审批。没有就不发（不制造空事件噪音）。
+    const pendingApprovals = cfg.approvals.current();
+    if (pendingApprovals.length > 0) send('approvals', pendingApprovals);
     const unsubscribe = center.on((e: CenterEvent) => {
       if (e.kind === 'status') send('status', { connected: e.connected, center: cfg.centerURL });
       else if (e.kind === 'roster') send('roster', e.roster as RosterPayload);
@@ -186,6 +214,9 @@ export function createRequestHandler(
     const unsubscribeTimers = cfg.timers.on((items) => {
       send('timers', items);
     });
+    const unsubscribeApprovals = cfg.approvals.on((items) => {
+      send('approvals', items);
+    });
     const keepalive = setInterval(() => {
       res.write(': ping\n\n');
     }, 20_000);
@@ -194,6 +225,7 @@ export function createRequestHandler(
       unsubscribe();
       unsubscribeDeliver();
       unsubscribeTimers();
+      unsubscribeApprovals();
     });
   };
 
@@ -265,7 +297,15 @@ export function createRequestHandler(
       events(req, res);
       return;
     }
-    if (pathname === '/api/overview' || pathname === '/api/message' || pathname === '/api/settings/set' || pathname === '/api/settings/reset' || pathname === '/api/events') {
+    if (pathname === '/api/approvals' && req.method === 'GET') {
+      sendJSON(res, 200, { items: cfg.approvals.current() });
+      return;
+    }
+    if (pathname === '/api/approvals' && req.method === 'POST') {
+      await decideApproval(req, res);
+      return;
+    }
+    if (pathname === '/api/overview' || pathname === '/api/message' || pathname === '/api/settings/set' || pathname === '/api/settings/reset' || pathname === '/api/events' || pathname === '/api/approvals') {
       throw new HttpError(405, `方法不允许: ${req.method ?? ''}`);
     }
     if (pathname.startsWith('/api/')) {

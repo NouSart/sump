@@ -6,13 +6,14 @@
 import type { Server as HttpServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { RawData } from 'ws';
-import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type TimerItem, type TimerState, type TrustConfig } from './portal.ts';
+import { PORTAL_CONVERSATION_ID, checkRequestTrust, parsePendingApproval, type DeliverMessage, type PendingApprovalItem, type TimerItem, type TimerState, type TrustConfig } from './portal.ts';
 import { type Provide, type Setting, TypeJump, decodeEnvelope, encodeEnvelope, frameBytes, newResponse } from './protocol.ts';
 
-// portalProvides 是注册时上报的动作清单——名册里因此看得见门户能收 deliver 与计时快照。
+// portalProvides 是注册时上报的动作清单——名册里因此看得见门户能收 deliver、计时快照与待审命令。
 export const portalProvides: Provide[] = [
   { action: 'deliver', input: '{text, conversation_id}', output: '回执（已送达面板）' },
   { action: 'timer_state', input: '{boss?, seq, timers[]}', output: '回执（已登记展示；accepted 说明这条快照有没有被采纳）' },
+  { action: 'approval_pending', input: '{item_id, command, work_dir, reason_code, summary, expires_ms}', output: '回执（已登记待审；用户裁决经 approval_decide 送回 approval）' },
 ];
 
 // portalSettings 是门户声明的设置项：**全是只读项**——门户的参数是启动参数（改它要重启），
@@ -56,6 +57,7 @@ export function attachJumpEndpoint(
   log: (m: string) => void,
   onDeliver: (m: DeliverMessage) => void,
   onTimers: (s: TimerState) => boolean,
+  onApproval: (item: PendingApprovalItem) => void,
   trust: TrustConfig,
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
@@ -96,6 +98,12 @@ export function attachJumpEndpoint(
           items: parseTimerItems(input.timers, log),
         });
         ws.send(encodeEnvelope(newResponse(env, name, { ok: true, data: { accepted } })));
+        return;
+      }
+      if (jp?.action === 'approval_pending') {
+        const item = parsePendingApproval(jp.input, log);
+        if (item !== null) onApproval(item);
+        ws.send(encodeEnvelope(newResponse(env, name, { ok: true, data: { accepted: item !== null } })));
         return;
       }
       ws.send(encodeEnvelope(newResponse(env, name, { ok: false, error: `unknown action: ${jp?.action ?? ''}` })));

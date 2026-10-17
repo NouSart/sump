@@ -64,8 +64,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		ActionTimeout:     60 * time.Second, // save 含下载，放宽动作超时
 		Description:       "图片服务：保存图片（URL/base64），按需转 base64 发回调用方",
 		Provides: []protocol.Provide{
-			{Action: "save", Input: "{url} 或 {data(base64), mime}", Output: "{id, mime, size}"},
-			{Action: "fetch", Input: "{id}", Output: "{id, mime, data(base64), size}"},
+			{Action: "save", Tool: true, Input: "{url} 或 {data(base64), mime}", Output: "{id, mime, size}"},
+			{Action: "fetch", Tool: true, Input: "{id}", Output: "{id, mime, data(base64), size}（图片索引转 base64；大图会很长）"},
 		},
 		Logger: logger,
 	})

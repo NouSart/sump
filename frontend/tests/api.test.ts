@@ -28,6 +28,7 @@ async function startWithCenter(centerURL: string, heartbeatMS = 50): Promise<Fro
       webDir: await makeWebDir(),
       heartbeatMS,
       reasoner: 'reasoner',
+      approval: 'approval',
       trustedHosts: [],
     },
     silent,
@@ -550,6 +551,123 @@ test('门户：timer 推来快照 → 回执 + SSE 全量推给浏览器；旧�
   // 乱序到达的迟到快照（序号更小）必须被丢弃——否则倒计时会倒回旧状态。
   const late = await push('ts-2', 6);
   assert.equal(late.data?.accepted, false, '旧序号快照应被丢弃');
+});
+
+test('待审命令：approval_pending 推到面板 → 用户裁决经 approval_decide 送回 approval', async (t) => {
+  const stub = new StubCenter();
+  const stubApproval = await startStubService({ ok: true, data: { status: 'accepted' } });
+  const centerURL = await stub.start();
+  const handle = await startWithCenter(centerURL);
+  t.after(async () => {
+    await handle.close();
+    await stub.stop();
+    await stubApproval.stop();
+  });
+  // 名册里要有 approval（门户要能从名册解析出它的地址去送裁决）。
+  stub.roster = { services: [{ name: 'approval', addr: stubApproval.url, provides: [] }], revision: 2 };
+  await waitFor(() => handle.link.connected, 3000, '前端接入中心');
+  stub.broadcastRoster();
+  await waitFor(() => (handle.link.roster?.services ?? []).length > 0, 3000, '名册到达');
+
+  const res = await fetch(`http://${handle.addr}/api/approvals`);
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json()) as { items: unknown[] }, { items: [] }, '初始没有待审项');
+
+  // approval 推一条待审过来。
+  const ws = new WebSocket(`ws://${handle.addr}/ws`);
+  t.after(() => ws.terminate());
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve());
+    ws.once('error', reject);
+  });
+  const pushed = await new Promise<{ ok: boolean; data?: { accepted?: boolean } }>((resolve) => {
+    ws.once('message', (data: RawData) => {
+      const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : new Uint8Array(data);
+      resolve((decode(bytes) as { payload: { ok: boolean; data?: { accepted?: boolean } } }).payload);
+    });
+    ws.send(
+      encode({
+        v: 1,
+        id: 'ap-1',
+        type: 'jump',
+        from: 'approval',
+        to: 'frontend',
+        payload: {
+          action: 'approval_pending',
+          input: {
+            item_id: 'item-42',
+            command: 'Get-Process',
+            work_dir: 'C:\\root',
+            requested_by: 'shell',
+            reason_code: 'NO_MATCHING_RULE',
+            summary: '没有覆盖该命令的允许规则',
+            created_ms: 1,
+            expires_ms: 2,
+          },
+        },
+      }),
+    );
+  });
+  assert.equal(pushed.ok, true, 'approval_pending 应被受理');
+  assert.equal(pushed.data?.accepted, true);
+
+  const listed = (await (await fetch(`http://${handle.addr}/api/approvals`)).json()) as {
+    items: { itemId: string; command: string; reasonCode: string }[];
+  };
+  assert.equal(listed.items.length, 1);
+  assert.equal(listed.items[0]?.itemId, 'item-42');
+  assert.equal(listed.items[0]?.command, 'Get-Process', '命令原文必须给用户看');
+  assert.equal(listed.items[0]?.reasonCode, 'NO_MATCHING_RULE');
+
+  // 用户在面板点"批准"→ 门户把裁决送回 approval（真 WS 跳转）。
+  const decided = await postJSON(`http://${handle.addr}/api/approvals`, { item_id: 'item-42', decision: 'allow' });
+  assert.equal(decided.status, 200);
+  const viaApproval = stubApproval.jumps.filter((j) => j.action === 'approval_decide');
+  assert.equal(viaApproval.length, 1, '应恰好送出一条裁决');
+  assert.deepEqual(viaApproval[0]?.input, { item_id: 'item-42', decision: 'allow', note: '' });
+  assert.equal(viaApproval[0]?.from, 'frontend', '裁决必须由门户发出（approval 按 from 校验）');
+
+  const after = (await (await fetch(`http://${handle.addr}/api/approvals`)).json()) as { items: unknown[] };
+  assert.equal(after.items.length, 0, '裁决后卡片应消失');
+});
+
+test('待审命令：decision 只接受 allow / deny，形状不对的推送被丢弃', async (t) => {
+  const stub = new StubCenter();
+  const centerURL = await stub.start();
+  const handle = await startWithCenter(centerURL);
+  t.after(async () => {
+    await handle.close();
+    await stub.stop();
+  });
+  await waitFor(() => handle.link.connected, 3000, '前端接入中心');
+
+  const bad = await postJSON(`http://${handle.addr}/api/approvals`, { item_id: 'x', decision: 'maybe' });
+  assert.equal(bad.status, 400);
+
+  const ws = new WebSocket(`ws://${handle.addr}/ws`);
+  t.after(() => ws.terminate());
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve());
+    ws.once('error', reject);
+  });
+  const receipt = await new Promise<{ ok: boolean; data?: { accepted?: boolean } }>((resolve) => {
+    ws.once('message', (data: RawData) => {
+      const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : new Uint8Array(data);
+      resolve((decode(bytes) as { payload: { ok: boolean; data?: { accepted?: boolean } } }).payload);
+    });
+    ws.send(
+      encode({
+        v: 1,
+        id: 'ap-bad',
+        type: 'jump',
+        from: 'approval',
+        to: 'frontend',
+        payload: { action: 'approval_pending', input: { item_id: '', command: 'x' } },
+      }),
+    );
+  });
+  assert.equal(receipt.ok, true, '坏推送也要回执（不静默）');
+  assert.equal(receipt.data?.accepted, false, '缺 item_id 的待审项必须丢弃');
 });
 
 test('门户：deliver 缺 text 时明确拒绝（不静默吞掉）', async (t) => {

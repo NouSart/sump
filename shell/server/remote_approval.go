@@ -27,7 +27,6 @@ func (s *Server) approveJob(ctx context.Context, j *job, svc string) error {
 	}
 	j.plan, j.environment = &plan, env
 	req := protocol.CommandApprovalRequest{Version: 1, ItemID: j.item, Plan: plan}
-	started := time.Now()
 	raw, err := s.Call(ctx, svc, protocol.ApprovalAction, req, j.trace, j.boss)
 	if err != nil {
 		return fmt.Errorf("审批服务未返回有效结果: %w", err)
@@ -43,7 +42,9 @@ func (s *Server) approveJob(ctx context.Context, j *job, svc string) error {
 	if result.Decision != protocol.DecisionAllow {
 		return fmt.Errorf("%s: %s", result.ReasonCode, result.Feedback.Summary)
 	}
-	j.approvedUntil = started.Add(time.Duration(result.ValidForMS) * time.Millisecond)
+	// 许可期从**拿到裁决**起算：第二层要等用户点批准，按发起时刻算会必然过期
+	//（ValidForMS 上限 30 秒，用户审 5 分钟就白审了）。
+	j.approvedUntil = time.Now().Add(time.Duration(result.ValidForMS) * time.Millisecond)
 	if !time.Now().Before(j.approvedUntil) {
 		return errors.New("审批许可已过期，本次未执行")
 	}

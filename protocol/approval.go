@@ -19,6 +19,48 @@ const (
 	DecisionReview    = "review"
 )
 
+// 第二层（用户裁决）的动作名与裁决码。命名见 SPEC §13。
+const (
+	// ApprovalPendingAction 是 approval → 门户的推送：一条待审命令（不等待回执）。
+	ApprovalPendingAction = "approval_pending"
+	// ApprovalDecideAction 是门户 → approval 的裁决：用户点了批准或拒绝。
+	// 只接受门户发来的裁决（approval 侧按 from 校验），别的服务调一律拒绝。
+	ApprovalDecideAction = "approval_decide"
+	// ApprovalListAction 是门户 → approval 的全量拉取：门户重启后据此恢复待审列表。
+	ApprovalListAction = "approval_list"
+
+	// ReasonUserApproved / ReasonUserDenied 是第二层裁决的理由码（第一层是 RULE_ALLOW / POLICY_DENY 等）。
+	ReasonUserApproved = "USER_APPROVED"
+	ReasonUserDenied   = "USER_DENIED"
+)
+
+// PendingApproval 是推给门户的一条待审命令。命令原文必须可见——用户要据此判断；
+// 这里不含任何密钥或环境变量（shell 计划里只有命令行、工作目录与固定启动参数）。
+type PendingApproval struct {
+	ItemID      string   `json:"item_id" msgpack:"item_id"`
+	Command     string   `json:"command" msgpack:"command"`
+	WorkDir     string   `json:"work_dir,omitempty" msgpack:"work_dir,omitempty"`
+	RequestedBy string   `json:"requested_by,omitempty" msgpack:"requested_by,omitempty"`
+	ReasonCode  string   `json:"reason_code,omitempty" msgpack:"reason_code,omitempty"`
+	Summary     string   `json:"summary,omitempty" msgpack:"summary,omitempty"`
+	Unknowns    []string `json:"unknowns,omitempty" msgpack:"unknowns,omitempty"`
+	RuleIDs     []string `json:"rule_ids,omitempty" msgpack:"rule_ids,omitempty"`
+	CreatedMS   int64    `json:"created_ms" msgpack:"created_ms"`
+	ExpiresMS   int64    `json:"expires_ms" msgpack:"expires_ms"`
+}
+
+// ApprovalDecision 是用户在门户上的一条裁决：allow = 批准执行，deny = 拒绝。
+type ApprovalDecision struct {
+	ItemID   string `json:"item_id" msgpack:"item_id"`
+	Decision string `json:"decision" msgpack:"decision"`
+	Note     string `json:"note,omitempty" msgpack:"note,omitempty"`
+}
+
+// PendingApprovalList 是 approval_list 的应答。
+type PendingApprovalList struct {
+	Items []PendingApproval `json:"items" msgpack:"items"`
+}
+
 // ExecutionPlan 是执行方固定的执行描述。Args 不含末尾原始命令。
 // Profile 是执行方的环境约定，不是身份认证或沙箱证明。
 type ExecutionPlan struct {

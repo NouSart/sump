@@ -204,6 +204,53 @@ describe('App', () => {
     assert.equal(countCalls(calls, '/api/overview'), 2, '相同 revision 不应触发重拉');
   });
 
+  it('待审命令：approvals 事件渲染卡片，点「批准执行」把裁决 POST 给 approval 通道', async () => {
+    const calls: string[] = [];
+    const posts: { url: string; body: unknown }[] = [];
+    const base = stubFetch((url) => {
+      if (url === '/api/overview') return jsonResponse(okOverview(rosterOf(['images', 'qq'])));
+      return undefined;
+    });
+    installFakeEventSource();
+    // 包一层：记录 /api/approvals 的 POST 与请求体（stubFetch 只管 GET 路由）。
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === '/api/approvals' && init?.method === 'POST') {
+        posts.push({ url, body: JSON.parse(String(init.body)) });
+        return Promise.resolve(jsonResponse({ ok: true, itemId: 'item-42' }));
+      }
+      return origFetch(input, init);
+    }) as typeof fetch;
+    render(<App />);
+
+    await emitSSE('approvals', [
+      {
+        itemId: 'item-42',
+        command: 'Get-Process',
+        workDir: 'C:\\\\root',
+        requestedBy: 'shell',
+        reasonCode: 'NO_MATCHING_RULE',
+        summary: '没有覆盖该命令的允许规则',
+        unknowns: [],
+        ruleIds: [],
+        createdMs: 1,
+        expiresMs: 2,
+      },
+    ]);
+
+    await screen.findByText('待审命令 · 1（命令不会执行，直到你点批准）');
+    assert.ok(screen.getByText('Get-Process'), '命令原文必须给用户看');
+    assert.ok(screen.getByText(/NO_MATCHING_RULE/));
+
+    fireEvent.click(screen.getByRole('button', { name: '批准执行' }));
+    await waitFor(() => expect(posts.length).toBe(1));
+    assert.deepEqual(posts[0]?.body, { item_id: 'item-42', decision: 'allow', note: '' });
+    globalThis.fetch = origFetch;
+    void base;
+  });
+
   it('status 事件：连接状态切换；重连（false→true）触发重拉', async () => {
     const { calls } = boot();
     await screen.findByRole('heading', { name: 'images' });

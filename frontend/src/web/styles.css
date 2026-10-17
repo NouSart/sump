@@ -228,6 +228,55 @@ body[data-ds-dark-theme] {
   font-size: 12px;
 }
 
+/* 待审命令：白名单外的命令挂在这里等用户点。命令原文用等宽字体，
+   背景取 warn 色阶（"这需要你注意"），按钮复用 DSH 的 .btn 取值。 */
+.approvals {
+  margin: 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.approvals-head {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.approval {
+  padding: 10px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-left: 2px solid var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-business-primary));
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.approval-cmd {
+  margin: 0 0 6px;
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.approval-meta {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.approval-reason {
+  font-family: var(--ds-font-family-code);
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 /* 倒计时条：一条计时一行；读数走等宽字体 + tabular-nums，避免每秒跳宽。 */
 .timer-strip {
   margin: 0 0 12px;

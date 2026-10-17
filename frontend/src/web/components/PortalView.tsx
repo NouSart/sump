@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import type { PortalMessage, TimerView } from '../types';
+import type { PendingApprovalView, PortalMessage, TimerView } from '../types';
+import { ApprovalStrip } from './ApprovalStrip';
 
 interface Props {
   connected: boolean;
   messages: PortalMessage[];
   timers: TimerView[];
+  approvals: PendingApprovalView[];
+  onDecide: (itemId: string, decision: 'allow' | 'deny') => Promise<void>;
   error: string | null;
   onSend: (text: string) => Promise<void>;
 }
@@ -36,7 +39,7 @@ export function remainingText(leftMS: number): string {
 
 // PortalView 是门户的对话面：上方消息流，下方输入行。
 // 消息只有两条来源——本地回显的输入，与 SSE 送来的 deliver。
-export function PortalView({ connected, messages, timers, error, onSend }: Props) {
+export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend }: Props) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const listRef = useRef<HTMLOListElement>(null);
@@ -84,6 +87,10 @@ export function PortalView({ connected, messages, timers, error, onSend }: Props
           })}
         </ol>
       )}
+
+      {/* 待审命令：白名单没覆盖的命令挂起在这里，等用户点批准或拒绝。
+          放到输入框上方——它是"需要你现在做决定"的东西，不能滚出视野。 */}
+      <ApprovalStrip items={approvals} onDecide={onDecide} />
 
       <ol className="portal-list" ref={listRef}>
         {messages.length === 0 ? (

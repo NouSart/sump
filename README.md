@@ -1,14 +1,9 @@
-# 命令处理与审批第一层
-
-新增 `approval` 服务，接通 shell 执行前审批和模型反馈。使用方法见 [命令审批说明](COMMAND-APPROVAL.md)，协议见 [审批协议](COMMAND-APPROVAL-PROTOCOL.md)。
-
-# SUMP v2
+# SUMP v2 · 2.0
 
 [![CI](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml/badge.svg)](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-> 状态：M10 完成（**设置全链路**：秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传） · M9（**shell 命令执行服务**：受理即回执 + 审批接缝（未接入 = 一律未通过）+ 
-eport_result 补报） · 长期记忆与 embedding 语义召回（M8，Python 服务） · **文件服务（含 Excel / Word 读写）** · 计时器（timer） · 前端服务 v1（设置中心可视化面板） · 设计文档：[DESIGN.md](./DESIGN.md)
+> 状态：**2.0 上线**（命令审批第二层：白名单外挂起 → 门户用户裁决） · M10（**设置全链路**：秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传） · M9（**shell 命令执行服务**：受理即回执 + 审批接缝（未接入 = 一律未通过）+ report_result 补报） · 长期记忆与 embedding 语义召回（M8，Python 服务） · **文件服务（含 Excel / Word 读写）** · 计时器（timer） · 前端服务 v1（设置中心可视化面板 + 待审命令裁决） · 命令审批：[说明](./COMMAND-APPROVAL.md) / [协议](./COMMAND-APPROVAL-PROTOCOL.md) · 设计文档：[DESIGN.md](./DESIGN.md)
 
 SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独立运行（独立进程、独立数据库、任意语言），通过 WebSocket 按地址互相访问；智能体循环由 LLM 服务在服务网络之上自由跳转、组装。
 
@@ -45,13 +40,39 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - 设置面板：<http://127.0.0.1:9501/>——查看各服务声明的设置项、修改（中心受理即回执，不等待服务送达）/ 重置；设置项分三类：普通项（值 + 默认值）/ 秘密项（只显示「已设置」与否，值由服务自己保存、不回显）/ 只读项（启动值 + 不可改）；名册、连接状态与设置结果（行状态：已覆盖·待确认 / 已覆盖·未送达；提示：已生效 / 未生效 + 原因）事件驱动实时刷新（SSE，无刷新按钮）；首次运行会自动 `npm install` + `npm run build`（需要 Node ≥ 22.18，推荐 24）
 - 前端单独开发：`cd frontend; npm run build`（构建）/ `npm test`（协议 + 链路 + API + 面板组件测试）
 - 接 QQ（NapCat 正向 WS，仅私聊）：`.\scripts\run-local.ps1 -Owner 2271917353 -NapCatURL ws://192.168.11.196:3001 -NapCatToken <token>`——连不上会自动重试，不影响其余服务
-- shell（命令执行，工作目录根 = 仓库根）：**审批未接入时一律“未通过”**——命令不会被真正执行（fail-closed）；已接通 approval 第一层，由审批服务裁决。边界：工作目录越界即拒（含软链解析）、执行超时后终止整棵进程树、单流输出超上限截断并标注总数、并行上限与待执行队列上限（满即拒绝执行）。细则与设置项：[shell/README.md](./shell/README.md)
+- shell（命令执行，工作目录根 = 仓库根）：**审批未接入时一律“未通过”**——命令不会被真正执行（fail-closed）；已接通 approval：白名单直接放行，白名单外**挂起并在门户等用户裁决**（批准才执行，超时/离线/拒绝都不执行）。边界：工作目录越界即拒（含软链解析）、执行超时后终止整棵进程树、单流输出超上限截断并标注总数、并行上限与待执行队列上限（满即拒绝执行）。细则与设置项：[shell/README.md](./shell/README.md)
 - embedding 与语义召回（需要 Python ≥ 3.12，首次运行脚本自动建 venv 装依赖）：模型不入库——把 `model*.onnx + tokenizer.json + config.json`（bge-small-zh-v1.5 量级）放进 `data/models/bge-small-zh-v1.5/`；**没有模型时脚本以 fake 后端启动（显著警告，语义召回不可用），放置后重启即启用**。细则与实测记录：[embedding/README.md](./embedding/README.md)
 - 数据落在 `data/`（`memory.db` / `images.db` / `images/` / `files.db` / `files/` / `settings.json`，不入库）
 - 接入真 LLM：`$env:DEEPSEEK_API_KEY='sk-...'; .\scripts\run-local.ps1`（或显式 `-LlmKey/-LlmModel/-LlmBase`）
 - 真 LLM 冒烟测试：`$env:SUMP_LIVE_LLM='1'; $env:DEEPSEEK_API_KEY='sk-...'; cd reasoner; go test ./tests/ -run TestLiveDeepSeek -v`（平时自动跳过）
 - `Ctrl+C` 停止（脚本会清理全部子进程）
 - 跨服务端到端测试：`cd tests; go test ./... -count=1`
+
+### 长期运行（上线用）
+
+`run-local.ps1` 是**前台开发脚本**：`Ctrl+C` 就全停，日志只在控制台。要长期跑用守护脚本：
+
+```powershell
+.\scripts\serve.ps1                    # 前台守护：日志落 logs\sump-<日期>.log，run-local 退出即退避重拉
+.\scripts\serve.ps1 -Once              # 只跑一次（排查用）
+.\scripts\serve.ps1 -InstallTask       # 注册登录自启（无管理员权限时自动回落到「启动文件夹」）
+.\scripts\serve.ps1 -UninstallTask     # 取消自启
+```
+
+- 日志：`logs/sump-yyyyMMdd.log`（`logs/` 不入库）。
+- 自启：优先建计划任务 `SUMP-v2`（需要管理员）；被拒时自动在 `shell:startup` 放一个 `SUMP-v2.cmd`——效果相同、无需提权。
+- 守护只管"拉起来"与"记日志"：单个服务崩溃由它自己的骨架自愈（重连中心），整栈退出才由守护重拉。
+
+### 已知限制（上线时如实告知）
+
+| # | 限制 | 影响 / 现状 |
+| - | ---- | ----------- |
+| 1 | 门户没有文件上传入口 | 模型能 `files.save`（给 URL 入库）→ `read`，但"用户本地上传一个文件"还没有入口；临时替代：给 URL，或用 shell 把文件放到 `data/files` 后手工入库 |
+| 2 | `files.fetch` / 大图 `images.fetch` 回的是 base64 | 刻意不把 `files.fetch` 暴露给模型（会把上下文撑爆）；`images.fetch` 已暴露（图片索引的用途就是转 base64），大图会很长 |
+| 3 | 语义召回需要模型文件 | 没有 `data/models/bge-small-zh-v1.5/` 时以 fake 后端启动，召回退化为 bigram |
+| 4 | qq 入口需要外部 NapCat | 不起 NapCat 就只有门户一个入口 |
+| 5 | 审批第二层只有"批准/拒绝" | 解释（LLM 解读命令）与富通知未做；用户批准后 30 秒内必须执行（排队过期即作废） |
+| 6 | 面板没有自动化测试 | 曾用 CDP 做过像素级复核（三类渲染/对比度/秘密掩码），尚未落成测试 |
 
 ## 进度
 

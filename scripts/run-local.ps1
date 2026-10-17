@@ -171,7 +171,7 @@ try {
     if (-not (Wait-Port $QQAddr 60)) { throw 'qq 未在 60 秒内就绪' }
 
     Write-Host '[7/9] 启动 approval + shell + timer ...' -ForegroundColor Cyan
-    $approvalSvc = Start-Process -FilePath (Join-Path $binDir 'sump-approval.exe') -ArgumentList 'serve', '-addr', $ApprovalAddr, '-center', "ws://$CenterAddr/ws" -PassThru -WindowStyle Hidden
+    $approvalSvc = Start-Process -FilePath (Join-Path $binDir 'sump-approval.exe') -ArgumentList 'serve', '-addr', $ApprovalAddr, '-center', "ws://$CenterAddr/ws", '-portal', 'frontend' -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $ApprovalAddr 60)) { throw 'approval 未在 60 秒内就绪' }
     $shellSvc = Start-Process -FilePath (Join-Path $binDir 'shell.exe') -ArgumentList '-addr', $ShellAddr, '-center', "ws://$CenterAddr/ws", '-root', ('"' + $root + '"'), '-approval', 'approval', '-shell', ('"' + $approvalRuntime.Source + '"') -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $ShellAddr 60)) { throw 'shell 未在 60 秒内就绪' }
@@ -185,7 +185,7 @@ try {
     $reasoner = Start-Process -FilePath (Join-Path $binDir 'reasoner.exe') -ArgumentList $reasonerArgs -PassThru -NoNewWindow
 
     Write-Host '[9/9] 启动 frontend ...' -ForegroundColor Cyan
-    $frontend = Start-Process -FilePath 'node' -ArgumentList 'dist/server/index.js', '-addr', $FrontendAddr, '-center', "ws://$CenterAddr/ws" -WorkingDirectory $frontendDir -PassThru -NoNewWindow
+    $frontend = Start-Process -FilePath 'node' -ArgumentList 'dist/server/index.js', '-addr', $FrontendAddr, '-center', "ws://$CenterAddr/ws", '-approval', 'approval' -WorkingDirectory $frontendDir -PassThru -NoNewWindow
     if (-not (Wait-Port $FrontendAddr 60)) { throw 'frontend 未在 60 秒内就绪' }
 
     Write-Host ''
