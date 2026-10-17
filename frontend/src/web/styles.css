@@ -209,7 +209,7 @@ button { font: inherit; }
 }
 .me-name { flex: 1; font-size: var(--fs-meta); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .icon-btn {
-  width: 28px; height: 28px; display: grid; place-items: center; flex: none;
+  width: 42px; height: 42px; display: grid; place-items: center; flex: none;
   border-radius: var(--r-sm); border: 1px solid transparent;
   background: transparent; color: var(--text-2); cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
@@ -347,8 +347,8 @@ button { font: inherit; }
 /* ---------- 通用小按钮（图标按钮：方形、圆角、留白靠 grid 居中） ---------- */
 .chip {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; padding: 0;
-  border-radius: var(--r-md);
+  width: 48px; height: 48px; padding: 0;
+  border-radius: var(--r-lg);
   border: 1px solid var(--border); background: transparent; color: var(--text-2); cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
@@ -375,7 +375,7 @@ button { font: inherit; }
 .theme-switch { display: flex; gap: 2px; padding: 2px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); }
 .theme-tab {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; padding: 0; border-radius: 999px; border: 0; background: transparent;
+  width: 39px; height: 39px; padding: 0; border-radius: 999px; border: 0; background: transparent;
   color: var(--text-2); cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
@@ -426,7 +426,7 @@ button { font: inherit; }
 .tag-drift { color: var(--text); border-color: var(--border-strong); background: var(--surface-strong); }
 .field-reset {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; padding: 0;
+  width: 30px; height: 30px; padding: 0;
   color: var(--text-2); background: transparent;
   border: 1px solid var(--border); border-radius: 999px; cursor: pointer;
 }
@@ -454,7 +454,7 @@ button { font: inherit; }
 /* 图标按钮：方形、居中，图标本身 16 网格 */
 .btn.icon {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; padding: 0;
+  width: 39px; height: 39px; padding: 0;
 }
 .btn.ghost { background: transparent; border-color: var(--border); color: var(--text-2); }
 .btn.ghost:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
