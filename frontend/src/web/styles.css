@@ -221,17 +221,16 @@ button { font: inherit; }
 .icon-btn:hover { background: var(--surface-hover); color: var(--text); border-color: var(--border); }
 
 /* 收起态：只剩字标的一小块，*浮在*对话面板上——面板不避让，直接顶到顶。
-   字标坐标不变（见 .brand），块围绕字标四边留白定死：
-   19 = 12(app) + 12(侧栏) + 6(原字标行) + 1(border)，17 = 12 + 12 + 4 + 1。 */
+   字标坐标不变（见 .brand），底板四周留白统一 17.5px（左右上下相同）。 */
 .sidebar-bar {
-  position: absolute; left: 12px; top: 12px; z-index: 2;
-  width: calc(61.78px + 19px + 19px);
-  height: calc(31px + 17px + 17px);
+  position: absolute; left: 13.5px; top: 11.5px; z-index: 2;
+  /* 字标四周留白统一 17.5px：字标左上 (31,29) 各内缩 17.5 → 底板左上 (13.5,11.5)，
+     宽高同理 = 字标 61.78×31 + 17.5×2。 */
+  width: calc(61.78px + 35px);
+  height: calc(31px + 35px);
   padding: 0;
   cursor: pointer;
   color: var(--text); font: inherit;
-  /* 底板非等比收：左右只收一点（3%），上下收得多（10%）——绕块中心缩放，字标始终居中 */
-  transform: scale(0.97, 0.9);
 }
 .sidebar-bar:hover { background: var(--surface-hover); }
 /* 收起态：对话面板四边各外扩一圈（12 → 4），于是它和字标块边缘错开 8px，不再贴成一条线 */
