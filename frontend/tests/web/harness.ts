@@ -61,8 +61,9 @@ export function jsonResponse(body: unknown, status = 200): Response {
 }
 
 // stubFetch 安装 fetch 路由：handler 返回 undefined 视为未打桩（抛错，测试立刻可见）。
+// 允许返回 Promise<Response>——用于构造"响应被网络延迟扣住、SSE 抢先到达"这类时序用例。
 export function stubFetch(
-  handler: (url: string, init: RequestInit | undefined, calls: FetchCall[]) => Response | undefined,
+  handler: (url: string, init: RequestInit | undefined, calls: FetchCall[]) => Response | Promise<Response> | undefined,
 ): FetchCall[] {
   const calls: FetchCall[] = [];
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {

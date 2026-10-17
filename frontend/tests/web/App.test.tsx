@@ -170,6 +170,40 @@ describe('App', () => {
     await waitFor(() => expect(countCalls(calls, '/api/overview')).toBeGreaterThanOrEqual(2));
   });
 
+  it('名册竞态：SSE 新名册先到、首屏 overview 的旧响应后到 → 旧名册不得覆盖，守卫水位也不得倒退', async () => {
+    // 场景：首屏 fetch 被"网络延迟"扣住（gate），期间 SSE 推来 rev 2 的新名册；
+    // 随后 fetch 才带着 rev 1 的旧名册返回。旧代码会无条件 setRoster → 界面回退到两个服务，
+    // 并把修订水位倒退回 1（于是下一条 rev 2 事件会再触发一次多余重拉）。
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const calls = stubFetch((url) => {
+      if (url === '/api/overview') {
+        return gate.then(() => jsonResponse(okOverview(rosterOf(['images', 'qq'], 1))));
+      }
+      return undefined;
+    });
+    installFakeEventSource();
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '设置' })); // 服务计数在设置页（门户视图没有它）
+
+    // SSE 先到：rev 2，三个服务。
+    await emitSSE('roster', rosterOf(['images', 'qq', 'memory'], 2));
+    await screen.findByText('服务 · 3');
+
+    // 旧响应此时才回来（rev 1，两个服务）——必须被丢弃。
+    await act(async () => {
+      release();
+      await Promise.resolve();
+    });
+    assert.ok(screen.getByText('服务 · 3'), '更旧 revision 的名册不得覆盖新名册');
+
+    // 守卫水位未倒退：再次收到 rev 2（与当前相同）→ 不触发多余重拉。
+    await emitSSE('roster', rosterOf(['images', 'qq', 'memory'], 2));
+    assert.equal(countCalls(calls, '/api/overview'), 2, '相同 revision 不应触发重拉');
+  });
+
   it('status 事件：连接状态切换；重连（false→true）触发重拉', async () => {
     const { calls } = boot();
     await screen.findByRole('heading', { name: 'images' });
