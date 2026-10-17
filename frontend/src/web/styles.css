@@ -233,6 +233,9 @@ button { font: inherit; }
   color: var(--text); font: inherit;
 }
 .sidebar-bar:hover { background: var(--surface-hover); }
+/* 收起态：面板左沿到字标底板留 7px（= 底板到面板顶沿的距离），右边与底边维持 12px。
+   底板左沿 13.5 - 7 = 6.5。 */
+.app[data-collapsed='1'] { padding-left: 6.5px; }
 
 /* ---------- L2 交互面板 ---------- */
 .stage {
