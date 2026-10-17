@@ -3,8 +3,8 @@ import type { ReactElement } from 'react';
 // 图标集：与 SUMP 字标同一套几何取向——16 网格、细线（1.25）、圆角端点与拐角、直白无装饰的形状、
 // 只用最少笔画（密度小）。颜色一律 currentColor；按钮自己负责 aria-label 与 title。
 const box = {
-  width: 24,
-  height: 24,
+  width: 20,
+  height: 20,
   viewBox: '0 0 16 16',
   fill: 'none',
   xmlns: 'http://www.w3.org/2000/svg',
