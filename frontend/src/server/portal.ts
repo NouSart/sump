@@ -94,6 +94,91 @@ export function createTimerStore(): TimerStore {
   };
 }
 
+// ---------- 待审命令（approval → 门户 → 浏览器）----------
+//
+// 第二层审批：approval 判不出来（白名单没覆盖）的命令会挂起，并把待审项推给门户。
+// 门户只做两件事：把它推给浏览器、把用户的裁决送回 approval。
+// **不在这里记历史**：approval 那边一次只认一条在挂的项，裁决完即从列表里删掉。
+
+export interface PendingApprovalItem {
+  itemId: string;
+  command: string;
+  workDir: string;
+  requestedBy: string;
+  reasonCode: string;
+  summary: string;
+  unknowns: string[];
+  ruleIds: string[];
+  createdMs: number;
+  expiresMs: number;
+}
+
+/** parsePendingApproval 校验 approval 推来的待审项：外部输入不可信，形状不对整条丢弃。 */
+export function parsePendingApproval(raw: unknown, log: (m: string) => void): PendingApprovalItem | null {
+  const o = raw as Record<string, unknown> | null;
+  if (o === null || typeof o !== 'object') return null;
+  if (typeof o.item_id !== 'string' || o.item_id === '' || typeof o.command !== 'string') {
+    log('approval_pending 形状不符（缺 item_id 或 command，丢弃）');
+    return null;
+  }
+  const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return {
+    itemId: o.item_id,
+    command: o.command,
+    workDir: typeof o.work_dir === 'string' ? o.work_dir : '',
+    requestedBy: typeof o.requested_by === 'string' ? o.requested_by : '',
+    reasonCode: typeof o.reason_code === 'string' ? o.reason_code : '',
+    summary: typeof o.summary === 'string' ? o.summary : '',
+    unknowns: strs(o.unknowns),
+    ruleIds: strs(o.rule_ids),
+    createdMs: num(o.created_ms),
+    expiresMs: num(o.expires_ms),
+  };
+}
+
+export interface ApprovalStore {
+  /** apply 新增或替换一条待审项（同一 item_id 幂等）。 */
+  apply(item: PendingApprovalItem): void;
+  /** remove 删掉一条（已裁决 / 已过期）。 */
+  remove(itemId: string): void;
+  /** replaceAll 用全量列表替换（门户重启后从 approval 拉回）。 */
+  replaceAll(items: PendingApprovalItem[]): void;
+  /** list 返回当前待审项（按创建时间升序）。 */
+  list(): PendingApprovalItem[];
+  /** on 订阅变化（只推变化；初值请先取一次 list）。 */
+  on(fn: (items: PendingApprovalItem[]) => void): () => void;
+}
+
+export function createApprovalStore(): ApprovalStore {
+  const byId = new Map<string, PendingApprovalItem>();
+  const listeners = new Set<(items: PendingApprovalItem[]) => void>();
+  const snapshot = (): PendingApprovalItem[] => [...byId.values()].sort((a, b) => a.createdMs - b.createdMs);
+  const emit = (): void => {
+    const items = snapshot();
+    for (const fn of [...listeners]) fn(items);
+  };
+  return {
+    apply: (item) => {
+      byId.set(item.itemId, item);
+      emit();
+    },
+    remove: (itemId) => {
+      if (byId.delete(itemId)) emit();
+    },
+    replaceAll: (items) => {
+      byId.clear();
+      for (const it of items) byId.set(it.itemId, it);
+      emit();
+    },
+    list: snapshot,
+    on: (fn) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+  };
+}
+
 // ---------- 浏览器信任栅栏 ----------
 //
 // 为什么需要它：门户一旦能驱动智能体（而智能体手里有 shell），它就是一个"能执行命令的入口"。

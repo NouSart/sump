@@ -46,3 +46,12 @@ export function sendMessage(text: string): Promise<{ conversationId: string }> {
     body: JSON.stringify({ text }),
   });
 }
+
+// decideApproval 把用户的裁决送回 approval（allow = 批准执行，deny = 拒绝）。
+export function decideApproval(itemId: string, decision: 'allow' | 'deny', note = ''): Promise<{ itemId: string }> {
+  return request<{ itemId: string }>('/api/approvals', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ item_id: itemId, decision, note }),
+  });
+}

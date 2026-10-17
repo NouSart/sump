@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import type { WebSocketServer } from 'ws';
 import { createRequestHandler } from './api.ts';
 import { CenterLink } from './center.ts';
-import { createDeliverHub, createTimerStore, type TrustConfig } from './portal.ts';
+import { createApprovalStore, createDeliverHub, createTimerStore, parsePendingApproval, type TrustConfig } from './portal.ts';
 import { attachJumpEndpoint, parseTimerItems, portalProvides, portalSettings } from './service.ts';
 
 export const frontendDescription =
@@ -17,6 +17,8 @@ export interface FrontendConfig {
   webDir: string;
   heartbeatMS: number;
   reasoner: string;
+  /** 审批服务名（第二层裁决由门户送回它）。 */
+  approval: string;
   trustedHosts: string[];
 }
 
@@ -49,6 +51,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
 
   const hub = createDeliverHub();
   const timers = createTimerStore();
+  const approvals = createApprovalStore();
   const trust: TrustConfig = { boundAddr: addr, trustedHosts: cfg.trustedHosts };
   const link = new CenterLink({
     name: cfg.name,
@@ -74,12 +77,14 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
         reasoner: cfg.reasoner,
         portal: { on: hub.on },
         timers: { current: timers.current, on: timers.on },
+        approvals: { current: approvals.list, on: approvals.on, remove: approvals.remove },
+        approval: cfg.approval,
         trust,
       },
       log,
     ),
   );
-  const wss: WebSocketServer = attachJumpEndpoint(server, '/ws', cfg.name, log, hub.publish, timers.apply, trust);
+  const wss: WebSocketServer = attachJumpEndpoint(server, '/ws', cfg.name, log, hub.publish, timers.apply, approvals.apply, trust);
   link.start();
 
   // 冷启动兜一次：门户重启后 timer 不会主动重推在计时器，这里拉一次 list 补上。
@@ -103,10 +108,35 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
         log(`启动兜底拉取在计时器失败（不影响使用）: ${String(err)}`);
       });
   };
+
+  // 待审命令同理：门户重启会丢掉内存里的待审列表，而 approval 那边还在挂起——
+  // 不拉回来，用户就永远看不到这条审批（直到 TTL 到期按未通过处理）。
+  let approvalSeeded = false;
+  const seedApprovals = (): void => {
+    if (approvalSeeded || !(link.roster?.services ?? []).some((s) => s.name === cfg.approval)) return;
+    approvalSeeded = true;
+    void link
+      .jumpTo(cfg.approval, 'approval_list', {}, 5000)
+      .then((data) => {
+        const r = data as { items?: unknown };
+        const items = (Array.isArray(r.items) ? r.items : [])
+          .map((x) => parsePendingApproval(x, log))
+          .filter((x): x is NonNullable<typeof x> => x !== null);
+        approvals.replaceAll(items);
+        log(`启动兜底：拉到待审项 ${String(items.length)} 条`);
+      })
+      .catch((err: unknown) => {
+        log(`启动兜底拉取待审项失败（不影响使用）: ${String(err)}`);
+      });
+  };
   link.on((e) => {
-    if (e.kind === 'roster') seedTimers();
+    if (e.kind === 'roster') {
+      seedTimers();
+      seedApprovals();
+    }
   });
   seedTimers();
+  seedApprovals();
 
   return {
     link,

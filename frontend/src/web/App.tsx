@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { fetchOverview, resetSetting, sendMessage, setSetting } from './api';
+import { decideApproval, fetchOverview, resetSetting, sendMessage, setSetting } from './api';
 import { PortalView } from './components/PortalView';
 import { ServiceList } from './components/ServiceList';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -8,6 +8,7 @@ import { Toasts, type Toast } from './components/Toasts';
 import { IconDark, IconLight, IconSettings } from './components/icons';
 import type {
   Overview,
+  PendingApprovalView,
   PortalMessage,
   RosterView,
   RowStatus,
@@ -51,6 +52,7 @@ export function App() {
   const [view, setView] = useState<'portal' | 'settings'>('portal');
   const [messages, setMessages] = useState<PortalMessage[]>([]);
   const [timers, setTimers] = useState<TimerView[]>([]);
+  const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
   const [portalError, setPortalError] = useState<string | null>(null);
   const pendingKeysRef = useRef(new Set<string>());
   const rosterRevRef = useRef(-1);
@@ -156,6 +158,10 @@ export function App() {
     es.addEventListener('timers', (ev) => {
       setTimers(JSON.parse((ev as MessageEvent).data) as TimerView[]);
     });
+    // 待审命令：approval 挂起后推来的**全量列表**（新到、已裁决、过期都在里面），直接覆盖。
+    es.addEventListener('approvals', (ev) => {
+      setApprovals(JSON.parse((ev as MessageEvent).data) as PendingApprovalView[]);
+    });
     return () => es.close();
   }, []);
 
@@ -256,6 +262,17 @@ export function App() {
     }
   }, []);
 
+  // onDecide：把用户的裁决送回 approval。成功后由 SSE 的 approvals 事件把卡片删掉
+  // （服务端是唯一真相：门户不自己先删，避免"界面说批了、其实 approval 已经过期"）。
+  const onDecide = useCallback(async (itemId: string, decision: 'allow' | 'deny') => {
+    setPortalError(null);
+    try {
+      await decideApproval(itemId, decision);
+    } catch (err) {
+      setPortalError(`裁决未送达：${(err as Error).message}`);
+    }
+  }, []);
+
   return (
     <div className="app">
       <aside className="sidebar">
@@ -328,7 +345,15 @@ export function App() {
         )}
 
         {view === 'portal' ? (
-          <PortalView connected={connected} messages={messages} timers={timers} error={portalError} onSend={onSend} />
+          <PortalView
+            connected={connected}
+            messages={messages}
+            timers={timers}
+            approvals={approvals}
+            onDecide={onDecide}
+            error={portalError}
+            onSend={onSend}
+          />
         ) : (
           <section className="settings-page" aria-label="设置">
             <header className="page-head">

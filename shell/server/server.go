@@ -34,7 +34,7 @@ const (
 	defaultMaxOutput    = 256 << 10 // 单流输出上限 256KiB
 	defaultConcurrency  = 8
 	defaultQueueLimit   = 32
-	defaultApprovalWait = time.Minute
+	defaultApprovalWait = 10 * time.Minute // 第二层要等用户裁决；与 approval 的 -review-ttl 对齐
 	maxPendingApprovals = 64
 )
 

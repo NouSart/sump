@@ -87,7 +87,35 @@
 
 **新增执行域（例如 fs、http、后台任务）**：先定义独立域判别字段（建议 `kind`），不让 `dialect` 兼任域名。各域声明自己的执行字段组、上下文校验、事实提取器和规则段；事实提取器注册在 approval 侧，不能接受调用方自报“安全”结论。裁决包、摘要绑定、有效期和 fail-closed 原则共用。当前 `plan` 的 command/work_dir/shell_path/args/dialect/platform/profile/timeout_ms/max_output_bytes 都是 exec 域字段；本次只约定扩展方向，没有新增域判别字段或执行域实现，见 SPEC.md §13。
 
-## 第二层钩子
+## 第二层：用户裁决（已实现）
+
+第一层（规则引擎）给不出 `allow` 时，命令**挂起**并推到门户，等用户点批准 / 拒绝。
+
+### 消息
+
+| 方向 | 动作 | 载荷 |
+| ---- | ---- | ---- |
+| approval → 门户 | `approval_pending` | `{item_id, command, work_dir, requested_by, reason_code, summary, unknowns[], rule_ids[], created_ms, expires_ms}` |
+| 门户 → approval | `approval_decide` | `{item_id, decision: allow\|deny, note?}` |
+| 门户 → approval | `approval_list` | `{}` → `{items: [...]}`（门户重启后拉回待审列表） |
+
+### 规则
+
+- **只接受门户裁决**：`approval_decide` / `approval_list` 的 `from` 必须是 `-portal` 指定的服务名（默认 `frontend`），别的服务调一律拒。
+- **挂起的是这条命令，不是审批服务**：每条 jump 独立 goroutine；并发槽只在解析/裁决期间占用，等待用户时释放。其它审批照常处理。
+- **TTL**（`-review-ttl`，默认 10 分钟）：到期按 `review` 原样返回（调用方视为未通过，不执行），待审项消失。
+- **门户不在名册**：不挂起，立即按 `review` 返回（不浪费调用方 10 分钟等一个不会来的裁决）。
+- **队列满**（`-max-pending`，默认 32）：按 `review` 返回，不排队。
+- 用户批准 → `decision=allow`、`reason_code=USER_APPROVED`、`valid_for_ms=30000`；拒绝 → `decision=deny`、`reason_code=USER_DENIED`。
+- **许可期从"拿到裁决"起算**（shell 侧）：`valid_for_ms` 仍是 30 秒，但计时起点是收到裁决的时刻——否则用户审 5 分钟、许可早过期，等于白审。
+- 门户重启后用 `approval_list` 恢复列表；`approval` 侧待审项只在内存里，重启即清空（挂起随之失效，调用方按未通过补报）。
+
+### 与"零阻塞"的关系
+
+阻塞被限制在**调用方自己那条链**：shell 的这条 job 在等裁决（受 `approval.timeout_ms` 限制，默认 10 分钟），
+审批服务、其它服务、其它命令都不受影响。门户慢或挂掉也不阻塞——推送是 Fire（不等回执）。
+
+## 第二层钩子（解释与通知，未实现）
 
 `approval/review/ports.go` 中保留四个接口：
 
