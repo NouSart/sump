@@ -3,7 +3,7 @@
 [![CI](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml/badge.svg)](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-> 状态：**命令审批第二层**（白名单外挂起 → 门户用户裁决） · M10（**设置全链路**：秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传） · M9（**shell 命令执行服务**：受理即回执 + 审批接缝（未接入 = 一律未通过）+ report_result 补报） · 长期记忆与 embedding 语义召回（M8，Python 服务） · **文件服务（含 Excel / Word 读写）** · 计时器（timer） · 前端服务 v1（设置中心可视化面板 + 待审命令裁决） · 命令审批：[说明](./COMMAND-APPROVAL.md) / [协议](./COMMAND-APPROVAL-PROTOCOL.md) · 设计文档：[DESIGN.md](./DESIGN.md)
+> 版本：**v0.0.1-beta.1**（[发布说明](https://github.com/QAQ-awa-QAQ/sump/releases/tag/v0.0.1-beta.1)） · 门户 v2：**对话时间线**（深度思考 / 终端命令 / 终端输出 + Markdown 渲染）、**任务板块**（会话 → 任务目录、点任务跳转、完成判定权在 reasoner）、**设置项说人话**（选项 / 开关 / 单位）与语言包、**整站配色跟本地时段走** · 命令审批第二层（白名单外挂起 → 门户用户裁决） · 设置全链路（秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传） · shell 命令执行服务（受理即回执 + 未接审批即不执行 + 补报） · 长期记忆与 embedding 语义召回（Python 服务） · 文件服务（含 Excel / Word 读写） · 命令审批：[说明](./COMMAND-APPROVAL.md) / [协议](./COMMAND-APPROVAL-PROTOCOL.md) · 设计文档：[DESIGN.md](./DESIGN.md)
 
 SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独立运行（独立进程、独立数据库、任意语言），通过 WebSocket 按地址互相访问；智能体循环由 LLM 服务在服务网络之上自由跳转、组装。
 
@@ -19,8 +19,8 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - **WebSocket 通信**：默认短连接、按访问频率自适应保活；服务间点对点直连
 - **设置中心**：注册 · 全局信息 · 设置与调度——不是中央交换机，不做流量中转
 - **服务骨架库（`service/`）**：注册 / 心跳 / 名册 / 断线自愈（重连 + 重注册）/ 优雅下线（bye）统一实现——服务只写业务动作
-- **语言分工（性能优先）**：Go 扛全部逻辑，Python 只做 embedding 推理，TS 做前端（`frontend` 服务：设置中心可视化面板）
-- **前端服务（frontend）**：设置中心的浏览器面板——TS 服务节点（注册 / 心跳 / 名册广播）+ 浏览器 HTTP JSON + SSE；只做视图层，不持业务状态；界面走瑞典极简（系统无衬线字体、亚麻白底、零阴影）
+- **语言分工（性能优先）**：Go 扛全部逻辑，Python 只做 embedding 推理，TS 做前端（`frontend` 服务：门户面板）
+- **前端服务（frontend）**：**门户**——对话是主体（步骤时间线 + Markdown），侧栏是「会话 → 任务」的目录，设置页按服务分页、每项按类型出控件；TS 服务节点（注册 / 心跳 / 名册广播）+ 浏览器 HTTP JSON + SSE，只做视图层、不持业务状态；视觉是自有令牌链（三层云母 + 玻璃浮层），深浅与配色由**时段主题**按本地时间驱动
 - **智能体循环 = 跳转式调度**：每轮推理决定是访问工具服务、重新访问自己，还是发起审批
 - **异步工具模型**：工具调用即时回执、结果以 `[工具结果]` 注入并唤醒下一轮（通知模式 `each`/`batch` 可设）；内置 `wait` 工具；**收尾门禁**保证结果到齐才交付；进行中任务的上下文由 reasoner 内存**黑板**持有（窗口 = 任务在跑期）
 - **长期记忆**：`remember`（声明在 `provides` 里，自动成为 LLM 工具——加能力零 reasoner 改动）/ `forget` 软删；召回 = **语义召回（embedding 服务，余弦 ≥0.45）+ bigram 兜底（服务缺席/超时静默回落）** + 核心注入（priority）；recall 组装为「最近对话 / 核心记忆 / 相关记忆」三节；条目向量是派生数据（懒补齐、可重建）
@@ -37,7 +37,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 ```
 
 - 自定义地址：`.\scripts\run-local.ps1 -CenterAddr 127.0.0.1:9000 -MemoryAddr 127.0.0.1:9201 -EmbeddingAddr 127.0.0.1:9601 -ImageAddr 127.0.0.1:9401 -FilesAddr 127.0.0.1:9802 -QQAddr 127.0.0.1:9301 -ShellAddr 127.0.0.1:9701 -TimerAddr 127.0.0.1:9801 -ReasonerAddr 127.0.0.1:9101 -FrontendAddr 127.0.0.1:9501` 
-- 设置面板：<http://127.0.0.1:9501/>——查看各服务声明的设置项、修改（中心受理即回执，不等待服务送达）/ 重置；设置项分三类：普通项（值 + 默认值）/ 秘密项（只显示「已设置」与否，值由服务自己保存、不回显）/ 只读项（启动值 + 不可改）；名册、连接状态与设置结果（行状态：已覆盖·待确认 / 已覆盖·未送达；提示：已生效 / 未生效 + 原因）事件驱动实时刷新（SSE，无刷新按钮）；首次运行会自动 `npm install` + `npm run build`（需要 Node ≥ 22.18，推荐 24）
+- 门户：<http://127.0.0.1:9501/>——**对话**（回复按 Markdown 渲染，思考 / 终端命令 / 终端输出画成步骤时间线，时间戳悬停才显示）；侧栏是「会话 → 任务」目录，点任务跳到那一段；输入框旁的「设置」进设置页——门户排第一（外观：跟随时间 + 主题时段），各服务按设置项类型出控件（选项 / 开关 / 带单位的数字 / 服务下拉），修改由中心受理即回执、不等待服务送达，重置同路径；设置项分三类：普通项（值 + 默认值）/ 秘密项（只显示「已设置」与否，值由服务自己保存、不回显）/ 只读项（启动值 + 不可改）；名册、连接状态与设置结果（行状态：已覆盖·待确认 / 已覆盖·未送达；提示：已生效 / 未生效 + 原因）事件驱动实时刷新（SSE，无刷新按钮）；首次运行会自动 `npm install` + `npm run build`（需要 Node ≥ 22.18，推荐 24）
 - 前端单独开发：`cd frontend; npm run build`（构建）/ `npm test`（协议 + 链路 + API + 面板组件测试）
 - 接 QQ（NapCat 正向 WS，仅私聊）：`.\scripts\run-local.ps1 -Owner 2271917353 -NapCatURL ws://192.168.11.196:3001 -NapCatToken <token>`——连不上会自动重试，不影响其余服务
 - shell（命令执行，工作目录根 = 仓库根）：**审批未接入时一律“未通过”**——命令不会被真正执行（fail-closed）；已接通 approval：白名单直接放行，白名单外**挂起并在门户等用户裁决**（批准才执行，超时/离线/拒绝都不执行）。边界：工作目录越界即拒（含软链解析）、执行超时后终止整棵进程树、单流输出超上限截断并标注总数、并行上限与待执行队列上限（满即拒绝执行）。细则与设置项：[shell/README.md](./shell/README.md)
@@ -72,7 +72,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 | 3 | 语义召回需要模型文件 | 没有 `data/models/bge-small-zh-v1.5/` 时以 fake 后端启动，召回退化为 bigram |
 | 4 | qq 入口需要外部 NapCat | 不起 NapCat 就只有门户一个入口 |
 | 5 | 审批第二层只有"批准/拒绝" | 解释（LLM 解读命令）与富通知未做；用户批准后 30 秒内必须执行（排队过期即作废） |
-| 6 | 面板没有自动化测试 | 曾用 CDP 做过像素级复核（三类渲染/对比度/秘密掩码），尚未落成测试 |
+| 6 | 门户只有一个会话 | 会话身份固定为 `web:private:owner`，还没有多会话列表；任务板块的"会话 → 任务"目录目前只挂这一个 |
 
 ## 进度
 
@@ -88,19 +88,23 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - [x] 工具暴露显式声明（`provides` 里 `tool: true`）+ 设置下发（`configure`）：中心 set/reset 后推送生效值，reasoner 实时应用（启动拉取兜底）
 - [x] 设置热链（M7）：注册即全量下发（受理回执不等待送达）｜`settings` 事件回传结果（ok=true / ok=false + 原因）｜骨架通用接收（`HandleSetting` 声明 + 校验 + 应用；注册后异步拉取兜底）｜设置项接入全部服务（reasoner 3 / memory 5 / images 1 / qq 1 / 中心 2）｜面板事件驱动自动刷新（无刷新按钮）
 - [x] 设置全链路（M10）：**秘密项**（`HandleSecret`：值不进中心——不落盘、不回显，只在提交那一次转发给服务，服务自己持久化 `data/<名>-secret.json` 并在启动时加载；名片只报「有没有值」；注册对齐不含它）｜**只读项**（`HandleReadOnly`：进面板展示启动值、改动明确拒绝）｜**服务自报**（`AnnounceSetting` → `report_setting`：服务侧的值自己变了实时回传，中心不改覆盖值，面板同时显示「中心口径」与「服务侧」两列，不一致给「服务侧已变」标记）｜面板三类渲染（秘密项密码框覆盖 / 清空；只读项无修改入口）｜**全部服务的启动参数进面板**：reasoner（`llm.*` / `memory` / `images` 热改 + `name`/`addr`/`center` 只读）· qq（`napcat.url` 热改即重连 / `napcat.token` 秘密 / `reasoner`·`images` 热改 + 只读三要素）· memory（`recall.embedding` 热改 + `db` 与三要素只读）· timer（`portal` 热改 + 三要素只读）· images / 中心自身（路径与三要素只读）· 门户（五个只读项，不发明 configure 机制）｜CI 的 frontend 任务跑门户全链路 e2e（需先构建前端产物）
-- [x] 前端服务 v1（`frontend`）：设置中心可视化面板——TS 服务节点（注册 / 心跳 / 名册）+ HTTP JSON + SSE；设置查看 / 修改（configure 下发）/ 重置；瑞典极简界面（React/Vite + 系统无衬线字体）；协议以 Go 产出夹具做跨语言字节级锚定
+- [x] 前端服务 v1（`frontend`）：设置中心可视化面板——TS 服务节点（注册 / 心跳 / 名册）+ HTTP JSON + SSE；设置查看 / 修改（configure 下发）/ 重置；协议以 Go 产出夹具做跨语言字节级锚定
 - [x] 文件服务（含 Excel/Word 读写）：`files` 服务（save/fetch/read/write/edit_word，独立进程/独立库）；QQ 私聊文件消息 → 存库 → 占位带 id 上链；`read` 声明 `tool: true` 自动成为 LLM 工具（文本截断 / 二进制明确拒绝 / xlsx 转 TSV / docx 提取正文）；`write` 单元格级编辑 / `edit_word` .docx 纯文本替换——含服务级测试、qq 接缝测试与全链真进程 e2e
 - [x] embedding 服务（M8，Python）：文本 → 向量（onnxruntime + tokenizers 本地推理；fake 后端供测试与 CI）；协议 / 注册自愈 / 双后端
 - [x] 语义召回（M8）：memory 接入 embedding——向量列（派生、懒补齐）+ 余弦 ≥0.45 阈值 + **bigram 兜底**（服务缺席/超时静默回落）；跨语言真进程 e2e；query 前缀 A/B 实测（no-prefix 胜出）
 - [x] shell 命令执行服务（M9）：受理即回执（审批与执行不占响应）｜审批接缝（`Approver` 接口；未接入 = 一律未通过）｜结果以 `report_result` 补报（reasoner：在跑则注入、已收尾则开补报轮）｜护栏：工作目录根（越界即拒）+ 执行超时（终止整棵进程树）+ 输出上限（截断标注）+ 并行/队列上限（满即拒）｜8 个设置项（`exec.*` / `approval.*`）
-- [x] 命令审批第一层（approval）：PowerShell AST 规则引擎｜执行摘要与短期许可绑定｜shell 审批及模型反馈｜第二层仅预留接口
-- [ ] 下一步：巩固线（sleep 提炼）、群聊（@ 必回 / 自主插话）、审批第二层（LLM 解读与用户通知，明确状态归属后接入）、PDF/Office 抽取（files.read 升级）、shell 后续（后台任务托管 / 输出有界引用 / 文件工具）
+- [x] 命令审批第一层（approval）：PowerShell AST 规则引擎｜执行摘要与短期许可绑定｜shell 审批及模型反馈
+- [x] 会话记忆扩到轨迹：记录分 `kind`（user / assistant / reasoning / tool_call / tool_result）+ `meta` + `seq`；reasoner 抓深度思考、工具执行前记命令、异步工具终态补报记输出，门户经 `progress` SSE 实时画出来
+- [x] 任务板块：`tasks` 表 + 六个 `task_*` 动作；一个会话最多一个进行中任务（SQLite 部分唯一索引兜底，并发建不上就回头读）；没有任务先建再开工；**完成判定权在 reasoner**（内置 `task_status`，交付前必须先判，最多催两轮，仍不判按 continue 记账）；完结即不再续，记录留在原处
+- [x] 门户 v2：对话改成步骤时间线 + Markdown 渲染；侧栏「会话 → 任务」目录，点任务只做跳转；设置项说人话（`kind` / `options` / `unit` → 分段控件 / 服务下拉 / 开关 / 单位读法）；语言包（`locales/*.json`，含"全 x"测试包抓漏键）；整站配色跟本地时段走（17 个锚点插值底色 / 光斑 / 强调色，按亮度自动切深浅令牌）
+- [ ] 下一步：巩固线（sleep 提炼）、群聊（@ 必回 / 自主插话）、审批第二层补强（LLM 解读命令 + 富通知）、门户多会话与文件上传入口、PDF/Office 抽取（files.read 升级）、shell 后续（后台任务托管 / 输出有界引用 / 文件工具）
 
 ## 文档
 
 | 文档 | 内容 |
 | ---- | ---- |
 | [DESIGN.md](./DESIGN.md) | 重构设计：背景 / 架构 / 目录约定 / 实施路线 / 待决问题 |
+| [frontend/README.md](./frontend/README.md) | 门户：HTTP API、SSE 事件、设计系统与主题、测试结构 |
 | [SPEC.md](./SPEC.md) | 服务规范（草案）：写一个新服务要满足什么（独立性 / 最小实现 / 动作词汇 / 工具暴露 / 异步补报 / 兼容规则 / 待定事项） |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | 参与开发指南：环境 / 测试 / 提交规范 / 三条硬规则 |
 | [shell/README.md](./shell/README.md) | shell 服务：边界、审批接缝、设置项、补报时序 |
