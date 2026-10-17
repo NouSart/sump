@@ -28,9 +28,10 @@ export function SettingsPanel({ service, settings, connected, statusOf, onSave, 
   return (
     <div className="panel">
       <h1 className="panel-title">{title}</h1>
-      {service.description !== undefined && service.description !== '' && (
-        <p className="panel-desc">{service.description}</p>
-      )}
+      {(() => {
+        const desc = t(`service.${service.name}.desc`, service.description ?? '');
+        return desc !== '' ? <p className="panel-desc">{desc}</p> : null;
+      })()}
 
       {settings === null ? (
         <p className="empty">{t('ui.settings.loading', '加载中…')}</p>

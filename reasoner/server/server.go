@@ -128,7 +128,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		}
 		s.setNotifyMode(v)
 		return nil
-	})
+	}, service.Label("工具调用的提示方式"),
+		service.Hint("each = 每次工具调用都告诉你；batch = 攒起来最后一次性说"),
+		service.As("enum", "each", "batch"))
 	s.HandleSetting("tool.concurrency", strconv.Itoa(cfg.ToolConcurrency), func(v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || (n != -1 && n < 1) {
@@ -136,7 +138,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		}
 		s.setToolConcurrency(n)
 		return nil
-	})
+	}, service.Label("同时跑几个工具"),
+		service.As("number"))
 	s.HandleSetting("tool.timeout_ms", strconv.FormatInt(cfg.ToolTimeout.Milliseconds(), 10), func(v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1000 {
@@ -144,7 +147,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		}
 		s.setToolTimeout(time.Duration(n) * time.Millisecond)
 		return nil
-	})
+	}, service.Label("单次工具调用超时"),
+		service.Hint("单位毫秒；到点还没回来就算这次失败"),
+		service.As("number"))
 	// 推理侧可热改项：LLM 三件套 + 记忆 / 图片服务名（预设 = main.go 的启动 flag）。
 	s.HandleSetting("llm.base", cfg.LLMBase, func(v string) error {
 		if strings.TrimSpace(v) == "" {
@@ -152,21 +157,24 @@ func New(cfg Config, logger *log.Logger) *Server {
 		}
 		s.setLLMBase(v)
 		return nil
-	})
+	}, service.Label("模型接口地址"),
+		service.Hint("OpenAI 兼容的 base URL，例如 https://api.deepseek.com"))
 	s.HandleSetting("llm.model", cfg.LLMModel, func(v string) error {
 		if strings.TrimSpace(v) == "" {
 			return errors.New("不接受空模型名")
 		}
 		s.setLLMModel(v)
 		return nil
-	})
+	}, service.Label("用哪个模型"),
+		service.Hint("模型名要和上面的接口匹配，例如 deepseek-chat"))
 	s.HandleSetting("memory", cfg.Memory, func(v string) error {
 		if strings.TrimSpace(v) == "" {
 			return errors.New("不接受空服务名")
 		}
 		s.setMemoryName(v)
 		return nil
-	})
+	}, service.Label("记忆服务名"),
+		service.Hint("对话历史与长期记忆交给哪个服务"))
 	s.HandleSetting("images", cfg.Images, func(v string) error {
 		if strings.TrimSpace(v) == "" {
 			return errors.New("不接受空服务名")
@@ -179,7 +187,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setLLMKey(v)
 		return nil
 	}
-	s.HandleSecret("llm.key", applyKey)
+	s.HandleSecret("llm.key", applyKey,
+		service.Label("模型 API Key"),
+		service.Hint("只在你自己这边保存，中心不落盘也不回显；换 key 直接覆盖"))
 	if cfg.LLMKey != "" {
 		// 启动参数（flag / 环境变量）给了 Key：与下发同路径先应用一次。
 		// 秘密文件里若有值，Start 加载时会覆盖（文件才是面板提交的最新状态）。

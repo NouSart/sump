@@ -120,7 +120,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.historyLimit = n
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("每次带上多少条旧对话"),
+		service.Hint("每轮回答前，把最近这么多条对话一起交给模型；0 = 不带历史"),
+		service.As("number"))
 	s.HandleSetting("recall.core_limit", strconv.Itoa(defaultCoreLimit), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
@@ -130,7 +132,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.coreLimit = n
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("最多注入几条核心记忆"),
+		service.Hint("你在长期记忆里标成「核心」的条目，每次对话最多带几条"),
+		service.As("number"))
 	s.HandleSetting("recall.core_max_chars", strconv.Itoa(defaultCoreMaxChars), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
@@ -140,7 +144,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.coreMaxChars = n
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("核心记忆的总字数上限"),
+		service.Hint("核心记忆太多会挤占对话空间，这里卡一个总字数"),
+		service.As("number"))
 	s.HandleSetting("recall.rel_limit", strconv.Itoa(defaultRelLimit), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
@@ -150,7 +156,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.relLimit = n
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("最多召回几条相关记忆"),
+		service.Hint("按语义相关度挑出来的长期记忆，最多带几条（不相关的不带）"),
+		service.As("number"))
 	s.HandleSetting("recall.rel_max_chars", strconv.Itoa(defaultRelMaxChars), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
@@ -160,7 +168,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.relMaxChars = n
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("相关记忆的总字数上限"),
+		service.Hint("相关记忆太多会挤占对话空间，这里卡一个总字数"),
+		service.As("number"))
 	s.Handle("recall", s.actionRecall)
 	s.Handle("store", s.actionStore)
 	s.Handle("history", s.actionHistory)
@@ -170,7 +180,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.HandleSetting("recall.embedding", cfg.Embedding, func(v string) error {
 		s.setEmbeddingName(strings.TrimSpace(v))
 		return nil
-	})
+	}, service.Label("用哪个服务算语义向量"),
+		service.Hint("留空 = 关闭语义召回，退回关键词（bigram）匹配"))
 	// 只读项：启动参数带起来的（换它要重启）。db 是库身份——运行中换库不做。
 	s.HandleReadOnly("db", cfg.DBPath)
 	s.HandleReadOnly("name", cfg.Name)
