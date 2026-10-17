@@ -30,7 +30,7 @@ func TestStoreAppendRecent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := st.Recent("c1", 3)
+	got, err := st.Recent("c1", 3, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestStoreAppendRecent(t *testing.T) {
 		t.Fatalf("Recent(c1,3) 不符: %+v", got)
 	}
 
-	all, err := st.Recent("c1", 10)
+	all, err := st.Recent("c1", 10, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestStoreAppendRecent(t *testing.T) {
 		t.Fatalf("Recent(c1,10) 不符: %+v", all)
 	}
 
-	other, err := st.Recent("c2", 10)
+	other, err := st.Recent("c2", 10, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestStoreHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := st.History("h1", 2, 0)
+	got, err := st.History("h1", 2, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestStoreHistory(t *testing.T) {
 		}
 	}
 
-	all, err := st.History("h1", 0, 0) // 0 → 默认 100
+	all, err := st.History("h1", 0, 0, "") // 0 → 默认 100
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,21 +102,21 @@ func TestStoreRecords(t *testing.T) {
 	}
 	defer st.Close()
 
-	if err := st.Record("c", "user", "跑个命令", "", "", 1); err != nil {
+	if err := st.Record("c", "user", "跑个命令", "", "", 1, ""); err != nil {
 		t.Fatal(err)
 	}
 	// 并发写乱序到达：seq 决定先后，落库顺序不影响结果
-	if err := st.Record("c", "assistant", "Get-Date", "tool_call", `{"tool":"shell__run","command":"Get-Date"}`, 3); err != nil {
+	if err := st.Record("c", "assistant", "Get-Date", "tool_call", `{"tool":"shell__run","command":"Get-Date"}`, 3, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Record("c", "assistant", "想一下", "reasoning", "", 2); err != nil {
+	if err := st.Record("c", "assistant", "想一下", "reasoning", "", 2, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Record("c", "tool", "2026-10-17", "tool_result", `{"tool":"shell__run"}`, 4); err != nil {
+	if err := st.Record("c", "tool", "2026-10-17", "tool_result", `{"tool":"shell__run"}`, 4, ""); err != nil {
 		t.Fatal(err)
 	}
 
-	hist, err := st.History("c", 0, 0)
+	hist, err := st.History("c", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestStoreRecords(t *testing.T) {
 	}
 
 	// 增量：只要 seq > 2 的
-	tail, err := st.History("c", 0, 2)
+	tail, err := st.History("c", 0, 2, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestStoreRecords(t *testing.T) {
 	}
 
 	// 进 LLM 上下文的只有对话消息
-	recent, err := st.Recent("c", 10)
+	recent, err := st.Recent("c", 10, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,11 +160,11 @@ func TestStoreNoDedupeForEvents(t *testing.T) {
 	defer st.Close()
 
 	for i := 0; i < 2; i++ {
-		if err := st.Record("c", "assistant", "Get-Date", "tool_call", "", int64(i+1)); err != nil {
+		if err := st.Record("c", "assistant", "Get-Date", "tool_call", "", int64(i+1), ""); err != nil {
 			t.Fatal(err)
 		}
 	}
-	hist, err := st.History("c", 0, 0)
+	hist, err := st.History("c", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestStoreNoDedupeForEvents(t *testing.T) {
 	// 对话消息仍去重
 	_ = st.Append("c", "user", "你好")
 	_ = st.Append("c", "user", "你好")
-	hist, _ = st.History("c", 0, 0)
+	hist, _ = st.History("c", 0, 0, "")
 	if len(hist) != 3 {
 		t.Fatalf("重复的用户消息该被压掉，实际 %d 条", len(hist))
 	}
@@ -202,7 +202,7 @@ func TestStoreMigrateOldSchema(t *testing.T) {
 		t.Fatalf("老库升级失败: %v", err)
 	}
 	defer st.Close()
-	hist, err := st.History("c", 0, 0)
+	hist, err := st.History("c", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}

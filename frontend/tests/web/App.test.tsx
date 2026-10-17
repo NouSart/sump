@@ -34,12 +34,22 @@ function boot(
     setResponse?: () => Response;
     messageResponse?: () => Response;
     openSettings?: boolean;
-    history?: { role: string; content: string; at: string }[];
+    history?: { role: string; content: string; at: string; task_id?: string }[];
+    tasks?: { id: string; name: string; status: 'active' | 'done'; updated_at: string }[];
   } = {},
 ) {
   let currentRoster = rosterOf(['images', 'qq']);
+  const taskList =
+    over.tasks ??
+    [{ id: 'task-1', name: '看看现在几点', status: 'active' as const, updated_at: '2026-10-17T10:00:00Z' }];
   const calls = stubFetch((url) => {
     if (url === '/api/overview') return jsonResponse(okOverview(currentRoster));
+    if (url === '/api/tasks') {
+      return jsonResponse({
+        conversationId: 'web:private:owner',
+        tasks: taskList.map((x) => ({ conversation_id: 'web:private:owner', created_at: x.updated_at, ...x })),
+      });
+    }
     if (url.startsWith('/api/history')) {
       return jsonResponse({ conversationId: 'web:private:owner', messages: over.history ?? [] });
     }
@@ -314,7 +324,7 @@ describe('App', () => {
   it('设置：独占 agent 面板的位置，左边栏换成服务名导览', async () => {
     boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
-    assert.ok(screen.getByRole('navigation', { name: '会话' }));
+    assert.ok(screen.getByRole('navigation', { name: '会话与任务' }));
     assert.equal(screen.queryByRole('navigation', { name: '服务列表' }), null);
 
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
@@ -324,7 +334,7 @@ describe('App', () => {
     assert.ok(screen.getByRole('region', { name: '设置' }));
     // 左边栏改放服务名（字标、连接点、收起按钮都还在）
     assert.ok(screen.getByRole('navigation', { name: '服务列表' }));
-    assert.equal(screen.queryByRole('navigation', { name: '会话' }), null);
+    assert.equal(screen.queryByRole('navigation', { name: '会话与任务' }), null);
     assert.ok(screen.getByText('服务 · 2'));
     assert.ok(screen.getByText('SUMP'));
     assert.ok(screen.getByRole('button', { name: '收起侧栏' }));
@@ -342,17 +352,17 @@ describe('App', () => {
   it('侧栏：收起是向上塌成只剩字标的一小块，点块即可展开', async () => {
     boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
-    assert.ok(screen.getByRole('navigation', { name: '会话' }));
+    assert.ok(screen.getByRole('navigation', { name: '会话与任务' }));
     const brand = screen.getByText('SUMP');
 
     fireEvent.click(screen.getByRole('button', { name: '收起侧栏' }));
-    assert.equal(screen.queryByRole('navigation', { name: '会话' }), null, '收起后会话列表不该还占着地方');
+    assert.equal(screen.queryByRole('navigation', { name: '会话与任务' }), null, '收起后会话列表不该还占着地方');
     assert.equal(document.querySelector('.app')?.getAttribute('data-collapsed'), '1');
     assert.equal(screen.getByText('SUMP'), brand, '字标是同一个节点：收起不许重建它');
     assert.equal(screen.queryByRole('img', { name: '已连接设置中心' }), null, '收起态只剩字标，连接点也收起来');
 
     fireEvent.click(screen.getByRole('button', { name: '展开侧栏' }));
-    assert.ok(screen.getByRole('navigation', { name: '会话' }));
+    assert.ok(screen.getByRole('navigation', { name: '会话与任务' }));
     assert.equal(document.querySelector('.app')?.getAttribute('data-collapsed'), null);
     assert.equal(screen.getByText('SUMP'), brand, '展开回来还是同一个字标节点');
   });
@@ -407,6 +417,52 @@ describe('App', () => {
     assert.equal(document.querySelectorAll('.md li').length, 2);
     assert.equal(document.querySelector('.md')?.textContent?.includes('```'), false, '不该把围栏原样印出来');
     assert.ok(document.querySelector('.md p code')?.textContent === 'npm test');
+  });
+
+  it('任务：会话下面按任务展开，点任务跳回那一段；面板仍是一整段会话', async () => {
+    boot({
+      openSettings: false,
+      tasks: [
+        { id: 'task-done', name: '上一次的活', status: 'done', updated_at: '2026-10-17T10:00:00Z' },
+        { id: 'task-live', name: '正在做的活', status: 'active', updated_at: '2026-10-17T11:00:00Z' },
+      ],
+      history: [
+        { role: 'user', content: '先把上次那件事收尾', at: '2026-10-17T09:59:00Z', task_id: 'task-done' },
+        { role: 'assistant', content: '上次的答复', at: '2026-10-17T10:00:00Z', task_id: 'task-done' },
+        { role: 'user', content: '现在做这个', at: '2026-10-17T11:00:00Z', task_id: 'task-live' },
+      ],
+    });
+    await screen.findByRole('region', { name: '对话' });
+    await screen.findByText('上次的答复');
+
+    // 面板：整段会话都在，两次任务各起一个分节头
+    assert.ok(screen.getByText('现在做这个'), '进行中任务的消息也在同一段会话里');
+    assert.equal(document.querySelectorAll('.task-sep').length, 2);
+    assert.deepEqual(
+      Array.from(document.querySelectorAll('.task-sep-name')).map((e) => e.textContent),
+      ['上一次的活', '正在做的活'],
+    );
+    assert.deepEqual(
+      Array.from(document.querySelectorAll('.task-sep-state')).map((e) => e.textContent),
+      ['已完成', '进行中'],
+    );
+
+    // 完结的任务不再是"只读视图"：这是会话，不是历史快照
+    assert.equal((screen.getByLabelText('消息') as HTMLTextAreaElement).disabled, false);
+    assert.equal(
+      screen.getByLabelText('消息').getAttribute('placeholder'),
+      '说点什么…（Enter 发送，Shift+Enter 换行）',
+    );
+
+    // 侧栏点任务 = 跳回那一段（jsdom 里没有布局，只验"落点标记"）
+    fireEvent.click(screen.getByRole('button', { name: /上一次的活/ }));
+    assert.ok(document.getElementById('task-task-done')?.classList.contains('is-jump'), '跳转要标出落点');
+
+    // 会话节点可以收起来
+    fireEvent.click(screen.getByRole('button', { name: /当前会话/ }));
+    assert.equal(screen.queryByRole('button', { name: /上一次的活/ }), null, '收起后任务行收起');
+    fireEvent.click(screen.getByRole('button', { name: /当前会话/ }));
+    assert.ok(screen.getByRole('button', { name: /上一次的活/ }), '再点展开回来');
   });
 
   it('对话：progress 事件把思考 / 终端命令 / 终端输出画成轨迹条目', async () => {
@@ -499,6 +555,29 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('radio', { name: '浅色' }));
     assert.equal(document.documentElement.dataset.theme, 'light');
     assert.equal(window.localStorage.getItem('sump.portal.theme'), 'light');
+  });
+
+  it('外观：拖动背景时段滑块会固定时段、立即换色并记住；开关可恢复跟随', () => {
+    window.localStorage.clear();
+    boot(); // 设置页已打开
+
+    const slider = screen.getByRole('slider', { name: '背景时段' }) as HTMLInputElement;
+    const follow = screen.getByRole('switch', { name: '跟随时间' });
+    assert.equal(follow.getAttribute('aria-checked'), 'true');
+
+    fireEvent.change(slider, { target: { value: '8' } });
+
+    assert.equal(follow.getAttribute('aria-checked'), 'false');
+    assert.equal(slider.value, '8');
+    assert.equal(document.documentElement.style.getPropertyValue('--aurora-1'), '#B9DCFF');
+    assert.deepEqual(JSON.parse(window.localStorage.getItem('sump.portal.background') ?? 'null'), {
+      auto: false,
+      hour: 8,
+    });
+
+    fireEvent.click(follow);
+    assert.equal(follow.getAttribute('aria-checked'), 'true');
+    assert.equal(JSON.parse(window.localStorage.getItem('sump.portal.background') ?? '{}').auto, true);
   });
 
   it('对话：timer 快照画成倒计时；到点显示「到点…」，空快照即消失', async () => {

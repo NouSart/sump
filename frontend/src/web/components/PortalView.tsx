@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import type { PendingApprovalView, PortalMessage, TimerView } from '../types';
+import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react';
+import type { PendingApprovalView, PortalMessage, TaskView, TimerView } from '../types';
 import { ApprovalStrip } from './ApprovalStrip';
 import type { Translate } from '../i18n';
 import { IconAnswer, IconOutput, IconPaperclip, IconSend, IconSliders, IconSparkle, IconTerminal, IconUser } from './icons';
@@ -14,6 +14,8 @@ interface Props {
   error: string | null;
   onSend: (text: string) => Promise<void>;
   onOpenSettings: () => void;
+  /** 任务清单：面板按任务分节，节头要用它的名字与状态。 */
+  tasks: TaskView[];
   t: Translate;
 }
 
@@ -151,7 +153,7 @@ function firstLine(text: string): string {
 }
 // PortalView 是门户的对话面：消息流铺满整个面板，输入区（含待审/计时器/报错）作为浮层压在底部——
 // 所以输入框是悬浮的，消息能滚到它背后透出来。消息只有两条来源：本地回显，与 SSE 送来的 deliver。
-export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend, onOpenSettings, t }: Props) {
+export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend, onOpenSettings, tasks, t }: Props) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const listRef = useRef<HTMLOListElement>(null);
@@ -203,9 +205,24 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
         {messages.length === 0 ? (
           <li className="portal-empty">{t('ui.portal.empty', '发一条消息开始。回复会经 deliver 实时送回来。')}</li>
         ) : (
-          messages.map((m, i) => (
-            <Step key={`${String(m.seq ?? 0)}-${m.at}-${String(i)}`} m={m} t={t} />
-          ))
+          messages.map((m, i) => {
+            const prev = i > 0 ? messages[i - 1] : undefined;
+            const newTask = m.taskId !== undefined && m.taskId !== '' && m.taskId !== prev?.taskId;
+            const task = newTask ? tasks.find((x) => x.id === m.taskId) : undefined;
+            return (
+              <Fragment key={`${String(m.seq ?? 0)}-${m.at}-${String(i)}`}>
+                {newTask && (
+                  <li className="task-sep" id={`task-${m.taskId ?? ''}`}>
+                    <span className="task-sep-name">{task?.name ?? t('ui.task.label', '任务')}</span>
+                    <span className="task-sep-state">
+                      {task?.status === 'done' ? t('ui.task.done', '已完成') : t('ui.task.active', '进行中')}
+                    </span>
+                  </li>
+                )}
+                <Step m={m} t={t} />
+              </Fragment>
+            );
+          })
         )}
       </ol>
 

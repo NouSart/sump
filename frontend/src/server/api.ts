@@ -181,13 +181,55 @@ export function createRequestHandler(
 
   // fetchHistory 把该会话最近的对话从 memory 取回来（门户启动时回填界面用）。
   // 与 user_message 同一条链路：从名册解析 memory 的地址后直连，中心不转发。
-  const fetchHistory = async (res: ServerResponse, limit: number, afterSeq: number): Promise<void> => {
+  const fetchTasks = async (res: ServerResponse): Promise<void> => {
+    let data: { tasks?: unknown } | undefined;
+    try {
+      data = (await center.jumpTo(cfg.memory, 'task_list', {
+        conversation_id: PORTAL_CONVERSATION_ID,
+      })) as { tasks?: unknown };
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
+    sendJSON(res, 200, { conversationId: PORTAL_CONVERSATION_ID, tasks });
+  };
+
+  // resumeTask 恢复一个未完结任务：把"当前任务"顶到它（下一条用户消息就落在这个任务里）。
+  // 已完结的任务会被记忆服务明确拒绝——门户不自己判断任务能不能继续。
+  const resumeTask = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const body = asObject(await readJSON(req)) ?? {};
+    const taskId = requiredString(body, 'task_id');
+    let data: { task?: unknown; messages?: unknown } | undefined;
+    try {
+      data = (await center.jumpTo(cfg.memory, 'task_resume', { task_id: taskId })) as {
+        task?: unknown;
+        messages?: unknown;
+      };
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    sendJSON(res, 200, {
+      task: data?.task ?? null,
+      messages: Array.isArray(data?.messages) ? data.messages : [],
+    });
+  };
+
+  // fetchHistory 取某任务（默认当前任务）的记录：直连记忆服务，中心只当地址簿。
+  const fetchHistory = async (
+    res: ServerResponse,
+    limit: number,
+    afterSeq: number,
+    taskId: string,
+    all: boolean,
+  ): Promise<void> => {
     let data: { messages?: unknown } | undefined;
     try {
       data = (await center.jumpTo(cfg.memory, 'history', {
         conversation_id: PORTAL_CONVERSATION_ID,
         limit,
         after_seq: afterSeq,
+        ...(taskId === '' ? {} : { task_id: taskId }),
+        ...(all ? { all_tasks: true } : {}),
       })) as { messages?: unknown };
     } catch (err) {
       throw mapCenterError(err);
@@ -376,7 +418,15 @@ export function createRequestHandler(
       const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.trunc(raw), 500) : 100;
       const rawAfter = Number(url.searchParams.get('after_seq') ?? '');
       const afterSeq = Number.isFinite(rawAfter) && rawAfter > 0 ? Math.trunc(rawAfter) : 0;
-      await fetchHistory(res, limit, afterSeq);
+      await fetchHistory(res, limit, afterSeq, url.searchParams.get('task_id') ?? '', url.searchParams.get('all') === '1');
+      return;
+    }
+    if (pathname === '/api/tasks' && req.method === 'GET') {
+      await fetchTasks(res);
+      return;
+    }
+    if (pathname === '/api/tasks/resume' && req.method === 'POST') {
+      await resumeTask(req, res);
       return;
     }
     if (pathname === '/api/approvals' && req.method === 'GET') {

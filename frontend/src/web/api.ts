@@ -1,5 +1,5 @@
 // 与前端服务 HTTP API 的通信（JSON 进出；失败统一抛 Error，消息即中文提示）。
-import type { Overview, PortalMessage, ServiceSettingsView, TraceMeta } from './types';
+import type { Overview, PortalMessage, ServiceSettingsView, TaskView, TraceMeta } from './types';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -20,12 +20,21 @@ export function fetchOverview(): Promise<Overview> {
   return request<Overview>('/api/overview');
 }
 
-// fetchHistory 取该会话最近的记录（门户启动时回填；真相在 memory 服务，门户不自己存）。
-// afterSeq > 0 = 只要更新的那些（增量拉取）。返回按 seq/落库顺序排好的完整条目（含思考与工具轨迹）。
-export async function fetchHistory(limit = 100, afterSeq = 0): Promise<PortalMessage[]> {
-  const q = afterSeq > 0 ? `&after_seq=${String(afterSeq)}` : '';
+// fetchHistory 取某个任务的记录（门户回填；真相在 memory 服务，门户不自己存）。
+// taskId 为空 = 当前任务（由记忆服务决定）。返回按 seq/落库顺序排好的完整条目（含思考与工具轨迹）。
+export async function fetchHistory(limit = 100, afterSeq = 0, taskId = '', all = false): Promise<PortalMessage[]> {
+  const q = `${afterSeq > 0 ? `&after_seq=${String(afterSeq)}` : ''}${taskId === '' ? '' : `&task_id=${encodeURIComponent(taskId)}`}${all ? '&all=1' : ''}`;
   const r = await request<{
-    messages?: { id?: number; seq?: number; role?: string; kind?: string; content?: string; meta?: string; at?: string }[];
+    messages?: {
+      id?: number;
+      seq?: number;
+      role?: string;
+      kind?: string;
+      content?: string;
+      meta?: string;
+      at?: string;
+      task_id?: string;
+    }[];
   }>(`/api/history?limit=${String(limit)}${q}`);
   const out: PortalMessage[] = [];
   for (const m of r.messages ?? []) {
@@ -33,6 +42,13 @@ export async function fetchHistory(limit = 100, afterSeq = 0): Promise<PortalMes
     if (message !== null) out.push(message);
   }
   return out;
+}
+
+// fetchTasks 取任务列表。面板是从上到下的会话，侧栏是它的目录：同样按时间正序，
+// 读起来才对得上（服务端给的是"最近活跃在前"，这里翻过来）。
+export async function fetchTasks(): Promise<TaskView[]> {
+  const r = await request<{ tasks?: TaskView[] }>('/api/tasks');
+  return [...(r.tasks ?? [])].sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
 // historyToMessage 把一条落库记录翻成界面消息：对话消息进气泡，思考/命令/输出进轨迹条目。
@@ -44,15 +60,17 @@ export function historyToMessage(m: {
   content?: string;
   meta?: string;
   at?: string;
+  task_id?: string;
 }): PortalMessage | null {
   const kind = m.kind ?? (m.role === 'user' ? 'user' : 'assistant');
   const text = m.content ?? '';
   const at = m.at ?? '';
   const seq = m.seq ?? 0;
-  if (kind === 'user') return { author: 'user', kind: 'user', text, at, seq };
-  if (kind === 'assistant') return { author: 'agent', kind: 'assistant', text, at, seq };
+  const taskId = m.task_id ?? '';
+  if (kind === 'user') return { author: 'user', kind: 'user', text, at, seq, taskId };
+  if (kind === 'assistant') return { author: 'agent', kind: 'assistant', text, at, seq, taskId };
   if (kind === 'reasoning' || kind === 'tool_call' || kind === 'tool_result') {
-    return { author: 'agent', kind, text, at, seq, meta: parseMeta(m.meta) };
+    return { author: 'agent', kind, text, at, seq, taskId, meta: parseMeta(m.meta) };
   }
   return null; // 其他 role（system 等）不进对话视图
 }

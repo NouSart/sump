@@ -109,6 +109,14 @@ export function IconChevronUp(): ReactElement {
   );
 }
 
+export function IconChevronRight(): ReactElement {
+  return (
+    <svg {...box}>
+      <path d="M6.2 4.2 10 8l-3.8 3.8" />
+    </svg>
+  );
+}
+
 export function IconChevronDown(): ReactElement {
   return (
     <svg {...box}>
@@ -149,6 +157,14 @@ export function IconAnswer(): ReactElement {
   return (
     <svg {...box}>
       <path d="M8 3.1 12.9 8 8 12.9 3.1 8Z" />
+    </svg>
+  );
+}
+
+export function IconPlus(): ReactElement {
+  return (
+    <svg {...box}>
+      <path d="M8 3.6v8.8M3.6 8h8.8" />
     </svg>
   );
 }

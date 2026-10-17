@@ -9,6 +9,8 @@ export const PORTAL_CONVERSATION_ID = 'web:private:owner';
 export interface DeliverMessage {
   text: string;
   conversationId: string;
+  /** 这条答复属于哪个任务（门户按任务分段展示时用）。 */
+  taskId: string;
   at: string;
 }
 
@@ -38,6 +40,8 @@ export function createDeliverHub(): DeliverHub {
 
 export interface ProgressUpdate {
   conversationId: string;
+  /** 这条实况属于哪个任务（门户按任务分段展示时用）。 */
+  taskId: string;
   seq: number;
   kind: string; // reasoning / tool_call / tool_result
   content: string;
@@ -75,6 +79,7 @@ export function parseProgress(raw: unknown, log: (m: string) => void): ProgressU
   }
   return {
     conversationId: typeof o.conversation_id === 'string' ? o.conversation_id : '',
+    taskId: typeof o.task_id === 'string' ? o.task_id : '',
     seq: typeof o.seq === 'number' && Number.isFinite(o.seq) ? o.seq : 0,
     kind,
     content,

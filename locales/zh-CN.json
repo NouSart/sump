@@ -29,8 +29,18 @@
     "ui.settings.close": "关闭设置",
     "ui.settings.services": "服务",
     "ui.settings.appearance": "外观",
+    "ui.settings.background": "背景",
     "ui.settings.light": "浅色",
     "ui.settings.dark": "深色",
+    "ui.settings.followTime": "跟随时间",
+    "ui.settings.following": "跟随中",
+    "ui.settings.fixed": "已固定",
+    "ui.settings.followTimeHint": "每分钟按本地时间重新取色，背景连续过渡，不会到点突跳。",
+    "ui.settings.backgroundTime": "背景时段",
+    "ui.settings.followingNow": "跟随时间中 · 当前",
+    "ui.settings.fixedAt": "已固定为",
+    "ui.settings.dragToFix": "拖动滑块会固定到所选时段",
+    "ui.settings.reopenAuto": "打开「跟随时间」恢复自动",
     "ui.settings.language": "语言",
     "ui.settings.editable": "可以改的",
     "ui.settings.readonly": "启动参数",
@@ -213,6 +223,12 @@
     "ui.trace.command": "命令",
     "ui.trace.output": "终端输出",
     "ui.trace.lines": "行",
-    "ui.trace.truncated": "已截断"
+    "ui.trace.truncated": "已截断",
+    "ui.task.nav": "会话与任务",
+    "ui.task.label": "任务",
+    "ui.task.empty": "还没有任务——发一条消息就会开一个",
+    "ui.task.active": "进行中",
+    "ui.task.done": "已完成",
+    "ui.task.noRecords": "没有记录可跳"
   }
 }

@@ -22,12 +22,14 @@ import (
 
 // asyncJob 记录一次已受理、等待补报的异步工具调用。
 type asyncJob struct {
-	cid    string // 会话（补报回到哪个任务）
-	callID string // 该次工具调用的 job id（模型上下文里也是它）
-	name   string // 工具名（服务__动作）
-	boss   string // 任务原老板（补报轮交付用）
-	trace  string // 链路 id（原样沿用）
-	at     time.Time
+	cid      string // 会话（补报回到哪个任务）
+	callID   string // 该次工具调用的 job id（模型上下文里也是它）
+	name     string // 工具名（服务__动作）
+	boss     string // 任务原老板（补报轮交付用）
+	trace    string // 链路 id（原样沿用）
+	taskID   string // 归属任务（补报开的轮次也算在这个任务里）
+	taskName string
+	at       time.Time
 }
 
 // asyncJobTTL 是记录的兜底寿命：服务若中途死掉可能永远不发终态补报，过期即清（防无界增长）。
@@ -100,7 +102,7 @@ func (s *Server) actionReportResult(_ context.Context, _ protocol.Envelope, in p
 	// 终态补报里有**真正的输出**（异步工具的回执只是"已排队"，输出在补报里）——
 	// 记一条轨迹，界面才看得见终端到底吐了什么。
 	if p.Final && strings.TrimSpace(p.Text) != "" {
-		s.record(j.cid, j.boss, j.trace, kindToolResult, "tool", p.Text, map[string]any{
+		s.record(j.cid, j.boss, j.trace, j.taskID, kindToolResult, "tool", p.Text, map[string]any{
 			"tool": j.name, "call_id": j.callID, "item_id": p.ItemID, "phase": p.Phase,
 		})
 	}
@@ -127,7 +129,7 @@ func (s *Server) deliverFollowUp(j asyncJob, text string) string {
 		s.logger.Printf("会话 %s：补报到达但任务已收尾且无 boss，无法补交给用户", j.cid)
 		return "dropped_no_boss"
 	}
-	st = s.boardOpen(j.cid, j.boss, j.trace, []llm.Message{
+	st = s.boardOpen(j.cid, j.boss, j.trace, j.taskID, j.taskName, []llm.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: text + "\n\n" + followUpHint},
 	})

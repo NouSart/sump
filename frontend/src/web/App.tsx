@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { decideApproval, fetchHistory, fetchOverview, parseMeta, resetSetting, sendMessage, setSetting } from './api';
+import { decideApproval, fetchHistory, fetchOverview, fetchTasks, parseMeta, resetSetting, sendMessage, setSetting } from './api';
 import { PortalView } from './components/PortalView';
 import { IconChevronUp } from './components/icons';
 import { ServiceList } from './components/ServiceList';
+import { TaskList } from './components/TaskList';
 import { SettingsView } from './components/SettingsView';
 import { useLocalePack } from './i18n';
 import { Toasts, type Toast } from './components/Toasts';
+import { useTimeBackground } from './timeBackground';
 import type {
   Overview,
   PendingApprovalView,
@@ -15,6 +17,7 @@ import type {
   RowStatus,
   ServiceSettingsView,
   SettingsEventViewData,
+  TaskView,
   TimerView,
 } from './types';
 
@@ -69,6 +72,8 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem(ThemeKey, theme);
   }, [theme]);
+  // 背景光斑跟随本地时间取色；只改 .aurora 的三层颜色，不动 UI 令牌。
+  const timeBackground = useTimeBackground(theme);
   const [rowStates, setRowStates] = useState<Record<string, RowStatus>>({});
   // 视图：对话是主体；设置是右侧抽屉（从输入框的「设置」进入）。
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -78,6 +83,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
   // 语言包：界面文案全部走它，切语言即时生效（不重启服务）。
   const { locale, locales, setLocale, t } = useLocalePack();
   const [messages, setMessages] = useState<PortalMessage[]>([]);
+  const [tasks, setTasks] = useState<TaskView[]>([]);
   const [timers, setTimers] = useState<TimerView[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
   const [portalError, setPortalError] = useState<string | null>(null);
@@ -178,8 +184,14 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     });
     // 门户投递：智能体经 deliver 送来的消息，落到对话里。
     es.addEventListener('deliver', (ev) => {
-      const d = JSON.parse((ev as MessageEvent).data) as { text: string; at: string };
-      setMessages((prev) => appendMessage(prev, { author: 'agent', kind: 'assistant', text: d.text, at: d.at }));
+      const d = JSON.parse((ev as MessageEvent).data) as { text: string; taskId?: string; at: string };
+      setMessages((prev) =>
+        appendMessage(prev, { author: 'agent', kind: 'assistant', text: d.text, at: d.at, taskId: d.taskId ?? '' }),
+      );
+      // 答复到了：任务名/状态可能刚被判定改过，顺手对齐一次（失败不影响对话）。
+      void fetchTasks()
+        .then(setTasks)
+        .catch(() => undefined);
     });
     // 任务实况：思考 / 终端命令 / 终端输出——进行中就画出来，不必等最终答复。
     es.addEventListener('progress', (ev) => {
@@ -187,7 +199,15 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
       const kind = d.kind;
       if (kind !== 'reasoning' && kind !== 'tool_call' && kind !== 'tool_result') return;
       setMessages((prev) =>
-        appendMessage(prev, { author: 'agent', kind, text: d.content, at: d.at, seq: d.seq, meta: parseMeta(d.meta) }),
+        appendMessage(prev, {
+          author: 'agent',
+          kind,
+          text: d.content,
+          at: d.at,
+          seq: d.seq,
+          taskId: d.taskId,
+          meta: parseMeta(d.meta),
+        }),
       );
     });
     // 计时快照：timer 受理/到点/撤销后推来的**全量列表**（不是增量），直接覆盖。
@@ -287,21 +307,62 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     [overview],
   );
 
-  // 会话侧栏的时间戳：取这条对话最后一条消息的时间（回归"最近说话"的直觉）；没有就留占位。
-  const threadLabel = useMemo(() => {
-    const last = messages[messages.length - 1];
-    return last ? last.at.slice(11, 16) : '—:—';
-  }, [messages]);
+  // ---------- 任务 ----------
+  // 面板按**会话**来：整段会话一次拉全（按任务分段），任务只是会话里的分节。
+  // 侧栏的树是"会话 → 任务"，点任务 = 跳到那一段（不切换视图、不过滤）。
+  const taskIdsWithRecords = useMemo(() => new Set(messages.map((m) => m.taskId ?? '')), [messages]);
 
-  // 历史回填：门户启动时向 memory 要最近的对话——真相在服务，门户只负责显示。
-  // 失败只提示，不阻断：新消息照样能发、能收。
+  // 用"临时关掉平滑滚动 + 直接写 scrollTop"落位而不是 scrollIntoView：容器是 scroll-behavior:smooth，
+  // 跨几千像素的平滑滚动又慢又容易被打断；跳转要的是"立刻到那"，再用一下高亮说明落在哪一段。
+  const jumpToTask = useCallback((taskId: string) => {
+    const el = document.getElementById(`task-${taskId}`);
+    const list = el?.closest('.portal-list');
+    if (el === null || !(list instanceof HTMLElement)) return;
+    const behavior = list.style.scrollBehavior;
+    list.style.scrollBehavior = 'auto';
+    list.scrollTop += el.getBoundingClientRect().top - list.getBoundingClientRect().top - 12;
+    list.style.scrollBehavior = behavior;
+    el.classList.remove('is-jump');
+    // 强制回流：同一段连点两次也要重新播放高亮
+    void el.offsetWidth;
+    el.classList.add('is-jump');
+    window.setTimeout(() => {
+      el.classList.remove('is-jump');
+    }, 1400);
+  }, []);
+
+  // onSend：消息永远发进"当前任务"——进行中就直接续，没有进行中的就由记忆服务新开一个。
+  const onSend = useCallback(
+    async (text: string) => {
+      setPortalError(null);
+      // 本地先回显（受理回执只说明消息已交给 reasoner，不代表已有回复）。
+      const at = new Date().toISOString();
+      const active = tasks.find((x) => x.status === 'active') ?? null;
+      setMessages((prev) =>
+        appendMessage(prev, { author: 'user', text, at, taskId: active?.id ?? '', seq: undefined }),
+      );
+      try {
+        await sendMessage(text);
+      } catch (err) {
+        setPortalError(`${t('ui.app.undelivered', '未送达：')}${(err as Error).message}`);
+        return;
+      }
+      // 新任务可能刚被创建：刷新一次任务列表（记录由 reasoner 落库，稍后才到）。
+      void fetchTasks()
+        .then(setTasks)
+        .catch(() => undefined);
+    },
+    [tasks, t],
+  );
+  // 首屏：一次拉全"任务清单 + 整段会话"——面板按会话展示，任务只是里面的分节。
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const history = await fetchHistory();
-        if (cancelled || history.length === 0) return;
-        setMessages((prev) => mergeMessages(history, prev));
+        const [list, history] = await Promise.all([fetchTasks(), fetchHistory(300, 0, '', true)]);
+        if (cancelled) return;
+        setTasks(list);
+        if (history.length > 0) setMessages(mergeMessages(history, []));
       } catch (err) {
         if (!cancelled) setPortalError(`${t('ui.app.historyFailed', '历史未取回：')}${(err as Error).message}`);
       }
@@ -309,17 +370,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const onSend = useCallback(async (text: string) => {
-    setPortalError(null);
-    // 本地先回显（受理回执只说明消息已交给 reasoner，不代表已有回复）。
-    setMessages((prev) => appendMessage(prev, { author: 'user', text, at: new Date().toISOString() }));
-    try {
-      await sendMessage(text);
-    } catch (err) {
-      setPortalError(`${t('ui.app.undelivered', '未送达：')}${(err as Error).message}`);
-    }
+    // ?????t ?????????????????????????????
   }, []);
 
   // onDecide：把用户的裁决送回 approval。成功后由 SSE 的 approvals 事件把卡片删掉
@@ -383,14 +434,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
               />
             </nav>
           ) : (
-            <nav className="threads" aria-label={t('ui.app.conversations', '会话')}>
-              {/* 目前 reasoner 只有单会话（web:private:owner）：列表如实只显示这一条，
-                  不做假的多会话条目——等多会话能力落地再长出来。 */}
-              <button type="button" className="thread is-active" aria-current="true" title={t('ui.app.currentThread', '当前会话')}>
-                <span className="t-time">{threadLabel}</span>
-                <span className="t-title">{t('ui.app.currentThread', '当前会话')}</span>
-              </button>
-            </nav>
+            <TaskList tasks={tasks} jumps={taskIdsWithRecords} onJump={jumpToTask} t={t} />
           )}
           <div className="me">
             <span className="avatar" aria-hidden="true">{t('ui.me.avatar', '我')}</span>
@@ -421,6 +465,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
           <SettingsView
             theme={theme}
             onTheme={setTheme}
+            timeBackground={timeBackground}
             onClose={() => {
               setSettingsOpen(false);
             }}
@@ -448,6 +493,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
             onOpenSettings={() => {
               setSettingsOpen(true);
             }}
+            tasks={tasks}
             t={t}
           />
         )}

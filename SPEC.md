@@ -296,6 +296,36 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
   不必等最终答复。**没声明的不推**（QQ 之类），否则对方只会回 unknown action。
   记忆是真相，`progress` 只是"别等最后才看见"：丢一条不影响历史。
 
+### 7.4 任务：agent 在任务里工作（已实现）
+
+任务是**一段有名字、有始有终的工作**，会话记录挂在任务下；历史列表的标题就是任务名。
+
+| 动作（jump 到 `memory`） | 输入 | 输出 |
+| ---- | ---- | ---- |
+| `task_current` | `{conversation_id}` | `{task?}`（最近活跃的 active 任务；没有就是空） |
+| `task_open` | `{conversation_id, name}` | `{task}` |
+| `task_rename` | `{task_id, name}` | `{task}` |
+| `task_finish` | `{task_id, name?}` | `{task}`（status=done，之后只读） |
+| `task_resume` | `{task_id}` | `{task, messages[]}`（把未完结任务顶成当前，记录一并带走） |
+| `task_list` | `{conversation_id, limit?}` | `{tasks[]}`（最近活跃在前） |
+
+- **没有任务必须创建**：`recall` 里先 `EnsureTask`——当前没有 active 任务就以这次用户消息命名建一个，
+  随 `resume` 带回 reasoner。拿不到任务，这一轮不该开工。
+- **一个会话最多一个 active 任务**：靠 SQLite 部分唯一索引
+  `CREATE UNIQUE INDEX ... ON tasks(conversation_id) WHERE status='active'` 保证；
+  并发下建不上的那一方回头读现有的那个（任务不会分叉）。
+- **完成判定权在 reasoner**：内置工具 `task_status{status: done|continue, title?, note?}`，
+  收尾门禁要求交付前必须调用一次（没判就催一轮，最多两次；两次都不判按 continue 记账）。
+  `done` → `task_finish`（顺带用 `title` 把任务名改准）；`continue` → `task_rename`（任务保持进行中）。
+- **完结 = 不再续**：已完结任务不接受继续（`task_resume` 明确拒绝）。但它的记录还在会话里：
+  门户按**任务分节**连续展示整段会话，侧栏是"会话 → 任务"的目录，点任务只是跳到那一段（不切换视图、不过滤）。
+  **未完结 = 可恢复**：它的记录都还在（`task_id` 一列），点开就回到那一段继续。
+- **记录归属**：`store` 带 `task_id`；没带时——`user` 记录会触发 `EnsureTask`，
+  其他记录（答复/轨迹）挂到**最近一个任务**上，绝不拿它们的内容当任务名。
+- **LLM 上下文按任务取**：`recall` 只取当前任务的对话消息（`Recent(..., taskID)`），换任务即换上下文。
+- **老数据**：迁移时每个会话补一个已完结的「历史记录」任务，旧消息全部挂上去（不丢历史）。
+- 任务现在**只存事实**（名字/状态/归属），不解释语义。要独立成服务时，把 `tasks` 表与这六个动作整体搬走即可。
+
 
 - **错误上报（已实现·留接口）**：服务把错误上报给中心（`report`）——中心记一条日志并交给 `OnReport`
   消费挂点（前端 / 落盘 / 富日志后续接入此处）。**不含链路编号**（暂无链路记录者，记了无处可查）；

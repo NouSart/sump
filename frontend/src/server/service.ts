@@ -90,7 +90,8 @@ export function attachJumpEndpoint(
           typeof input.conversation_id === 'string' && input.conversation_id !== ''
             ? input.conversation_id
             : PORTAL_CONVERSATION_ID;
-        onDeliver({ text: input.text, conversationId, at: new Date().toISOString() });
+        const taskId = typeof (input as { task_id?: unknown }).task_id === 'string' ? (input as { task_id: string }).task_id : '';
+        onDeliver({ text: input.text, conversationId, taskId, at: new Date().toISOString() });
         ws.send(encodeEnvelope(newResponse(env, name, { ok: true, data: { delivered: true } })));
         return;
       }

@@ -29,8 +29,18 @@
     "ui.settings.close": "x",
     "ui.settings.services": "x",
     "ui.settings.appearance": "x",
+    "ui.settings.background": "x",
     "ui.settings.light": "x",
     "ui.settings.dark": "x",
+    "ui.settings.followTime": "x",
+    "ui.settings.following": "x",
+    "ui.settings.fixed": "x",
+    "ui.settings.followTimeHint": "x",
+    "ui.settings.backgroundTime": "x",
+    "ui.settings.followingNow": "x",
+    "ui.settings.fixedAt": "x",
+    "ui.settings.dragToFix": "x",
+    "ui.settings.reopenAuto": "x",
     "ui.settings.language": "x",
     "ui.settings.editable": "x",
     "ui.settings.readonly": "x",
@@ -213,6 +223,12 @@
     "ui.trace.command": "x",
     "ui.trace.output": "x",
     "ui.trace.lines": "x",
-    "ui.trace.truncated": "x"
+    "ui.trace.truncated": "x",
+    "ui.task.nav": "x",
+    "ui.task.label": "x",
+    "ui.task.empty": "x",
+    "ui.task.active": "x",
+    "ui.task.done": "x",
+    "ui.task.noRecords": "x"
   }
 }

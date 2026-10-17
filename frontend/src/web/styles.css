@@ -41,6 +41,12 @@
 
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --dur: 180ms;
+
+  /* 背景光斑兜底色：深色观感（原样保留），也是 data-theme 尚未写入时的第一帧颜色；
+     实际值由 timeBackground.ts 按本地时间覆盖。 */
+  --aurora-1: #3a47a8;
+  --aurora-2: #1c6e78;
+  --aurora-3: #6d4fa8;
 }
 
 /* 深色（默认） */
@@ -92,6 +98,10 @@
   --noise-opacity: 0.025;
   --glass: rgba(255, 255, 255, 0.55);
   --glass-focus: rgba(255, 255, 255, 0.88);
+  /* 背景光斑兜底色（与当前浅色观感一致）；实际值由 timeBackground.ts 按本地时间覆盖 */
+  --aurora-1: #b9c6ff;
+  --aurora-2: #a9e2e6;
+  --aurora-3: #d6c4f5;
 }
 
 * { box-sizing: border-box; }
@@ -123,12 +133,9 @@ button { font: inherit; }
   animation: drift 26s var(--ease) infinite alternate;
 }
 [data-theme='dark'] .aurora span { opacity: 0.34; }
-.aurora span:nth-child(1) { width: 720px; height: 720px; left: -180px; top: -260px; background: #3a47a8; }
-.aurora span:nth-child(2) { width: 640px; height: 640px; right: -160px; top: 8%; background: #1c6e78; animation-delay: -8s; }
-.aurora span:nth-child(3) { width: 560px; height: 560px; left: 38%; bottom: -260px; background: #6d4fa8; animation-delay: -16s; }
-[data-theme='light'] .aurora span:nth-child(1) { background: #b9c6ff; }
-[data-theme='light'] .aurora span:nth-child(2) { background: #a9e2e6; }
-[data-theme='light'] .aurora span:nth-child(3) { background: #d6c4f5; }
+.aurora span:nth-child(1) { width: 720px; height: 720px; left: -180px; top: -260px; background: var(--aurora-1); }
+.aurora span:nth-child(2) { width: 640px; height: 640px; right: -160px; top: 8%; background: var(--aurora-2); animation-delay: -8s; }
+.aurora span:nth-child(3) { width: 560px; height: 560px; left: 38%; bottom: -260px; background: var(--aurora-3); animation-delay: -16s; }
 @keyframes drift {
   from { transform: translate3d(0, 0, 0) scale(1); }
   to { transform: translate3d(40px, 26px, 0) scale(1.08); }
@@ -205,6 +212,27 @@ button { font: inherit; }
 .t-time { font-family: var(--font-mono); font-size: var(--fs-micro); color: var(--text-3); font-variant-numeric: tabular-nums; }
 .t-title { font-size: var(--fs-body); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 会话行：折角 + 会话名 + 当前任务状态 */
+.thread.conv { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+.thread.conv svg { width: 16px; height: 16px; color: var(--text-3); }
+.thread.conv[aria-expanded='true'] { background: var(--surface-strong); }
+
+/* 任务条目：一行放下「状态点 · 任务名 · 时间/进行中」，缩进挂在会话下面 */
+.thread.task {
+  display: grid; grid-template-columns: 7px minmax(0, 1fr) auto;
+  align-items: center; gap: 8px;
+  width: calc(100% - 14px); margin-left: 14px; padding: 7px 8px;
+}
+.thread.task .t-title { font-size: var(--fs-meta); }
+.thread.task.is-done .t-title { color: var(--text-3); }
+.thread.task.is-empty { opacity: 0.5; cursor: default; }
+.thread.task.is-empty:hover { background: transparent; }
+.task-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.task-dot.is-done { background: var(--text-3); box-shadow: none; }
+
 .me { display: flex; align-items: center; gap: var(--gap-2); padding: 6px; border-radius: var(--r-md); }
 .avatar {
   width: 30px; height: 30px; border-radius: 50%; flex: none;
@@ -259,6 +287,29 @@ button { font: inherit; }
   list-style: none; display: flex; flex-direction: column;
 }
 .portal-empty { color: var(--text-3); font-size: var(--fs-meta); text-align: center; margin-top: 12vh; }
+
+/* 任务分节头：一段任务的开始。点侧栏的任务就滚到这里（scroll-margin 让标题不贴边）。 */
+.task-sep {
+  display: flex; align-items: baseline; gap: 8px;
+  margin: var(--gap-5) -8px var(--gap-3);
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--border);
+  scroll-margin-top: var(--gap-4);
+}
+.portal-list > .task-sep:first-child { margin-top: 0; }
+.task-sep-name { font-size: var(--fs-meta); color: var(--text); font-weight: 600; }
+.task-sep-state { font-size: var(--fs-micro); color: var(--text-3); }
+/* 从侧栏跳过来的那一段：闪一下，告诉眼睛"落在这儿了" */
+.task-sep.is-jump { animation: sep-flash 1.4s var(--ease); }
+.task-sep.is-jump .task-sep-name { animation: sep-name 1.4s var(--ease); }
+@keyframes sep-flash {
+  from { background: var(--accent-soft); border-bottom-color: var(--accent); }
+  to { background: transparent; border-bottom-color: var(--border); }
+}
+@keyframes sep-name {
+  from { color: var(--accent); }
+  to { color: var(--text); }
+}
 
 /* ---------- 对话：一条时间线（每步一个图标，图标之间连线） ---------- */
 .step {
@@ -394,6 +445,10 @@ button { font: inherit; }
   padding: 12px 14px; border-radius: var(--r-lg);
   background: var(--surface); border: 1px solid var(--border);
   border-left: 2px solid var(--accent-line);
+  /* 它浮在消息流之上：背后的字要被糊掉，否则和命令叠在一起看不清 */
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: blur(20px) saturate(140%);
+  box-shadow: var(--shadow-1);
 }
 .approval-cmd {
   margin: 0 0 8px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55;
@@ -482,6 +537,13 @@ button { font: inherit; }
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .theme-tab[aria-checked='true'] { background: var(--surface-strong); color: var(--text); }
+
+/* 背景：门户自己的设置项，与服务的设置项共用同一种卡片。 */
+.appearance {
+  margin-bottom: var(--gap-5); padding-bottom: var(--gap-4);
+  border-bottom: 1px solid var(--border);
+}
+.appearance > .set-label { margin-top: 0; }
 
 /* ---------- 服务列表（设置抽屉内） ---------- */
 .section-label { margin: 0 0 var(--gap-2); font-size: var(--fs-micro); color: var(--text-3); }
@@ -634,6 +696,29 @@ button { font: inherit; }
 }
 .switch[aria-checked='true'] .switch-knob { transform: translateX(20px); background: var(--accent); }
 .switch:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 时段滑块：轨道直接铺这一天的背景色带，「拖到哪儿会变成什么颜色」一眼可见。 */
+.range {
+  flex: 1; min-width: 0; height: 10px; margin: 0; padding: 0;
+  appearance: none; -webkit-appearance: none;
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  background: var(--range-track, var(--surface));
+  cursor: pointer;
+}
+.range::-webkit-slider-thumb {
+  appearance: none; -webkit-appearance: none;
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--bg-0);
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+}
+.range::-moz-range-thumb {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--bg-0);
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+}
+.range:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 999px; }
 
 /* 分段选项：项少时比下拉更快——一眼看全，一下点上。 */
 .seg {

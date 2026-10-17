@@ -59,14 +59,22 @@ type taskState struct {
 	seen     int64                 // 已安排给“下一轮”的水位（gen != seen = 有未处理的进展）
 	running  bool                  // 是否有一轮 LLM 在跑（每会话同时至多一轮）
 	closed   bool                  // 已交付 / 被取代：残留事件一律丢弃
+
+	taskID    string // 这次工作所属的任务（记忆服务在 recall 时确定）
+	taskName  string // 任务名（写进系统提示，也是历史列表的标题）
+	judged    bool   // 本轮是否已用 task_status 判定过完成与否
+	judgedDone bool  // 判定结果：true = 任务完成
+	judgedTitle string // 判定时顺带修正的任务名（空 = 不改）
+	judgeAsks int     // 已经为"必须先判定"催过几次（上限 2，防死循环）
 }
 
 // ---------- 黑板操作 ----------
 
 // boardOpen 开启任务；同一会话已有进行中任务时，后者取代前者（旧任务的结果将被丢弃）。
-func (s *Server) boardOpen(cid, boss, trace string, messages []llm.Message) *taskState {
+func (s *Server) boardOpen(cid, boss, trace, taskID, taskName string, messages []llm.Message) *taskState {
 	st := &taskState{
 		cid: cid, boss: boss, trace: trace,
+		taskID: taskID, taskName: taskName,
 		messages: messages, pending: map[string]pendingJob{}, gen: 1,
 	}
 	s.boardMu.Lock()
@@ -165,7 +173,7 @@ func (s *Server) boardRound(st *taskState) {
 	}
 
 	// 思考先落库再派发：seq 保证「想了什么 → 跑了什么」的先后（给人看的历史）。
-	s.record(st.cid, st.boss, st.trace, kindReasoning, "assistant", resp.Reasoning, nil)
+	s.record(st.cid, st.boss, st.trace, st.taskID, kindReasoning, "assistant", resp.Reasoning, nil)
 
 	switch {
 	case len(resp.ToolCalls) > 0:
@@ -178,8 +186,17 @@ func (s *Server) boardRound(st *taskState) {
 }
 
 // dispatchToolCalls 处理一轮里的工具调用：助手消息与受理回执即刻入账（占住配对位），
-// 执行转入后台；wait 为内置工具，在其余工具开始后按调用顺序同步执行。
+// 执行转入后台；wait / task_status 是内置工具，不跳任何服务。
 func (s *Server) dispatchToolCalls(st *taskState, resp llm.Message) {
+	// task_status 先算：它要读改写黑板状态（自己会加锁），不能放在持锁段里做（不可重入）。
+	judgements := make([]llm.Message, 0, 1)
+	for _, call := range resp.ToolCalls {
+		if call.Function.Name != taskStatusToolName {
+			continue
+		}
+		judgements = append(judgements, llm.Message{Role: "tool", ToolCallID: call.ID, Content: s.applyTaskStatus(st, call)})
+	}
+
 	st.mu.Lock()
 	if st.closed {
 		st.mu.Unlock()
@@ -187,10 +204,18 @@ func (s *Server) dispatchToolCalls(st *taskState, resp llm.Message) {
 	}
 	st.messages = append(st.messages, llm.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls})
 	st.gen++
+	// 又要派工具 = 又有了新进展：之前的判定作废，交付前必须重新判定。
+	for _, call := range resp.ToolCalls {
+		if call.Function.Name != waitToolName && call.Function.Name != taskStatusToolName {
+			st.judged = false
+			st.judgedDone = false
+			break
+		}
+	}
 	acks := make([]llm.Message, 0, len(resp.ToolCalls))
 	dispatched := 0
 	for _, call := range resp.ToolCalls {
-		if call.Function.Name == waitToolName {
+		if call.Function.Name == waitToolName || call.Function.Name == taskStatusToolName {
 			continue
 		}
 		st.pending[call.ID] = pendingJob{name: call.Function.Name}
@@ -198,21 +223,22 @@ func (s *Server) dispatchToolCalls(st *taskState, resp llm.Message) {
 		dispatched++
 	}
 	st.messages = append(st.messages, acks...)
-	st.gen += int64(len(acks))
-	cid, boss, trace := st.cid, st.boss, st.trace
+	st.messages = append(st.messages, judgements...)
+	st.gen += int64(len(acks) + len(judgements))
+	cid, boss, trace, taskID := st.cid, st.boss, st.trace, st.taskID
 	st.mu.Unlock()
 
 	// 命令先落库再执行：即使执行超时/进程崩了，"跑过什么"也该留在记忆里。
 	for _, call := range resp.ToolCalls {
-		if call.Function.Name == waitToolName {
+		if call.Function.Name == waitToolName || call.Function.Name == taskStatusToolName {
 			continue
 		}
 		text, meta := toolCallTrace(call)
-		s.record(cid, boss, trace, kindToolCall, "assistant", text, meta)
+		s.record(cid, boss, trace, taskID, kindToolCall, "assistant", text, meta)
 	}
 
 	for _, call := range resp.ToolCalls {
-		if call.Function.Name == waitToolName {
+		if call.Function.Name == waitToolName || call.Function.Name == taskStatusToolName {
 			continue
 		}
 		go s.runToolJob(st, call)
@@ -313,10 +339,10 @@ func (s *Server) boardResult(st *taskState, call llm.ToolCall, content string) {
 	if mode == "batch" && remaining > 0 {
 		st.seen = st.gen // 攒批：非最后一条不唤醒
 	}
-	cid, boss, trace := st.cid, st.boss, st.trace
+	cid, boss, trace, taskID := st.cid, st.boss, st.trace, st.taskID
 	st.mu.Unlock()
 	if !job.async {
-		s.record(cid, boss, trace, kindToolResult, "tool", content, map[string]any{"tool": call.Function.Name, "call_id": call.ID})
+		s.record(cid, boss, trace, taskID, kindToolResult, "tool", content, map[string]any{"tool": call.Function.Name, "call_id": call.ID})
 	}
 	s.logger.Printf("会话 %s：工具 %s 结果入账（还剩 %d 个在跑）", st.cid, call.Function.Name, remaining)
 	s.boardKick(st)
@@ -345,6 +371,24 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 		s.logger.Printf("会话 %s：拒绝收尾（在跑 %d 个工具，快照过期=%v）", st.cid, pending, stale)
 		return
 	}
+
+	// 收尾门禁：出结果必须先判定任务完成情况（task_status）。
+	// 没判定就催一轮（最多催两次）——两次都不判按"未完成"记账，照常交付（不制造死循环）。
+	// 只有"有任务"时才设门禁：任务由记忆服务在 recall 时保证，拿不到任务就没有判定对象。
+	if st.taskID != "" && !st.judged {
+		if st.judgeAsks < 2 {
+			st.judgeAsks++
+			st.messages = append(st.messages,
+				llm.Message{Role: "assistant", Content: text},
+				llm.Message{Role: "user", Content: taskJudgeReminder},
+			)
+			st.gen += 2
+			st.mu.Unlock()
+			s.logger.Printf("会话 %s：拒绝收尾（还没判定任务是否完成，第 %d 次提醒）", st.cid, st.judgeAsks)
+			return
+		}
+		s.logger.Printf("会话 %s：两次催促仍未判定任务，按未完成处理并交付", st.cid)
+	}
 	st.mu.Unlock()
 
 	// 交付前复查：放行到真正交付之间，任务可能已被同会话新消息取代（boardOpen 置 closed）——
@@ -367,7 +411,9 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 	replaced = st.closed
 	st.mu.Unlock()
 
-	s.Fire(s.memoryName(), "store", protocol.StorePayload{ConversationID: st.cid, Role: "assistant", Content: text, Kind: "assistant", Seq: s.nextSeq()}, st.trace, s.cfg.Name)
+	s.Fire(s.memoryName(), "store", protocol.StorePayload{
+		ConversationID: st.cid, Role: "assistant", Content: text, Kind: "assistant", Seq: s.nextSeq(), TaskID: st.taskID,
+	}, st.trace, s.cfg.Name)
 	s.boardClose(st)
 	if replaced {
 		s.logger.Printf("会话 %s：交付完成（在途已被新任务取代；答复已送达并记入记忆）", st.cid)
@@ -384,7 +430,7 @@ func (s *Server) deliverToBoss(st *taskState, text string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := s.Call(ctx, st.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: st.cid}, st.trace, ""); err != nil {
+	if _, err := s.Call(ctx, st.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: st.cid, TaskID: st.taskID}, st.trace, ""); err != nil {
 		return s.notifyDeliveryFailure(st, fmt.Errorf("交付 boss(%s) 失败: %w", st.boss, err))
 	}
 	return nil

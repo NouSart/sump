@@ -54,9 +54,21 @@ export interface SettingsEventViewData {
   results?: SettingResultViewData[];
 }
 
+// TaskView 是一个任务（历史列表的标题就是任务名）。
+// status：active = 进行中（可继续 / 可恢复）；done = 已完结（只读）。
+export interface TaskView {
+  id: string;
+  conversation_id: string;
+  name: string;
+  status: 'active' | 'done';
+  created_at: string;
+  updated_at: string;
+}
+
 // ProgressEventView 是 reasoner 推来的任务实况（经门户 SSE 转发）：思考 / 命令 / 输出。
 export interface ProgressEventView {
   conversationId: string;
+  taskId: string;
   seq: number;
   kind: string;
   content: string;
@@ -112,6 +124,8 @@ export interface PortalMessage {
   seq?: number;
   /** 轨迹条目的附加信息。 */
   meta?: TraceMeta;
+  /** 这条消息属于哪个任务（面板按任务分节展示）。 */
+  taskId?: string;
 }
 
 // TimerView 是一条在计时器（timer 经 timer_state 快照推来）：门户据此画倒计时。

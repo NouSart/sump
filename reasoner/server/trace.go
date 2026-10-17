@@ -27,7 +27,6 @@ const (
 
 // nextSeq 返回会话内单调序号：Fire 是 goroutine，落地顺序不保证，
 // 但 seq 保证"命令在输出之前"这种真实先后。
-//
 // 用**微秒时间戳**而不是进程内计数器：reasoner 重启后计数器会从头开始，
 // 那样新记录会排到旧记录前面。不用纳秒是因为门户要经 JSON 读它：
 // JS 的 number 只能精确表示 2^53（约 9e15），纳秒级 1.8e18 会被抹平，
@@ -56,7 +55,7 @@ func clampRecord(text string) (string, bool) {
 
 // record 落一条会话记录：写记忆 + （入口方声明了 progress 时）推一条实况。
 // meta 只放**给人看**的附加信息（工具名、命令、call_id…），不放正文。
-func (s *Server) record(cid, boss, trace, kind, role, content string, meta map[string]any) {
+func (s *Server) record(cid, boss, trace, taskID, kind, role, content string, meta map[string]any) {
 	if strings.TrimSpace(content) == "" {
 		return
 	}
