@@ -77,7 +77,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
-		Title:       "QQ",
+		Title:             "QQ",
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,

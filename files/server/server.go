@@ -71,7 +71,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s := &Server{cfg: cfg, logger: logger, maxBytes: cfg.MaxBytes, readMaxChars: cfg.ReadMaxChars}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
-		Title:       "文件",
+		Title:             "文件",
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
