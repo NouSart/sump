@@ -1,8 +1,9 @@
 """Go 侧 protocol 包产出的字节夹具（跨语言锚点）。
 
-与 frontend/tests/protocol.test.ts 使用的同一批 base64（由 Go 程序一次性生成后固化）：
-本服务解码这些字节并逐字段断言——任何一侧的键名 / 编码漂移都会立刻被抓住。
-反向锚定（Python 编码 → Go 解码）由根 tests/ 的跨语言真进程 e2e 承担。
+由 Go 程序一次性生成后固化（同一批 base64 也给了 frontend/tests/protocol.test.ts 一份）。
+本服务**双向**使用它们：解码后逐字段断言（Go 编码 → Python 解码），
+并用同样的输入反向重编码比对（Python 编码 → 与夹具一致，见 test_protocol.py 末组用例）。
+任一方向的键名 / 结构漂移都会被抓住。
 """
 
 GO_REGISTER = (
@@ -18,9 +19,9 @@ GO_ROSTER = (
     "ZXZpc2lvbtMAAAAAAAAAAw=="
 )
 GO_RESPONSE = (
-    "h6F2AaJpZLowMUZJWFJFR0lTVEVSMDAwMDAwMDAwMDAwMKV0cmFjZadUUkFDRS0xpHR5cGWocmVzcG9uc2WkZnJv"
-    "ba9zZXR0aW5ncy1jZW50ZXKidG+lc3ZjLWGncGF5bG9hZIKib2vDpGRhdGGBqHNlcnZpY2VzkYKnc2VydmljZaVz"
-    "dmMtYahzZXR0aW5nc5GEo2tleaxkZW1vLnNldHRpbmeldmFsdWWjMTBtp2RlZmF1bHSiNW2qb3ZlcnJpZGRlbsM="
+    "h6F2AaJpZLowMUZJWFJFR0lTVEVSMDAwMDAwMDAwMDAwMKV0cmFjZadUUkFDRS0xpHR5cGWocmVzcG9uc2WkZnJvba9z"
+    "ZXR0aW5ncy1jZW50ZXKidG+lc3ZjLWGncGF5bG9hZIKib2vDpGRhdGGBqHNlcnZpY2VzkYKnc2VydmljZaVzdmMtYahz"
+    "ZXR0aW5nc5GFo2tleaxkZW1vLnNldHRpbmeldmFsdWWjMTBtp2RlZmF1bHSiNW2qb3ZlcnJpZGRlbsOmYWN0dWFsoA=="
 )
 GO_HEARTBEAT = (
     "h6F2AaJpZLowMUZJWEhFQVJUQkVBVDAwMDAwMDAwMDAwMKV0cmFjZadUUkFDRS0zpHR5cGWpaGVhcnRiZWF0pGZy"

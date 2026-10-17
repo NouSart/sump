@@ -18,6 +18,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,7 +35,10 @@ const (
 	defaultConcurrency  = 8
 	defaultQueueLimit   = 32
 	defaultApprovalWait = time.Minute
+	maxPendingApprovals = 64
 )
+
+var serviceNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 // Config 是 shell 服务的启动配置（引导只靠它：自己的名字/地址 + 设置中心地址）。
 type Config struct {
@@ -70,19 +74,32 @@ type Server struct {
 	approvalService string
 	approvalWait    time.Duration
 
-	schedMu sync.Mutex // 调度锁：running / waiting 只在此锁下读写
-	running int
-	waiting []*job
+	schedMu          sync.Mutex // 调度锁：running / waiting 只在此锁下读写
+	running          int
+	waiting          []*job
+	pendingApprovals chan struct{}
 }
 
 // job 是一条已受理的命令：审批通过后进队列 / 执行，全程带着补报所需的信息。
 type job struct {
-	item    string // 受理句柄（补报原样带回）
-	caller  string // 受理时的调用方（补报目标）
-	trace   string // 链路 id（原样沿用）
-	boss    string // 受理时的 boss（原样沿用）
-	command string
-	workDir string
+	item          string // 受理句柄（补报原样带回）
+	caller        string // 受理时的调用方（补报目标）
+	trace         string // 链路 id（原样沿用）
+	boss          string // 受理时的 boss（原样沿用）
+	command       string
+	workDir       string
+	plan          *protocol.ExecutionPlan
+	environment   []string
+	approval      *protocol.CommandApprovalResult
+	approvedUntil time.Time
+	progressReady chan struct{} // 先完成 approved 的投递尝试，再允许执行结果发出。
+	progressOnce  sync.Once
+}
+
+func (j *job) finishProgress() {
+	if j.progressReady != nil {
+		j.progressOnce.Do(func() { close(j.progressReady) })
+	}
 }
 
 // New 创建实例并注册动作与设置项。
@@ -120,14 +137,15 @@ func New(cfg Config, logger *log.Logger) *Server {
 
 	s := &Server{
 		cfg: cfg, logger: logger,
-		root:            root,
-		shell:           strings.TrimSpace(cfg.Shell),
-		timeout:         cfg.Timeout,
-		maxOutput:       cfg.MaxOutputBytes,
-		conc:            cfg.Concurrency,
-		queueLimit:      cfg.QueueLimit,
-		approvalService: cfg.ApprovalService,
-		approvalWait:    cfg.ApprovalTimeout,
+		root:             root,
+		shell:            strings.TrimSpace(cfg.Shell),
+		timeout:          cfg.Timeout,
+		maxOutput:        cfg.MaxOutputBytes,
+		conc:             cfg.Concurrency,
+		queueLimit:       cfg.QueueLimit,
+		approvalService:  cfg.ApprovalService,
+		approvalWait:     cfg.ApprovalTimeout,
+		pendingApprovals: make(chan struct{}, maxPendingApprovals),
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
@@ -212,11 +230,12 @@ func New(cfg Config, logger *log.Logger) *Server {
 		return nil
 	})
 	s.HandleSetting("approval.service", cfg.ApprovalService, func(v string) error {
-		if strings.TrimSpace(v) != "" {
-			return errors.New("审批服务协议未定（等审批服务定）——当前只接受空值：未接入 = 一律未通过")
+		v = strings.TrimSpace(v)
+		if v != "" && !serviceNamePattern.MatchString(v) {
+			return errors.New("审批服务名无效")
 		}
 		s.setMu.Lock()
-		s.approvalService = ""
+		s.approvalService = v
 		s.setMu.Unlock()
 		return nil
 	})
@@ -259,6 +278,9 @@ func (s *Server) QueueCount() int {
 // actionRun 受理一条命令：立即回执（不等审批、不等执行，后续由 report_result 补报）。
 // 同步拒绝的只有“请求本身不合法”：命令为空、工作目录越界或不可访问。
 func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	if len(in.Input) > 64<<10 {
+		return nil, errors.New("run: 请求超过 64 KiB")
+	}
 	var p protocol.ShellRunPayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
@@ -266,28 +288,49 @@ func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol
 	if strings.TrimSpace(p.Command) == "" {
 		return nil, errors.New("run: command 必填")
 	}
+	if len(p.Command) > 16<<10 {
+		return nil, errors.New("run: 命令超过 16 KiB")
+	}
 	dir, err := s.resolveWorkDir(p.WorkDir)
 	if err != nil {
 		return nil, err
 	}
-	j := &job{
-		item:    protocol.NewID(),
-		caller:  env.From,
-		trace:   env.Trace,
-		boss:    env.Boss,
-		command: p.Command,
-		workDir: dir,
+	select {
+	case s.pendingApprovals <- struct{}{}:
+	default:
+		return nil, errors.New("run: 待审批队列已满，请稍后重试")
 	}
-	s.logger.Printf("受理命令 %s（来自 %s，%s）：%s", j.item, j.caller, dir, oneLine(j.command))
+	j := &job{
+		item:          protocol.NewID(),
+		caller:        env.From,
+		trace:         env.Trace,
+		boss:          env.Boss,
+		command:       p.Command,
+		workDir:       dir,
+		progressReady: make(chan struct{}),
+	}
+	s.logger.Printf("受理命令 %s（来自 %s，命令 %d 字节）", j.item, j.caller, len(j.command))
 	go s.process(j)
 	return protocol.ShellRunResult{ItemID: j.item, Phase: "queued"}, nil
 }
 
 // process 走完一条命令的全程：审批 → 排队 / 执行 → 补报。
 func (s *Server) process(j *job) {
+	defer func() { <-s.pendingApprovals }()
+	enqueued := false
+	defer func() {
+		// 不能因进展投递异常把终态反馈永久挂住。
+		defer j.finishProgress()
+		if r := recover(); r != nil {
+			s.Report("shell_internal", "审批或进展处理发生内部异常；item="+j.item)
+			if !enqueued {
+				s.report(j, "failed", "审批处理发生内部异常，本次未执行", protocol.ShellEventData{Error: "internal error"})
+			}
+		}
+	}()
 	svc := s.approvalServiceNow()
 	actx, cancel := context.WithTimeout(context.Background(), s.approvalWaitNow())
-	verr := s.approver().Approve(actx, ApprovalRequest{ItemID: j.item, Command: j.command, WorkDir: j.workDir, Service: svc})
+	verr := s.approveJob(actx, j, svc)
 	cancel()
 	if verr != nil {
 		s.logger.Printf("命令 %s 未通过审批: %v", j.item, verr)
@@ -302,6 +345,7 @@ func (s *Server) process(j *job) {
 			protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: err.Error()})
 		return
 	}
+	enqueued = true
 	s.report(j, "approved", fmt.Sprintf("审批通过，%s\n$ %s", state, j.command),
 		protocol.ShellEventData{Command: j.command, WorkDir: j.workDir})
 }
@@ -316,7 +360,7 @@ func (s *Server) enqueue(j *job) (string, error) {
 		s.running++
 		s.schedMu.Unlock()
 		go s.execute(j)
-		return "已开始执行", nil
+		return "准备执行", nil
 	}
 	if len(s.waiting) >= s.queueLimitNow() {
 		n, running := len(s.waiting), s.running
@@ -331,8 +375,23 @@ func (s *Server) enqueue(j *job) (string, error) {
 
 // execute 执行一条命令并补报结果；结束后让出槽位、拉起下一条等待中的命令。
 func (s *Server) execute(j *job) {
+	// 执行槽只覆盖执行过程；反馈慢或暂未认领不能占住槽位。
+	phase, text, data := func() (string, string, protocol.ShellEventData) {
+		defer s.next()
+		return s.executeAndCollect(j)
+	}()
+	s.reportAfterProgress(j, phase, text, data)
+}
+
+func (s *Server) executeAndCollect(j *job) (string, string, protocol.ShellEventData) {
+	if err := j.validateBeforeExecution(); err != nil {
+		return "rejected", err.Error(), protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: err.Error()}
+	}
 	start := time.Now()
 	limit := s.maxOutputNow() // 每次执行只读一次上限：截断与补报文案共用，杜绝两次读数不一致
+	if j.plan != nil {
+		limit = j.plan.MaxOutputBytes
+	}
 	res, err := s.runCommand(j, limit)
 	res.DurationMS = time.Since(start).Milliseconds()
 	switch {
@@ -340,11 +399,18 @@ func (s *Server) execute(j *job) {
 		if res.Error == "" {
 			res.Error = err.Error()
 		}
-		s.report(j, "failed", fmt.Sprintf("未能执行：%v\n$ %s", err, j.command), res)
+		return "failed", fmt.Sprintf("未能执行：%v\n$ %s", err, j.command), res
 	default:
-		s.report(j, "done", renderDone(j, res, limit), res)
+		return "done", renderDone(j, res, limit), res
 	}
-	s.next()
+}
+
+// 只门控终态的投递顺序，实际命令无需等待 approved 的网络往返。
+func (s *Server) reportAfterProgress(j *job, phase, text string, data protocol.ShellEventData) {
+	if j.progressReady != nil {
+		<-j.progressReady
+	}
+	s.report(j, phase, text, data)
 }
 
 // next 结束一条命令的执行：让出槽位；有等待中的命令就立即补位（保持并行度）。
@@ -370,6 +436,16 @@ func (s *Server) report(j *job, phase, text string, data protocol.ShellEventData
 		s.logger.Printf("命令 %s 无调用方，补报丢弃（phase=%s）", j.item, phase)
 		return
 	}
+	data.Approval = j.approval
+	if j.approval != nil && (phase == "approved" || phase == "rejected") {
+		text = fmt.Sprintf("[审批 %s / %s / 规则 %s] %s\n%s", j.approval.Decision, j.approval.ReasonCode, j.approval.PolicyVersion, j.approval.Feedback.Summary, text)
+		if len(j.approval.Feedback.RuleIDs) > 0 {
+			text += "\n命中规则：" + strings.Join(j.approval.Feedback.RuleIDs, ", ")
+		}
+		if len(j.approval.Feedback.Unknowns) > 0 {
+			text += "\n未覆盖结构：" + strings.Join(j.approval.Feedback.Unknowns, ", ")
+		}
+	}
 	p := protocol.AsyncResultPayload{ItemID: j.item, Phase: phase, Text: text, Final: phase != "approved"}
 	if raw, err := protocol.EncodePayload(data); err == nil {
 		p.Data = raw
@@ -377,7 +453,44 @@ func (s *Server) report(j *job, phase, text string, data protocol.ShellEventData
 		s.logger.Printf("补报载荷编码失败（结构化补充丢弃）: %v", err)
 	}
 	s.logger.Printf("补报 %s（phase=%s, final=%v）→ %s", j.item, phase, p.Final, j.caller)
-	s.Fire(j.caller, "report_result", p, j.trace, j.boss)
+	// 在当前后台 job 内顺序投递，避免 done 抢在 approved 之前抵达并终结模型记账。
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := s.deliverReport(ctx, j, p); err != nil {
+		s.logger.Printf("补报 %s 未确认送达: %v", j.item, err)
+		s.Report("shell_feedback", "异步结果未确认送达；item="+j.item)
+	}
+}
+
+// 受理回执与后台补报走不同连接，补报可能先到。只有明确 ignored
+// （对端尚未登记 item）才短暂重试；网络状态不明时不重发，避免重复启动模型轮次。
+func (s *Server) deliverReport(ctx context.Context, j *job, p protocol.AsyncResultPayload) error {
+	delay := 50 * time.Millisecond
+	for {
+		raw, err := s.Call(ctx, j.caller, "report_result", p, j.trace, j.boss)
+		if err != nil {
+			return err
+		}
+		var receipt struct {
+			Status string `msgpack:"status"`
+		}
+		if err := protocol.DecodeRaw(raw, &receipt); err != nil {
+			return fmt.Errorf("反馈回执无效: %w", err)
+		}
+		if receipt.Status != "ignored" {
+			return nil
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if delay < 400*time.Millisecond {
+			delay *= 2
+		}
+	}
 }
 
 // ---------- 运行时取值（设置下发即时生效） ----------

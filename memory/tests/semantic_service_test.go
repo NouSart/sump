@@ -27,6 +27,11 @@ type stubEmbedding struct {
 }
 
 func startStubEmbedding(t *testing.T, center *stubCenter) *stubEmbedding {
+	return startStubEmbeddingNamed(t, center, "embedding")
+}
+
+// startStubEmbeddingNamed 同上，但可指定注册名（测 recall.embedding 热改用）。
+func startStubEmbeddingNamed(t *testing.T, center *stubCenter, name string) *stubEmbedding {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -47,8 +52,8 @@ func startStubEmbedding(t *testing.T, center *stubCenter) *stubEmbedding {
 	t.Cleanup(func() { _ = reg.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, "embedding", "settings-center", "", protocol.RegisterPayload{
-		Name: "embedding", Addr: e.URL(), Description: "embedding 测试替身",
+	env, err := protocol.NewEnvelope(protocol.TypeRegister, name, "settings-center", "", protocol.RegisterPayload{
+		Name: name, Addr: e.URL(), Description: "embedding 测试替身",
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -29,6 +29,8 @@ type Config struct {
 	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
 	Store             *store.Store  // 图片库
 	MaxBytes          int64         // 单图上限（默认 32MiB，对齐 DeepSeek 图片限制；作为声明预设上报）
+	DBPath            string        // 元数据库路径（只读项展示用：换它要重启）
+	Dir               string        // 图片二进制目录（只读项展示用：换它要重启）
 }
 
 // 默认单图上限（32MiB）。
@@ -80,6 +82,13 @@ func New(cfg Config, logger *log.Logger) *Server {
 	})
 	s.Handle("save", s.actionSave)
 	s.Handle("fetch", s.actionFetch)
+	// 只读项：启动参数带起来的（换它要重启服务）。db/dir 是存储身份——运行中换库/换目录
+	// 意味着一批在途读写换个落点，不做（宁可不给旋钮，也不给一个会撕开的旋钮）。
+	s.HandleReadOnly("db", cfg.DBPath)
+	s.HandleReadOnly("dir", cfg.Dir)
+	s.HandleReadOnly("name", cfg.Name)
+	s.HandleReadOnly("addr", cfg.Listen)
+	s.HandleReadOnly("center", cfg.Center)
 	return s
 }
 

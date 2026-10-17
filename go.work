@@ -1,13 +1,17 @@
 go 1.26
 
 use (
+	./approval-integration
+	./approval
 	./protocol
 	./service
 	./reasoner
 	./memory
 	./images
+	./files
 	./qq
 	./shell
+	./timer
 	./settings-center
 	./tests
 )

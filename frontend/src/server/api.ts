@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import type { CenterEvent, CenterLink } from './center.ts';
 import { RemoteError } from './center.ts';
+import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type TimerItem, type TrustConfig } from './portal.ts';
 import type { RosterPayload, ServiceSettings, SettingsResult } from './protocol.ts';
 
 export interface ApiConfig {
@@ -14,6 +15,14 @@ export interface ApiConfig {
   selfURL: string;
   centerURL: string;
   webDir: string;
+  /** 门户的对话对象：用户消息跳给它（与 qq 的 -reasoner 同名同义）。 */
+  reasoner: string;
+  /** 投递订阅（deliver → SSE）。 */
+  portal: { on: (fn: (m: DeliverMessage) => void) => () => void };
+  /** 计时快照订阅（timer_state → SSE）：新连接先补当前值，再推变化。 */
+  timers: { current: () => TimerItem[]; on: (fn: (items: TimerItem[]) => void) => () => void };
+  /** 浏览器信任栅栏的放行范围。 */
+  trust: TrustConfig;
 }
 
 class HttpError extends Error {
@@ -78,6 +87,8 @@ function mapCenterError(err: unknown): HttpError {
   if (err instanceof RemoteError) return new HttpError(400, err.message);
   const msg = (err as Error).message;
   if (msg === '未连接到设置中心') return new HttpError(503, msg);
+  // 目标不在名册 = 对端不可达，语义同 503（而不是 502 的"上游坏了"）。
+  if (msg.startsWith('未知目标服务')) return new HttpError(503, msg);
   return new HttpError(502, msg);
 }
 
@@ -138,6 +149,19 @@ export function createRequestHandler(
     sendJSON(res, 200, { ok: true, services });
   };
 
+  // sendUserMessage 是门户的"用户 → 智能体"入口：跳 user_message 给 reasoner。
+  // 返回的只是**受理回执**——最终回答由 reasoner 经 deliver 送回来，走 SSE，不从这条 HTTP 出。
+  const sendUserMessage = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const body = asObject(await readJSON(req)) ?? {};
+    const text = requiredString(body, 'text');
+    try {
+      await center.jumpTo(cfg.reasoner, 'user_message', { text, conversation_id: PORTAL_CONVERSATION_ID });
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    sendJSON(res, 200, { ok: true, conversationId: PORTAL_CONVERSATION_ID });
+  };
+
   const events = (req: IncomingMessage, res: ServerResponse): void => {
     setSecurityHeaders(res);
     res.writeHead(200, {
@@ -150,10 +174,17 @@ export function createRequestHandler(
     };
     send('status', { connected: center.connected, center: cfg.centerURL });
     send('roster', center.roster ?? { services: [], revision: 0 });
+    send('timers', cfg.timers.current()); // 冷启动先补一次当前快照（浏览器新开标签也能立刻看到倒计时）
     const unsubscribe = center.on((e: CenterEvent) => {
       if (e.kind === 'status') send('status', { connected: e.connected, center: cfg.centerURL });
       else if (e.kind === 'roster') send('roster', e.roster as RosterPayload);
       else send('settings', e.event);
+    });
+    const unsubscribeDeliver = cfg.portal.on((m: DeliverMessage) => {
+      send('deliver', m);
+    });
+    const unsubscribeTimers = cfg.timers.on((items) => {
+      send('timers', items);
     });
     const keepalive = setInterval(() => {
       res.write(': ping\n\n');
@@ -161,6 +192,8 @@ export function createRequestHandler(
     req.on('close', () => {
       clearInterval(keepalive);
       unsubscribe();
+      unsubscribeDeliver();
+      unsubscribeTimers();
     });
   };
 
@@ -205,11 +238,19 @@ export function createRequestHandler(
   };
 
   const route = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // 信任栅栏先于一切路由：Host 是 DNS 重绑伪造不了的那个头，Origin 挡跨站请求。
+    // 门户能驱动智能体（而智能体手里有 shell），所以这道栅栏不是可选项。
+    const denied = checkRequestTrust(req.headers.host, req.headers.origin, cfg.trust);
+    if (denied !== null) throw new HttpError(403, denied);
     const url = new URL(req.url ?? '/', 'http://localhost');
     const pathname = decodeURIComponent(url.pathname);
 
     if (pathname === '/api/overview' && req.method === 'GET') {
       sendJSON(res, 200, await overview());
+      return;
+    }
+    if (pathname === '/api/message' && req.method === 'POST') {
+      await sendUserMessage(req, res);
       return;
     }
     if (pathname === '/api/settings/set' && req.method === 'POST') {
@@ -224,7 +265,7 @@ export function createRequestHandler(
       events(req, res);
       return;
     }
-    if (pathname === '/api/overview' || pathname === '/api/settings/set' || pathname === '/api/settings/reset' || pathname === '/api/events') {
+    if (pathname === '/api/overview' || pathname === '/api/message' || pathname === '/api/settings/set' || pathname === '/api/settings/reset' || pathname === '/api/events') {
       throw new HttpError(405, `方法不允许: ${req.method ?? ''}`);
     }
     if (pathname.startsWith('/api/')) {

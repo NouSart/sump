@@ -23,7 +23,7 @@ func main() {
 	maxKB := flag.Int("max-output-kb", 256, "单流输出上限（KB；超出即截断并标注）")
 	conc := flag.Int("concurrency", 8, "并行执行上限")
 	queue := flag.Int("queue-limit", 32, "待执行队列上限（满即拒绝执行，不排队）")
-	approval := flag.String("approval", "", "审批服务名（留空 = 未接入，一律未通过——审批协议待定）")
+	approval := flag.String("approval", "", "审批服务名（集成启动器使用 approval；留空仍不执行）")
 	approvalMS := flag.Int("approval-timeout-ms", 60000, "等审批超时（毫秒；超时按未通过处理）")
 	flag.Parse()
 

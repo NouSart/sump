@@ -12,21 +12,50 @@ import (
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 )
 
+// settingKind 是声明类别：普通项（值由设置中心保管）／秘密项（值由本服务保管）／只读项（不可改）。
+type settingKind int
+
+const (
+	settingNormal settingKind = iota
+	settingSecret
+	settingReadOnly
+)
+
 // settingEntry 是一个已声明的设置项。
 type settingEntry struct {
 	key    string
 	preset string
+	kind   settingKind
 	apply  func(value string) error
 }
 
 // HandleSetting 声明一个可设置项：预设值 + 校验/应用回调（必须在 Start 前调用）。
 // 预设值由服务自己决定（库不规定来源）；回调返回错误 = 明确拒绝该值，服务保持旧值。
+// 值由**设置中心**保管（覆盖值落盘于中心），注册时全量对齐下发。
 func (s *Service) HandleSetting(key, preset string, apply func(value string) error) {
+	s.declare(key, preset, settingNormal, apply)
+}
+
+// HandleSecret 声明一个**秘密项**：值不进设置中心——中心不落盘、不回显、list 恒回空串，
+// 只在面板提交那一次把值转发过来；由**本服务自己**持久化（Config.SecretFile）并在 Start
+// 时加载（中心那边没有值可下发）。一句话：谁消费谁持有。
+func (s *Service) HandleSecret(key string, apply func(value string) error) {
+	s.declare(key, "", settingSecret, apply)
+}
+
+// HandleReadOnly 声明一个**只读项**：启动参数带起来的值，进面板可见但不可改
+// （改动会被明确拒绝——改它要重启，或等服务重启机制）。
+func (s *Service) HandleReadOnly(key, value string) {
+	s.declare(key, value, settingReadOnly, nil)
+}
+
+// declare 是三种声明的公共落点（时机校验、去重、登记生效值）。
+func (s *Service) declare(key, preset string, kind settingKind, apply func(value string) error) {
 	s.mu.Lock()
 	started := s.started
 	s.mu.Unlock()
 	if started {
-		s.logger.Printf("HandleSetting(%s) 必须在 Start 前调用——已忽略", key)
+		s.logger.Printf("声明设置项(%s) 必须在 Start 前调用——已忽略", key)
 		return
 	}
 
@@ -37,24 +66,67 @@ func (s *Service) HandleSetting(key, preset string, apply func(value string) err
 		return
 	}
 	s.settingIndex[key] = len(s.settings)
-	s.settings = append(s.settings, settingEntry{key: key, preset: preset, apply: apply})
+	s.settings = append(s.settings, settingEntry{key: key, preset: preset, kind: kind, apply: apply})
 	s.settingValues[key] = preset
 }
 
 // SettingValue 返回某设置项最近一次成功应用的生效值（未下发/拉取过时 = 声明预设）。
+// 秘密项返回的是**本服务自己**持有的值（中心那边没有）；日志/名片仍不回显。
 func (s *Service) SettingValue(key string) string {
 	s.settingsMu.Lock()
 	defer s.settingsMu.Unlock()
 	return s.settingValues[key]
 }
 
+// isSecret 判断某键是否声明为秘密项（日志据此决定要不要回显值）。
+func (s *Service) isSecret(key string) bool {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	idx, ok := s.settingIndex[key]
+	return ok && s.settings[idx].kind == settingSecret
+}
+
+// AnnounceSetting 把某项的当前生效值回传给设置中心——服务侧的值**自己变了**时调用它
+// （自适应 / 规范化 / 程序内部改写），中心据此更新「服务侧实际值」，面板实时可见，
+// 不必等服务下次注册。只报事实：异步发出（不阻塞本服务）、失败不排队
+// （下次注册的名片对齐会收敛）；秘密项只回「有没有值」，值本身永不上线。
+func (s *Service) AnnounceSetting(key string) {
+	s.settingsMu.Lock()
+	idx, ok := s.settingIndex[key]
+	p := protocol.ReportSettingPayload{Service: s.cfg.Name, Key: key}
+	if ok {
+		if s.settings[idx].kind == settingSecret {
+			p.Set = s.secrets[key] != ""
+		} else {
+			p.Value = s.settingValues[key]
+		}
+		s.announceSeq++
+		p.Seq = s.announceSeq
+	}
+	s.settingsMu.Unlock()
+
+	if !ok {
+		s.logger.Printf("AnnounceSetting 忽略：未声明的设置项 %s", key)
+		return
+	}
+	s.Fire("settings-center", "report_setting", p, "", "")
+}
+
 // declarations 返回名片用的设置声明（按声明顺序）。
+// 秘密项**只报有没有值**（Set），值本身永不上线；只读项把启动值放在 default 里。
 func (s *Service) declarations() []protocol.Setting {
 	s.settingsMu.Lock()
 	defer s.settingsMu.Unlock()
 	out := make([]protocol.Setting, 0, len(s.settings))
 	for _, it := range s.settings {
-		out = append(out, protocol.Setting{Key: it.key, Default: it.preset})
+		switch it.kind {
+		case settingSecret:
+			out = append(out, protocol.Setting{Key: it.key, Secret: true, Set: s.secrets[it.key] != ""})
+		case settingReadOnly:
+			out = append(out, protocol.Setting{Key: it.key, Default: it.preset, ReadOnly: true})
+		default:
+			out = append(out, protocol.Setting{Key: it.key, Default: it.preset})
+		}
 	}
 	return out
 }
@@ -68,7 +140,12 @@ func (s *Service) actionConfigure(_ context.Context, _ protocol.Envelope, in pro
 	if err := s.applySetting(p.Key, p.Value); err != nil {
 		return nil, err
 	}
-	s.logger.Printf("设置生效（下发）: %s=%s", p.Key, p.Value)
+	// 秘密项的值不进日志（日志会被人看、会被转发，值只该留在服务自己的文件里）
+	if s.isSecret(p.Key) {
+		s.logger.Printf("设置生效（下发）: %s（秘密，不回显）", p.Key)
+	} else {
+		s.logger.Printf("设置生效（下发）: %s=%s", p.Key, p.Value)
+	}
 	return map[string]any{"status": "applied"}, nil
 }
 
@@ -81,17 +158,28 @@ func (s *Service) applySetting(key, value string) error {
 	s.settingsMu.Lock()
 	idx, ok := s.settingIndex[key]
 	var apply func(string) error
+	kind := settingNormal
 	if ok {
 		apply = s.settings[idx].apply
+		kind = s.settings[idx].kind
 	}
 	s.settingsMu.Unlock()
 	if !ok {
 		return fmt.Errorf("configure: 未声明的设置项 %q", key)
 	}
+	if kind == settingReadOnly {
+		return fmt.Errorf("configure: %s 是只读项（启动参数带起来的，改它需要重启）", key)
+	}
 
 	if apply != nil {
 		if err := apply(value); err != nil {
 			return fmt.Errorf("configure: %s: %w", key, err)
+		}
+	}
+	// 秘密项不进中心：由本服务自己落盘（普通项的覆盖值由中心保管）。
+	if kind == settingSecret {
+		if err := s.saveSecret(key, value); err != nil {
+			return fmt.Errorf("configure: %s: 秘密落盘失败: %w", key, err)
 		}
 	}
 	s.settingsMu.Lock()

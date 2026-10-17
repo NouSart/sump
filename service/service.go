@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -30,6 +31,9 @@ type Config struct {
 	Description       string             // 名片：功能简介
 	Provides          []protocol.Provide // 名片：对外提供的动作
 	Logger            *log.Logger        // 日志（默认 log.Default）
+	// SecretFile 是秘密项（HandleSecret）的本地持久化文件路径。
+	// 留空 = <name> 的默认路径（data/<name>-secret.json）；传 "-" 表示只放内存不落盘。
+	SecretFile string
 }
 
 // Handler 处理一次跳转动作，返回的数据会作为响应 payload 的 data。
@@ -46,6 +50,8 @@ type Service struct {
 	settings      []settingEntry    // 已声明的设置项（按声明顺序）
 	settingIndex  map[string]int    // 键 → settings 下标
 	settingValues map[string]string // 最近一次成功应用的生效值（初始 = 预设）
+	secrets       map[string]string // 秘密项的值（不进设置中心；由本服务持久化）
+	announceSeq   int64             // 设置回传（AnnounceSetting）的单调序号（settingsMu 保护）
 	applyMu       sync.Mutex        // 应用串行化：多个下发不并发进回调
 
 	mu      sync.Mutex
@@ -73,12 +79,16 @@ func New(cfg Config) *Service {
 	if cfg.Logger == nil {
 		cfg.Logger = log.Default()
 	}
+	if cfg.SecretFile == "" {
+		cfg.SecretFile = filepath.Join("data", cfg.Name+"-secret.json")
+	}
 	s := &Service{
 		cfg:           cfg,
 		logger:        cfg.Logger,
 		actions:       map[string]Handler{},
 		settingIndex:  map[string]int{},
 		settingValues: map[string]string{},
+		secrets:       map[string]string{},
 		roster:        map[string]protocol.ServiceCard{},
 	}
 	// "configure" 是骨架保留动作（设置下发专用）：不进 provides、不作 LLM 工具。
@@ -116,6 +126,9 @@ func (s *Service) Start(ctx context.Context) error {
 	s.mu.Lock()
 	s.started = true
 	s.mu.Unlock()
+
+	// 秘密项先落地：它们不在中心那边（中心没有值可下发），服务得自己带起来。
+	s.loadSecrets()
 
 	ln, err := net.Listen("tcp", s.cfg.Listen)
 	if err != nil {
