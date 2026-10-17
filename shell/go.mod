@@ -1,6 +1,6 @@
 module github.com/QAQ-awa-QAQ/sump/shell
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/QAQ-awa-QAQ/sump/protocol v0.0.0
