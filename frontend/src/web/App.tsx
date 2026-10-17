@@ -31,8 +31,7 @@ function initialTheme(): Theme {
   return prefersDark ? 'dark' : 'light';
 }
 
-export function App() {
-  const [overview, setOverview] = useState<Overview | null>(null);
+export function App() {  const [overview, setOverview] = useState<Overview | null>(null);
   const [roster, setRoster] = useState<RosterView | null>(null);
   const [connected, setConnected] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
@@ -47,7 +46,9 @@ export function App() {
   const [rowStates, setRowStates] = useState<Record<string, RowStatus>>({});
   // 视图：对话是主体；设置是右侧抽屉（从输入框的「设置」进入）。
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [rail, setRail] = useState(false);
+  // 侧栏收起＝向上塌成一条（草图里的 ↑ 收起按钮），不是缩成竖轨：
+  // 收起后字标留在顶上、对话区接管整幅宽度。
+  const [collapsed, setCollapsed] = useState(false);
   const [messages, setMessages] = useState<PortalMessage[]>([]);
   const [timers, setTimers] = useState<TimerView[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
@@ -277,48 +278,69 @@ export function App() {
     }
   }, []);
 
+  // 连接状态缩成一枚点：展开态在字标旁，收起态也跟着字标留在条上。
+  const statusDot = (
+    <span
+      className={connected ? 'dot dot-on' : 'dot dot-off'}
+      role="img"
+      aria-label={connected ? '已连接设置中心' : '未连接设置中心'}
+      title={overview ? `设置中心 ${overview.center} · ${connected ? '已连接' : '未连接'}` : '设置中心'}
+    />
+  );
+
   return (
-    <div className="app" data-rail={rail ? '1' : undefined}>
+    <div className="app" data-collapsed={collapsed ? '1' : undefined}>
       <div className="aurora" aria-hidden="true">
         <span />
         <span />
         <span />
       </div>
 
-      <aside className="sidebar">
-        <div className="brand-row">
-          <div className="brand">SUMP</div>
-          <span
-            className={connected ? 'dot dot-on' : 'dot dot-off'}
-            role="img"
-            aria-label={connected ? '已连接设置中心' : '未连接设置中心'}
-            title={overview ? `设置中心 ${overview.center} · ${connected ? '已连接' : '未连接'}` : '设置中心'}
-          />
-        </div>
-        <nav className="threads" aria-label="会话">
-          {/* 目前 reasoner 只有单会话（web:private:owner）：列表如实只显示这一条，
-              不做假的多会话条目——等多会话能力落地再长出来。 */}
-          <button type="button" className="thread is-active" aria-current="true" title="当前会话">
-            <span className="t-time">{threadLabel}</span>
-            <span className="t-title">当前会话</span>
-          </button>
-        </nav>
-        <div className="me">
-          <span className="avatar" aria-hidden="true">我</span>
-          <span className="me-name">本机用户</span>
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label={rail ? '展开侧栏' : '收起侧栏'}
-            title={rail ? '展开侧栏' : '收起侧栏'}
-            onClick={() => {
-              setRail((v) => !v);
-            }}
-          >
-            {rail ? '→' : '←'}
-          </button>
-        </div>
-      </aside>
+      {collapsed ? (
+        <button
+          type="button"
+          className="sidebar sidebar-bar"
+          aria-expanded={false}
+          aria-label="展开侧栏"
+          title="展开侧栏"
+          onClick={() => {
+            setCollapsed(false);
+          }}
+        >
+          <span className="brand">SUMP</span>
+        </button>
+      ) : (
+        <aside className="sidebar">
+          <div className="brand-row">
+            <div className="brand">SUMP</div>
+            {statusDot}
+          </div>
+          <nav className="threads" aria-label="会话">
+            {/* 目前 reasoner 只有单会话（web:private:owner）：列表如实只显示这一条，
+                不做假的多会话条目——等多会话能力落地再长出来。 */}
+            <button type="button" className="thread is-active" aria-current="true" title="当前会话">
+              <span className="t-time">{threadLabel}</span>
+              <span className="t-title">当前会话</span>
+            </button>
+          </nav>
+          <div className="me">
+            <span className="avatar" aria-hidden="true">我</span>
+            <span className="me-name">本机用户</span>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-expanded={true}
+              aria-label="收起侧栏"
+              title="收起侧栏"
+              onClick={() => {
+                setCollapsed(true);
+              }}
+            >
+              ↑
+            </button>
+          </div>
+        </aside>
+      )}
 
       <main className="stage">
         {loadError && (

@@ -37,7 +37,6 @@
   --gap-6: 32px;
 
   --sidebar-w: 292px;
-  --rail-w: 68px;
   --col: 860px;
 
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
@@ -211,13 +210,17 @@ button { font: inherit; }
 }
 .icon-btn:hover { background: var(--surface-hover); color: var(--text); border-color: var(--border); }
 
-/* 收起态：侧栏变轨道 */
-.app[data-rail='1'] .sidebar { width: var(--rail-w); padding: var(--gap-2); align-items: center; }
-.app[data-rail='1'] .brand { writing-mode: vertical-rl; font-size: 13px; letter-spacing: 0.14em; padding: 6px 0; }
-.app[data-rail='1'] .threads,
-.app[data-rail='1'] .me-name,
-.app[data-rail='1'] .brand-row { display: none; }
-.app[data-rail='1'] .me { padding: 4px; flex-direction: column; }
+/* 收起态：侧栏塌成只剩字标的一小块（草图：折叠后只剩 SUMP，没有箭头，点字标展开），
+   对话区随即接管整幅宽度——不做"缩成竖轨"的左右方向收起，也不占一整横行。 */
+.app[data-collapsed='1'] { flex-direction: column; }
+.sidebar-bar {
+  align-self: flex-start;
+  width: auto;
+  padding: 10px 12px;
+  cursor: pointer; text-align: left;
+  color: var(--text); font: inherit;
+}
+.sidebar-bar:hover { background: var(--surface-hover); }
 
 /* ---------- L2 交互面板 ---------- */
 .stage {
@@ -473,8 +476,8 @@ button { font: inherit; }
 
 /* ---------- 窄屏 ---------- */
 @media (max-width: 900px) {
-  .sidebar { width: var(--rail-w); padding: var(--gap-2); align-items: center; }
-  .sidebar .threads, .sidebar .me-name, .sidebar .brand-row { display: none; }
+  /* 窄屏不再把侧栏压成竖轨（那是左右方向）；收不收由用户点 ↑ 决定，这里只让侧栏窄一点。 */
+  .sidebar { width: 232px; }
   .sheet-nav { width: 150px; }
   .portal-list { padding-inline: var(--gap-4); }
 }

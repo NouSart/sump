@@ -309,6 +309,22 @@ describe('App', () => {
     await waitFor(() => assert.equal(screen.queryByRole('heading', { name: '设置' }), null));
   });
 
+  it('侧栏：收起是向上塌成一条（留字标、隐会话），点条即可展开', async () => {
+    boot({ openSettings: false });
+    await screen.findByRole('region', { name: '对话' });
+    assert.ok(screen.getByRole('navigation', { name: '会话' }));
+
+    fireEvent.click(screen.getByRole('button', { name: '收起侧栏' }));
+    assert.equal(screen.queryByRole('navigation', { name: '会话' }), null, '收起后会话列表不该还占着地方');
+    const bar = screen.getByRole('button', { name: '展开侧栏' });
+    assert.equal(bar.textContent, 'SUMP', '收起后只剩字标：没有箭头，也没有别的字');
+    assert.equal(document.querySelector('.app')?.getAttribute('data-collapsed'), '1');
+
+    fireEvent.click(bar);
+    assert.ok(screen.getByRole('navigation', { name: '会话' }));
+    assert.equal(document.querySelector('.app')?.getAttribute('data-collapsed'), null);
+  });
+
   it('对话：deliver 事件把智能体的消息落进对话', async () => {
     boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
