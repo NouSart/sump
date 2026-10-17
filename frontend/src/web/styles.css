@@ -278,6 +278,8 @@ button { font: inherit; }
   width: 1px; background: var(--text-3); opacity: 0.5; transform: translateX(-0.5px);
 }
 .step:last-child .step-mark::before { display: none; }
+/* 任务边界不连线：用户消息开启新任务，它上面那条线掐掉 */
+.step:has(+ .step-user) .step-mark::before { display: none; }
 .step-answer .step-mark { color: var(--accent); }
 .step-body { min-width: 0; max-width: 78ch; }
 .step-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
@@ -289,11 +291,14 @@ button { font: inherit; }
   min-width: 0; color: var(--text-3); font-size: var(--fs-micro);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 时间平时不占视线：指到这一步才浮出来（不移动布局——位置一直留着） */
 .step-time {
   margin-left: auto; flex: none;
   font-family: var(--font-mono); font-size: var(--fs-micro); color: var(--text-3);
   font-variant-numeric: tabular-nums;
+  opacity: 0; transition: opacity 120ms var(--ease);
 }
+.step:hover .step-time { opacity: 1; }
 .step-note { flex: none; font-size: var(--fs-micro); color: var(--text-3); }
 
 /* 我：一块淡色底，和过程条目区分开（时间线是给"发生的事"，自己的话略突出） */
