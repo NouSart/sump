@@ -32,12 +32,18 @@ type Setting struct {
 	Secret   bool   `msgpack:"secret,omitempty"`
 	ReadOnly bool   `msgpack:"readonly,omitempty"`
 	Set      bool   `msgpack:"set,omitempty"` // 仅 Secret 有意义：服务侧当前是否已有值
+	// 以下是给**人**看的部分（可选；缺省时面板退回显示 Key）。
+	Label   string   `msgpack:"label,omitempty"`   // 中文名，如「单文件大小上限」
+	Hint    string   `msgpack:"hint,omitempty"`    // 一句话：改它会发生什么
+	Kind    string   `msgpack:"kind,omitempty"`    // bool | number | enum | textarea | text（缺省 text）
+	Options []string `msgpack:"options,omitempty"` // Kind=enum 的候选值
 }
 
 // RegisterPayload 是 register 请求的 payload：服务名片。
 type RegisterPayload struct {
 	Name        string    `msgpack:"name"`
 	Addr        string    `msgpack:"addr"`
+	Title       string    `msgpack:"title,omitempty"` // 中文短名（面板导航用），如「审批」
 	Description string    `msgpack:"description,omitempty"`
 	Provides    []Provide `msgpack:"provides,omitempty"`
 	Settings    []Setting `msgpack:"settings,omitempty"`
@@ -48,6 +54,7 @@ type RegisterPayload struct {
 type ServiceCard struct {
 	Name        string    `msgpack:"name"`
 	Addr        string    `msgpack:"addr"`
+	Title       string    `msgpack:"title,omitempty"` // 中文短名（面板导航用）
 	Description string    `msgpack:"description,omitempty"`
 	Provides    []Provide `msgpack:"provides,omitempty"`
 	HeartbeatMS int64     `msgpack:"heartbeat_ms,omitempty"` // 心跳间隔（毫秒；离线判定用）
@@ -58,6 +65,7 @@ func (r RegisterPayload) Card() ServiceCard {
 	return ServiceCard{
 		Name:        r.Name,
 		Addr:        r.Addr,
+		Title:       r.Title,
 		Description: r.Description,
 		Provides:    r.Provides,
 		HeartbeatMS: r.HeartbeatMS,
@@ -282,6 +290,11 @@ type SettingView struct {
 	Set        bool   `msgpack:"set,omitempty"`      // 仅 Secret：服务侧当前是否已有值
 	Actual     string `msgpack:"actual"`             // 服务侧自报的实际值（没回传过为空串）
 	Reported   bool   `msgpack:"reported,omitempty"` // 服务是否回传过实际值（Actual 为空串时靠它区分"没报过"与"报了空值"）
+	// 给**人**看的部分：由服务声明时给出，面板据此画中文名、说明与合适的控件。
+	Label   string   `msgpack:"label,omitempty"`
+	Hint    string   `msgpack:"hint,omitempty"`
+	Kind    string   `msgpack:"kind,omitempty"`
+	Options []string `msgpack:"options,omitempty"`
 }
 
 // ServiceSettings 是一个服务的设置清单（按声明顺序）。
