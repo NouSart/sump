@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { decideApproval, fetchOverview, resetSetting, sendMessage, setSetting } from './api';
+import { decideApproval, fetchHistory, fetchOverview, resetSetting, sendMessage, setSetting } from './api';
 import { PortalView } from './components/PortalView';
 import { IconChevronUp } from './components/icons';
 import { ServiceList } from './components/ServiceList';
@@ -21,6 +21,21 @@ let toastSeq = 0;
 // 外观：整站只有一套令牌，深/浅由 <html data-theme> 切换（见 styles.css）。首选项存本地，没有就跟系统。
 type Theme = 'light' | 'dark';
 const ThemeKey = 'sump.portal.theme';
+
+// appendMessage 追加一条消息；与上一条完全同角色同文本时跳过——
+// 和 memory 的 store 幂等规则一致，避免"历史回填 + 实时推送"把同一条画两遍。
+function appendMessage(prev: PortalMessage[], m: PortalMessage): PortalMessage[] {
+  const last = prev[prev.length - 1];
+  if (last !== undefined && last.author === m.author && last.text === m.text) return prev;
+  return [...prev, m];
+}
+
+// mergeMessages 把历史接在实时消息前面，并压掉交界处的相邻重复（同样只压相邻）。
+function mergeMessages(history: PortalMessage[], live: PortalMessage[]): PortalMessage[] {
+  let out: PortalMessage[] = [];
+  for (const m of [...history, ...live]) out = appendMessage(out, m);
+  return out;
+}
 
 function initialTheme(): Theme {
   const saved = window.localStorage.getItem(ThemeKey);
@@ -151,7 +166,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     // 门户投递：智能体经 deliver 送来的消息，落到对话里。
     es.addEventListener('deliver', (ev) => {
       const d = JSON.parse((ev as MessageEvent).data) as { text: string; at: string };
-      setMessages((prev) => [...prev, { author: 'agent', text: d.text, at: d.at }]);
+      setMessages((prev) => appendMessage(prev, { author: 'agent', text: d.text, at: d.at }));
     });
     // 计时快照：timer 受理/到点/撤销后推来的**全量列表**（不是增量），直接覆盖。
     es.addEventListener('timers', (ev) => {
@@ -250,16 +265,34 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     [overview],
   );
 
-  // 会话侧栏的时间戳：取这条对话的第一条消息；没有就是占位符（不编造时间）。
+  // 会话侧栏的时间戳：取这条对话最后一条消息的时间（回归"最近说话"的直觉）；没有就留占位。
   const threadLabel = useMemo(() => {
-    const first = messages[0];
-    return first ? first.at.slice(11, 16) : '—:—';
+    const last = messages[messages.length - 1];
+    return last ? last.at.slice(11, 16) : '—:—';
   }, [messages]);
+
+  // 历史回填：门户启动时向 memory 要最近的对话——真相在服务，门户只负责显示。
+  // 失败只提示，不阻断：新消息照样能发、能收。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const history = await fetchHistory();
+        if (cancelled || history.length === 0) return;
+        setMessages((prev) => mergeMessages(history, prev));
+      } catch (err) {
+        if (!cancelled) setPortalError(`历史未取回：${(err as Error).message}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const onSend = useCallback(async (text: string) => {
     setPortalError(null);
     // 本地先回显（受理回执只说明消息已交给 reasoner，不代表已有回复）。
-    setMessages((prev) => [...prev, { author: 'user', text, at: new Date().toISOString() }]);
+    setMessages((prev) => appendMessage(prev, { author: 'user', text, at: new Date().toISOString() }));
     try {
       await sendMessage(text);
     } catch (err) {

@@ -104,6 +104,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Provides: []protocol.Provide{
 			{Action: "recall", Input: "任务上下文 {conversation_id, messages, boss}", Output: "受理回执；随后向调用方发送 resume（注入记忆后的上下文）"},
 			{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
+			{Action: "history", Input: "{conversation_id, limit}", Output: "{conversation_id, messages:[{role, content, at}]}（按时间正序；供界面回填，不做记忆组装）"},
 			{Action: "remember", Tool: true, Input: "长期记忆条目 {kind, content, priority?}（kind 如 偏好/身份/知识/事件；priority>0 = 核心记忆，每次对话都会带上）", Output: "{id, created}（同 kind+content 已有 active 条目时幂等跳过）"},
 		},
 		Logger: logger,
@@ -161,6 +162,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	})
 	s.Handle("recall", s.actionRecall)
 	s.Handle("store", s.actionStore)
+	s.Handle("history", s.actionHistory)
 	s.Handle("remember", s.actionRemember)
 	s.Handle("forget", s.actionForget)
 	// embedding 服务名：热改（空 = 关闭语义召回，静默回落 bigram）。
@@ -211,6 +213,23 @@ func (s *Server) actionStore(_ context.Context, _ protocol.Envelope, in protocol
 		return nil, fmt.Errorf("落库失败: %w", err)
 	}
 	return map[string]any{}, nil
+}
+
+// actionHistory 把某会话最近的对话原样交还（界面回填用：不做记忆组装、不碰长期记忆、不改上下文）。
+func (s *Server) actionHistory(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.HistoryPayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	cid := p.ConversationID
+	if cid == "" {
+		cid = "default"
+	}
+	msgs, err := s.cfg.Store.History(cid, p.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("查询历史失败: %w", err)
+	}
+	return protocol.HistoryResult{ConversationID: cid, Messages: msgs}, nil
 }
 
 // actionRemember 写一条长期记忆（内容重复时幂等跳过）；来源记调用方服务名。

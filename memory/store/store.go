@@ -112,3 +112,39 @@ func (s *Store) Recent(conversationID string, limit int) ([]protocol.Message, er
 	}
 	return out, nil
 }
+
+// History 返回该会话最近 limit 条消息（按时间正序，带落库时间）——供门户回填对话视图。
+// 与 Recent 的区别：多带 created_at，且显式夹紧上限（界面回填不该一次拉整库）。
+func (s *Store) History(conversationID string, limit int) ([]protocol.HistoryEntry, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	rows, err := s.db.Query(
+		`SELECT role, content, created_at FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT ?`,
+		conversationID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]protocol.HistoryEntry, 0, limit)
+	for rows.Next() {
+		var m protocol.HistoryEntry
+		if err := rows.Scan(&m.Role, &m.Content, &m.At); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// 倒序 → 正序
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}

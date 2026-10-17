@@ -17,6 +17,8 @@ export interface FrontendConfig {
   webDir: string;
   heartbeatMS: number;
   reasoner: string;
+  /** 记忆服务名：门户启动时向它要该会话的历史，用来回填对话（真相在服务，门户不自己存）。 */
+  memory: string;
   /** 审批服务名（第二层裁决由门户送回它）。 */
   approval: string;
   trustedHosts: string[];
@@ -75,6 +77,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
         centerURL: cfg.centerURL,
         webDir: cfg.webDir,
         reasoner: cfg.reasoner,
+        memory: cfg.memory,
         portal: { on: hub.on },
         timers: { current: timers.current, on: timers.on },
         approvals: { current: approvals.list, on: approvals.on, remove: approvals.remove },

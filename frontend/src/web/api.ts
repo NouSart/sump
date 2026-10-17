@@ -1,5 +1,5 @@
 // 与前端服务 HTTP API 的通信（JSON 进出；失败统一抛 Error，消息即中文提示）。
-import type { Overview, ServiceSettingsView } from './types';
+import type { Overview, PortalMessage, ServiceSettingsView } from './types';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -18,6 +18,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function fetchOverview(): Promise<Overview> {
   return request<Overview>('/api/overview');
+}
+
+// fetchHistory 取该会话最近的对话（门户启动时回填；真相在 memory 服务，门户不自己存）。
+export async function fetchHistory(limit = 50): Promise<PortalMessage[]> {
+  const r = await request<{ messages?: { role?: string; content?: string; at?: string }[] }>(
+    `/api/history?limit=${String(limit)}`,
+  );
+  const out: PortalMessage[] = [];
+  for (const m of r.messages ?? []) {
+    if (m.role !== 'user' && m.role !== 'assistant') continue; // tool/system 不进对话视图
+    out.push({ author: m.role === 'user' ? 'user' : 'agent', text: m.content ?? '', at: m.at ?? '' });
+  }
+  return out;
 }
 
 export async function setSetting(service: string, key: string, value: string): Promise<ServiceSettingsView[]> {

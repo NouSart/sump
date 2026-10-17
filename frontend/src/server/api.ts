@@ -17,6 +17,8 @@ export interface ApiConfig {
   webDir: string;
   /** 门户的对话对象：用户消息跳给它（与 qq 的 -reasoner 同名同义）。 */
   reasoner: string;
+  /** 记忆服务名：历史回填直连它取（中心只提供名册地址，不转发）。 */
+  memory: string;
   /** 投递订阅（deliver → SSE）。 */
   portal: { on: (fn: (m: DeliverMessage) => void) => () => void };
   /** 计时快照订阅（timer_state → SSE）：新连接先补当前值，再推变化。 */
@@ -170,8 +172,23 @@ export function createRequestHandler(
     sendJSON(res, 200, { ok: true, conversationId: PORTAL_CONVERSATION_ID });
   };
 
-  // decideApproval 把用户的裁决送回 approval。裁决权在用户手里，门户只是搬运工：
-  // 这里不判断该不该批准，也不缓存结果——approval 认不认（待审项还在不在）由它自己决定。
+  // fetchHistory 把该会话最近的对话从 memory 取回来（门户启动时回填界面用）。
+  // 与 user_message 同一条链路：从名册解析 memory 的地址后直连，中心不转发。
+  const fetchHistory = async (res: ServerResponse, limit: number): Promise<void> => {
+    let data: { messages?: unknown } | undefined;
+    try {
+      data = (await center.jumpTo(cfg.memory, 'history', {
+        conversation_id: PORTAL_CONVERSATION_ID,
+        limit,
+      })) as { messages?: unknown };
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    const messages = Array.isArray(data?.messages) ? data.messages : [];
+    sendJSON(res, 200, { conversationId: PORTAL_CONVERSATION_ID, messages });
+  };
+
+  // decideApproval 把用户的裁决送回 approval。裁决权在用户手里，门户只是搬运工：  // 这里不判断该不该批准，也不缓存结果——approval 认不认（待审项还在不在）由它自己决定。
   const decideApproval = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const body = asObject(await readJSON(req)) ?? {};
     const itemId = requiredString(body, 'item_id');
@@ -297,6 +314,12 @@ export function createRequestHandler(
       events(req, res);
       return;
     }
+    if (pathname === '/api/history' && req.method === 'GET') {
+      const raw = Number(url.searchParams.get('limit') ?? '');
+      const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.trunc(raw), 500) : 50;
+      await fetchHistory(res, limit);
+      return;
+    }
     if (pathname === '/api/approvals' && req.method === 'GET') {
       sendJSON(res, 200, { items: cfg.approvals.current() });
       return;
@@ -305,7 +328,7 @@ export function createRequestHandler(
       await decideApproval(req, res);
       return;
     }
-    if (pathname === '/api/overview' || pathname === '/api/message' || pathname === '/api/settings/set' || pathname === '/api/settings/reset' || pathname === '/api/events' || pathname === '/api/approvals') {
+    if (pathname === '/api/overview' || pathname === '/api/message' || pathname === '/api/settings/set' || pathname === '/api/settings/reset' || pathname === '/api/events' || pathname === '/api/approvals' || pathname === '/api/history') {
       throw new HttpError(405, `方法不允许: ${req.method ?? ''}`);
     }
     if (pathname.startsWith('/api/')) {

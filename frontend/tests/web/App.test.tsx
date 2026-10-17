@@ -26,12 +26,23 @@ const okOverview = (r: RosterView) =>
 // boot 安装替身并挂载 App：
 //   - setResponse 可替换 set_setting 的应答（默认成功）；
 //   - messageResponse 可替换 /api/message 的应答（默认受理）；
+//   - history 可替换 /api/history 的历史（默认空）；
 //   - openSettings=false 停在对话视图（设置从输入框的「设置」进入）；
 //   - 返回的 setRoster 用于让 overview 桩跟随名册推进（与服务端一致：名册更新后重拉应见到新名册）。
-function boot(over: { setResponse?: () => Response; messageResponse?: () => Response; openSettings?: boolean } = {}) {
+function boot(
+  over: {
+    setResponse?: () => Response;
+    messageResponse?: () => Response;
+    openSettings?: boolean;
+    history?: { role: string; content: string; at: string }[];
+  } = {},
+) {
   let currentRoster = rosterOf(['images', 'qq']);
   const calls = stubFetch((url) => {
     if (url === '/api/overview') return jsonResponse(okOverview(currentRoster));
+    if (url.startsWith('/api/history')) {
+      return jsonResponse({ conversationId: 'web:private:owner', messages: over.history ?? [] });
+    }
     if (url === '/api/message') {
       if (over.messageResponse) return over.messageResponse();
       return jsonResponse({ ok: true, conversationId: 'web:private:owner' });
@@ -344,6 +355,36 @@ describe('App', () => {
     assert.ok(screen.getByRole('navigation', { name: '会话' }));
     assert.equal(document.querySelector('.app')?.getAttribute('data-collapsed'), null);
     assert.equal(screen.getByText('SUMP'), brand, '展开回来还是同一个字标节点');
+  });
+
+  it('对话：启动时向服务要历史回填；同一条重复推送不画两遍', async () => {
+    const { calls } = boot({
+      openSettings: false,
+      history: [
+        { role: 'user', content: '早先的问题', at: '2026-10-17T10:00:00Z' },
+        { role: 'assistant', content: '早先的答复', at: '2026-10-17T10:00:05Z' },
+      ],
+    });
+    await screen.findByRole('region', { name: '对话' });
+    await screen.findByText('早先的问题');
+    assert.ok(screen.getByText('早先的答复'));
+    assert.equal(
+      screen.queryByText('发一条消息开始。回复会经 deliver 实时送回来。'),
+      null,
+      '有历史就不该再显示空态',
+    );
+    assert.ok(calls.some((c) => c.url.startsWith('/api/history')), '启动应拉一次历史');
+
+    // 同一条答复又被 deliver 推一遍（历史尾巴与实时推送重叠）→ 只画一次
+    await emitSSE('deliver', { text: '早先的答复', conversationId: 'web:private:owner', at: '2026-10-17T10:00:05Z' });
+    assert.equal(screen.getAllByText('早先的答复').length, 1);
+  });
+
+  it('对话：历史取不到只提示，不阻断对话', async () => {
+    boot({ openSettings: false });
+    await screen.findByRole('region', { name: '对话' });
+    // 默认桩已覆盖 /api/history（空列表）：不该出现任何错误提示
+    assert.equal(screen.queryByRole('alert'), null);
   });
 
   it('对话：deliver 事件把智能体的消息落进对话', async () => {

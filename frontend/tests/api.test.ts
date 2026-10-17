@@ -28,6 +28,7 @@ async function startWithCenter(centerURL: string, heartbeatMS = 50): Promise<Fro
       webDir: await makeWebDir(),
       heartbeatMS,
       reasoner: 'reasoner',
+      memory: 'memory',
       approval: 'approval',
       trustedHosts: [],
     },
@@ -375,6 +376,62 @@ test('门户：注册名片里声明五个只读设置项（参数进面板看�
   assert.match(byKey.get('addr')?.default ?? '', /^127\.0\.0\.1:\d+$/);
 });
 
+test('门户：GET /api/history 直连 memory 取历史（中心只给地址，不转发）', async (t) => {
+  const memory = await startStubService({
+    ok: true,
+    data: {
+      conversation_id: 'web:private:owner',
+      messages: [
+        { role: 'user', content: '上一轮的问题', at: '2026-10-17T10:00:00Z' },
+        { role: 'assistant', content: '上一轮的答复', at: '2026-10-17T10:00:02Z' },
+      ],
+    },
+  });
+  const stub = new StubCenter();
+  const centerURL = await stub.start();
+  stub.roster = {
+    services: [
+      { name: 'frontend', addr: 'ws://127.0.0.1:9/ws' },
+      { name: 'memory', addr: memory.url },
+    ],
+    revision: 1,
+  };
+  const handle = await startWithCenter(centerURL);
+  t.after(async () => {
+    await handle.close();
+    await stub.stop();
+    await memory.stop();
+  });
+  await waitFor(() => handle.link.connected, 3000, '前端接入中心');
+
+  const res = await fetch(`http://${handle.addr}/api/history?limit=7`);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { conversationId?: string; messages?: { role?: string; content?: string }[] };
+  assert.equal(body.conversationId, 'web:private:owner');
+  assert.equal(body.messages?.length, 2);
+  assert.equal(body.messages?.[0]?.content, '上一轮的问题');
+
+  assert.equal(memory.jumps.length, 1, '应恰好跳一次');
+  assert.equal(memory.jumps[0]?.action, 'history');
+  assert.deepEqual(memory.jumps[0]?.input, { conversation_id: 'web:private:owner', limit: 7 });
+});
+
+test('门户：GET /api/history 目标不在名册里 → 明确的错误而不是空列表', async (t) => {
+  const stub = new StubCenter();
+  const centerURL = await stub.start();
+  stub.roster = { services: [{ name: 'frontend', addr: 'ws://127.0.0.1:9/ws' }], revision: 1 };
+  const handle = await startWithCenter(centerURL);
+  t.after(async () => {
+    await handle.close();
+    await stub.stop();
+  });
+  await waitFor(() => handle.link.connected, 3000, '前端接入中心');
+
+  const res = await fetch(`http://${handle.addr}/api/history`);
+  assert.notEqual(res.status, 200);
+  const body = (await res.json()) as { error?: string };
+  assert.match(body.error ?? '', /memory/);
+});
 test('门户：POST /api/message 跳 user_message 给 reasoner，只回受理回执', async (t) => {
   const reasoner = await startStubService({ ok: true, data: { item_id: 'h1', phase: 'queued' } });
   const stub = new StubCenter();

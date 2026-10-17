@@ -116,6 +116,25 @@ type StorePayload struct {
 	Content        string `msgpack:"content"`
 }
 
+// HistoryPayload 是 history 的 payload：向记忆服务要某会话最近的消息（供门户回填对话视图）。
+type HistoryPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+	Limit          int    `msgpack:"limit,omitempty"`
+}
+
+// HistoryEntry 是一条落库的对话消息（带落库时间，供界面按时间排序）。
+type HistoryEntry struct {
+	Role    string `msgpack:"role"`
+	Content string `msgpack:"content"`
+	At      string `msgpack:"at"`
+}
+
+// HistoryResult 是 history 的结果：按时间正序。
+type HistoryResult struct {
+	ConversationID string         `msgpack:"conversation_id"`
+	Messages       []HistoryEntry `msgpack:"messages"`
+}
+
 // ---------- 任务链入口 ----------
 
 // UserMessagePayload 是 user_message（链入口）的 payload：用户消息文本 + 图片/文件引用。
