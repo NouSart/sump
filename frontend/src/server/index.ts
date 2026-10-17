@@ -1,7 +1,8 @@
 // frontend：SUMP v2 的用户交互门户（与 qq 同类）＋ 设置中心可视化面板。
 // 服务节点：把自己注册进设置中心（心跳 / 名册）；浏览器侧：HTTP JSON + SSE。
 // 用法：node dist/server/index.js [-addr 127.0.0.1:9501] [-center ws://127.0.0.1:9000/ws] [-name frontend]
-//        [-web dist/web] [-heartbeat-ms 15000] [-reasoner reasoner] [-trusted-hosts a.example,b.example]
+//        [-web dist/web] [-heartbeat-ms 15000] [-reasoner reasoner] [-memory memory]
+//        [-locales locales] [-lang zh-CN] [-trusted-hosts a.example,b.example]
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFrontend, type FrontendConfig } from './app.ts';
@@ -28,6 +29,12 @@ function parseFlags(argv: string[]): Record<string, string> {
   return out;
 }
 
+// defaultLocalesDir：语言包在仓库根的 locales/（dist/server → 上三级；也允许 -locales 覆盖）。
+function defaultLocalesDir(): string {
+  const here = dirname(fileURLToPath(import.meta.url)); // frontend/dist/server
+  return resolve(here, '../../../locales');
+}
+
 function resolveFlags(argv: string[]): FrontendConfig {
   const raw = parseFlags(argv);
   const heartbeatMS = raw['heartbeat-ms'] === undefined ? 15_000 : Number(raw['heartbeat-ms']);
@@ -42,6 +49,9 @@ function resolveFlags(argv: string[]): FrontendConfig {
     webDir: raw.web ?? resolve(here, '../web'),
     heartbeatMS,
     reasoner: raw.reasoner ?? 'reasoner',
+    memory: raw.memory ?? 'memory',
+    localesDir: raw.locales ?? defaultLocalesDir(),
+    lang: raw.lang ?? 'zh-CN',
     approval: raw.approval ?? 'approval',
     trustedHosts: (raw['trusted-hosts'] ?? '')
       .split(',')

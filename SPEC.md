@@ -183,7 +183,8 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
     { "action": "fetch", "input": "{id}", "output": "{id, mime, data(base64), size}" }
   ],
   "settings": [                                  // 我可被设置哪些项（预设值 = 本服务启动引导值；只声明真正消费的项）
-    { "key": "max_mb", "default": "32" },                                    // 普通项：值由中心保管
+    { "key": "max_mb", "default": "32",                                      // 普通项：值由中心保管
+      "label": "单张图片大小上限", "kind": "number", "unit": "MB" },          // 人话元数据（可选）：怎么显示、用什么控件
     { "key": "llm.key", "secret": true, "set": false },                      // 秘密项：值由服务自己持有
     { "key": "addr", "default": "127.0.0.1:9101", "readonly": true }         // 只读项：启动参数带起来的
   ]
@@ -192,6 +193,19 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 
 - `provides[].input/output` 是**给人看的宽松描述**，不是 JSON Schema。
   精确的字段形状由协议包里的载荷类型定义（`protocol/payloads.go`）。
+- `settings[]` 的**人话元数据**全部可选——服务不给，面板就退回"键名 + 文本框"：
+
+| 字段 | 用途 |
+| ---- | ---- |
+| `label` | 中文名。面板优先取语言包 `setting.<service>.<key>.label`，再回落这里 |
+| `hint` | 一句话说明：改它会发生什么、留空意味着什么 |
+| `kind` | 控件类型：`bool` / `enum` / `number` / `text` / `textarea` / `service` / `optional-service`（缺省 `text`） |
+| `options` | `enum` 的候选**原值**；标签走语言包 `setting.<service>.<key>.opt.<value>`，缺了就显示原值 |
+| `unit` | `number` 的单位**符号**：`ms` / `MB` / `KB` / `chars` / `count`。面板翻成人话并在值旁给读法（`300000 ms → ≈ 5 分钟`）；服务收到的仍是原始数值 |
+
+`service` 表示值是一个服务名：面板从名册里列候选，但**名册只是候选，校验权仍在服务**
+（名册里没有的名字照样提交，服务自己拒）。`optional-service` 表示该项可以"没有"
+（清空 = 关闭这项能力），面板画成「开关 + 选择」，关掉提交空串、打开回落声明预设。
 - `settings[]` 声明“可设置项 + 预设值”（线路字段名沿用 `default`；预设值 = 服务自己给的引导值，可在重启后变化）。设置中心保管并提供动作：
 
 | 动作（jump 到 `settings-center`） | 输入 | 输出 |
@@ -250,6 +264,67 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 - **秘密项 `value` 恒空**：只回 `set`（服务侧有没有值），值永远不上线。
 - `seq` 服务内单调递增：中心丢弃比已记下更小的旧报（回传与补报的到达顺序都不保证）。
 - 服务侧实际值是**运行时态**：不落盘（中心重启后为空，等服务下次回传或注册对齐）。
+
+### 7.3 会话记录：对话 + 过程轨迹（已实现）
+
+记忆服务（memory）保管的不只是"用户说了什么 / 智能体答了什么"：
+
+| `kind` | 内容 | 谁写 |
+| ---- | ---- | ---- |
+| `user` / `assistant` | 对话本身 | reasoner（链入口 / 交付成功后） |
+| `reasoning` | 模型这一轮的思考（`reasoning_content`） | reasoner（每轮有思考就记一条） |
+| `tool_call` | 工具调用（shell 类工具直接给出 `command`） | reasoner（派发时，**执行前**落库） |
+| `tool_result` | 工具输出（异步工具取**终态补报**的文本，不是"已排队"回执） | reasoner（结果入账时） |
+
+- **只有 `user` / `assistant` 进 LLM 上下文**（`recall` 的 `Recent` 过滤）：思考回灌纯浪费，
+  工具结果缺少配对的 `tool_calls` 会被上游直接拒。轨迹是**给人看**的。
+- **`seq` 由写入方给**（微秒时间戳，跨重启仍递增）：`Fire` 是 goroutine，落地顺序不保证，
+  `seq` 保证"命令在输出之前"这种真实先后；门户也用它去重。**不能超过 2^53**——
+  它要经 JSON 到浏览器，纳秒级会被 JS 的 number 抹平，相邻记录可能撞成同一个数。
+- 单条上限 8000 字符，超出标 `meta.truncated = true` + `full_chars`（终端输出上限是 256KB，原样存会撑爆库和界面）。
+- 对话消息仍幂等去重（连续完全相同 = 重复交付）；**事件类记录不去重**——连跑两条一样的命令是两件事。
+- 老库平滑升级：`kind` / `meta` / `seq` 三列按需 `ALTER TABLE`，老数据 `kind` 按 `role` 推断、`seq` 用主键回填。
+
+| 动作（jump 到 `memory`） | 输入 | 输出 |
+| ---- | ---- | ---- |
+| `store` | `{conversation_id, role, content, kind?, meta?, seq?}` | `{}`（尽力落库；失败只记日志） |
+| `history` | `{conversation_id, limit?, after_seq?}` | `{conversation_id, messages:[{id, seq, role, kind, content, meta, at}]}` |
+
+- `after_seq` 是**增量拉取**：只回序号更大的记录（门户重连/回填不必每次全量重来）。
+- **实况推送**：reasoner 在落库的同时，若入口方（boss）在 `provides` 里声明了 `progress`，
+  就推一条 `{conversation_id, seq, kind, content, meta, at}`——界面进行中就能看见思考与命令，
+  不必等最终答复。**没声明的不推**（QQ 之类），否则对方只会回 unknown action。
+  记忆是真相，`progress` 只是"别等最后才看见"：丢一条不影响历史。
+
+### 7.4 任务：agent 在任务里工作（已实现）
+
+任务是**一段有名字、有始有终的工作**，会话记录挂在任务下；历史列表的标题就是任务名。
+
+| 动作（jump 到 `memory`） | 输入 | 输出 |
+| ---- | ---- | ---- |
+| `task_current` | `{conversation_id}` | `{task?}`（最近活跃的 active 任务；没有就是空） |
+| `task_open` | `{conversation_id, name}` | `{task}` |
+| `task_rename` | `{task_id, name}` | `{task}` |
+| `task_finish` | `{task_id, name?}` | `{task}`（status=done，之后只读） |
+| `task_resume` | `{task_id}` | `{task, messages[]}`（把未完结任务顶成当前，记录一并带走） |
+| `task_list` | `{conversation_id, limit?}` | `{tasks[]}`（最近活跃在前） |
+
+- **没有任务必须创建**：`recall` 里先 `EnsureTask`——当前没有 active 任务就以这次用户消息命名建一个，
+  随 `resume` 带回 reasoner。拿不到任务，这一轮不该开工。
+- **一个会话最多一个 active 任务**：靠 SQLite 部分唯一索引
+  `CREATE UNIQUE INDEX ... ON tasks(conversation_id) WHERE status='active'` 保证；
+  并发下建不上的那一方回头读现有的那个（任务不会分叉）。
+- **完成判定权在 reasoner**：内置工具 `task_status{status: done|continue, title?, note?}`，
+  收尾门禁要求交付前必须调用一次（没判就催一轮，最多两次；两次都不判按 continue 记账）。
+  `done` → `task_finish`（顺带用 `title` 把任务名改准）；`continue` → `task_rename`（任务保持进行中）。
+- **完结 = 不再续**：已完结任务不接受继续（`task_resume` 明确拒绝）。但它的记录还在会话里：
+  门户按**任务分节**连续展示整段会话，侧栏是"会话 → 任务"的目录，点任务只是跳到那一段（不切换视图、不过滤）。
+  **未完结 = 可恢复**：它的记录都还在（`task_id` 一列），点开就回到那一段继续。
+- **记录归属**：`store` 带 `task_id`；没带时——`user` 记录会触发 `EnsureTask`，
+  其他记录（答复/轨迹）挂到**最近一个任务**上，绝不拿它们的内容当任务名。
+- **LLM 上下文按任务取**：`recall` 只取当前任务的对话消息（`Recent(..., taskID)`），换任务即换上下文。
+- **老数据**：迁移时每个会话补一个已完结的「历史记录」任务，旧消息全部挂上去（不丢历史）。
+- 任务现在**只存事实**（名字/状态/归属），不解释语义。要独立成服务时，把 `tasks` 表与这六个动作整体搬走即可。
 
 
 - **错误上报（已实现·留接口）**：服务把错误上报给中心（`report`）——中心记一条日志并交给 `OnReport`

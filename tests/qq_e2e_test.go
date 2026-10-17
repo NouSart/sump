@@ -247,8 +247,9 @@ func TestQQFullChainE2E(t *testing.T) {
 	}
 
 	// 假 DeepSeek 收到的请求应含内联图片（多模态 content 数组）。
-	if fakeLLM.Calls() != 1 {
-		t.Fatalf("假 DeepSeek 调用次数 = %d, want 1", fakeLLM.Calls())
+	// 假 DeepSeek 收到两次调用：先 task_status 判定任务（收尾门禁），再给答复。
+	if fakeLLM.Calls() != 2 {
+		t.Fatalf("假 DeepSeek 调用次数 = %d, want 2", fakeLLM.Calls())
 	}
 	reqs := fakeLLM.Requests()
 	msgs, _ := reqs[0]["messages"].([]any)

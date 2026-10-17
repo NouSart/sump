@@ -1,56 +1,72 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
-import { decideApproval, fetchOverview, resetSetting, sendMessage, setSetting } from './api';
+import { decideApproval, fetchHistory, fetchOverview, fetchTasks, parseMeta, resetSetting, sendMessage, setSetting } from './api';
 import { PortalView } from './components/PortalView';
+import { IconChevronUp } from './components/icons';
 import { ServiceList } from './components/ServiceList';
-import { SettingsPanel } from './components/SettingsPanel';
+import { TaskList } from './components/TaskList';
+import { SettingsView } from './components/SettingsView';
+import { useLocalePack } from './i18n';
 import { Toasts, type Toast } from './components/Toasts';
-import { IconDark, IconLight, IconSettings } from './components/icons';
+import { useTimeTheme } from './timeTheme';
 import type {
   Overview,
   PendingApprovalView,
   PortalMessage,
+  ProgressEventView,
   RosterView,
   RowStatus,
   ServiceSettingsView,
   SettingsEventViewData,
+  TaskView,
   TimerView,
 } from './types';
 
 let toastSeq = 0;
 
-// 外观：DSH 的暗色是令牌级的 body[data-ds-dark-theme]，我们只切这一个属性，
-// 颜色全部由 --dsw-* 自动跟随，不另画一套色。首选项存本地，没有就用系统偏好。
-type Theme = 'light' | 'dark';
-const ThemeKey = 'sump.portal.theme';
-
-function initialTheme(): Theme {
-  const saved = window.localStorage.getItem(ThemeKey);
-  if (saved === 'light' || saved === 'dark') return saved;
-  // jsdom 没有 matchMedia，没有就按浅色
-  const prefersDark =
-    typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
-  return prefersDark ? 'dark' : 'light';
+// appendMessage 追加一条消息：
+//  - 有 seq（落库过的记录）就按 seq 去重与插入——实时推送与历史回填可能同时到，seq 是同一把尺子；
+//  - 没有 seq（本地回显的用户消息、deliver 送来的答复）就按"上一条同角色同文本"跳过。
+function appendMessage(prev: PortalMessage[], m: PortalMessage): PortalMessage[] {
+  const seq = m.seq ?? 0;
+  if (seq > 0) {
+    if (prev.some((p) => p.seq === seq)) return prev;
+    // 乱序到达（progress 是并发发出的）：插到第一个更大 seq 之前，而不是无脑追加。
+    const at = prev.findIndex((p) => (p.seq ?? 0) > seq);
+    if (at >= 0) return [...prev.slice(0, at), m, ...prev.slice(at)];
+    return [...prev, m];
+  }
+  const last = prev[prev.length - 1];
+  if (last !== undefined && last.author === m.author && last.text === m.text) return prev;
+  return [...prev, m];
 }
 
-export function App() {
-  const [overview, setOverview] = useState<Overview | null>(null);
+// mergeMessages 把历史接在实时消息前面，并压掉交界处的相邻重复（同样只压相邻）。
+function mergeMessages(history: PortalMessage[], live: PortalMessage[]): PortalMessage[] {
+  let out: PortalMessage[] = [];
+  for (const m of [...history, ...live]) out = appendMessage(out, m);
+  return out;
+}
+
+export function App() {  const [overview, setOverview] = useState<Overview | null>(null);
   const [roster, setRoster] = useState<RosterView | null>(null);
   const [connected, setConnected] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  // 用户是否亲手点过服务项：点过就尊重选择；没点过则每次进设置都回门户。
+  const selectedByUserRef = useRef(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [theme, setTheme] = useState<Theme>(initialTheme);
-
-  useEffect(() => {
-    if (theme === 'dark') document.body.dataset.dsDarkTheme = '';
-    else delete document.body.dataset.dsDarkTheme;
-    window.localStorage.setItem(ThemeKey, theme);
-  }, [theme]);
+  // 整站配色（底色 / 光斑 / 强调色 / 深浅面板）跟随本地时间；设置页只保留跟随开关与时段滑块。
+  const timeTheme = useTimeTheme();
   const [rowStates, setRowStates] = useState<Record<string, RowStatus>>({});
-  // 视图：门户（默认，主体）与设置（从侧栏底部进入的独立页）。
-  const [view, setView] = useState<'portal' | 'settings'>('portal');
+  // 视图：对话是主体；设置是右侧抽屉（从输入框的「设置」进入）。
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // 侧栏收起＝向上塌成一条（草图里的 ↑ 收起按钮），不是缩成竖轨：
+  // 收起后字标留在顶上、对话区接管整幅宽度。
+  const [collapsed, setCollapsed] = useState(false);
+  // 语言包：界面文案全部走它，切语言即时生效（不重启服务）。
+  const { locale, locales, setLocale, t } = useLocalePack();
   const [messages, setMessages] = useState<PortalMessage[]>([]);
+  const [tasks, setTasks] = useState<TaskView[]>([]);
   const [timers, setTimers] = useState<TimerView[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
   const [portalError, setPortalError] = useState<string | null>(null);
@@ -110,11 +126,11 @@ export function App() {
             delete next[k];
             return next;
           });
-          if (wasPending) pushToast('ok', `已生效 ${k}${r.value ? ` = ${r.value}` : ''}`);
+          if (wasPending) pushToast('ok', `${t('ui.app.applied', '已生效')} ${k}${r.value ? ` = ${r.value}` : ''}`);
         } else {
           const reason = r.error ?? '未送达';
           setRowStates((prev) => ({ ...prev, [k]: { state: 'failed', error: reason } }));
-          if (wasPending) pushToast('error', `未生效 ${k}：${reason}`);
+          if (wasPending) pushToast('error', `${t('ui.app.notApplied', '未生效')} ${k}：${reason}`);
         }
       }
       void loadRef.current();
@@ -151,8 +167,31 @@ export function App() {
     });
     // 门户投递：智能体经 deliver 送来的消息，落到对话里。
     es.addEventListener('deliver', (ev) => {
-      const d = JSON.parse((ev as MessageEvent).data) as { text: string; at: string };
-      setMessages((prev) => [...prev, { author: 'agent', text: d.text, at: d.at }]);
+      const d = JSON.parse((ev as MessageEvent).data) as { text: string; taskId?: string; at: string };
+      setMessages((prev) =>
+        appendMessage(prev, { author: 'agent', kind: 'assistant', text: d.text, at: d.at, taskId: d.taskId ?? '' }),
+      );
+      // 答复到了：任务名/状态可能刚被判定改过，顺手对齐一次（失败不影响对话）。
+      void fetchTasks()
+        .then(setTasks)
+        .catch(() => undefined);
+    });
+    // 任务实况：思考 / 终端命令 / 终端输出——进行中就画出来，不必等最终答复。
+    es.addEventListener('progress', (ev) => {
+      const d = JSON.parse((ev as MessageEvent).data) as ProgressEventView;
+      const kind = d.kind;
+      if (kind !== 'reasoning' && kind !== 'tool_call' && kind !== 'tool_result') return;
+      setMessages((prev) =>
+        appendMessage(prev, {
+          author: 'agent',
+          kind,
+          text: d.content,
+          at: d.at,
+          seq: d.seq,
+          taskId: d.taskId,
+          meta: parseMeta(d.meta),
+        }),
+      );
     });
     // 计时快照：timer 受理/到点/撤销后推来的**全量列表**（不是增量），直接覆盖。
     es.addEventListener('timers', (ev) => {
@@ -165,16 +204,31 @@ export function App() {
     return () => es.close();
   }, []);
 
-  const services = useMemo(() => roster?.services ?? [], [roster]);
+  const portalName = overview?.self.name ?? null;
+  // 门户排在最上面：它承载自己的外观设置，也方便用户一进来就改主题。
+  // 名册还没到（或中心断线）时，用 overview.self 补一条，保证门户页仍可进入。
+  const services = useMemo(() => {
+    const list = roster?.services ?? [];
+    if (portalName === null) return list;
+    const portal = list.find((s) => s.name === portalName);
+    const rest = list.filter((s) => s.name !== portalName);
+    return [portal ?? { name: portalName, addr: overview?.self.ws ?? '' }, ...rest];
+  }, [roster, portalName, overview?.self.ws]);
 
   useEffect(() => {
     if (services.length === 0) {
       setSelected(null);
       return;
     }
-    if (selected !== null && services.some((s) => s.name === selected)) return;
-    setSelected(services[0]?.name ?? null);
-  }, [services, selected]);
+    // 未手动选过时始终回门户；名册先到、overview 后到时也不会被“审批”占住默认页。
+    setSelected((current) => {
+      if (selectedByUserRef.current && current !== null && services.some((s) => s.name === current)) {
+        return current;
+      }
+      const portal = portalName !== null && services.some((s) => s.name === portalName) ? portalName : null;
+      return portal ?? services[0]?.name ?? null;
+    });
+  }, [services, portalName]);
 
   const selectedService = useMemo(() => services.find((s) => s.name === selected) ?? null, [services, selected]);
   const selectedSettings = useMemo(() => {
@@ -216,7 +270,7 @@ export function App() {
           delete next[k];
           return next;
         });
-        pushToast('error', `写入失败：${(err as Error).message}`);
+        pushToast('error', `${t('ui.app.writeFailed', '写入失败：')}${(err as Error).message}`);
         throw err;
       }
     },
@@ -251,15 +305,70 @@ export function App() {
     [overview],
   );
 
-  const onSend = useCallback(async (text: string) => {
-    setPortalError(null);
-    // 本地先回显（受理回执只说明消息已交给 reasoner，不代表已有回复）。
-    setMessages((prev) => [...prev, { author: 'user', text, at: new Date().toISOString() }]);
-    try {
-      await sendMessage(text);
-    } catch (err) {
-      setPortalError(`未送达：${(err as Error).message}`);
-    }
+  // ---------- 任务 ----------
+  // 面板按**会话**来：整段会话一次拉全（按任务分段），任务只是会话里的分节。
+  // 侧栏的树是"会话 → 任务"，点任务 = 跳到那一段（不切换视图、不过滤）。
+  const taskIdsWithRecords = useMemo(() => new Set(messages.map((m) => m.taskId ?? '')), [messages]);
+
+  // 用"临时关掉平滑滚动 + 直接写 scrollTop"落位而不是 scrollIntoView：容器是 scroll-behavior:smooth，
+  // 跨几千像素的平滑滚动又慢又容易被打断；跳转要的是"立刻到那"，再用一下高亮说明落在哪一段。
+  const jumpToTask = useCallback((taskId: string) => {
+    const el = document.getElementById(`task-${taskId}`);
+    const list = el?.closest('.portal-list');
+    if (el === null || !(list instanceof HTMLElement)) return;
+    const behavior = list.style.scrollBehavior;
+    list.style.scrollBehavior = 'auto';
+    list.scrollTop += el.getBoundingClientRect().top - list.getBoundingClientRect().top - 12;
+    list.style.scrollBehavior = behavior;
+    el.classList.remove('is-jump');
+    // 强制回流：同一段连点两次也要重新播放高亮
+    void el.offsetWidth;
+    el.classList.add('is-jump');
+    window.setTimeout(() => {
+      el.classList.remove('is-jump');
+    }, 1400);
+  }, []);
+
+  // onSend：消息永远发进"当前任务"——进行中就直接续，没有进行中的就由记忆服务新开一个。
+  const onSend = useCallback(
+    async (text: string) => {
+      setPortalError(null);
+      // 本地先回显（受理回执只说明消息已交给 reasoner，不代表已有回复）。
+      const at = new Date().toISOString();
+      const active = tasks.find((x) => x.status === 'active') ?? null;
+      setMessages((prev) =>
+        appendMessage(prev, { author: 'user', text, at, taskId: active?.id ?? '', seq: undefined }),
+      );
+      try {
+        await sendMessage(text);
+      } catch (err) {
+        setPortalError(`${t('ui.app.undelivered', '未送达：')}${(err as Error).message}`);
+        return;
+      }
+      // 新任务可能刚被创建：刷新一次任务列表（记录由 reasoner 落库，稍后才到）。
+      void fetchTasks()
+        .then(setTasks)
+        .catch(() => undefined);
+    },
+    [tasks, t],
+  );
+  // 首屏：一次拉全"任务清单 + 整段会话"——面板按会话展示，任务只是里面的分节。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [list, history] = await Promise.all([fetchTasks(), fetchHistory(300, 0, '', true)]);
+        if (cancelled) return;
+        setTasks(list);
+        if (history.length > 0) setMessages(mergeMessages(history, []));
+      } catch (err) {
+        if (!cancelled) setPortalError(`${t('ui.app.historyFailed', '历史未取回：')}${(err as Error).message}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // ?????t ?????????????????????????????
   }, []);
 
   // onDecide：把用户的裁决送回 approval。成功后由 SSE 的 approvals 事件把卡片删掉
@@ -269,82 +378,110 @@ export function App() {
     try {
       await decideApproval(itemId, decision);
     } catch (err) {
-      setPortalError(`裁决未送达：${(err as Error).message}`);
+      setPortalError(`${t('ui.app.decisionFailed', '裁决未送达：')}${(err as Error).message}`);
     }
   }, []);
 
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          SUMP
-          <span className="brand-sub">门户</span>
-        </div>
-        <div className="side-status">
-          <span
-            className={connected ? 'status status-on' : 'status status-off'}
-            title={overview ? `设置中心 ${overview.center}` : '设置中心'}
-          >
-            <span className="status-dot" aria-hidden="true" />
-            {connected ? '已连接' : '未连接'}
-          </span>
-        </div>
-        {/* 侧栏底部：外观开关 + 设置入口（设置入口与 DSH 的设置页同一位置）。 */}
-        <div className="side-foot">
-          <div
-            className="theme-switch"
-            role="radiogroup"
-            aria-label="外观"
-            style={{ '--dsh-segment-count': 2, '--dsh-segment-index': theme === 'dark' ? 1 : 0 } as CSSProperties}
-          >
-            <span className="theme-indicator" aria-hidden="true" />
+    <div className="app" data-collapsed={collapsed ? '1' : undefined}>
+      <div className="aurora" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </div>
+
+      {/* 字标与连接点挂在壳上（见 styles.css 里定死的坐标）：侧栏展开/收起、
+          设置抽屉、终端都动不了它们的位置。 */}
+      <span className="brand">SUMP</span>
+      {!collapsed && (
+        <span
+          className={connected ? 'dot dot-on' : 'dot dot-off'}
+          role="img"
+          aria-label={connected ? t('ui.app.connected', '已连接设置中心') : t('ui.app.disconnected', '未连接设置中心')}
+          title={
+            overview
+              ? `${t('ui.settings.title', '设置')} ${overview.center} · ${connected ? t('ui.app.on', '已连接') : t('ui.app.off', '未连接')}`
+              : t('ui.settings.title', '设置')
+          }
+        />
+      )}
+
+      {collapsed ? (
+        <button
+          type="button"
+          className="sidebar sidebar-bar"
+          aria-expanded={false}
+          aria-label={t('ui.app.expand', '展开侧栏')}
+          title={t('ui.app.expand', '展开侧栏')}
+          onClick={() => {
+            setCollapsed(false);
+          }}
+        />
+      ) : (
+        <aside className="sidebar">
+          <div className="brand-slot" aria-hidden="true" />
+          {settingsOpen ? (
+            <nav className="threads" aria-label={t('ui.settings.servicesNav', '服务列表')}>
+              <p className="section-label">{t('ui.settings.services', '服务')} · {services.length}</p>
+              <ServiceList
+                services={services}
+                selected={selected}
+                onSelect={(name) => {
+                  selectedByUserRef.current = true;
+                  setSelected(name);
+                }}
+                settingsCountOf={settingsCountOf}
+                t={t}
+              />
+            </nav>
+          ) : (
+            <TaskList tasks={tasks} jumps={taskIdsWithRecords} onJump={jumpToTask} t={t} />
+          )}
+          <div className="me">
+            <span className="avatar" aria-hidden="true">{t('ui.me.avatar', '我')}</span>
+            <span className="me-name">{t('ui.me.name', '本机用户')}</span>
             <button
               type="button"
-              role="radio"
-              aria-checked={theme === 'light'}
-              className="theme-tab"
+              className="icon-btn"
+              aria-expanded={true}
+              aria-label={t('ui.app.collapse', '收起侧栏')}
+              title={t('ui.app.collapse', '收起侧栏')}
               onClick={() => {
-                setTheme('light');
+                setCollapsed(true);
               }}
             >
-              <IconLight />
-              浅色
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={theme === 'dark'}
-              className="theme-tab"
-              onClick={() => {
-                setTheme('dark');
-              }}
-            >
-              <IconDark />
-              深色
+              <IconChevronUp />
             </button>
           </div>
-          <button
-            type="button"
-            className="side-row"
-            aria-current={view === 'settings' ? 'page' : undefined}
-            onClick={() => {
-              setView('settings');
-            }}
-          >
-            <IconSettings />
-            设置
-          </button>
-        </div>
-      </aside>
+        </aside>
+      )}
 
-      <main className="content">
+      <main className="stage">
         {loadError && (
           <p className="inline-error" role="alert">
-            加载失败：{loadError}
+            {t('ui.app.loadFailed', '加载失败：')}{loadError}
           </p>
         )}
-
-        {view === 'portal' ? (
+        {settingsOpen ? (
+          <SettingsView
+            timeTheme={timeTheme}
+            portalName={portalName}
+            onClose={() => {
+              setSettingsOpen(false);
+            }}
+            service={selectedService}
+            settings={selectedSettings}
+            peers={services.map((s) => s.name)}
+            connected={connected}
+            statusOf={(service, key) => rowStates[`${service}.${key}`]}
+            onSave={onSave}
+            onReset={onReset}
+            locale={locale}
+            locales={locales}
+            onLocale={setLocale}
+            t={t}
+          />
+        ) : (
           <PortalView
             connected={connected}
             messages={messages}
@@ -353,40 +490,15 @@ export function App() {
             onDecide={onDecide}
             error={portalError}
             onSend={onSend}
+            onOpenSettings={() => {
+              // 每次进设置页都回门户默认页（除非之后在页内亲手点了别的服务）。
+              selectedByUserRef.current = false;
+              if (portalName !== null) setSelected(portalName);
+              setSettingsOpen(true);
+            }}
+            tasks={tasks}
+            t={t}
           />
-        ) : (
-          <section className="settings-page" aria-label="设置">
-            <header className="page-head">
-              <h1>设置</h1>
-              <button
-                type="button"
-                className="page-close"
-                onClick={() => {
-                  setView('portal');
-                }}
-              >
-                关闭
-              </button>
-            </header>
-            <div className="settings-body">
-              <nav aria-label="服务列表">
-                <p className="section-label">服务 · {services.length}</p>
-                <ServiceList services={services} selected={selected} onSelect={setSelected} settingsCountOf={settingsCountOf} />
-              </nav>
-              <div className="settings-content">
-                <SettingsPanel
-                  service={selectedService}
-                  settings={selectedSettings}
-                  connected={connected}
-                  index={svcIndex}
-                  total={services.length}
-                  statusOf={(service, key) => rowStates[`${service}.${key}`]}
-                  onSave={onSave}
-                  onReset={onReset}
-                />
-              </div>
-            </div>
-          </section>
         )}
       </main>
 

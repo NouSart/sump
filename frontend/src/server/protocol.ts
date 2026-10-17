@@ -25,11 +25,20 @@ export interface Setting {
   key: string;
   default?: string;
   readonly?: boolean;
+  secret?: boolean;
+  set?: boolean;
+  /** 给**人**看的部分（可选）：中文名、说明、控件类型、枚举候选、数字单位。 */
+  label?: string;
+  hint?: string;
+  kind?: string;
+  options?: string[];
+  unit?: string;
 }
 
 export interface RegisterPayload {
   name: string;
   addr: string;
+  title?: string;
   description?: string;
   provides?: Provide[];
   settings?: Setting[];
@@ -39,6 +48,7 @@ export interface RegisterPayload {
 export interface ServiceCard {
   name: string;
   addr: string;
+  title?: string;
   description?: string;
   provides?: Provide[];
   heartbeat_ms?: number;
@@ -84,6 +94,10 @@ export interface SettingView {
   readonly?: boolean;
   actual?: string;
   reported?: boolean;
+  label?: string;
+  hint?: string;
+  kind?: string;
+  options?: string[];
 }
 
 export interface ServiceSettings {

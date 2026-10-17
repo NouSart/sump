@@ -59,6 +59,8 @@ type Server struct {
 	entryMu sync.Mutex        // 会话入口表锁（交付失败时往哪补一条）
 	entries map[string]string // 会话 → 入口服务名（user_message 的 from）
 
+	memSeq int64 // 会话记录的单调序号（atomic）：并发写（Fire 是 goroutine）也按真实先后落库
+
 	setMu   sync.Mutex    // 运行时可设项锁（设置下发 / 拉取即时生效）
 	notify  string        // 工具结果通知模式（each / batch）
 	conc    int           // 单会话工具并发上限（-1 = 不限制）
@@ -108,6 +110,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
+		Title:             "对话",
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
@@ -127,7 +130,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		}
 		s.setNotifyMode(v)
 		return nil
-	})
+	}, service.Label("工具调用的提示方式"),
+		service.Hint("工具跑完要不要马上告诉你"),
+		service.As("enum", "each", "batch"))
 	s.HandleSetting("tool.concurrency", strconv.Itoa(cfg.ToolConcurrency), func(v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || (n != -1 && n < 1) {
@@ -135,7 +140,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		}
 		s.setToolConcurrency(n)
 		return nil
-	})
+	}, service.Label("同时跑几个工具"),
+		service.Hint("填 -1 表示不限制；填太大会同时压很多请求"),
+		service.As("number"),
+		service.Unit("count"))
 	s.HandleSetting("tool.timeout_ms", strconv.FormatInt(cfg.ToolTimeout.Milliseconds(), 10), func(v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1000 {
@@ -143,7 +151,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		}
 		s.setToolTimeout(time.Duration(n) * time.Millisecond)
 		return nil
-	})
+	}, service.Label("单次工具调用超时"),
+		service.Hint("到点还没回来就算这次失败"),
+		service.As("number"),
+		service.Unit("ms"))
 	// 推理侧可热改项：LLM 三件套 + 记忆 / 图片服务名（预设 = main.go 的启动 flag）。
 	s.HandleSetting("llm.base", cfg.LLMBase, func(v string) error {
 		if strings.TrimSpace(v) == "" {
@@ -151,34 +162,44 @@ func New(cfg Config, logger *log.Logger) *Server {
 		}
 		s.setLLMBase(v)
 		return nil
-	})
+	}, service.Label("模型接口地址"),
+		service.Hint("OpenAI 兼容的 base URL，例如 https://api.deepseek.com"),
+		service.As("text"))
 	s.HandleSetting("llm.model", cfg.LLMModel, func(v string) error {
 		if strings.TrimSpace(v) == "" {
 			return errors.New("不接受空模型名")
 		}
 		s.setLLMModel(v)
 		return nil
-	})
+	}, service.Label("用哪个模型"),
+		service.Hint("模型名要和上面的接口匹配，例如 deepseek-flash"),
+		service.As("text"))
 	s.HandleSetting("memory", cfg.Memory, func(v string) error {
 		if strings.TrimSpace(v) == "" {
 			return errors.New("不接受空服务名")
 		}
 		s.setMemoryName(v)
 		return nil
-	})
+	}, service.Label("记忆服务名"),
+		service.Hint("对话历史与长期记忆交给哪个服务"),
+		service.As("service"))
 	s.HandleSetting("images", cfg.Images, func(v string) error {
 		if strings.TrimSpace(v) == "" {
 			return errors.New("不接受空服务名")
 		}
 		s.setImagesName(v)
 		return nil
-	})
+	}, service.Label("图片服务名"),
+		service.Hint("需要看图时交给哪个服务"),
+		service.As("service"))
 	// 秘密项：值不进中心（面板提交那一次由中心转发过来），由本服务自己落盘 / 加载（Config.SecretFile）。
 	applyKey := func(v string) error {
 		s.setLLMKey(v)
 		return nil
 	}
-	s.HandleSecret("llm.key", applyKey)
+	s.HandleSecret("llm.key", applyKey,
+		service.Label("模型 API Key"),
+		service.Hint("只在你自己这边保存，中心不落盘也不回显；换 key 直接覆盖"))
 	if cfg.LLMKey != "" {
 		// 启动参数（flag / 环境变量）给了 Key：与下发同路径先应用一次。
 		// 秘密文件里若有值，Start 加载时会覆盖（文件才是面板提交的最新状态）。

@@ -97,6 +97,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
+		Title:             "记忆",
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
@@ -104,6 +105,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Provides: []protocol.Provide{
 			{Action: "recall", Input: "任务上下文 {conversation_id, messages, boss}", Output: "受理回执；随后向调用方发送 resume（注入记忆后的上下文）"},
 			{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
+			{Action: "history", Input: "{conversation_id, limit}", Output: "{conversation_id, messages:[{role, content, at}]}（按时间正序；供界面回填，不做记忆组装）"},
 			{Action: "remember", Tool: true, Input: "长期记忆条目 {kind, content, priority?}（kind 如 偏好/身份/知识/事件；priority>0 = 核心记忆，每次对话都会带上）", Output: "{id, created}（同 kind+content 已有 active 条目时幂等跳过）"},
 		},
 		Logger: logger,
@@ -118,7 +120,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.historyLimit = n
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("每次带上多少条旧对话"),
+		service.Hint("每轮回答前，把最近这么多条对话一起交给模型；0 = 不带历史"),
+		service.As("number"),
+		service.Unit("count"))
 	s.HandleSetting("recall.core_limit", strconv.Itoa(defaultCoreLimit), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
@@ -128,7 +133,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.coreLimit = n
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("最多注入几条核心记忆"),
+		service.Hint("你在长期记忆里标成「核心」的条目，每次对话最多带几条"),
+		service.As("number"),
+		service.Unit("count"))
 	s.HandleSetting("recall.core_max_chars", strconv.Itoa(defaultCoreMaxChars), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
@@ -138,7 +146,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.coreMaxChars = n
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("核心记忆的总字数上限"),
+		service.Hint("核心记忆太多会挤占对话空间，这里卡一个总字数"),
+		service.As("number"),
+		service.Unit("chars"))
 	s.HandleSetting("recall.rel_limit", strconv.Itoa(defaultRelLimit), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
@@ -148,7 +159,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.relLimit = n
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("最多召回几条相关记忆"),
+		service.Hint("按语义相关度挑出来的长期记忆，最多带几条（不相关的不带）"),
+		service.As("number"),
+		service.Unit("count"))
 	s.HandleSetting("recall.rel_max_chars", strconv.Itoa(defaultRelMaxChars), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
@@ -158,16 +172,29 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.relMaxChars = n
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("相关记忆的总字数上限"),
+		service.Hint("相关记忆太多会挤占对话空间，这里卡一个总字数"),
+		service.As("number"),
+		service.Unit("chars"))
 	s.Handle("recall", s.actionRecall)
 	s.Handle("store", s.actionStore)
+	s.Handle("history", s.actionHistory)
 	s.Handle("remember", s.actionRemember)
 	s.Handle("forget", s.actionForget)
+	// 任务：会话的结构（agent 在任务里工作；没有任务就没有上下文可取）。
+	s.Handle("task_current", s.actionTaskCurrent)
+	s.Handle("task_open", s.actionTaskOpen)
+	s.Handle("task_finish", s.actionTaskFinish)
+	s.Handle("task_resume", s.actionTaskResume)
+	s.Handle("task_rename", s.actionTaskRename)
+	s.Handle("task_list", s.actionTaskList)
 	// embedding 服务名：热改（空 = 关闭语义召回，静默回落 bigram）。
 	s.HandleSetting("recall.embedding", cfg.Embedding, func(v string) error {
 		s.setEmbeddingName(strings.TrimSpace(v))
 		return nil
-	})
+	}, service.Label("用哪个服务算语义向量"),
+		service.Hint("关掉就退回关键词匹配——不花算力，但只认字面相近的记忆"),
+		service.As("optional-service"))
 	// 只读项：启动参数带起来的（换它要重启）。db 是库身份——运行中换库不做。
 	s.HandleReadOnly("db", cfg.DBPath)
 	s.HandleReadOnly("name", cfg.Name)
@@ -194,7 +221,9 @@ func (s *Server) limits() (history, core, coreChars, rel, relChars int) {
 
 // ---------- 动作 ----------
 
-// actionStore 记一条对话消息（幂等：与上一条完全相同时跳过）。
+// actionStore 记一条会话记录（对话消息幂等：与上一条完全相同时跳过）。
+// Kind 为空按 Role 推断；新类型（reasoning/tool_call/tool_result）不去重也不进 LLM 上下文。
+// 记录必须归属某个任务：调用方没给就归到当前进行中的任务（没有就现建一个）。
 func (s *Server) actionStore(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p protocol.StorePayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
@@ -207,10 +236,194 @@ func (s *Server) actionStore(_ context.Context, _ protocol.Envelope, in protocol
 	if cid == "" {
 		cid = "default"
 	}
-	if err := s.cfg.Store.Append(cid, p.Role, p.Content); err != nil {
+	taskID := p.TaskID
+	if taskID == "" {
+		if p.Kind == "" || p.Kind == "user" {
+			// 用户消息可以开新任务（"没有任务必须创建"）。
+			task, err := s.cfg.Store.EnsureTask(cid, taskNameFrom(p.Content))
+			if err != nil {
+				return nil, fmt.Errorf("任务解析失败: %w", err)
+			}
+			taskID = task.ID
+		} else if t, ok, err := s.cfg.Store.LatestTask(cid); err == nil && ok {
+			// 迟到的事件（答复 / 轨迹）没有任务归属：挂到最近那个任务上，绝不拿它当任务名新建。
+			taskID = t.ID
+		}
+	}
+	if err := s.cfg.Store.Record(cid, p.Role, p.Content, p.Kind, p.Meta, p.Seq, taskID); err != nil {
 		return nil, fmt.Errorf("落库失败: %w", err)
 	}
+	if err := s.cfg.Store.TouchTask(taskID); err != nil {
+		s.logger.Printf("刷新任务活跃时间失败: %v", err)
+	}
 	return map[string]any{}, nil
+}
+
+// taskNameFrom 从一条用户消息里取任务名：第一行、压掉空白、截到 24 个字。
+// 模型之后可以用 task_status 的 title 把它改准。
+func taskNameFrom(text string) string {
+	line := strings.TrimSpace(strings.SplitN(text, "\n", 2)[0])
+	line = strings.Join(strings.Fields(line), " ")
+	runes := []rune(line)
+	if len(runes) > 24 {
+		return string(runes[:24]) + "…"
+	}
+	if line == "" {
+		return "未命名任务"
+	}
+	return line
+}
+
+// actionHistory 把某会话最近的记录原样交还（界面回填用：不做记忆组装、不碰长期记忆、不改上下文）。
+// TaskID 为空时给"当前任务"的记录；连进行中的任务都没有时退回最近一个任务。
+func (s *Server) actionHistory(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.HistoryPayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	cid := p.ConversationID
+	if cid == "" {
+		cid = "default"
+	}
+	taskID := p.TaskID
+	if p.AllTasks {
+		// 整段会话（按任务分段的视图要的就是这个）：不做任务过滤。
+		taskID = ""
+	} else if taskID == "" {
+		if t, ok, err := s.cfg.Store.CurrentTask(cid); err != nil {
+			return nil, fmt.Errorf("查询任务失败: %w", err)
+		} else if ok {
+			taskID = t.ID
+		} else if t, ok, err := s.cfg.Store.LatestTask(cid); err != nil {
+			return nil, fmt.Errorf("查询任务失败: %w", err)
+		} else if ok {
+			taskID = t.ID
+		}
+	}
+	msgs, err := s.cfg.Store.History(cid, p.Limit, p.AfterSeq, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("查询历史失败: %w", err)
+	}
+	return protocol.HistoryResult{ConversationID: cid, Messages: msgs}, nil
+}
+
+// ---------- 任务 ----------
+
+// actionTaskCurrent 取当前任务（没有就返回 nil——调用方据此决定要不要建）。
+func (s *Server) actionTaskCurrent(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.TaskCurrentPayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	cid := p.ConversationID
+	if cid == "" {
+		cid = "default"
+	}
+	t, ok, err := s.cfg.Store.CurrentTask(cid)
+	if err != nil {
+		return nil, fmt.Errorf("查询当前任务失败: %w", err)
+	}
+	if !ok {
+		return protocol.TaskResult{}, nil
+	}
+	return protocol.TaskResult{Task: &t}, nil
+}
+
+// actionTaskOpen 新开一个进行中的任务。
+func (s *Server) actionTaskOpen(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.TaskOpenPayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	cid := p.ConversationID
+	if cid == "" {
+		cid = "default"
+	}
+	t, err := s.cfg.Store.OpenTask(cid, p.Name)
+	if err != nil {
+		return nil, fmt.Errorf("新建任务失败: %w", err)
+	}
+	s.logger.Printf("任务新建: %s「%s」", t.ID, t.Name)
+	return protocol.TaskResult{Task: &t}, nil
+}
+
+// actionTaskFinish 完结任务（判定权在 reasoner，这里只记账）。
+func (s *Server) actionTaskFinish(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.TaskFinishPayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	if p.TaskID == "" {
+		return nil, errors.New("task_finish: task_id 必填")
+	}
+	t, err := s.cfg.Store.FinishTask(p.TaskID, p.Name)
+	if err != nil {
+		return nil, fmt.Errorf("完结任务失败: %w", err)
+	}
+	s.logger.Printf("任务完结: %s「%s」", t.ID, t.Name)
+	return protocol.TaskResult{Task: &t}, nil
+}
+
+// actionTaskResume 恢复一个未完结任务：顶成当前任务，并把它这一段的记录一并带走。
+func (s *Server) actionTaskResume(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.TaskResumePayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	if p.TaskID == "" {
+		return nil, errors.New("task_resume: task_id 必填")
+	}
+	t, err := s.cfg.Store.TaskByID(p.TaskID)
+	if err != nil {
+		return nil, fmt.Errorf("任务不存在: %w", err)
+	}
+	if t.Status != store.TaskActive {
+		return nil, fmt.Errorf("任务「%s」已完结，只能看不能继续", t.Name)
+	}
+	t, err = s.cfg.Store.ResumeTask(t.ID)
+	if err != nil {
+		return nil, fmt.Errorf("恢复任务失败: %w", err)
+	}
+	msgs, err := s.cfg.Store.History(t.ConversationID, 200, 0, t.ID)
+	if err != nil {
+		return nil, fmt.Errorf("读取任务记录失败: %w", err)
+	}
+	s.logger.Printf("任务恢复: %s「%s」", t.ID, t.Name)
+	return protocol.TaskResumeResult{Task: t, Messages: msgs}, nil
+}
+
+// actionTaskRename 改任务名（判定时顺手把标题写准；不改状态）。
+func (s *Server) actionTaskRename(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.TaskRenamePayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	if p.TaskID == "" {
+		return nil, errors.New("task_rename: task_id 必填")
+	}
+	t, err := s.cfg.Store.RenameTask(p.TaskID, p.Name)
+	if err != nil {
+		return nil, fmt.Errorf("改任务名失败: %w", err)
+	}
+	s.logger.Printf("任务改名: %s「%s」", t.ID, t.Name)
+	return protocol.TaskResult{Task: &t}, nil
+}
+
+// actionTaskList 列出会话的任务（最近活跃在前）。
+func (s *Server) actionTaskList(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.TaskListPayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	cid := p.ConversationID
+	if cid == "" {
+		cid = "default"
+	}
+	tasks, err := s.cfg.Store.ListTasks(cid, p.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("查询任务列表失败: %w", err)
+	}
+	return protocol.TaskListResult{Tasks: tasks}, nil
 }
 
 // actionRemember 写一条长期记忆（内容重复时幂等跳过）；来源记调用方服务名。
@@ -286,7 +499,14 @@ func (s *Server) actionRecall(ctx context.Context, env protocol.Envelope, in pro
 
 	historyLimit, coreLimit, coreMaxChars, relLimit, relMaxChars := s.limits()
 
-	history, err := s.cfg.Store.Recent(cid, historyLimit)
+	// 任务：agent 必须在任务里工作——没有进行中的任务就地新建（名字取这次用户消息）。
+	// 拿不到任务就不往下走：宁可这一轮失败，也不要在"无主"的状态下开工。
+	task, err := s.cfg.Store.EnsureTask(cid, taskNameFrom(recallQuery(tc.Messages)))
+	if err != nil {
+		return nil, fmt.Errorf("任务解析失败: %w", err)
+	}
+
+	history, err := s.cfg.Store.Recent(cid, historyLimit, task.ID)
 	if err != nil {
 		return nil, fmt.Errorf("查询历史失败: %w", err)
 	}
@@ -323,6 +543,7 @@ func (s *Server) actionRecall(ctx context.Context, env protocol.Envelope, in pro
 		ConversationID: cid,
 		Messages:       final,
 		Boss:           tc.Boss,
+		Task:           &task,
 	}}); err != nil {
 		return nil, err
 	}

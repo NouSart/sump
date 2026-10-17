@@ -92,7 +92,7 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Portal != "" {
 		actionTimeout = cfg.ReviewTTL + 30*time.Second
 	}
-	s.Service = service.New(service.Config{Name: cfg.Name, Listen: cfg.Listen, Center: cfg.Center,
+	s.Service = service.New(service.Config{Name: cfg.Name, Title: "审批", Listen: cfg.Listen, Center: cfg.Center,
 		ActionTimeout: actionTimeout, Logger: cfg.Logger,
 		Description: "终端命令处理与审批：返回终端裁决和 LLM 反馈，由 shell 补报到模型；白名单直过，其余挂起等门户用户裁决",
 		Provides: []protocol.Provide{
@@ -102,7 +102,10 @@ func New(cfg Config) (*Server, error) {
 			{Action: "capabilities", Input: "{}", Output: "支持范围与第二层状态"},
 		},
 	})
-	s.HandleSetting("policy.json", cfg.PolicyJSON, s.engine.UpdatePolicy)
+	s.HandleSetting("policy.json", cfg.PolicyJSON, s.engine.UpdatePolicy,
+		service.Label("命令审批策略"),
+		service.Hint("JSON 策略：deny_commands 里的命令直接拒绝；rules 里列出的命令免审批直过；其余挂起等你在门户点批准"),
+		service.As("textarea"))
 	s.Handle(protocol.ApprovalAction, s.approve)
 	s.Handle(protocol.ApprovalDecideAction, s.decide)
 	s.Handle(protocol.ApprovalListAction, s.list)

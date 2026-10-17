@@ -4,13 +4,16 @@
 // 没有"总是允许"——那等于在面板里偷偷改白名单（规则归 approval 的 policy.json）。
 import { useState } from 'react';
 import type { PendingApprovalView } from '../types';
+import type { Translate } from '../i18n';
+import { IconCheck, IconClose } from './icons';
 
 interface Props {
+  t: Translate;
   items: PendingApprovalView[];
   onDecide: (itemId: string, decision: 'allow' | 'deny') => Promise<void>;
 }
 
-export function ApprovalStrip({ items, onDecide }: Props) {
+export function ApprovalStrip({ items, onDecide, t }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   if (items.length === 0) return null;
   const decide = async (itemId: string, decision: 'allow' | 'deny'): Promise<void> => {
@@ -22,39 +25,47 @@ export function ApprovalStrip({ items, onDecide }: Props) {
     }
   };
   return (
-    <section className="approvals" aria-label="待审命令">
-      <p className="approvals-head">待审命令 · {items.length}（命令不会执行，直到你点批准）</p>
+    <section className="approvals" aria-label={t('ui.approval.title', '待审命令')}>
+      <p className="approvals-head">
+        {t('ui.approval.title', '待审命令')} · {items.length}
+        {t('ui.approval.note', '（命令不会执行，直到你点批准）')}
+      </p>
       {items.map((it) => (
-        <article key={it.itemId} className="approval" aria-label={`待审 ${it.itemId}`}>
+        <article key={it.itemId} className="approval" aria-label={`${t('ui.approval.item', '待审')} ${it.itemId}`}>
           <pre className="approval-cmd">{it.command}</pre>
           <p className="approval-meta">
-            {it.summary !== '' ? it.summary : '白名单未覆盖'}
+            {it.summary !== '' ? it.summary : t('ui.approval.notCovered', '白名单未覆盖')}
             {it.reasonCode !== '' && <span className="approval-reason"> · {it.reasonCode}</span>}
           </p>
           <p className="approval-meta">
-            {it.workDir !== '' && <span>目录 {it.workDir} · </span>}
-            {it.requestedBy !== '' && <span>来自 {it.requestedBy}</span>}
+            {it.workDir !== '' && <span>{t('ui.approval.workDir', '目录')} {it.workDir} · </span>}
+            {it.requestedBy !== '' && <span>{t('ui.approval.from', '来自')} {it.requestedBy}</span>}
           </p>
           <div className="approval-actions">
             <button
               type="button"
-              className="btn sm"
+              className="btn sm icon"
+              aria-label={busy === it.itemId ? t('ui.approval.submitting', '提交中') : t('ui.approval.approve', '批准执行')}
+              aria-busy={busy === it.itemId}
+              title={t('ui.approval.approve', '批准执行')}
               disabled={busy !== null}
               onClick={() => {
                 void decide(it.itemId, 'allow');
               }}
             >
-              {busy === it.itemId ? '提交中…' : '批准执行'}
+              <IconCheck />
             </button>
             <button
               type="button"
-              className="btn sm ghost"
+              className="btn sm ghost icon"
+              aria-label={t('ui.approval.deny', '拒绝')}
+              title={t('ui.approval.deny', '拒绝')}
               disabled={busy !== null}
               onClick={() => {
                 void decide(it.itemId, 'deny');
               }}
             >
-              拒绝
+              <IconClose />
             </button>
           </div>
         </article>

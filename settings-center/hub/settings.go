@@ -145,13 +145,25 @@ func (s *Settings) PushItems(service string) []protocol.SettingView {
 }
 
 // sameSettings 比较两份设置声明（nil 与空视为相同）。
+// Options 是切片，所以逐字段比而不是整体比较（结构体已不再可比较）。
 func sameSettings(a, b []protocol.Setting) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		x, y := a[i], b[i]
+		if x.Key != y.Key || x.Default != y.Default || x.Secret != y.Secret ||
+			x.ReadOnly != y.ReadOnly || x.Set != y.Set ||
+			x.Label != y.Label || x.Hint != y.Hint || x.Kind != y.Kind || x.Unit != y.Unit {
 			return false
+		}
+		if len(x.Options) != len(y.Options) {
+			return false
+		}
+		for j := range x.Options {
+			if x.Options[j] != y.Options[j] {
+				return false
+			}
 		}
 	}
 	return true
@@ -328,27 +340,31 @@ func (s *Settings) viewLocked(service string) (protocol.ServiceSettings, bool) {
 	rep := s.reported[service]
 	views := make([]protocol.SettingView, 0, len(items))
 	for _, it := range items {
+		// 人话元数据跟着声明走（服务说它叫什么、怎么解释、用什么控件）。
+		human := protocol.SettingView{Label: it.Label, Hint: it.Hint, Kind: it.Kind, Options: it.Options, Unit: it.Unit}
 		switch {
 		case it.Secret:
-			views = append(views, protocol.SettingView{Key: it.Key, Secret: true, Set: it.Set})
+			v := human
+			v.Key, v.Secret, v.Set = it.Key, true, it.Set
+			views = append(views, v)
 		case it.ReadOnly:
 			rv, ok := rep[it.Key]
-			views = append(views, protocol.SettingView{
-				Key: it.Key, Value: it.Default, Default: it.Default, ReadOnly: true,
-				Actual: rv.value, Reported: ok,
-			})
+			v := human
+			v.Key, v.Value, v.Default, v.ReadOnly = it.Key, it.Default, it.Default, true
+			v.Actual, v.Reported = rv.value, ok
+			views = append(views, v)
 		default:
-			v := it.Default
+			v := human
+			value := it.Default
 			overridden := false
 			if got, ok := ov[it.Key]; ok {
-				v = got
+				value = got
 				overridden = true
 			}
 			rv, ok := rep[it.Key]
-			views = append(views, protocol.SettingView{
-				Key: it.Key, Value: v, Default: it.Default, Overridden: overridden,
-				Actual: rv.value, Reported: ok,
-			})
+			v.Key, v.Value, v.Default, v.Overridden = it.Key, value, it.Default, overridden
+			v.Actual, v.Reported = rv.value, ok
+			views = append(views, v)
 		}
 	}
 	return protocol.ServiceSettings{Service: service, Settings: views}, true

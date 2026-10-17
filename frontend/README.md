@@ -42,8 +42,8 @@ npm start            # 启动（需先 build）：node dist/server/index.js -add
 - `src/server/center.ts`：中心连接（注册 / 心跳 / 断线自愈 / 名册广播 / 调用的 `RemoteError` 区分）；
 - `src/server/portal.ts`：门户的会话身份、投递分发（WS → SSE）与浏览器信任栅栏；
 - `src/server/service.ts`：自己的 WS 端点（对外提供 `deliver`；其余动作一律 `unknown action` 回执——注册的地址必须真实可达）；
-- `src/server/api.ts`：HTTP 层（`/api/overview`、`/api/message`、`/api/settings/set|reset`、`/api/events` SSE——事件：`status` / `roster` / `settings` / `deliver`、静态托管；每个请求先过信任栅栏）；
-- `src/web/`：React 界面（版式：悬浮胶囊边栏；**主体是门户对话**，设置从侧栏底部一行进入、另起一页并自带服务导航 + 设置字段列表（纵排：键 + 状态标签 + 生效值 + 修改/重置，秘密项与只读项各有各的控件）；**视觉取自 DSH 设计系统**——见下；Fira Code 本地打包）。
+- `src/server/api.ts`：HTTP 层（`/api/overview`、`/api/message`、`/api/tasks`、`/api/tasks/resume`、`/api/history`、`/api/settings/set|reset`、`/api/events` SSE——事件：`status` / `roster` / `settings` / `deliver` / `progress` / `approvals` / `timer`、静态托管；每个请求先过信任栅栏）；
+- `src/web/`：React 界面（版式：悬浮胶囊边栏；**主体是门户对话**——整段会话按**任务分节**连续展示，侧栏是"会话 → 任务"的目录，点任务跳到那一段、不切换视图；设置从侧栏底部一行进入、另起一页并自带服务导航 + 设置字段列表（纵排：键 + 状态标签 + 生效值 + 修改/重置，秘密项与只读项各有各的控件）；**视觉取自 DSH 设计系统**——见下；Fira Code 本地打包）。
 - `tests/`：`*.test.ts` = 服务端（node --test）；`tests/web/` = 面板组件测试（vitest + jsdom，
   `harness.ts` 提供假 EventSource 与 fetch 路由桩——SSE/fetch 在边界处替换，App 代码零改动；`tsconfig.test.json` 让测试进类型检查）。
 - `design/`：版式样张（specimen.html + specimen.css，纯静态、供版式评审；经 `:19531` 查看需先拷到 `dist/web/`）。
@@ -52,6 +52,7 @@ npm start            # 启动（需先 build）：node dist/server/index.js -add
 
 - **本项目没有自己的视觉设计**：观感 = DSH（deepseek-harness）的设计系统。`styles.css` 整表 `@import` 上游 `ui-theme` 的样式表（令牌、字体栈、圆角阶梯、焦点环、滚动条），下游规则**直接用 `--dsw-alias-*` 令牌**，不自建色值。
 - 组件取值照抄上游 `ui-primitives` 的 `.module.css`：输入框（`Input`、`settings-form/fields`）、按钮（`Button` 的 md/sm 与主/幽灵/描边变体）、状态点（`StateDot`）、分段开关（`SegmentedControl`）、设置字段（`settings-form`）；布局几何对齐上游 `ui-layout`（侧栏 280）。
-- **外观开关**（侧栏底部）：只切 `body[data-ds-dark-theme]`——DSH 的暗色是另一套令牌，颜色全部自动跟随，我们不出第二套色。首选项存 `localStorage`，缺省跟随系统偏好。注意 `bg-overlay` 在暗色下是**遮罩**用的中灰，块底一律用 `interactive-bg-hover`。
+- **外观**：不再有手动深/浅开关；`<html data-theme>` 由时段主题按本地时间自动写入，深/浅两套令牌随之切换。
 - 注意令牌**作用域**：DSH 把 `--dsw-*` 定义在 `body` 上——自定义属性在「声明它的元素」上求值，所以别把这些令牌映射到 `:root`，否则整层引用会静默失效（属性变透明，CSS 不报错）。
 - 有意偏差：① 占位符用 `label-tertiary` 而非上游的 `label-dimmed`（后者在白底上几乎看不见）；② 首个连接设置中心失败不退出（持续退避重连），与其余服务“引导错误立刻可见”不同——面板优先可用性。
+- **整站时段主题**：`src/web/timeTheme.ts` 按本地时间在 17 个锚点间插值整体底色、三层光斑与全局强调色（底色走 RGB，光斑/强调色走 HSL），并按底色亮度自动切换深/浅面板令牌，每分钟刷新。设置页里「门户」排服务列表第一，每次进入设置都默认回到门户；它的「外观」区只保留「跟随时间」开关与「主题时段」滑块（15 分钟细分色带，偏好存 `localStorage`）；其它服务页不显示这组设置。

@@ -79,6 +79,7 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 	}
 	h.PutSelf(protocol.ServiceCard{
 		Name:        selfServiceName,
+		Title:       "设置中心",
 		Addr:        "ws://" + ln.Addr().String() + "/ws",
 		Description: "服务注册 · 全局信息 · 设置与调度",
 		Provides: []protocol.Provide{
@@ -90,10 +91,18 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 	// 中心自身也是服务：声明自己的可设置项（预设 = 本次启动的引导值）。
 	// 后三项是只读项：启动参数带起来的（换它要重启），进面板只为看得见。
 	st.Declare(selfServiceName, []protocol.Setting{
-		{Key: settingSweepMS, Default: strconv.FormatInt(cfg.Sweep.Milliseconds(), 10)},
-		{Key: settingHeartbeatFallbackMS, Default: strconv.FormatInt(cfg.Heartbeat.Milliseconds(), 10)},
-		{Key: "addr", Default: cfg.Addr, ReadOnly: true},
-		{Key: "settings", Default: cfg.SettingsPath, ReadOnly: true},
+		{
+			Key: settingSweepMS, Default: strconv.FormatInt(cfg.Sweep.Milliseconds(), 10),
+			Label: "多久扫一遍谁掉线了", Hint: "按这个间隔检查一遍名册，超过时限没心跳的服务判为离线",
+			Kind: "number", Unit: "ms",
+		},
+		{
+			Key: settingHeartbeatFallbackMS, Default: strconv.FormatInt(cfg.Heartbeat.Milliseconds(), 10),
+			Label: "等多久没动静算掉线", Hint: "服务自己没声明心跳间隔时，用这个时长兜底",
+			Kind: "number", Unit: "ms",
+		},
+		{Key: "addr", Default: cfg.Addr, Label: "监听地址", ReadOnly: true},
+		{Key: "settings", Default: cfg.SettingsPath, Label: "设置清单", ReadOnly: true},
 	})
 	s := &Server{cfg: cfg, hub: h, settings: st, ln: ln, logger: logger, done: make(chan struct{}), sweepWake: make(chan struct{}, 1)}
 	s.sweepMS.Store(cfg.Sweep.Milliseconds())

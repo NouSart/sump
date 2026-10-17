@@ -9,6 +9,8 @@ export const PORTAL_CONVERSATION_ID = 'web:private:owner';
 export interface DeliverMessage {
   text: string;
   conversationId: string;
+  /** 这条答复属于哪个任务（门户按任务分段展示时用）。 */
+  taskId: string;
   at: string;
 }
 
@@ -28,6 +30,61 @@ export function createDeliverHub(): DeliverHub {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
+  };
+}
+
+// ---------- 任务实况（reasoner → 门户 → 浏览器）----------
+//
+// 实况是**过程**不是结果：思考、终端命令、终端输出。门户只负责转手给浏览器，
+// 不做任何判断——真相在记忆里（history），这里只是让界面不必等到最后才看见。
+
+export interface ProgressUpdate {
+  conversationId: string;
+  /** 这条实况属于哪个任务（门户按任务分段展示时用）。 */
+  taskId: string;
+  seq: number;
+  kind: string; // reasoning / tool_call / tool_result
+  content: string;
+  meta: string; // JSON 字符串（工具名、call_id、是否截断…）
+  at: string;
+}
+
+export interface ProgressHub {
+  publish(p: ProgressUpdate): void;
+  on(fn: (p: ProgressUpdate) => void): () => void;
+}
+
+export function createProgressHub(): ProgressHub {
+  const listeners = new Set<(p: ProgressUpdate) => void>();
+  return {
+    publish: (p) => {
+      for (const fn of [...listeners]) fn(p);
+    },
+    on: (fn) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+  };
+}
+
+// parseProgress 校验一条实况：形状不对就丢（单条丢弃不影响整轮对话）。
+export function parseProgress(raw: unknown, log: (m: string) => void): ProgressUpdate | null {
+  const o = raw as Record<string, unknown> | null;
+  if (o === null || typeof o !== 'object') return null;
+  const kind = typeof o.kind === 'string' ? o.kind : '';
+  const content = typeof o.content === 'string' ? o.content : '';
+  if (kind === '' || content === '') {
+    log('progress 形状不符（缺 kind 或 content，丢弃）');
+    return null;
+  }
+  return {
+    conversationId: typeof o.conversation_id === 'string' ? o.conversation_id : '',
+    taskId: typeof o.task_id === 'string' ? o.task_id : '',
+    seq: typeof o.seq === 'number' && Number.isFinite(o.seq) ? o.seq : 0,
+    kind,
+    content,
+    meta: typeof o.meta === 'string' ? o.meta : '',
+    at: typeof o.at === 'string' ? o.at : new Date().toISOString(),
   };
 }
 

@@ -58,6 +58,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s := &Server{cfg: cfg, logger: logger, maxBytes: cfg.MaxBytes}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
+		Title:             "图片",
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
@@ -79,7 +80,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.maxBytes = n << 20
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("单张图片大小上限"),
+		service.Hint("超过这个大小的图片会被拒绝"),
+		service.As("number"),
+		service.Unit("MB"))
 	s.Handle("save", s.actionSave)
 	s.Handle("fetch", s.actionFetch)
 	// 只读项：启动参数带起来的（换它要重启服务）。db/dir 是存储身份——运行中换库/换目录

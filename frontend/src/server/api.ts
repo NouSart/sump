@@ -1,12 +1,13 @@
 // 面板的 HTTP 层：浏览器 JSON API + SSE 事件流 + 静态资源。
 // 只做“翻译”：把 HTTP 请求翻成中心跳转，把回执翻回 JSON——不缓存业务数据、不落盘。
 import { createReadStream } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
 import { stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import type { CenterEvent, CenterLink } from './center.ts';
 import { RemoteError } from './center.ts';
-import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type PendingApprovalItem, type TimerItem, type TrustConfig } from './portal.ts';
+import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type PendingApprovalItem, type ProgressUpdate, type TimerItem, type TrustConfig } from './portal.ts';
 import type { RosterPayload, ServiceSettings, SettingsResult } from './protocol.ts';
 
 export interface ApiConfig {
@@ -17,8 +18,16 @@ export interface ApiConfig {
   webDir: string;
   /** 门户的对话对象：用户消息跳给它（与 qq 的 -reasoner 同名同义）。 */
   reasoner: string;
+  /** 记忆服务名：历史回填直连它取（中心只提供名册地址，不转发）。 */
+  memory: string;
+  /** 语言包目录（扫描其中的 <locale>.json）。 */
+  localesDir: string;
+  /** 启动语言：服务端自用（浏览器可另选，见 /api/i18n）。 */
+  lang: string;
   /** 投递订阅（deliver → SSE）。 */
   portal: { on: (fn: (m: DeliverMessage) => void) => () => void };
+  /** 任务实况订阅（progress → SSE）：思考 / 命令 / 输出，进行中就能看见。 */
+  progress: { on: (fn: (p: ProgressUpdate) => void) => () => void };
   /** 计时快照订阅（timer_state → SSE）：新连接先补当前值，再推变化。 */
   timers: { current: () => TimerItem[]; on: (fn: (items: TimerItem[]) => void) => () => void };
   /** 待审命令：approval 推来的挂起项（approval_pending），以及用户裁决后的移除。 */
@@ -170,8 +179,66 @@ export function createRequestHandler(
     sendJSON(res, 200, { ok: true, conversationId: PORTAL_CONVERSATION_ID });
   };
 
-  // decideApproval 把用户的裁决送回 approval。裁决权在用户手里，门户只是搬运工：
-  // 这里不判断该不该批准，也不缓存结果——approval 认不认（待审项还在不在）由它自己决定。
+  // fetchHistory 把该会话最近的对话从 memory 取回来（门户启动时回填界面用）。
+  // 与 user_message 同一条链路：从名册解析 memory 的地址后直连，中心不转发。
+  const fetchTasks = async (res: ServerResponse): Promise<void> => {
+    let data: { tasks?: unknown } | undefined;
+    try {
+      data = (await center.jumpTo(cfg.memory, 'task_list', {
+        conversation_id: PORTAL_CONVERSATION_ID,
+      })) as { tasks?: unknown };
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
+    sendJSON(res, 200, { conversationId: PORTAL_CONVERSATION_ID, tasks });
+  };
+
+  // resumeTask 恢复一个未完结任务：把"当前任务"顶到它（下一条用户消息就落在这个任务里）。
+  // 已完结的任务会被记忆服务明确拒绝——门户不自己判断任务能不能继续。
+  const resumeTask = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const body = asObject(await readJSON(req)) ?? {};
+    const taskId = requiredString(body, 'task_id');
+    let data: { task?: unknown; messages?: unknown } | undefined;
+    try {
+      data = (await center.jumpTo(cfg.memory, 'task_resume', { task_id: taskId })) as {
+        task?: unknown;
+        messages?: unknown;
+      };
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    sendJSON(res, 200, {
+      task: data?.task ?? null,
+      messages: Array.isArray(data?.messages) ? data.messages : [],
+    });
+  };
+
+  // fetchHistory 取某任务（默认当前任务）的记录：直连记忆服务，中心只当地址簿。
+  const fetchHistory = async (
+    res: ServerResponse,
+    limit: number,
+    afterSeq: number,
+    taskId: string,
+    all: boolean,
+  ): Promise<void> => {
+    let data: { messages?: unknown } | undefined;
+    try {
+      data = (await center.jumpTo(cfg.memory, 'history', {
+        conversation_id: PORTAL_CONVERSATION_ID,
+        limit,
+        after_seq: afterSeq,
+        ...(taskId === '' ? {} : { task_id: taskId }),
+        ...(all ? { all_tasks: true } : {}),
+      })) as { messages?: unknown };
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    const messages = Array.isArray(data?.messages) ? data.messages : [];
+    sendJSON(res, 200, { conversationId: PORTAL_CONVERSATION_ID, messages });
+  };
+
+  // decideApproval 把用户的裁决送回 approval。裁决权在用户手里，门户只是搬运工：  // 这里不判断该不该批准，也不缓存结果——approval 认不认（待审项还在不在）由它自己决定。
   const decideApproval = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const body = asObject(await readJSON(req)) ?? {};
     const itemId = requiredString(body, 'item_id');
@@ -211,6 +278,9 @@ export function createRequestHandler(
     const unsubscribeDeliver = cfg.portal.on((m: DeliverMessage) => {
       send('deliver', m);
     });
+    const unsubscribeProgress = cfg.progress.on((p: ProgressUpdate) => {
+      send('progress', p);
+    });
     const unsubscribeTimers = cfg.timers.on((items) => {
       send('timers', items);
     });
@@ -224,6 +294,7 @@ export function createRequestHandler(
       clearInterval(keepalive);
       unsubscribe();
       unsubscribeDeliver();
+      unsubscribeProgress();
       unsubscribeTimers();
       unsubscribeApprovals();
     });
@@ -269,6 +340,42 @@ export function createRequestHandler(
     });
   };
 
+  // ---- 语言包：启动语言 + 目录扫描（浏览器切语言时按需读，不重启服务）----
+  interface LangPack {
+    locale: string;
+    name: string;
+    messages: Record<string, string>;
+  }
+  const packPath = (locale: string): string => join(cfg.localesDir, `${locale}.json`);
+  const loadPack = async (locale: string): Promise<LangPack> => {
+    // 只认 [A-Za-z0-9_-]，避免 ../ 之类的路径穿越
+    if (!/^[A-Za-z0-9_-]+$/.test(locale)) throw new HttpError(400, `语言标识不合法: ${locale}`);
+    try {
+      const raw = await readFile(packPath(locale), 'utf8');
+      const parsed = JSON.parse(raw) as { locale?: string; name?: string; messages?: Record<string, string> };
+      return { locale: parsed.locale ?? locale, name: parsed.name ?? locale, messages: parsed.messages ?? {} };
+    } catch {
+      // 缺包不算致命：返回空，界面各处会退回服务声明/内置中文
+      return { locale, name: locale, messages: {} };
+    }
+  };
+  const listLocales = async (): Promise<{ locale: string; name: string }[]> => {
+    try {
+      const files = await readdir(cfg.localesDir);
+      const out: { locale: string; name: string }[] = [];
+      for (const f of files) {
+        if (!f.endsWith('.json')) continue;
+        const locale = f.slice(0, -5);
+        if (!/^[A-Za-z0-9_-]+$/.test(locale)) continue;
+        const pack = await loadPack(locale);
+        out.push({ locale: pack.locale, name: pack.name });
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  };
+
   const route = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // 信任栅栏先于一切路由：Host 是 DNS 重绑伪造不了的那个头，Origin 挡跨站请求。
     // 门户能驱动智能体（而智能体手里有 shell），所以这道栅栏不是可选项。
@@ -297,6 +404,31 @@ export function createRequestHandler(
       events(req, res);
       return;
     }
+    if (pathname === '/api/i18n/locales' && req.method === 'GET') {
+      sendJSON(res, 200, { locales: await listLocales() });
+      return;
+    }
+    if (pathname === '/api/i18n' && req.method === 'GET') {
+      const want = url.searchParams.get('lang') ?? cfg.lang;
+      sendJSON(res, 200, await loadPack(want));
+      return;
+    }
+    if (pathname === '/api/history' && req.method === 'GET') {
+      const raw = Number(url.searchParams.get('limit') ?? '');
+      const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.trunc(raw), 500) : 100;
+      const rawAfter = Number(url.searchParams.get('after_seq') ?? '');
+      const afterSeq = Number.isFinite(rawAfter) && rawAfter > 0 ? Math.trunc(rawAfter) : 0;
+      await fetchHistory(res, limit, afterSeq, url.searchParams.get('task_id') ?? '', url.searchParams.get('all') === '1');
+      return;
+    }
+    if (pathname === '/api/tasks' && req.method === 'GET') {
+      await fetchTasks(res);
+      return;
+    }
+    if (pathname === '/api/tasks/resume' && req.method === 'POST') {
+      await resumeTask(req, res);
+      return;
+    }
     if (pathname === '/api/approvals' && req.method === 'GET') {
       sendJSON(res, 200, { items: cfg.approvals.current() });
       return;
@@ -305,7 +437,7 @@ export function createRequestHandler(
       await decideApproval(req, res);
       return;
     }
-    if (pathname === '/api/overview' || pathname === '/api/message' || pathname === '/api/settings/set' || pathname === '/api/settings/reset' || pathname === '/api/events' || pathname === '/api/approvals') {
+    if (pathname === '/api/overview' || pathname === '/api/message' || pathname === '/api/settings/set' || pathname === '/api/settings/reset' || pathname === '/api/events' || pathname === '/api/approvals' || pathname === '/api/history' || pathname === '/api/i18n' || pathname === '/api/i18n/locales') {
       throw new HttpError(405, `方法不允许: ${req.method ?? ''}`);
     }
     if (pathname.startsWith('/api/')) {

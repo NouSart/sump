@@ -21,7 +21,7 @@ type Client interface {
 type DeepSeekClient struct {
 	BaseURL string // 如 https://api.deepseek.com（可带 /v1）
 	APIKey  string
-	Model   string // 如 deepseek-chat
+	Model   string // 如 deepseek-flash
 	HTTP    *http.Client
 }
 

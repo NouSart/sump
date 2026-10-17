@@ -89,6 +89,24 @@ func startFakeDeepSeek(t *testing.T, toolFirst bool) *fakeDeepSeek {
 					},
 				}},
 			}
+		case toolFirst && call == 3, toolFirst && call >= 5 && call%2 == 1, !toolFirst && call%2 == 1:
+			// 收尾门禁要求交付前用 task_status 判定任务：脚本化的模型也照规矩来一次，
+			// 否则 reasoner 会补两轮提醒（那是 reasoner 单测的事，这里只走正路）。
+			// 工具模式下第 1 轮先跑工具（第 1、2 次调用），第 3 次判定；之后每轮都是"判定 + 答复"两跳。
+			// 纯文本模式下每轮也是"判定 + 答复"两跳（奇数次判定，偶数次答复）。
+			msg = map[string]any{
+				"role": "assistant",
+				"tool_calls": []any{
+					map[string]any{
+						"id":   "call_judge",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "task_status",
+							"arguments": `{"status":"done"}`,
+						},
+					},
+				},
+			}
 		default:
 			msg = map[string]any{"role": "assistant", "content": "E2E 最终答复"}
 		}
@@ -351,8 +369,8 @@ func TestInferChainE2E(t *testing.T) {
 		t.Fatal("超时：boss 未收到 deliver")
 	}
 
-	if fakeLLM.Calls() != 3 {
-		t.Fatalf("假 DeepSeek 调用次数 = %d, want 3", fakeLLM.Calls())
+	if fakeLLM.Calls() != 4 {
+		t.Fatalf("假 DeepSeek 调用次数 = %d, want 4", fakeLLM.Calls())
 	}
 	reqs := fakeLLM.Requests()
 
@@ -465,12 +483,25 @@ func TestInferChainE2E(t *testing.T) {
 		t.Fatal("超时：boss 未收到第二轮 deliver")
 	}
 
-	// 第二轮的第一轮请求（总第 4 次）：记忆块应含「相关记忆」与 remember 写入的内容。
-	if fakeLLM.Calls() != 4 {
-		t.Fatalf("假 DeepSeek 调用次数 = %d, want 4", fakeLLM.Calls())
+	// 判定轮之后（总第 4 次）：task_status 的结果已作为工具消息回到上下文。
+	msgsJudge, _ := reqs[3]["messages"].([]any)
+	foundJudge := false
+	for _, m := range msgsJudge {
+		mm, _ := m.(map[string]any)
+		if mm["role"] == "tool" && mm["tool_call_id"] == "call_judge" {
+			foundJudge = true
+		}
+	}
+	if !foundJudge {
+		t.Fatalf("判定轮的请求应含 task_status 的工具结果（tool_call_id=call_judge）: %+v", msgsJudge)
+	}
+
+	// 第二轮的第一轮请求（总第 5 次）：记忆块应含「相关记忆」与 remember 写入的内容。
+	if fakeLLM.Calls() != 6 {
+		t.Fatalf("假 DeepSeek 调用次数 = %d, want 6", fakeLLM.Calls())
 	}
 	reqs = fakeLLM.Requests()
-	msgs4, _ := reqs[3]["messages"].([]any)
+	msgs4, _ := reqs[4]["messages"].([]any)
 	foundRelevant := false
 	for _, m := range msgs4 {
 		mm, _ := m.(map[string]any)

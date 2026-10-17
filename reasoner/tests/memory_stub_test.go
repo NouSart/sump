@@ -25,6 +25,10 @@ type stubMemory struct {
 	recalls     int    // 收到的 recall 次数
 	reasonerURL string // resume 的投递目标（reasoner 启动后设置）
 	stores      []protocol.StorePayload
+
+	task     *protocol.Task // 非空时随 resume 带回（模拟"记忆已经确定了当前任务"）
+	finished []protocol.TaskFinishPayload
+	renamed  []protocol.TaskRenamePayload
 }
 
 // startStubMemory 起一个服务名为 "memory" 的记忆替身。
@@ -53,7 +57,7 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 		Name:        name,
 		Addr:        m.URL(),
 		Description: "记忆测试替身",
-		Provides:    []protocol.Provide{{Action: "recall"}, {Action: "store"}},
+		Provides:    []protocol.Provide{{Action: "recall"}, {Action: "store"}, {Action: "task_finish"}, {Action: "task_rename"}},
 	}
 	center.mu.Unlock()
 	return m
@@ -65,6 +69,31 @@ func (m *stubMemory) setReasonerURL(u string) {
 	m.mu.Lock()
 	m.reasonerURL = u
 	m.mu.Unlock()
+}
+
+// setTask 设置随 resume 带回的任务（nil = 没有当前任务）。
+func (m *stubMemory) setTask(t *protocol.Task) {
+	m.mu.Lock()
+	m.task = t
+	m.mu.Unlock()
+}
+
+// Finished 返回收到的 task_finish（任务完结）。
+func (m *stubMemory) Finished() []protocol.TaskFinishPayload {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]protocol.TaskFinishPayload, len(m.finished))
+	copy(out, m.finished)
+	return out
+}
+
+// Renamed 返回收到的 task_rename（任务改名）。
+func (m *stubMemory) Renamed() []protocol.TaskRenamePayload {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]protocol.TaskRenamePayload, len(m.renamed))
+	copy(out, m.renamed)
+	return out
 }
 
 // Stores 返回已收到的 store 请求快照。
@@ -133,10 +162,14 @@ func (m *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
 					placed = true
 				}
 			}
+			m.mu.Lock()
+			task := m.task
+			m.mu.Unlock()
 			raw, err := protocol.EncodePayload(protocol.ResumePayload{Context: protocol.TaskContext{
 				ConversationID: p.Context.ConversationID,
 				Messages:       msgs,
 				Boss:           p.Context.Boss,
+				Task:           task,
 			}})
 			if err != nil {
 				continue
@@ -144,6 +177,22 @@ func (m *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
 			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
 			c.send(resp)
 			m.fireResume(env.Trace, raw)
+		case "task_finish":
+			var p protocol.TaskFinishPayload
+			_ = protocol.DecodeRaw(jp.Input, &p)
+			m.mu.Lock()
+			m.finished = append(m.finished, p)
+			m.mu.Unlock()
+			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
+			c.send(resp)
+		case "task_rename":
+			var p protocol.TaskRenamePayload
+			_ = protocol.DecodeRaw(jp.Input, &p)
+			m.mu.Lock()
+			m.renamed = append(m.renamed, p)
+			m.mu.Unlock()
+			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
+			c.send(resp)
 		}
 	}
 }

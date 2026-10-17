@@ -32,12 +32,19 @@ type Setting struct {
 	Secret   bool   `msgpack:"secret,omitempty"`
 	ReadOnly bool   `msgpack:"readonly,omitempty"`
 	Set      bool   `msgpack:"set,omitempty"` // 仅 Secret 有意义：服务侧当前是否已有值
+	// 以下是给**人**看的部分（可选；缺省时面板退回显示 Key）。
+	Label   string   `msgpack:"label,omitempty"`   // 中文名，如「单文件大小上限」
+	Hint    string   `msgpack:"hint,omitempty"`    // 一句话：改它会发生什么
+	Kind    string   `msgpack:"kind,omitempty"`    // bool | number | enum | textarea | text | service | optional-service（缺省 text）
+	Options []string `msgpack:"options,omitempty"` // Kind=enum 的候选值
+	Unit    string   `msgpack:"unit,omitempty"`    // Kind=number 的单位符号（ms/MB/KB/chars/count），面板翻成人话
 }
 
 // RegisterPayload 是 register 请求的 payload：服务名片。
 type RegisterPayload struct {
 	Name        string    `msgpack:"name"`
 	Addr        string    `msgpack:"addr"`
+	Title       string    `msgpack:"title,omitempty"` // 中文短名（面板导航用），如「审批」
 	Description string    `msgpack:"description,omitempty"`
 	Provides    []Provide `msgpack:"provides,omitempty"`
 	Settings    []Setting `msgpack:"settings,omitempty"`
@@ -48,6 +55,7 @@ type RegisterPayload struct {
 type ServiceCard struct {
 	Name        string    `msgpack:"name"`
 	Addr        string    `msgpack:"addr"`
+	Title       string    `msgpack:"title,omitempty"` // 中文短名（面板导航用）
 	Description string    `msgpack:"description,omitempty"`
 	Provides    []Provide `msgpack:"provides,omitempty"`
 	HeartbeatMS int64     `msgpack:"heartbeat_ms,omitempty"` // 心跳间隔（毫秒；离线判定用）
@@ -58,6 +66,7 @@ func (r RegisterPayload) Card() ServiceCard {
 	return ServiceCard{
 		Name:        r.Name,
 		Addr:        r.Addr,
+		Title:       r.Title,
 		Description: r.Description,
 		Provides:    r.Provides,
 		HeartbeatMS: r.HeartbeatMS,
@@ -88,14 +97,82 @@ type HeartbeatPayload struct {
 	Status string `msgpack:"status,omitempty"`
 }
 
+// ---------- 任务（一段有名字、有始有终的工作） ----------
+
+// Task 是一个任务：每条会话记录都归属某个任务。
+// Status：active = 进行中（保留全部上下文，可恢复）；done = 已完结（只读，不可继续）。
+// 任务**只存事实**：谁在什么时候叫什么名字、什么状态。完成判定由 reasoner 负责，
+// 记忆服务不解释任务语义（只给出"当前是哪个任务"）。
+type Task struct {
+	ID             string `msgpack:"id"`
+	ConversationID string `msgpack:"conversation_id"`
+	Name           string `msgpack:"name"`
+	Status         string `msgpack:"status"`
+	CreatedAt      string `msgpack:"created_at"`
+	UpdatedAt      string `msgpack:"updated_at"`
+}
+
+// TaskCurrentPayload 取当前任务（最近活跃的 active 任务；没有就是空）。
+type TaskCurrentPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+}
+
+// TaskOpenPayload 新开一个任务（调用方保证此刻没有进行中的任务）。
+type TaskOpenPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+	Name           string `msgpack:"name"`
+}
+
+// TaskFinishPayload 完结一个任务（可顺带把名字改准）。
+type TaskFinishPayload struct {
+	TaskID string `msgpack:"task_id"`
+	Name   string `msgpack:"name,omitempty"`
+}
+
+// TaskRenamePayload 改任务名（进行中的任务也可以改：模型判定时顺手把标题写准）。
+type TaskRenamePayload struct {
+	TaskID string `msgpack:"task_id"`
+	Name   string `msgpack:"name"`
+}
+
+// TaskResumePayload 恢复一个未完结任务（把它顶成当前任务）。
+type TaskResumePayload struct {
+	TaskID string `msgpack:"task_id"`
+}
+
+// TaskListPayload 列出某会话的任务（按最近活跃排序）。
+type TaskListPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+	Limit          int    `msgpack:"limit,omitempty"`
+}
+
+// TaskResult 是单个任务查询/变更的结果（Task 为 nil = 没有当前任务）。
+type TaskResult struct {
+	Task *Task `msgpack:"task,omitempty"`
+}
+
+// TaskListResult 是任务清单。
+type TaskListResult struct {
+	Tasks []Task `msgpack:"tasks"`
+}
+
+// TaskResumeResult 是恢复任务的结果：任务本身 + 该任务的记录。
+type TaskResumeResult struct {
+	Task     Task           `msgpack:"task"`
+	Messages []HistoryEntry `msgpack:"messages"`
+}
+
 // ---------- 记忆往返（完全启动链） ----------
 
 // TaskContext 是 LLM 服务的任务上下文：随“记忆往返”托管给记忆服务。
 // Messages 是推理中的完整消息链；Boss 是原任务发起者（不可丢失，由记忆服务原样带回）。
+// Task 是这次工作所属的任务：由记忆服务在 recall 时确定（没有进行中的任务就地新建），
+// 随 resume 带回 reasoner——**没有任务这条链就走不起来**。
 type TaskContext struct {
 	ConversationID string    `msgpack:"conversation_id,omitempty"`
 	Messages       []Message `msgpack:"messages"`
 	Boss           string    `msgpack:"boss,omitempty"`
+	Task           *Task     `msgpack:"task,omitempty"`
 }
 
 // RecallPayload 是 recall（向记忆请求记忆）的 payload：把任务上下文交给记忆服务。
@@ -109,11 +186,62 @@ type ResumePayload struct {
 	Context TaskContext `msgpack:"context"`
 }
 
-// StorePayload 是 store 的 payload：向记忆服务记一条对话消息。
+// StorePayload 是 store 的 payload：向记忆服务记一条会话记录。
+// Kind 区分记录类型（空 = 按 Role 推断）：user / assistant / reasoning / tool_call / tool_result。
+// Seq 是**会话内单调序号**（由写入方给）：让并发写（Fire 是 goroutine）也能按真实先后落库与排序。
+// Meta 是给人看的附加信息（JSON 字符串，如工具名、命令、call_id、是否截断）。
+// TaskID 是这条记录属于哪个任务（空 = 由记忆服务归到当前任务）。
 type StorePayload struct {
 	ConversationID string `msgpack:"conversation_id"`
 	Role           string `msgpack:"role"`
 	Content        string `msgpack:"content"`
+	Kind           string `msgpack:"kind,omitempty"`
+	Meta           string `msgpack:"meta,omitempty"`
+	Seq            int64  `msgpack:"seq,omitempty"`
+	TaskID         string `msgpack:"task_id,omitempty"`
+}
+
+// HistoryPayload 是 history 的 payload：向记忆服务要某会话最近的消息（供门户回填对话视图）。
+// AfterSeq > 0 时只取序号更大的记录（增量拉取，避免每次全量重拉）。
+// TaskID 非空时只取该任务的记录；为空时取**当前任务**（门户默认看到的那段）。
+// AllTasks 为真时取整个会话（门户按任务分段展示时要的就是这一段）。
+type HistoryPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+	Limit          int    `msgpack:"limit,omitempty"`
+	AfterSeq       int64  `msgpack:"after_seq,omitempty"`
+	TaskID         string `msgpack:"task_id,omitempty"`
+	AllTasks       bool   `msgpack:"all_tasks,omitempty"`
+}
+
+// HistoryEntry 是一条落库的会话记录（带落库时间，供界面按时间排序）。
+type HistoryEntry struct {
+	ID      int64  `msgpack:"id"`
+	Seq     int64  `msgpack:"seq,omitempty"`
+	Role    string `msgpack:"role"`
+	Kind    string `msgpack:"kind,omitempty"`
+	Content string `msgpack:"content"`
+	Meta    string `msgpack:"meta,omitempty"`
+	At      string `msgpack:"at"`
+	TaskID  string `msgpack:"task_id,omitempty"`
+}
+
+// HistoryResult 是 history 的结果：按时间正序。
+type HistoryResult struct {
+	ConversationID string         `msgpack:"conversation_id"`
+	Messages       []HistoryEntry `msgpack:"messages"`
+}
+
+// ProgressPayload 是 progress 的 payload：任务进行中的一条实况（思考 / 命令 / 输出），
+// 推给**声明了 provides=progress** 的入口方（门户）。收到即渲染，不必等最终答复。
+// 与 store 同源同 seq：落库是真相，progress 只是让界面不必等到最后。
+type ProgressPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+	TaskID         string `msgpack:"task_id,omitempty"`
+	Seq            int64  `msgpack:"seq"`
+	Kind           string `msgpack:"kind"` // reasoning / tool_call / tool_result
+	Content        string `msgpack:"content"`
+	Meta           string `msgpack:"meta,omitempty"`
+	At             string `msgpack:"at,omitempty"`
 }
 
 // ---------- 任务链入口 ----------
@@ -132,6 +260,7 @@ type UserMessagePayload struct {
 type DeliverPayload struct {
 	Text           string `msgpack:"text"`
 	ConversationID string `msgpack:"conversation_id,omitempty"`
+	TaskID         string `msgpack:"task_id,omitempty"` // 这条答复属于哪个任务（门户据此刻画）
 }
 
 // ImageSavePayload 是 images.save 的 payload：URL 与 base64 二选一。
@@ -263,6 +392,12 @@ type SettingView struct {
 	Set        bool   `msgpack:"set,omitempty"`      // 仅 Secret：服务侧当前是否已有值
 	Actual     string `msgpack:"actual"`             // 服务侧自报的实际值（没回传过为空串）
 	Reported   bool   `msgpack:"reported,omitempty"` // 服务是否回传过实际值（Actual 为空串时靠它区分"没报过"与"报了空值"）
+	// 给**人**看的部分：由服务声明时给出，面板据此画中文名、说明与合适的控件。
+	Label   string   `msgpack:"label,omitempty"`
+	Hint    string   `msgpack:"hint,omitempty"`
+	Kind    string   `msgpack:"kind,omitempty"`
+	Options []string `msgpack:"options,omitempty"`
+	Unit    string   `msgpack:"unit,omitempty"`
 }
 
 // ServiceSettings 是一个服务的设置清单（按声明顺序）。

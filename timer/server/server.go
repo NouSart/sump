@@ -119,6 +119,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
+		Title:             "定时",
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
@@ -157,7 +158,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		}
 		s.setMaxDuration(time.Duration(n) * time.Millisecond)
 		return nil
-	})
+	}, service.Label("单次定时上限"),
+		service.Hint("最多能定多久，超过这个值会被直接拒绝"),
+		service.As("number"),
+		service.Unit("ms"))
 	s.HandleSetting("max_pending", strconv.Itoa(cfg.MaxPending), func(v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
@@ -165,7 +169,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		}
 		s.setMaxPending(n)
 		return nil
-	})
+	}, service.Label("同时挂起的定时上限"),
+		service.Hint("最多同时有多少个等唤醒的定时，满了新请求会被拒绝"),
+		service.As("number"),
+		service.Unit("count"))
 	s.Handle("sleep", s.actionSleep)
 	s.Handle("cancel", s.actionCancel)
 	s.Handle("list", s.actionList)
@@ -173,7 +180,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.HandleSetting("portal", cfg.Portal, func(v string) error {
 		s.setPortalName(strings.TrimSpace(v))
 		return nil
-	})
+	}, service.Label("把状态推给哪个门户"),
+		service.Hint("定时到点/新增/撤销时把快照推给这个服务；关掉就不推"),
+		service.As("optional-service"))
 	// 只读项：启动参数带起来的（换它要重启）。
 	s.HandleReadOnly("name", cfg.Name)
 	s.HandleReadOnly("addr", cfg.Listen)

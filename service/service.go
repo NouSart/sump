@@ -24,6 +24,7 @@ import (
 // Config 是服务启动配置（引导只靠它：自己的名字/地址 + 设置中心地址）。
 type Config struct {
 	Name              string             // 服务名（注册用）
+	Title             string             // 中文短名（面板导航用，如「审批」）
 	Listen            string             // 监听地址 host:port
 	Center            string             // 设置中心 WS 地址
 	HeartbeatInterval time.Duration      // 心跳间隔（默认 15s；随名片声明，中心据此判定离线）
@@ -190,6 +191,7 @@ func (s *Service) connectAndRegister(ctx context.Context) error {
 	env, err := protocol.NewEnvelope(protocol.TypeRegister, s.cfg.Name, "settings-center", "", protocol.RegisterPayload{
 		Name:        s.cfg.Name,
 		Addr:        s.selfURL,
+		Title:       s.cfg.Title,
 		Description: s.cfg.Description,
 		Provides:    s.cfg.Provides,
 		Settings:    s.declarations(),

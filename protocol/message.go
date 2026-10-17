@@ -11,6 +11,10 @@ type Message struct {
 	FileIDs    []string   `json:"file_ids,omitempty" msgpack:"file_ids,omitempty"`         // 文件引用（files 服务中的 id；LLM 凭 id 调 files__read 自取）
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty" msgpack:"tool_calls,omitempty"`     // assistant 发起的工具调用
 	ToolCallID string     `json:"tool_call_id,omitempty" msgpack:"tool_call_id,omitempty"` // tool 结果对应哪次调用
+	// Reasoning 是模型的思考过程（OpenAI 兼容的 reasoning_content）。
+	// 只用于**显示与落库**：buildRequestBody 是显式构造请求体的，不会把它发回上游
+	// （回灌思考既浪费额度，某些模型也会直接拒）。
+	Reasoning string `json:"reasoning_content,omitempty" msgpack:"reasoning,omitempty"`
 }
 
 // ToolCall 是 assistant 发起的一次工具调用。
