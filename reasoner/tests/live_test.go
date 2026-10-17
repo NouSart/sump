@@ -8,7 +8,7 @@ package tests
 //	$env:SUMP_LIVE_LLM = '1'
 //	go test ./tests/ -run TestLiveDeepSeek -v -count=1
 //
-// 可选：$env:SUMP_LLM_MODEL 指定模型（默认 deepseek-chat）。
+// 可选：$env:SUMP_LLM_MODEL 指定模型（默认 deepseek-flash）。
 
 import (
 	"context"
@@ -32,7 +32,7 @@ func TestLiveDeepSeek(t *testing.T) {
 	}
 	model := os.Getenv("SUMP_LLM_MODEL")
 	if model == "" {
-		model = "deepseek-chat"
+		model = "deepseek-flash"
 	}
 
 	sc := startStubCenter(t)

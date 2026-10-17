@@ -170,7 +170,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setLLMModel(v)
 		return nil
 	}, service.Label("用哪个模型"),
-		service.Hint("模型名要和上面的接口匹配，例如 deepseek-chat"),
+		service.Hint("模型名要和上面的接口匹配，例如 deepseek-flash"),
 		service.As("text"))
 	s.HandleSetting("memory", cfg.Memory, func(v string) error {
 		if strings.TrimSpace(v) == "" {

@@ -90,7 +90,7 @@
     "setting.reasoner.llm.base.label": "模型接口地址",
     "setting.reasoner.llm.base.hint": "OpenAI 兼容的 base URL，例如 https://api.deepseek.com",
     "setting.reasoner.llm.model.label": "用哪个模型",
-    "setting.reasoner.llm.model.hint": "模型名要和上面的接口匹配，例如 deepseek-chat",
+    "setting.reasoner.llm.model.hint": "模型名要和上面的接口匹配，例如 deepseek-flash",
     "setting.reasoner.memory.label": "记忆服务名",
     "setting.reasoner.memory.hint": "对话历史与长期记忆交给哪个服务",
     "setting.reasoner.images.label": "图片服务名",

@@ -22,7 +22,7 @@ func main() {
 	imagesSvc := flag.String("images", "images", "图片服务名（推理前取图内联）")
 	llmBase := flag.String("llm-base", "https://api.deepseek.com", "LLM API 地址（OpenAI 兼容；设置中心 llm.base 可热改）")
 	llmKey := flag.String("llm-key", os.Getenv("DEEPSEEK_API_KEY"), "LLM API Key（默认取环境变量 DEEPSEEK_API_KEY；设置中心 llm.key 可热改）")
-	llmModel := flag.String("llm-model", "deepseek-chat", "LLM 模型名（设置中心 llm.model 可热改）")
+	llmModel := flag.String("llm-model", "deepseek-flash", "LLM 模型名（设置中心 llm.model 可热改）")
 	secretFile := flag.String("secret-file", "", "秘密文件路径（空 = data/<服务名>-secret.json；\"-\" = 不落盘）")
 	toolConc := flag.Int("tool-concurrency", 10, "单会话工具并发上限（-1 = 不限制）")
 	toolTimeout := flag.Duration("tool-timeout", 60*time.Second, "单个工具调用的执行超时")
