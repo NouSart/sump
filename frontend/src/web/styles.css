@@ -230,8 +230,8 @@ button { font: inherit; }
   padding: 0;
   cursor: pointer;
   color: var(--text); font: inherit;
-  /* 底板等比收 2%：字标正好在块中心，绕中心缩放后仍居中 */
-  transform: scale(0.98);
+  /* 底板非等比收：左右只收一点（3%），上下收得多（10%）——绕块中心缩放，字标始终居中 */
+  transform: scale(0.97, 0.9);
 }
 .sidebar-bar:hover { background: var(--surface-hover); }
 /* 收起态：对话面板四边各外扩一圈（12 → 4），于是它和字标块边缘错开 8px，不再贴成一条线 */
