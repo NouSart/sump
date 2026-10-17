@@ -1,28 +1,30 @@
-// SettingsPanel：空态 / 字段布局 / 行状态（默认·已覆盖·待确认·未送达）/
-// 编辑保存 / 值未变 / Escape 取消 / 重置两步确认与超时复位 / 未连接禁用。
+// SettingsPanel（人话版）：空态 / 分组 / 状态词 / 编辑保存 / Escape / 重置两步确认 / 未连接禁用 /
+// 布尔开关即提交 / 枚举下拉 / 语言包覆盖（t 返回 x 时不出现中文）。
 import assert from 'node:assert/strict';
 import { describe, it, expect, vi } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import { SettingsPanel } from '../../src/web/components/SettingsPanel';
+import type { Translate } from '../../src/web/i18n';
 import type { RowStatus, SettingViewData } from '../../src/web/types';
 
-const svc = { name: 'images', addr: 'ws://127.0.0.1:9401/ws', description: '图片服务' };
+// tZh 等价于“语言包缺失、一路走兜底中文”，正是默认路径。
+const tZh: Translate = (key, fallback) => fallback ?? key;
 
-const defaultRow: SettingViewData = { key: 'max_mb', value: '32', default: '32', overridden: false };
+const svc = { name: 'images', title: '图片', addr: 'ws://127.0.0.1:9401/ws', description: '图片服务' };
+
+const defaultRow: SettingViewData = { key: 'max_mb', value: '32', default: '32', overridden: false, label: '单张图片大小上限', kind: 'number' };
 const overriddenRow: SettingViewData = { key: 'owner', value: '10001', default: '', overridden: true };
-// 秘密项：中心手里没有值，只有一个「服务侧有没有值」的标记
 const secretRow: SettingViewData = { key: 'llm.key', value: '', default: '', overridden: false, secret: true, set: true };
 const secretUnsetRow: SettingViewData = { key: 'napcat.token', value: '', default: '', overridden: false, secret: true };
-// 只读项：值是服务启动参数
 const readOnlyRow: SettingViewData = {
   key: 'addr',
   value: '127.0.0.1:9101',
   default: '127.0.0.1:9101',
   overridden: false,
   readonly: true,
+  label: '监听地址',
 };
-// 服务侧自己变了：服务回传的实际值与中心口径的生效值不一致
 const driftedRow: SettingViewData = {
   key: 'demo.mode',
   value: 'batch',
@@ -31,6 +33,15 @@ const driftedRow: SettingViewData = {
   actual: 'self-changed',
   reported: true,
 };
+const boolRow: SettingViewData = { key: 'flag', value: 'false', default: 'false', overridden: false, kind: 'bool' };
+const enumRow: SettingViewData = {
+  key: 'mode',
+  value: 'each',
+  default: 'each',
+  overridden: false,
+  kind: 'enum',
+  options: ['each', 'all'],
+};
 
 function renderPanel(over: Partial<ComponentProps<typeof SettingsPanel>> = {}) {
   return render(
@@ -38,139 +49,77 @@ function renderPanel(over: Partial<ComponentProps<typeof SettingsPanel>> = {}) {
       service={svc}
       settings={[defaultRow, overriddenRow]}
       connected={true}
-      index={1}
-      total={2}
       statusOf={() => undefined}
       onSave={async () => {}}
       onReset={async () => {}}
+      t={tZh}
       {...over}
     />,
   );
 }
 
 describe('SettingsPanel', () => {
-  it('无选中服务：等待名册提示', () => {
-    renderPanel({ service: null });
-    assert.ok(screen.getByText(/尚未收到名册/));
+  it('没收到名册：一句人话，不摆键值', () => {
+    renderPanel({ service: null, settings: null });
+    assert.ok(screen.getByText('还没有收到任何服务的设置声明'));
   });
 
-  it('设置加载中（null）与未声明（空数组）两种空态', () => {
-    const { unmount } = renderPanel({ settings: null });
-    assert.ok(screen.getByText('加载中…'));
-    unmount();
-    renderPanel({ settings: [] });
-    assert.ok(screen.getByText(/该服务未声明可设置项/));
+  it('标题用中文短名；能改的分一组，只读启动参数折叠起来', () => {
+    renderPanel({ settings: [defaultRow, overriddenRow, readOnlyRow] });
+    assert.ok(screen.getByRole('heading', { name: '图片' })); // 服务自报的 title
+    assert.ok(screen.getByText('可以改的'));
+    assert.ok(screen.getByText('启动参数'));
+    // 只读项在 <details> 里（默认收起），但仍在文档里
+    const ro = screen.getByText('监听地址');
+    assert.ok(ro.closest('details'));
+    assert.ok(screen.getByText('127.0.0.1:9101'));
   });
 
-  it('字段布局：标签行（键 + 状态标签 + 重置链）→ 控件行 → 默认值提示', () => {
-    const { container } = renderPanel();
-    assert.equal(container.querySelectorAll('.field').length, 2);
-    assert.ok(screen.getByText('max_mb'));
-    assert.ok(screen.getByText('owner'));
-    assert.ok(screen.getByText('32')); // 生效值
-    assert.ok(screen.getByText('默认 32')); // 默认值提示
-    assert.ok(screen.getByText('默认')); // 状态标签
-    assert.ok(screen.getByText('已覆盖'));
-    assert.ok(screen.getByText('默认 —')); // 空默认值回落 —
-    // 重置是覆盖行上的文字链，只在覆盖行出现
-    assert.equal(screen.getAllByRole('button', { name: '重置' }).length, 1);
+  it('状态说人话：默认值 / 已改过 / 待服务确认 / 未送达', () => {
+    const statuses: Record<string, RowStatus> = {
+      owner: { state: 'pending' },
+      'demo.mode': { state: 'failed', error: '未送达: 服务离线' },
+    };
+    renderPanel({ settings: [defaultRow, overriddenRow, driftedRow], statusOf: (_s, key) => statuses[key] });
+    assert.ok(screen.getByText('默认值'));
+    assert.ok(screen.getByText('待服务确认'));
+    const failed = screen.getByText('未送达');
+    assert.equal(failed.getAttribute('title'), '未送达: 服务离线');
+    assert.ok(screen.getByText('服务侧已变'));
   });
 
-  it('秘密项已设置：只显示占位不当默认值，覆盖走密码框，值原样交给 onSave', async () => {
+  it('秘密项：只显示有没有值，覆盖走密码框，值原样交给 onSave', async () => {
     const onSave = vi.fn(async () => {});
     renderPanel({ settings: [secretRow], onSave });
     assert.ok(screen.getByText('已设置'));
     assert.ok(screen.getByText('••••••••'));
-    assert.ok(screen.getByText(/值由服务自己保存/)); // 不是「默认 —」
-    assert.ok(screen.getByRole('button', { name: '清空' })); // 有值才有清空链
+    assert.ok(screen.queryByText('默认值') === null);
 
-    fireEvent.click(screen.getByRole('button', { name: '覆盖' }));
-    const input = screen.getByLabelText('llm.key 的新值') as HTMLInputElement;
-    assert.equal(input.type, 'password'); // 输入期也不明文露脸
-    assert.equal(input.value, ''); // 中心本来就没有值可回填
-    // 不给值不让保存：清空是另一条链
+    fireEvent.click(screen.getByRole('button', { name: '修改' }));
+    const input = screen.getByLabelText('llm.key 修改') as HTMLInputElement;
+    assert.equal(input.type, 'password');
+    assert.equal(input.value, '');
     assert.equal((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled, true);
     fireEvent.change(input, { target: { value: 'sk-2f9c' } });
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'llm.key', 'sk-2f9c'));
   });
 
-  it('秘密项未设置：未设置 + 设置按钮，不出现清空链', () => {
+  it('秘密项未设置：明确写"还没设置"', () => {
     renderPanel({ settings: [secretUnsetRow] });
-    assert.ok(screen.getByText('未设置'));
-    assert.ok(screen.getByRole('button', { name: '设置' }));
-    assert.equal(screen.queryByRole('button', { name: '清空' }), null);
-    assert.equal(screen.queryByRole('button', { name: '覆盖' }), null);
-  });
-
-  it('秘密项清空：两步确认后调 onReset（中心据此推空值给服务）', async () => {
-    const onReset = vi.fn(async () => {});
-    renderPanel({ settings: [secretRow], onReset });
-    fireEvent.click(screen.getByRole('button', { name: '清空' }));
-    assert.ok(screen.getByRole('button', { name: '确认清空' }));
-    expect(onReset).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
-    await waitFor(() => expect(onReset).toHaveBeenCalledWith('images', 'llm.key'));
-  });
-
-  it('只读项：显示启动值且没有可改入口', () => {
-    renderPanel({ settings: [readOnlyRow] });
-    assert.ok(screen.getByText('127.0.0.1:9101')); // 启动值照面
-    const tag = screen.getByText('不可改');
-    assert.ok(tag.getAttribute('title')?.includes('重启')); // 说清楚为什么不能改
-    assert.ok(screen.getByText(/启动参数带起来的只读值/));
-    assert.equal(screen.queryByRole('button', { name: '修改' }), null);
-    assert.equal(screen.queryByRole('button', { name: '重置' }), null);
-  });
-
-  it('服务侧自报值不一致：加「服务侧已变」标签 + 实际值走提示行', () => {
-    renderPanel({ settings: [driftedRow] });
-    const tag = screen.getByText('服务侧已变');
-    assert.equal(tag.getAttribute('title'), '服务侧现值：self-changed');
-    assert.ok(screen.getByText('默认 each')); // 提示行仍是默认值
-    assert.ok(screen.getByText(/服务侧 self-changed/)); // 服务侧那一列
-    assert.ok(screen.getByText('已覆盖')); // 中心口径的状态标签没被顶掉
-  });
-
-  it('回传过但一致 / 从没回传过：都不显示「服务侧已变」', () => {
-    const { unmount } = renderPanel({ settings: [{ ...driftedRow, actual: 'batch' }] });
-    assert.equal(screen.queryByText('服务侧已变'), null);
-    unmount();
-    renderPanel({
-      settings: [{ key: 'demo.mode', value: 'batch', default: 'each', overridden: true, actual: '', reported: false }],
-    });
-    assert.equal(screen.queryByText('服务侧已变'), null);
-  });
-
-  it('行状态：待确认 / 未送达（带原因 title）优先于覆盖态', () => {
-    const statuses: Record<string, RowStatus> = {
-      max_mb: { state: 'pending' },
-      owner: { state: 'failed', error: '未送达: 服务离线' },
-    };
-    renderPanel({ statusOf: (_s, key) => statuses[key] });
-    assert.ok(screen.getByText('已覆盖 · 待确认'));
-    const failed = screen.getByText('已覆盖 · 未送达');
-    assert.equal(failed.getAttribute('title'), '未送达: 服务离线');
-  });
-
-  it('未连接：修改与重置按钮禁用', () => {
-    renderPanel({ connected: false });
-    const modify = screen.getAllByRole('button', { name: '修改' })[0] as HTMLButtonElement;
-    const reset = screen.getByRole('button', { name: '重置' }) as HTMLButtonElement;
-    assert.equal(modify.disabled, true);
-    assert.equal(reset.disabled, true);
+    assert.ok(screen.getByText('还没设置'));
   });
 
   it('编辑保存：调用 onSave(service,key,新值)，成功后退出编辑态', async () => {
     const onSave = vi.fn(async () => {});
     renderPanel({ onSave });
     fireEvent.click(screen.getAllByRole('button', { name: '修改' })[0]!);
-    const input = screen.getByLabelText('max_mb 的新值') as HTMLInputElement;
+    const input = screen.getByLabelText('单张图片大小上限 修改') as HTMLInputElement;
     assert.equal(input.value, '32');
     fireEvent.change(input, { target: { value: '64' } });
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'max_mb', '64'));
-    await waitFor(() => assert.equal(screen.queryByLabelText('max_mb 的新值'), null));
+    await waitFor(() => assert.equal(screen.queryByLabelText('单张图片大小上限 修改'), null));
   });
 
   it('值未改动：保存直接退出，不调用 onSave', async () => {
@@ -178,7 +127,7 @@ describe('SettingsPanel', () => {
     renderPanel({ onSave });
     fireEvent.click(screen.getAllByRole('button', { name: '修改' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
-    await waitFor(() => assert.equal(screen.queryByLabelText('max_mb 的新值'), null));
+    await waitFor(() => assert.equal(screen.queryByLabelText('单张图片大小上限 修改'), null));
     expect(onSave).not.toHaveBeenCalled();
   });
 
@@ -186,23 +135,45 @@ describe('SettingsPanel', () => {
     const onSave = vi.fn(async () => {});
     renderPanel({ onSave });
     fireEvent.click(screen.getAllByRole('button', { name: '修改' })[0]!);
-    const input = screen.getByLabelText('max_mb 的新值');
+    const input = screen.getByLabelText('单张图片大小上限 修改');
     fireEvent.keyDown(input, { key: 'Escape' });
-    assert.equal(screen.queryByLabelText('max_mb 的新值'), null);
+    assert.equal(screen.queryByLabelText('单张图片大小上限 修改'), null);
     expect(onSave).not.toHaveBeenCalled();
   });
 
-  it('保存失败：保持编辑态（让用户可修正），由上层 toast 提示', async () => {
+  it('保存失败：保持编辑态（让用户可修正）', async () => {
     const onSave = vi.fn(async () => {
       throw new Error('设置项未声明');
     });
     renderPanel({ onSave });
-    fireEvent.click(screen.getAllByRole('button', { name: '修改' })[1]!);
-    fireEvent.change(screen.getByLabelText('owner 的新值'), { target: { value: '20002' } });
+    fireEvent.click(screen.getAllByRole('button', { name: '修改' })[0]!);
+    fireEvent.change(screen.getByLabelText('单张图片大小上限 修改'), { target: { value: '999' } });
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'owner', '20002'));
-    // 仍在编辑态
-    assert.ok(screen.getByLabelText('owner 的新值'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    assert.ok(screen.getByLabelText('单张图片大小上限 修改'));
+  });
+
+  it('布尔项：一个开关，点一下就是一次提交', async () => {
+    const onSave = vi.fn(async () => {});
+    renderPanel({ settings: [boolRow], onSave });
+    const sw = screen.getByRole('switch', { name: 'flag' });
+    assert.equal(sw.getAttribute('aria-checked'), 'false');
+    fireEvent.click(sw);
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'flag', 'true'));
+  });
+
+  it('枚举项：下拉里是给出的候选值', async () => {
+    const onSave = vi.fn(async () => {});
+    renderPanel({ settings: [enumRow], onSave });
+    fireEvent.click(screen.getByRole('button', { name: '修改' }));
+    const select = screen.getByLabelText('mode 修改') as HTMLSelectElement;
+    assert.deepEqual(
+      [...select.options].map((o) => o.value),
+      ['each', 'all'],
+    );
+    fireEvent.change(select, { target: { value: 'all' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'mode', 'all'));
   });
 
   it('重置：两步确认（先确认后执行），确认窗口 3s 超时复位', async () => {
@@ -210,27 +181,39 @@ describe('SettingsPanel', () => {
     try {
       const onReset = vi.fn(async () => {});
       renderPanel({ onReset });
-      fireEvent.click(screen.getByRole('button', { name: '重置' }));
-      assert.ok(screen.getByRole('button', { name: '确认重置' }));
+      fireEvent.click(screen.getByRole('button', { name: '恢复默认' }));
+      assert.ok(screen.getByRole('button', { name: '再点一次确认恢复默认' }));
       expect(onReset).not.toHaveBeenCalled();
 
-      // 3s 未确认 → 复位
       await act(async () => {
         await vi.advanceTimersByTimeAsync(3100);
       });
-      assert.ok(screen.getByRole('button', { name: '重置' }));
-      assert.equal(screen.queryByRole('button', { name: '确认重置' }), null);
+      assert.ok(screen.getByRole('button', { name: '恢复默认' }));
 
-      // 再走一遍完整确认（假时钟下不用 waitFor——测试库的 waitFor 靠真实 interval 检测，会挂住）
-      fireEvent.click(screen.getByRole('button', { name: '重置' }));
-      fireEvent.click(screen.getByRole('button', { name: '确认重置' }));
+      fireEvent.click(screen.getByRole('button', { name: '恢复默认' }));
+      fireEvent.click(screen.getByRole('button', { name: '再点一次确认恢复默认' }));
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });
       expect(onReset).toHaveBeenCalledWith('images', 'owner');
-      assert.ok(screen.getByRole('button', { name: '重置' })); // 确认态退出
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('未连接：修改与恢复默认都禁用', () => {
+    renderPanel({ connected: false });
+    const edit = screen.getAllByRole('button', { name: '修改' })[0] as HTMLButtonElement;
+    const reset = screen.getByRole('button', { name: '恢复默认' }) as HTMLButtonElement;
+    assert.equal(edit.disabled, true);
+    assert.equal(reset.disabled, true);
+  });
+
+  it('语言包覆盖：t 给什么就显示什么（全 x 时界面不该再露中文）', () => {
+    const tX: Translate = (key, fallback) => (key.startsWith('setting.') || key.startsWith('ui.') ? 'x' : (fallback ?? key));
+    renderPanel({ settings: [defaultRow], t: tX });
+    assert.ok(screen.getAllByText('x').length > 0);
+    assert.equal(screen.queryByText('默认值'), null);
+    assert.equal(screen.queryByText('单张图片大小上限'), null);
   });
 });

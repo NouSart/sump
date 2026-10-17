@@ -78,7 +78,7 @@ function boot(
 // writeNewValue 在 images 的第一行进入编辑、改值并保存。
 function writeNewValue(value: string): void {
   fireEvent.click(screen.getAllByRole('button', { name: '修改' })[0]!);
-  fireEvent.change(screen.getByLabelText('max_mb 的新值'), { target: { value } });
+  fireEvent.change(screen.getByLabelText('max_mb 修改'), { target: { value } });
   fireEvent.click(screen.getByRole('button', { name: '保存' }));
 }
 
@@ -99,7 +99,7 @@ describe('App', () => {
 
     fireEvent.click(screen.getByText('qq'));
     assert.ok(screen.getByRole('heading', { name: 'qq' }));
-    assert.ok(screen.getByText(/该服务未声明可设置项/));
+    assert.ok(screen.getByText(/这个服务没有可改的设置项/));
 
     fireEvent.click(screen.getByText('images'));
     assert.ok(screen.getByRole('heading', { name: 'images' }));
@@ -112,7 +112,7 @@ describe('App', () => {
 
     writeNewValue('2');
     await screen.findByText('已写入 images.max_mb（待服务确认）');
-    assert.ok(screen.getByText('已覆盖 · 待确认'));
+    assert.ok(screen.getByText('待服务确认'));
 
     await emitSSE('settings', {
       cause: 'set_setting',
@@ -120,7 +120,7 @@ describe('App', () => {
       results: [{ key: 'max_mb', value: '2', ok: true }],
     });
     await screen.findByText('已生效 images.max_mb = 2');
-    await waitFor(() => assert.ok(screen.getByText('已覆盖'))); // 待确认清除，覆盖态保留
+    await waitFor(() => assert.ok(screen.getByText('已改过'))); // 待确认清除，覆盖态保留
     await waitFor(() => expect(countCalls(calls, '/api/overview')).toBeGreaterThanOrEqual(2)); // 事件触发重拉
     expect(calls.some((c) => c.url === '/api/settings/set' && c.init?.method === 'POST')).toBe(true);
   });
@@ -139,7 +139,7 @@ describe('App', () => {
     });
     // 不 toast、不清状态：那一条不是我们这次推送的回执
     await waitFor(() => expect(countCalls(calls, '/api/overview')).toBeGreaterThanOrEqual(2));
-    assert.ok(screen.getByText('已覆盖 · 待确认'));
+    assert.ok(screen.getByText('待服务确认'));
     assert.equal(screen.queryByText(/已生效 images\.max_mb/), null);
   });
 
@@ -156,7 +156,7 @@ describe('App', () => {
     });
 
     await screen.findByText('未生效 images.max_mb：未送达: 拨号失败');
-    const failed = screen.getByText('已覆盖 · 未送达');
+    const failed = screen.getByText('未送达');
     assert.equal(failed.getAttribute('title'), '未送达: 拨号失败');
   });
 
@@ -166,8 +166,8 @@ describe('App', () => {
 
     writeNewValue('9');
     await screen.findByText('写入失败：设置项未声明');
-    assert.ok(screen.getByLabelText('max_mb 的新值')); // 仍在编辑，用户可修正
-    assert.ok(screen.getByText('已覆盖')); // pending 已清除
+    assert.ok(screen.getByLabelText('max_mb 修改')); // 仍在编辑，用户可修正
+    assert.ok(screen.getByText('已改过')); // pending 已清除
   });
 
   it('roster revision 变化：名册更新并触发设置视图重拉', async () => {
@@ -383,7 +383,7 @@ describe('App', () => {
   it('对话：历史取不到只提示，不阻断对话', async () => {
     boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
-    // 默认桩已覆盖 /api/history（空列表）：不该出现任何错误提示
+    // 默认桩已改过 /api/history（空列表）：不该出现任何错误提示
     assert.equal(screen.queryByRole('alert'), null);
   });
 

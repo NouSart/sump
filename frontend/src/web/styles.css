@@ -502,3 +502,43 @@ button { font: inherit; }
   .sidebar { width: 232px; }
   .portal-list { padding-inline: var(--gap-4); }
 }
+
+/* ---------- 设置页：人话版（中文名 + 控件 + 折叠只读项） ---------- */
+.svc-id { margin-left: 6px; font-family: var(--font-mono); font-size: 10px; color: var(--text-3); }
+.locale-select {
+  height: 32px; padding: 0 10px; border-radius: var(--r-md);
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+  font-size: var(--fs-meta); cursor: pointer;
+}
+.ro-group {
+  margin-top: var(--gap-4); border-top: 1px solid var(--border); padding-top: var(--gap-3);
+}
+.ro-group > summary {
+  cursor: pointer; font-size: var(--fs-meta); color: var(--text-2);
+  list-style: none;
+}
+.ro-group > summary::-webkit-details-marker { display: none; }
+.ro-group > summary::before { content: '▸ '; color: var(--text-3); }
+.ro-group[open] > summary::before { content: '▾ '; }
+.ro-hint { margin: 6px 0 var(--gap-2); font-size: var(--fs-micro); color: var(--text-3); }
+.ro-list { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.ro-row { display: flex; gap: var(--gap-3); font-size: var(--fs-meta); }
+.ro-row dt { flex: none; width: 128px; color: var(--text-3); }
+.ro-row dd {
+  margin: 0; min-width: 0; color: var(--text-2); font-family: var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.textarea { min-height: 96px; resize: vertical; line-height: 1.5; }
+.switch {
+  position: relative; width: 44px; height: 24px; padding: 0; flex: none;
+  border-radius: 999px; border: 1px solid var(--border-strong);
+  background: var(--surface); cursor: pointer; align-self: flex-start;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.switch[aria-checked='true'] { background: var(--accent-soft); border-color: var(--accent-line); }
+.switch-knob {
+  position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--text-2); transition: transform var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.switch[aria-checked='true'] .switch-knob { transform: translateX(20px); background: var(--accent); }
+.switch:disabled { opacity: 0.45; cursor: not-allowed; }

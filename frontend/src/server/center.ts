@@ -18,6 +18,8 @@ import {
 
 export interface CenterOptions {
   name: string;
+  /** 中文短名（面板导航用）。 */
+  title: string;
   centerURL: string;
   selfURL: string;
   description: string;
@@ -204,6 +206,7 @@ export class CenterLink {
   private async register(ws: WebSocket): Promise<void> {
     const payload: RegisterPayload = {
       name: this.opts.name,
+      title: this.opts.title,
       addr: this.opts.selfURL,
       description: this.opts.description,
       provides: this.opts.provides,

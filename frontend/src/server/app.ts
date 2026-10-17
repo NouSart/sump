@@ -19,6 +19,10 @@ export interface FrontendConfig {
   reasoner: string;
   /** 记忆服务名：门户启动时向它要该会话的历史，用来回填对话（真相在服务，门户不自己存）。 */
   memory: string;
+  /** 语言包目录（<locale>.json 的存放处）。 */
+  localesDir: string;
+  /** 启动语言（默认 zh-CN）。 */
+  lang: string;
   /** 审批服务名（第二层裁决由门户送回它）。 */
   approval: string;
   trustedHosts: string[];
@@ -57,6 +61,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
   const trust: TrustConfig = { boundAddr: addr, trustedHosts: cfg.trustedHosts };
   const link = new CenterLink({
     name: cfg.name,
+    title: '门户',
     centerURL: cfg.centerURL,
     selfURL,
     description: frontendDescription,
@@ -78,6 +83,8 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
         webDir: cfg.webDir,
         reasoner: cfg.reasoner,
         memory: cfg.memory,
+        localesDir: cfg.localesDir,
+        lang: cfg.lang,
         portal: { on: hub.on },
         timers: { current: timers.current, on: timers.on },
         approvals: { current: approvals.list, on: approvals.on, remove: approvals.remove },

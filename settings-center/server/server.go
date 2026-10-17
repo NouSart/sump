@@ -79,6 +79,7 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 	}
 	h.PutSelf(protocol.ServiceCard{
 		Name:        selfServiceName,
+		Title:       "设置中心",
 		Addr:        "ws://" + ln.Addr().String() + "/ws",
 		Description: "服务注册 · 全局信息 · 设置与调度",
 		Provides: []protocol.Provide{

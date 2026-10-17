@@ -4,6 +4,7 @@ import { PortalView } from './components/PortalView';
 import { IconChevronUp } from './components/icons';
 import { ServiceList } from './components/ServiceList';
 import { SettingsView } from './components/SettingsView';
+import { useLocalePack } from './i18n';
 import { Toasts, type Toast } from './components/Toasts';
 import type {
   Overview,
@@ -64,6 +65,8 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
   // 侧栏收起＝向上塌成一条（草图里的 ↑ 收起按钮），不是缩成竖轨：
   // 收起后字标留在顶上、对话区接管整幅宽度。
   const [collapsed, setCollapsed] = useState(false);
+  // 语言包：界面文案全部走它，切语言即时生效（不重启服务）。
+  const { locale, locales, setLocale, t } = useLocalePack();
   const [messages, setMessages] = useState<PortalMessage[]>([]);
   const [timers, setTimers] = useState<TimerView[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
@@ -347,12 +350,13 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
           <div className="brand-slot" aria-hidden="true" />
           {settingsOpen ? (
             <nav className="threads" aria-label="服务列表">
-              <p className="section-label">服务 · {services.length}</p>
+              <p className="section-label">{t('ui.settings.services', '服务')} · {services.length}</p>
               <ServiceList
                 services={services}
                 selected={selected}
                 onSelect={setSelected}
                 settingsCountOf={settingsCountOf}
+                t={t}
               />
             </nav>
           ) : (
@@ -366,8 +370,8 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
             </nav>
           )}
           <div className="me">
-            <span className="avatar" aria-hidden="true">我</span>
-            <span className="me-name">本机用户</span>
+            <span className="avatar" aria-hidden="true">{t('ui.me.avatar', '我')}</span>
+            <span className="me-name">{t('ui.me.name', '本机用户')}</span>
             <button
               type="button"
               className="icon-btn"
@@ -400,11 +404,13 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
             service={selectedService}
             settings={selectedSettings}
             connected={connected}
-            index={svcIndex}
-            total={services.length}
             statusOf={(service, key) => rowStates[`${service}.${key}`]}
             onSave={onSave}
             onReset={onReset}
+            locale={locale}
+            locales={locales}
+            onLocale={setLocale}
+            t={t}
           />
         ) : (
           <PortalView

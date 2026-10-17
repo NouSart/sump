@@ -127,6 +127,7 @@ class CenterLink:
             {
                 "name": self.name,
                 "addr": self.self_url,
+                "title": "向量",
                 "description": self.description,
                 "provides": self.provides,
                 "settings": self.settings,

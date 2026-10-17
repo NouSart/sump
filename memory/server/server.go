@@ -97,6 +97,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
+		Title:       "记忆",
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,

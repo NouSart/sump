@@ -92,7 +92,7 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Portal != "" {
 		actionTimeout = cfg.ReviewTTL + 30*time.Second
 	}
-	s.Service = service.New(service.Config{Name: cfg.Name, Listen: cfg.Listen, Center: cfg.Center,
+	s.Service = service.New(service.Config{Name: cfg.Name, Title: "审批", Listen: cfg.Listen, Center: cfg.Center,
 		ActionTimeout: actionTimeout, Logger: cfg.Logger,
 		Description: "终端命令处理与审批：返回终端裁决和 LLM 反馈，由 shell 补报到模型；白名单直过，其余挂起等门户用户裁决",
 		Provides: []protocol.Provide{
