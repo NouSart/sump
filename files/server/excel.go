@@ -62,7 +62,11 @@ func xlsxToText(f *excelize.File, maxChars int) (string, bool) {
 			continue // 单表读取失败跳过，其余表照常
 		}
 		for _, row := range rows {
-			line := strings.Join(row, "\t") + "\n"
+			cells := make([]string, len(row))
+			for i, cell := range row {
+				cells[i] = escapeTSVCell(cell)
+			}
+			line := strings.Join(cells, "\t") + "\n"
 			n = utf8.RuneCountInString(line)
 			if used+n > maxChars {
 				return strings.TrimRight(b.String(), "\n"), true
@@ -72,6 +76,18 @@ func xlsxToText(f *excelize.File, maxChars int) (string, bool) {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n"), false
+}
+
+// escapeTSVCell 把单元格里会破坏 TSV 结构的字符转义：制表符 → `\t`、换行 → `\n`、回车 → `\r`。
+//
+// 为什么必须转义：单元格允许换行（Excel 的 Alt+Enter）和制表符，直接拼进 TSV 会让
+// **一列变两列、一行变两行**——模型按列读就会错位（实测：备注列「含 tab\t与空格」拆成了三列）。
+// 宁可让模型看到可见的转义序列，也不能让表格结构悄悄串掉。
+func escapeTSVCell(s string) string {
+	if !strings.ContainsAny(s, "\t\r\n") {
+		return s
+	}
+	return strings.NewReplacer("\t", `\t`, "\r", `\r`, "\n", `\n`).Replace(s)
 }
 
 // editXlsx 对 xlsx 应用单元格编辑，返回写回后的完整字节与实际写入格数。

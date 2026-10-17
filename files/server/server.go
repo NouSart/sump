@@ -14,6 +14,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -176,8 +178,14 @@ func (s *Server) actionSave(_ context.Context, _ protocol.Envelope, in protocol.
 		return nil, fmt.Errorf("save: 文件超过 %d 字节上限", limit)
 	}
 	filename := strings.TrimSpace(p.Filename)
+	if filename == "" && strings.TrimSpace(p.URL) != "" {
+		// 只给了 URL 时按 URL 末段取名：模型用 save 抓一个网页/附件时不该被迫先猜文件名。
+		if name := filenameFromURL(p.URL); name != "" {
+			filename = name
+		}
+	}
 	if filename == "" {
-		return nil, errors.New("save: filename 必填")
+		return nil, errors.New("save: filename 必填（用 URL 保存时可由 URL 末段推断，但 URL 里得有个像文件名的末段）")
 	}
 	mime := p.Mime
 	if mime == "" {
@@ -430,6 +438,26 @@ func truncateRunes(s string, max int) (string, bool) {
 }
 
 // fetchURL 下载文件：限时 30s、限制大小（多读 1 字节探测超限）。
+// filenameFromURL 从 URL 末段推断文件名（去掉查询串、解码转义）。
+// 不像文件名（末段为空 / 含路径分隔符或控制字符 / 过长）时返回空串——由调用方继续要求显式 filename。
+func filenameFromURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	base := path.Base(u.Path)
+	if base == "." || base == "/" || base == "" {
+		return ""
+	}
+	if decoded, err := url.PathUnescape(base); err == nil {
+		base = decoded
+	}
+	if strings.ContainsAny(base, "/\\\x00") || len(base) > 200 {
+		return ""
+	}
+	return base
+}
+
 func fetchURL(url string, maxBytes int64) ([]byte, string, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(url)
