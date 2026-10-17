@@ -50,7 +50,7 @@ func newReviewServer(t *testing.T, over func(*Config)) (*Server, string) {
 
 func reviewRequest(exe, item string) protocol.JumpPayload {
 	req := protocol.CommandApprovalRequest{Version: 1, ItemID: item, Plan: protocol.ExecutionPlan{
-		Version: 1, Command: "Get-Process", WorkDir: `C:\root`, ShellPath: exe, Args: protocol.PowerShellArgs(),
+		Version: 1, Command: "Get-Process", WorkDir: filepath.Dir(exe), ShellPath: exe, Args: protocol.PowerShellArgs(),
 		Dialect: "powershell", Platform: runtime.GOOS, Profile: protocol.PowerShellProfile,
 		TimeoutMS: 5000, MaxOutputBytes: 4096,
 	}}
@@ -294,7 +294,7 @@ func TestReviewDoesNotBlockOtherApprovals(t *testing.T) {
 func requestForAllow(t *testing.T, exe string) protocol.JumpPayload {
 	t.Helper()
 	req := protocol.CommandApprovalRequest{Version: 1, ItemID: "item-allow", Plan: protocol.ExecutionPlan{
-		Version: 1, Command: "Get-Date", WorkDir: `C:\root`, ShellPath: exe, Args: protocol.PowerShellArgs(),
+		Version: 1, Command: "Get-Date", WorkDir: filepath.Dir(exe), ShellPath: exe, Args: protocol.PowerShellArgs(),
 		Dialect: "powershell", Platform: runtime.GOOS, Profile: protocol.PowerShellProfile,
 		TimeoutMS: 5000, MaxOutputBytes: 4096,
 	}}
