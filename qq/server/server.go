@@ -100,7 +100,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.owner = v
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("只服务哪个 QQ 号"),
+		service.Hint("填你自己的 QQ 号，只有它能指挥这个智能体；留空 = 谁的私聊都不理"))
 	s.HandleSetting("napcat.url", cfg.NapCatURL, func(v string) error {
 		v = strings.TrimSpace(v)
 		u, err := url.Parse(v)
@@ -109,28 +110,32 @@ func New(cfg Config, logger *log.Logger) *Server {
 		}
 		s.setNapcatURL(v)
 		return nil
-	})
+	}, service.Label("NapCat 地址"),
+		service.Hint("QQ 机器人网关的 WebSocket 地址，例如 ws://127.0.0.1:3001"))
 	s.HandleSetting("reasoner", cfg.Reasoner, func(v string) error {
 		if strings.TrimSpace(v) == "" {
 			return errors.New("不接受空服务名")
 		}
 		s.setReasoner(v)
 		return nil
-	})
+	}, service.Label("对话服务名"),
+		service.Hint("QQ 来的消息交给哪个服务去回答"))
 	s.HandleSetting("images", cfg.Images, func(v string) error {
 		if strings.TrimSpace(v) == "" {
 			return errors.New("不接受空服务名")
 		}
 		s.setImages(v)
 		return nil
-	})
+	}, service.Label("图片服务名"),
+		service.Hint("QQ 里发的图片存到哪个服务"))
 	s.HandleSetting("files", cfg.Files, func(v string) error {
 		if strings.TrimSpace(v) == "" {
 			return errors.New("不接受空服务名")
 		}
 		s.setFiles(v)
 		return nil
-	})
+	}, service.Label("文件服务名"),
+		service.Hint("QQ 里发的文件存到哪个服务"))
 	s.Handle("deliver", s.actionDeliver)
 	s.napcat = napcat.New(napcat.Config{
 		URL:       cfg.NapCatURL,
@@ -144,7 +149,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setNapcatToken(v)
 		return nil
 	}
-	s.HandleSecret("napcat.token", applyToken)
+	s.HandleSecret("napcat.token", applyToken,
+		service.Label("NapCat 访问令牌"),
+		service.Hint("网关开了鉴权才需要；只在你自己这边保存，中心不回显"))
 	if cfg.NapCatToken != "" {
 		_ = applyToken(cfg.NapCatToken)
 	}
