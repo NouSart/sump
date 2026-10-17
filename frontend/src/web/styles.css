@@ -65,6 +65,9 @@
   --shadow-1: 0 10px 30px rgba(0, 0, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
   --shadow-2: 0 24px 60px rgba(0, 0, 0, 0.45);
   --noise-opacity: 0.035;
+  /* 悬浮输入框：未聚焦更透（背后文字可见），聚焦更实（正在输入的字要清楚） */
+  --glass: rgba(18, 20, 27, 0.55);
+  --glass-focus: rgba(18, 20, 27, 0.86);
 }
 
 /* 浅色 */
@@ -87,6 +90,8 @@
   --shadow-1: 0 8px 24px rgba(29, 41, 66, 0.10), 0 1px 0 rgba(255, 255, 255, 0.7) inset;
   --shadow-2: 0 24px 60px rgba(29, 41, 66, 0.16);
   --noise-opacity: 0.025;
+  --glass: rgba(255, 255, 255, 0.55);
+  --glass-focus: rgba(255, 255, 255, 0.88);
 }
 
 * { box-sizing: border-box; }
@@ -246,10 +251,11 @@ button { font: inherit; }
 }
 
 /* ---------- 对话 ---------- */
-.portal { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.portal { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .portal-list {
   flex: 1; min-height: 0; overflow-y: auto; scroll-behavior: smooth;
-  margin: 0; padding: var(--gap-6) max(var(--gap-5), calc((100% - var(--col)) / 2)) var(--gap-4);
+  /* 底部留出浮层高度（--dock-space 由 PortalView 量出来喂进来）：最后一条消息能滚到输入框上方 */
+  margin: 0; padding: var(--gap-6) max(var(--gap-5), calc((100% - var(--col)) / 2)) var(--dock-space, var(--gap-4));
   list-style: none; display: flex; flex-direction: column; gap: var(--gap-5);
 }
 .portal-empty { color: var(--text-3); font-size: var(--fs-meta); text-align: center; margin-top: 12vh; }
@@ -313,26 +319,37 @@ button { font: inherit; }
 .approval-actions { display: flex; gap: var(--gap-2); margin-top: 8px; }
 
 /* ---------- L3 悬浮输入 ---------- */
+/* 输入区浮层：压在消息流之上，自身半透明——背后的文字能透出来；
+   聚焦时变实、模糊加强，保证正在输入的那行字足够清楚（草图里的两段式透明度）。 */
+.dock {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; flex-direction: column; gap: var(--gap-2);
+  padding: 0 var(--gap-5) var(--gap-3);
+  pointer-events: none;
+}
+.dock > * { pointer-events: auto; }
+.dock .composer,
+.dock .approvals,
+.dock .timer-strip,
+.dock .inline-error { width: min(var(--col), 100%); margin: 0 auto var(--gap-2); }
+.dock .composer { margin-bottom: 0; }
+
 .composer {
-  width: min(var(--col), calc(100% - var(--gap-5) * 2));
-  margin: 0 auto var(--gap-3);
   padding: 14px 16px 10px;
   display: flex; flex-direction: column; gap: var(--gap-2);
-  background: var(--surface);
-  -webkit-backdrop-filter: blur(22px) saturate(150%);
-  backdrop-filter: blur(22px) saturate(150%);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
   border: 1px solid var(--border);
   border-radius: var(--r-xl);
   box-shadow: var(--shadow-1);
-  opacity: 0.9;
-  transition: opacity var(--dur) var(--ease), background var(--dur) var(--ease),
-              border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease), backdrop-filter var(--dur) var(--ease);
 }
 .composer:focus-within {
-  opacity: 1;
-  background: var(--surface-strong);
-  -webkit-backdrop-filter: blur(30px) saturate(170%);
-  backdrop-filter: blur(30px) saturate(170%);
+  background: var(--glass-focus);
+  -webkit-backdrop-filter: blur(34px) saturate(170%);
+  backdrop-filter: blur(34px) saturate(170%);
   border-color: var(--border-strong);
   box-shadow: var(--shadow-2);
 }

@@ -376,6 +376,16 @@ describe('App', () => {
     await screen.findByText(/未送达：未知目标服务: reasoner/);
   });
 
+  it('对话：输入区是浮层（消息流在它背后穿过），不是坐在流里的占位', async () => {
+    boot({ openSettings: false });
+    await screen.findByRole('region', { name: '对话' });
+
+    const dock = document.querySelector('.dock');
+    assert.ok(dock, '输入区必须挂在一个浮层容器里');
+    assert.ok(dock.querySelector('.composer'), 'composer 应该在浮层内');
+    assert.equal(dock.contains(document.querySelector('.portal-list')), false, '消息流不能被塞进浮层');
+  });
+
   it('外观：切深色写 <html data-theme> 并记住，切回浅色移除', () => {
     window.localStorage.clear();
     delete document.documentElement.dataset.theme;
