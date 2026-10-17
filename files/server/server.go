@@ -97,8 +97,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setMu.Unlock()
 		return nil
 	}, service.Label("单个文件大小上限"),
-		service.Hint("超过这个大小的文件会被拒绝写入或读取，单位 MB"),
-		service.As("number"))
+		service.Hint("超过这个大小的文件会被拒绝写入或读取"),
+		service.As("number"),
+		service.Unit("MB"))
 	s.HandleSetting("read_max_chars", strconv.Itoa(cfg.ReadMaxChars), func(v string) error {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n < 1 {
@@ -110,7 +111,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		return nil
 	}, service.Label("单次读取的字数上限"),
 		service.Hint("读文件时最多往回带多少字，超出的会截断——调大能少丢上下文，但更费模型额度"),
-		service.As("number"))
+		service.As("number"),
+		service.Unit("chars"))
 	s.Handle("save", s.actionSave)
 	s.Handle("fetch", s.actionFetch)
 	s.Handle("read", s.actionRead)

@@ -14,6 +14,8 @@ interface Props {
   onClose: () => void;
   service: ServiceCardView | null;
   settings: SettingViewData[] | null;
+  /** 名册里的服务名：给"服务名"这类设置项当候选。 */
+  peers: string[];
   connected: boolean;
   statusOf: (service: string, key: string) => RowStatus | undefined;
   onSave: (service: string, key: string, value: string) => Promise<void>;
@@ -30,6 +32,7 @@ export function SettingsView({
   onClose,
   service,
   settings,
+  peers,
   connected,
   statusOf,
   onSave,
@@ -113,6 +116,7 @@ export function SettingsView({
         <SettingsPanel
           service={service}
           settings={settings}
+          peers={peers}
           connected={connected}
           statusOf={statusOf}
           onSave={onSave}

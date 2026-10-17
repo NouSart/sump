@@ -178,7 +178,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setMu.Unlock()
 		return nil
 	}, service.Label("命令在哪个目录里跑"),
-		service.Hint("模型执行命令时的默认工作目录；只能在这个目录及其子目录里活动"))
+		service.Hint("模型执行命令时的默认工作目录；只能在这个目录及其子目录里活动"),
+		service.As("text"))
 	s.HandleSetting("exec.shell", s.shell, func(v string) error {
 		v = strings.TrimSpace(v)
 		if v != "" {
@@ -191,7 +192,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setMu.Unlock()
 		return nil
 	}, service.Label("用哪个解释器"),
-		service.Hint("留空 = 自动找系统自带的 PowerShell；一般不用改"))
+		service.Hint("留空 = 自动找系统自带的 PowerShell；一般不用改"),
+		service.As("text"))
 	s.HandleSetting("exec.timeout_ms", strconv.FormatInt(cfg.Timeout.Milliseconds(), 10), func(v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1000 {
@@ -202,8 +204,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setMu.Unlock()
 		return nil
 	}, service.Label("单条命令超时"),
-		service.Hint("单位毫秒；超时会被强行结束，并把「超时」报给模型"),
-		service.As("number"))
+		service.Hint("超时会被强行结束，并把「超时」报给模型"),
+		service.As("number"),
+		service.Unit("ms"))
 	s.HandleSetting("exec.max_output_kb", strconv.FormatInt(cfg.MaxOutputBytes>>10, 10), func(v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
@@ -214,8 +217,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setMu.Unlock()
 		return nil
 	}, service.Label("命令输出上限"),
-		service.Hint("单位 KB；超出部分会被截断，太大会把模型上下文撑爆"),
-		service.As("number"))
+		service.Hint("超出部分会被截断，太大会把模型上下文撑爆"),
+		service.As("number"),
+		service.Unit("KB"))
 	s.HandleSetting("exec.concurrency", strconv.Itoa(cfg.Concurrency), func(v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
@@ -226,7 +230,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setMu.Unlock()
 		return nil
 	}, service.Label("同时跑几条命令"),
-		service.As("number"))
+		service.Hint("跑满后新命令排队，不直接拒绝"),
+		service.As("number"),
+		service.Unit("count"))
 	s.HandleSetting("exec.queue_limit", strconv.Itoa(cfg.QueueLimit), func(v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
@@ -238,7 +244,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		return nil
 	}, service.Label("排队等执行的上限"),
 		service.Hint("同时跑满后还能排几个；排满再来就直接拒绝"),
-		service.As("number"))
+		service.As("number"),
+		service.Unit("count"))
 	s.HandleSetting("approval.service", cfg.ApprovalService, func(v string) error {
 		v = strings.TrimSpace(v)
 		if v != "" && !serviceNamePattern.MatchString(v) {
@@ -249,7 +256,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setMu.Unlock()
 		return nil
 	}, service.Label("审批服务名"),
-		service.Hint("白名单外的命令交给哪个服务裁决；留空 = 直接拒绝"))
+		service.Hint("白名单外的命令交给哪个服务裁决；不填就没得裁决，一律拒绝"),
+		service.As("service"))
 	s.HandleSetting("approval.timeout_ms", strconv.FormatInt(cfg.ApprovalTimeout.Milliseconds(), 10), func(v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1000 {
@@ -260,8 +268,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setMu.Unlock()
 		return nil
 	}, service.Label("等你审批的最长时间"),
-		service.Hint("单位毫秒；白名单外的命令挂起这么久还没人裁决，就按拒绝处理"),
-		service.As("number"))
+		service.Hint("白名单外的命令挂起这么久还没人裁决，就按拒绝处理"),
+		service.As("number"),
+		service.Unit("ms"))
 
 	s.Handle("run", s.actionRun)
 	return s

@@ -30,12 +30,13 @@ export interface SettingViewData {
   readonly?: boolean;
   actual?: string;
   reported?: boolean;
-  // 人话元数据（服务声明时给出）：中文名、说明、控件类型、枚举候选。
+  // 人话元数据（服务声明时给出）：中文名、说明、控件类型、枚举候选、数字单位。
   // 面板优先用语言包里的 setting.<service>.<key>.label/hint，其次用这里的兜底。
   label?: string;
   hint?: string;
   kind?: string;
   options?: string[];
+  unit?: string;
 }
 
 // SettingResultViewData 是一次下发中单个设置项的结果（settings 事件）。

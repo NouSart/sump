@@ -154,7 +154,7 @@ func sameSettings(a, b []protocol.Setting) bool {
 		x, y := a[i], b[i]
 		if x.Key != y.Key || x.Default != y.Default || x.Secret != y.Secret ||
 			x.ReadOnly != y.ReadOnly || x.Set != y.Set ||
-			x.Label != y.Label || x.Hint != y.Hint || x.Kind != y.Kind {
+			x.Label != y.Label || x.Hint != y.Hint || x.Kind != y.Kind || x.Unit != y.Unit {
 			return false
 		}
 		if len(x.Options) != len(y.Options) {
@@ -341,7 +341,7 @@ func (s *Settings) viewLocked(service string) (protocol.ServiceSettings, bool) {
 	views := make([]protocol.SettingView, 0, len(items))
 	for _, it := range items {
 		// 人话元数据跟着声明走（服务说它叫什么、怎么解释、用什么控件）。
-		human := protocol.SettingView{Label: it.Label, Hint: it.Hint, Kind: it.Kind, Options: it.Options}
+		human := protocol.SettingView{Label: it.Label, Hint: it.Hint, Kind: it.Kind, Options: it.Options, Unit: it.Unit}
 		switch {
 		case it.Secret:
 			v := human

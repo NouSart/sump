@@ -35,8 +35,9 @@ type Setting struct {
 	// 以下是给**人**看的部分（可选；缺省时面板退回显示 Key）。
 	Label   string   `msgpack:"label,omitempty"`   // 中文名，如「单文件大小上限」
 	Hint    string   `msgpack:"hint,omitempty"`    // 一句话：改它会发生什么
-	Kind    string   `msgpack:"kind,omitempty"`    // bool | number | enum | textarea | text（缺省 text）
+	Kind    string   `msgpack:"kind,omitempty"`    // bool | number | enum | textarea | text | service | optional-service（缺省 text）
 	Options []string `msgpack:"options,omitempty"` // Kind=enum 的候选值
+	Unit    string   `msgpack:"unit,omitempty"`    // Kind=number 的单位符号（ms/MB/KB/chars/count），面板翻成人话
 }
 
 // RegisterPayload 是 register 请求的 payload：服务名片。
@@ -295,6 +296,7 @@ type SettingView struct {
 	Hint    string   `msgpack:"hint,omitempty"`
 	Kind    string   `msgpack:"kind,omitempty"`
 	Options []string `msgpack:"options,omitempty"`
+	Unit    string   `msgpack:"unit,omitempty"`
 }
 
 // ServiceSettings 是一个服务的设置清单（按声明顺序）。

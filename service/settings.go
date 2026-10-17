@@ -27,11 +27,12 @@ type settingEntry struct {
 	preset string
 	kind   settingKind
 	apply  func(value string) error
-	// 给**人**看的部分（可选）：中文名、一句话说明、控件类型、枚举候选。
+	// 给**人**看的部分（可选）：中文名、一句话说明、控件类型、枚举候选、数字单位。
 	label   string
 	hint    string
 	input   string
 	options []string
+	unit    string
 }
 
 // Option 给设置项补"人话"元数据。不传就用 Key 当标题、纯文本框。
@@ -43,13 +44,24 @@ func Label(text string) Option { return func(e *settingEntry) { e.label = text }
 // Hint 设置一句话说明：改它会发生什么、取值范围、留空意味着什么。
 func Hint(text string) Option { return func(e *settingEntry) { e.hint = text } }
 
-// As 指定控件类型（bool / number / enum / textarea / text），枚举顺带给候选值。
+// As 指定控件类型（bool / number / enum / textarea / text / service / optional-service），
+// 枚举顺带给候选值。
+//
+// service 表示值是一个**服务名**：面板从名册里列候选，但最终校验权仍在本服务
+// （名册只是候选，不是契约）。optional-service 表示该项可以"没有"（清空即关闭这项能力），
+// 面板会画成「开关 + 选择」。
 func As(kind string, options ...string) Option {
 	return func(e *settingEntry) {
 		e.input = kind
 		e.options = options
 	}
 }
+
+// Unit 给数字项标单位符号：ms / MB / KB / chars / count。
+//
+// 声明的是**符号**而不是中文——面板负责翻成人话（"毫秒"），并在值旁边加一句读法
+// （300000 ms → ≈ 5 分钟）。服务仍然只认原始数值。
+func Unit(symbol string) Option { return func(e *settingEntry) { e.unit = symbol } }
 
 // readOnlyLabels 是启动参数的中文名：这些键在所有服务里同义，写一次大家共用。
 var readOnlyLabels = map[string]string{
@@ -175,7 +187,7 @@ func (s *Service) declarations() []protocol.Setting {
 	out := make([]protocol.Setting, 0, len(s.settings))
 	for _, it := range s.settings {
 		view := protocol.Setting{
-			Key: it.key, Label: it.label, Hint: it.hint, Kind: it.input, Options: it.options,
+			Key: it.key, Label: it.label, Hint: it.hint, Kind: it.input, Options: it.options, Unit: it.unit,
 		}
 		switch it.kind {
 		case settingSecret:

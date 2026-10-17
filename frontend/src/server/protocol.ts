@@ -27,11 +27,12 @@ export interface Setting {
   readonly?: boolean;
   secret?: boolean;
   set?: boolean;
-  /** 给**人**看的部分（可选）：中文名、说明、控件类型、枚举候选。 */
+  /** 给**人**看的部分（可选）：中文名、说明、控件类型、枚举候选、数字单位。 */
   label?: string;
   hint?: string;
   kind?: string;
   options?: string[];
+  unit?: string;
 }
 
 export interface RegisterPayload {

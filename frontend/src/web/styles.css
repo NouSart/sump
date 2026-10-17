@@ -450,10 +450,13 @@ button { font: inherit; }
 .field-reset:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
 .field-reset[data-armed='true'] { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
 .field-control { display: flex; align-items: center; gap: var(--gap-2); }
+/* 值 + 单位 + 读法挤在一起，别被 flex 拉开成一排孤零零的字。 */
+.field-text { flex: 1; min-width: 0; display: inline-flex; align-items: baseline; gap: 6px; }
 .field-value {
-  flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--fs-meta);
+  min-width: 0; font-family: var(--font-mono); font-size: var(--fs-meta);
   color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.field-hint { margin: 0; font-size: var(--fs-micro); color: var(--text-3); line-height: 1.5; }
 .input {
   flex: 1; min-width: 0; padding: 6px 10px; border-radius: var(--r-sm);
   border: 1px solid var(--border-strong); background: var(--bg-0);
@@ -546,3 +549,19 @@ button { font: inherit; }
 }
 .switch[aria-checked='true'] .switch-knob { transform: translateX(20px); background: var(--accent); }
 .switch:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 分段选项：项少时比下拉更快——一眼看全，一下点上。 */
+.seg {
+  display: inline-flex; padding: 3px; gap: 2px;
+  border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg-0);
+}
+.seg-item {
+  padding: 4px 14px; border: 0; border-radius: 999px; background: transparent;
+  color: var(--text-2); font-size: var(--fs-meta); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.seg-item:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
+.seg-item[aria-checked='true'] { color: var(--text); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.seg-item:disabled { opacity: 0.45; cursor: not-allowed; }
+.field-unit { flex: none; font-size: var(--fs-micro); color: var(--text-3); }
+.field-readout { flex: none; font-size: var(--fs-micro); color: var(--text-3); font-variant-numeric: tabular-nums; }

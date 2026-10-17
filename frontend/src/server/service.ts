@@ -20,11 +20,11 @@ export const portalProvides: Provide[] = [
 // 进面板只为看得见。门户不消费 configure（只读项中心也不会下发），所以这里不发明一套设置机制。
 export function portalSettings(cfg: { name: string; addr: string; centerURL: string; reasoner: string; webDir?: string }): Setting[] {
   return [
-    { key: 'name', default: cfg.name, readonly: true },
-    { key: 'addr', default: cfg.addr, readonly: true },
-    { key: 'center', default: cfg.centerURL, readonly: true },
-    { key: 'reasoner', default: cfg.reasoner, readonly: true },
-    { key: 'web', default: cfg.webDir ?? '', readonly: true },
+    { key: 'name', default: cfg.name, readonly: true, label: '服务名' },
+    { key: 'addr', default: cfg.addr, readonly: true, label: '监听地址' },
+    { key: 'center', default: cfg.centerURL, readonly: true, label: '设置中心' },
+    { key: 'reasoner', default: cfg.reasoner, readonly: true, label: '对话服务' },
+    { key: 'web', default: cfg.webDir ?? '', readonly: true, label: '前端目录' },
   ];
 }
 

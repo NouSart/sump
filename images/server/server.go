@@ -81,8 +81,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setMu.Unlock()
 		return nil
 	}, service.Label("单张图片大小上限"),
-		service.Hint("超过这个大小的图片会被拒绝，单位 MB"),
-		service.As("number"))
+		service.Hint("超过这个大小的图片会被拒绝"),
+		service.As("number"),
+		service.Unit("MB"))
 	s.Handle("save", s.actionSave)
 	s.Handle("fetch", s.actionFetch)
 	// 只读项：启动参数带起来的（换它要重启服务）。db/dir 是存储身份——运行中换库/换目录

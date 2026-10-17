@@ -183,7 +183,8 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
     { "action": "fetch", "input": "{id}", "output": "{id, mime, data(base64), size}" }
   ],
   "settings": [                                  // 我可被设置哪些项（预设值 = 本服务启动引导值；只声明真正消费的项）
-    { "key": "max_mb", "default": "32" },                                    // 普通项：值由中心保管
+    { "key": "max_mb", "default": "32",                                      // 普通项：值由中心保管
+      "label": "单张图片大小上限", "kind": "number", "unit": "MB" },          // 人话元数据（可选）：怎么显示、用什么控件
     { "key": "llm.key", "secret": true, "set": false },                      // 秘密项：值由服务自己持有
     { "key": "addr", "default": "127.0.0.1:9101", "readonly": true }         // 只读项：启动参数带起来的
   ]
@@ -192,6 +193,19 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 
 - `provides[].input/output` 是**给人看的宽松描述**，不是 JSON Schema。
   精确的字段形状由协议包里的载荷类型定义（`protocol/payloads.go`）。
+- `settings[]` 的**人话元数据**全部可选——服务不给，面板就退回"键名 + 文本框"：
+
+| 字段 | 用途 |
+| ---- | ---- |
+| `label` | 中文名。面板优先取语言包 `setting.<service>.<key>.label`，再回落这里 |
+| `hint` | 一句话说明：改它会发生什么、留空意味着什么 |
+| `kind` | 控件类型：`bool` / `enum` / `number` / `text` / `textarea` / `service` / `optional-service`（缺省 `text`） |
+| `options` | `enum` 的候选**原值**；标签走语言包 `setting.<service>.<key>.opt.<value>`，缺了就显示原值 |
+| `unit` | `number` 的单位**符号**：`ms` / `MB` / `KB` / `chars` / `count`。面板翻成人话并在值旁给读法（`300000 ms → ≈ 5 分钟`）；服务收到的仍是原始数值 |
+
+`service` 表示值是一个服务名：面板从名册里列候选，但**名册只是候选，校验权仍在服务**
+（名册里没有的名字照样提交，服务自己拒）。`optional-service` 表示该项可以"没有"
+（清空 = 关闭这项能力），面板画成「开关 + 选择」，关掉提交空串、打开回落声明预设。
 - `settings[]` 声明“可设置项 + 预设值”（线路字段名沿用 `default`；预设值 = 服务自己给的引导值，可在重启后变化）。设置中心保管并提供动作：
 
 | 动作（jump 到 `settings-center`） | 输入 | 输出 |

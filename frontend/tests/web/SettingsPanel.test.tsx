@@ -1,5 +1,5 @@
-// SettingsPanel（人话版）：空态 / 分组 / 状态词 / 编辑保存 / Escape / 重置两步确认 / 未连接禁用 /
-// 布尔开关即提交 / 枚举下拉 / 语言包覆盖（t 返回 x 时不出现中文）。
+// SettingsPanel（人话版）：空态 / 分组 / 状态词 / 开关与选项直接提交 / 服务名候选来自名册 /
+// 数字单位与读法 / 长文本进「高级」/ 语言包覆盖（t 返回 x 时不出现中文）。
 import assert from 'node:assert/strict';
 import { describe, it, expect, vi } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -48,6 +48,7 @@ function renderPanel(over: Partial<ComponentProps<typeof SettingsPanel>> = {}) {
     <SettingsPanel
       service={svc}
       settings={[defaultRow, overriddenRow]}
+      peers={['images', 'memory', 'reasoner']}
       connected={true}
       statusOf={() => undefined}
       onSave={async () => {}}
@@ -162,18 +163,109 @@ describe('SettingsPanel', () => {
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'flag', 'true'));
   });
 
-  it('枚举项：下拉里是给出的候选值', async () => {
+  it('枚举项：候选项直接摆出来，点一下就是一次提交（不用先进编辑态）', async () => {
     const onSave = vi.fn(async () => {});
     renderPanel({ settings: [enumRow], onSave });
-    fireEvent.click(screen.getByRole('button', { name: '修改' }));
-    const select = screen.getByLabelText('mode 修改') as HTMLSelectElement;
+    const radios = screen.getAllByRole('radio');
     assert.deepEqual(
-      [...select.options].map((o) => o.value),
+      radios.map((r) => r.textContent),
       ['each', 'all'],
     );
-    fireEvent.change(select, { target: { value: 'all' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    assert.equal(radios[0]?.getAttribute('aria-checked'), 'true');
+    fireEvent.click(radios[1] as HTMLElement);
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'mode', 'all'));
+  });
+
+  it('枚举项候选多于 3 个时改下拉，仍是点一下就提交', async () => {
+    const onSave = vi.fn(async () => {});
+    const many: SettingViewData = { ...enumRow, value: 'a', kind: 'enum', options: ['a', 'b', 'c', 'd'] };
+    renderPanel({ settings: [many], onSave });
+    const select = screen.getByLabelText('mode') as HTMLSelectElement;
+    assert.deepEqual(
+      [...select.options].map((o) => o.value),
+      ['a', 'b', 'c', 'd'],
+    );
+    fireEvent.change(select, { target: { value: 'd' } });
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'mode', 'd'));
+  });
+
+  it('服务名项：候选来自名册（排除自己），选完即提交', async () => {
+    const onSave = vi.fn(async () => {});
+    const svcRow: SettingViewData = {
+      key: 'reasoner',
+      value: 'reasoner',
+      default: 'reasoner',
+      overridden: false,
+      kind: 'service',
+    };
+    renderPanel({ settings: [svcRow], onSave });
+    const select = screen.getByLabelText('reasoner') as HTMLSelectElement;
+    assert.deepEqual(
+      [...select.options].map((o) => o.value),
+      ['memory', 'reasoner'],
+    );
+    fireEvent.change(select, { target: { value: 'memory' } });
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'reasoner', 'memory'));
+  });
+
+  it('可空服务项：一个开关 + 选择；关掉提交空串，打开回落默认值', async () => {
+    const onSave = vi.fn(async () => {});
+    const optRow: SettingViewData = {
+      key: 'portal',
+      value: 'frontend',
+      default: 'frontend',
+      overridden: false,
+      kind: 'optional-service',
+    };
+    const { rerender } = renderPanel({ settings: [optRow], onSave });
+    const sw = screen.getByRole('switch', { name: 'portal' });
+    assert.equal(sw.getAttribute('aria-checked'), 'true');
+    fireEvent.click(sw);
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'portal', ''));
+
+    rerender(
+      <SettingsPanel
+        service={svc}
+        settings={[{ ...optRow, value: '' }]}
+        peers={['images', 'memory', 'reasoner']}
+        connected={true}
+        statusOf={() => undefined}
+        onSave={onSave}
+        onReset={async () => {}}
+        t={tZh}
+      />,
+    );
+    const swOff = screen.getByRole('switch', { name: 'portal' });
+    assert.equal(swOff.getAttribute('aria-checked'), 'false');
+    fireEvent.click(swOff);
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'portal', 'frontend'));
+  });
+
+  it('数字项：带单位与读法（300000 毫秒 ≈ 5 分钟）', () => {
+    const msRow: SettingViewData = {
+      key: 'timeout',
+      value: '300000',
+      default: '300000',
+      overridden: false,
+      kind: 'number',
+      unit: 'ms',
+    };
+    renderPanel({ settings: [msRow] });
+    assert.ok(screen.getByText('毫秒'));
+    assert.ok(screen.getByText('≈ 5 分钟'));
+  });
+
+  it('长文本项收进「高级」，正文里只剩开关与选项', () => {
+    const areaRow: SettingViewData = {
+      key: 'policy.json',
+      value: '{}',
+      default: '{}',
+      overridden: false,
+      kind: 'textarea',
+    };
+    renderPanel({ settings: [areaRow] });
+    assert.ok(screen.getByText('高级'));
+    assert.ok(screen.getByText('这个服务没有开关式的设置，只有下面这些高级项'));
   });
 
   it('重置：两步确认（先确认后执行），确认窗口 3s 超时复位', async () => {

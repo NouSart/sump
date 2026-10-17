@@ -407,6 +407,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
             }}
             service={selectedService}
             settings={selectedSettings}
+            peers={services.map((s) => s.name)}
             connected={connected}
             statusOf={(service, key) => rowStates[`${service}.${key}`]}
             onSave={onSave}
