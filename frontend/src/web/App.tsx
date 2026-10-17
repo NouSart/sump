@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { decideApproval, fetchOverview, resetSetting, sendMessage, setSetting } from './api';
 import { PortalView } from './components/PortalView';
 import { ServiceList } from './components/ServiceList';
-import { SettingsPanel } from './components/SettingsPanel';
-import { SettingsSheet } from './components/SettingsSheet';
+import { SettingsView } from './components/SettingsView';
 import { Toasts, type Toast } from './components/Toasts';
 import type {
   Overview,
@@ -312,14 +311,26 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
       ) : (
         <aside className="sidebar">
           <div className="brand-slot" aria-hidden="true" />
-          <nav className="threads" aria-label="会话">
-            {/* 目前 reasoner 只有单会话（web:private:owner）：列表如实只显示这一条，
-                不做假的多会话条目——等多会话能力落地再长出来。 */}
-            <button type="button" className="thread is-active" aria-current="true" title="当前会话">
-              <span className="t-time">{threadLabel}</span>
-              <span className="t-title">当前会话</span>
-            </button>
-          </nav>
+          {settingsOpen ? (
+            <nav className="threads" aria-label="服务列表">
+              <p className="section-label">服务 · {services.length}</p>
+              <ServiceList
+                services={services}
+                selected={selected}
+                onSelect={setSelected}
+                settingsCountOf={settingsCountOf}
+              />
+            </nav>
+          ) : (
+            <nav className="threads" aria-label="会话">
+              {/* 目前 reasoner 只有单会话（web:private:owner）：列表如实只显示这一条，
+                  不做假的多会话条目——等多会话能力落地再长出来。 */}
+              <button type="button" className="thread is-active" aria-current="true" title="当前会话">
+                <span className="t-time">{threadLabel}</span>
+                <span className="t-title">当前会话</span>
+              </button>
+            </nav>
+          )}
           <div className="me">
             <span className="avatar" aria-hidden="true">我</span>
             <span className="me-name">本机用户</span>
@@ -345,46 +356,37 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
             加载失败：{loadError}
           </p>
         )}
-        <PortalView
-          connected={connected}
-          messages={messages}
-          timers={timers}
-          approvals={approvals}
-          onDecide={onDecide}
-          error={portalError}
-          onSend={onSend}
-          onOpenSettings={() => {
-            setSettingsOpen(true);
-          }}
-        />
+        {settingsOpen ? (
+          <SettingsView
+            theme={theme}
+            onTheme={setTheme}
+            onClose={() => {
+              setSettingsOpen(false);
+            }}
+            service={selectedService}
+            settings={selectedSettings}
+            connected={connected}
+            index={svcIndex}
+            total={services.length}
+            statusOf={(service, key) => rowStates[`${service}.${key}`]}
+            onSave={onSave}
+            onReset={onReset}
+          />
+        ) : (
+          <PortalView
+            connected={connected}
+            messages={messages}
+            timers={timers}
+            approvals={approvals}
+            onDecide={onDecide}
+            error={portalError}
+            onSend={onSend}
+            onOpenSettings={() => {
+              setSettingsOpen(true);
+            }}
+          />
+        )}
       </main>
-
-      {settingsOpen && (
-        <SettingsSheet
-          theme={theme}
-          onTheme={setTheme}
-          onClose={() => {
-            setSettingsOpen(false);
-          }}
-        >
-          <nav className="sheet-nav" aria-label="服务列表">
-            <p className="section-label">服务 · {services.length}</p>
-            <ServiceList services={services} selected={selected} onSelect={setSelected} settingsCountOf={settingsCountOf} />
-          </nav>
-          <div className="sheet-content">
-            <SettingsPanel
-              service={selectedService}
-              settings={selectedSettings}
-              connected={connected}
-              index={svcIndex}
-              total={services.length}
-              statusOf={(service, key) => rowStates[`${service}.${key}`]}
-              onSave={onSave}
-              onReset={onReset}
-            />
-          </div>
-        </SettingsSheet>
-      )}
 
       <Toasts items={toasts} />
     </div>

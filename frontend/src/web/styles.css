@@ -52,7 +52,6 @@
   --surface-strong: rgba(255, 255, 255, 0.10);
   /* 抽屉是浮层：背后内容透过 12% 会被 blur(30px) 糊成一条能看见的灰带，
      所以抽屉用更实的底（云母感靠边框+阴影+blur 保留，不靠透明度）。 */
-  --sheet: rgba(20, 22, 29, 0.92);
   --border: rgba(255, 255, 255, 0.09);
   --border-strong: rgba(255, 255, 255, 0.16);
   --text: #eef0f4;
@@ -66,7 +65,6 @@
   --shadow-1: 0 10px 30px rgba(0, 0, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
   --shadow-2: 0 24px 60px rgba(0, 0, 0, 0.45);
   --noise-opacity: 0.035;
-  --scrim: rgba(0, 0, 0, 0.45);
 }
 
 /* 浅色 */
@@ -76,7 +74,6 @@
   --surface-weak: rgba(255, 255, 255, 0.40);
   --surface-hover: rgba(255, 255, 255, 0.80);
   --surface-strong: rgba(255, 255, 255, 0.88);
-  --sheet: rgba(252, 253, 255, 0.95);
   --border: rgba(15, 17, 21, 0.08);
   --border-strong: rgba(15, 17, 21, 0.16);
   --text: #0f1115;
@@ -90,7 +87,6 @@
   --shadow-1: 0 8px 24px rgba(29, 41, 66, 0.10), 0 1px 0 rgba(255, 255, 255, 0.7) inset;
   --shadow-2: 0 24px 60px rgba(29, 41, 66, 0.16);
   --noise-opacity: 0.025;
-  --scrim: rgba(23, 32, 48, 0.28);
 }
 
 * { box-sizing: border-box; }
@@ -359,36 +355,22 @@ button { font: inherit; }
 .chip.primary { background: var(--accent-soft); border-color: var(--accent-line); color: var(--text); }
 .chip:disabled { opacity: 0.45; cursor: not-allowed; }
 
-/* ---------- 设置抽屉 ---------- */
-.scrim {
-  position: fixed; inset: 0; z-index: 20;
-  background: var(--scrim);
-  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
-  display: flex; justify-content: flex-end;
-  animation: fade var(--dur) var(--ease);
-}
-@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
-.sheet {
-  width: min(780px, 100%); height: 100%;
-  display: flex; flex-direction: column;
-  background: var(--sheet);
-  -webkit-backdrop-filter: blur(30px) saturate(160%);
-  backdrop-filter: blur(30px) saturate(160%);
-  border-left: 1px solid var(--border-strong);
-  box-shadow: var(--shadow-2);
-  animation: slide var(--dur) var(--ease);
-}
-@keyframes slide { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
-.sheet-head {
+/* ---------- 设置（独占全屏：占 agent 面板的位置，左边栏改放服务名） ---------- */
+/* 正文与 agent 面板行为一致：同一条 860px 中缝、同一个滚动容器。 */
+.settings { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.settings-head {
   display: flex; align-items: center; gap: var(--gap-3);
   padding: var(--gap-4) var(--gap-5); border-bottom: 1px solid var(--border);
 }
-.sheet-title { margin: 0; font-size: var(--fs-title); font-weight: 600; }
-.sheet-body { flex: 1; min-height: 0; display: flex; }
-.sheet-nav { width: 200px; flex: none; padding: var(--gap-3); overflow-y: auto; border-right: 1px solid var(--border); }
-.sheet-content { flex: 1; min-width: 0; overflow-y: auto; padding: var(--gap-4) var(--gap-5); }
+.settings-title { margin: 0; font-size: var(--fs-title); font-weight: 600; }
+/* 收起态：字标块压住面板左上角（13.5 → 110.27），把标题让到它右边（126 = 110.27 + 16 间距） */
+.app[data-collapsed='1'] .settings-head { padding-left: 126px; }
+.settings-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: var(--gap-6) max(var(--gap-5), calc((100% - var(--col)) / 2)) var(--gap-5);
+}
 
-/* 主题切换（设置抽屉里） */
+/* 主题切换（设置头部） */
 .theme-switch { display: flex; gap: 2px; padding: 2px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); }
 .theme-tab {
   display: inline-flex; align-items: center; gap: 6px;
@@ -493,6 +475,5 @@ button { font: inherit; }
 @media (max-width: 900px) {
   /* 窄屏不再把侧栏压成竖轨（那是左右方向）；收不收由用户点 ↑ 决定，这里只让侧栏窄一点。 */
   .sidebar { width: 232px; }
-  .sheet-nav { width: 150px; }
   .portal-list { padding-inline: var(--gap-4); }
 }

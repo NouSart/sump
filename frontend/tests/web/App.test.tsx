@@ -290,23 +290,42 @@ describe('App', () => {
   it('对话：首屏在对话视图，设置从输入框进入并可关闭', async () => {
     boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
-    assert.equal(screen.queryByRole('heading', { name: '设置' }), null, '首屏不该直接是设置页');
+    assert.equal(screen.queryByRole('region', { name: '设置' }), null, '首屏不该直接是设置页');
 
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
     assert.ok(screen.getByRole('heading', { name: '设置' }));
-    assert.ok(screen.getByText('服务 · 2'), '设置抽屉里应有服务导航');
 
     fireEvent.click(screen.getByRole('button', { name: '关闭设置' }));
     assert.ok(screen.getByRole('region', { name: '对话' }));
-    assert.equal(screen.queryByRole('heading', { name: '设置' }), null);
+    assert.equal(screen.queryByRole('region', { name: '设置' }), null);
   });
 
-  it('对话：Esc 关闭设置抽屉', async () => {
+  it('设置：独占 agent 面板的位置，左边栏换成服务名导览', async () => {
+    boot({ openSettings: false });
+    await screen.findByRole('region', { name: '对话' });
+    assert.ok(screen.getByRole('navigation', { name: '会话' }));
+    assert.equal(screen.queryByRole('navigation', { name: '服务列表' }), null);
+
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+
+    // 不是浮层：对话视图整体让位，设置正文住进 agent 面板的位置
+    assert.equal(screen.queryByRole('region', { name: '对话' }), null, '设置不是抽屉，是把面板内容换掉');
+    assert.ok(screen.getByRole('region', { name: '设置' }));
+    // 左边栏改放服务名（字标、连接点、收起按钮都还在）
+    assert.ok(screen.getByRole('navigation', { name: '服务列表' }));
+    assert.equal(screen.queryByRole('navigation', { name: '会话' }), null);
+    assert.ok(screen.getByText('服务 · 2'));
+    assert.ok(screen.getByText('SUMP'));
+    assert.ok(screen.getByRole('button', { name: '收起侧栏' }));
+    assert.ok(screen.getByText('max_mb'), '设置正文照旧渲染选中服务的设置项');
+  });
+
+  it('设置：Esc 关闭', async () => {
     boot();
     await screen.findByRole('heading', { name: '设置' });
 
     fireEvent.keyDown(window, { key: 'Escape' });
-    await waitFor(() => assert.equal(screen.queryByRole('heading', { name: '设置' }), null));
+    await waitFor(() => assert.equal(screen.queryByRole('region', { name: '设置' }), null));
   });
 
   it('侧栏：收起是向上塌成只剩字标的一小块，点块即可展开', async () => {
