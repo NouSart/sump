@@ -118,23 +118,35 @@ type ResumePayload struct {
 	Context TaskContext `msgpack:"context"`
 }
 
-// StorePayload 是 store 的 payload：向记忆服务记一条对话消息。
+// StorePayload 是 store 的 payload：向记忆服务记一条会话记录。
+// Kind 区分记录类型（空 = 按 Role 推断）：user / assistant / reasoning / tool_call / tool_result。
+// Seq 是**会话内单调序号**（由写入方给）：让并发写（Fire 是 goroutine）也能按真实先后落库与排序。
+// Meta 是给人看的附加信息（JSON 字符串，如工具名、命令、call_id、是否截断）。
 type StorePayload struct {
 	ConversationID string `msgpack:"conversation_id"`
 	Role           string `msgpack:"role"`
 	Content        string `msgpack:"content"`
+	Kind           string `msgpack:"kind,omitempty"`
+	Meta           string `msgpack:"meta,omitempty"`
+	Seq            int64  `msgpack:"seq,omitempty"`
 }
 
 // HistoryPayload 是 history 的 payload：向记忆服务要某会话最近的消息（供门户回填对话视图）。
+// AfterSeq > 0 时只取序号更大的记录（增量拉取，避免每次全量重拉）。
 type HistoryPayload struct {
 	ConversationID string `msgpack:"conversation_id"`
 	Limit          int    `msgpack:"limit,omitempty"`
+	AfterSeq       int64  `msgpack:"after_seq,omitempty"`
 }
 
-// HistoryEntry 是一条落库的对话消息（带落库时间，供界面按时间排序）。
+// HistoryEntry 是一条落库的会话记录（带落库时间，供界面按时间排序）。
 type HistoryEntry struct {
+	ID      int64  `msgpack:"id"`
+	Seq     int64  `msgpack:"seq,omitempty"`
 	Role    string `msgpack:"role"`
+	Kind    string `msgpack:"kind,omitempty"`
 	Content string `msgpack:"content"`
+	Meta    string `msgpack:"meta,omitempty"`
 	At      string `msgpack:"at"`
 }
 
@@ -142,6 +154,18 @@ type HistoryEntry struct {
 type HistoryResult struct {
 	ConversationID string         `msgpack:"conversation_id"`
 	Messages       []HistoryEntry `msgpack:"messages"`
+}
+
+// ProgressPayload 是 progress 的 payload：任务进行中的一条实况（思考 / 命令 / 输出），
+// 推给**声明了 provides=progress** 的入口方（门户）。收到即渲染，不必等最终答复。
+// 与 store 同源同 seq：落库是真相，progress 只是让界面不必等到最后。
+type ProgressPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+	Seq            int64  `msgpack:"seq"`
+	Kind           string `msgpack:"kind"` // reasoning / tool_call / tool_result
+	Content        string `msgpack:"content"`
+	Meta           string `msgpack:"meta,omitempty"`
+	At             string `msgpack:"at,omitempty"`
 }
 
 // ---------- 任务链入口 ----------

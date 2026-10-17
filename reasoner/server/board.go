@@ -42,6 +42,9 @@ const (
 // pendingJob 是一个已受理、正在执行的工具调用。
 type pendingJob struct {
 	name string
+	// async：这个工具是异步受理的（回执只是「已排队」，真正的输出靠后续补报）。
+	// 这类工具的回执不记进轨迹——它没有信息量，真输出到达时再记一条。
+	async bool
 }
 
 // taskState 是黑板里的一个会话任务（窗口 = 任务在跑期）。
@@ -161,6 +164,9 @@ func (s *Server) boardRound(st *taskState) {
 		return
 	}
 
+	// 思考先落库再派发：seq 保证「想了什么 → 跑了什么」的先后（给人看的历史）。
+	s.record(st.cid, st.boss, st.trace, kindReasoning, "assistant", resp.Reasoning, nil)
+
 	switch {
 	case len(resp.ToolCalls) > 0:
 		s.dispatchToolCalls(st, resp)
@@ -193,7 +199,17 @@ func (s *Server) dispatchToolCalls(st *taskState, resp llm.Message) {
 	}
 	st.messages = append(st.messages, acks...)
 	st.gen += int64(len(acks))
+	cid, boss, trace := st.cid, st.boss, st.trace
 	st.mu.Unlock()
+
+	// 命令先落库再执行：即使执行超时/进程崩了，"跑过什么"也该留在记忆里。
+	for _, call := range resp.ToolCalls {
+		if call.Function.Name == waitToolName {
+			continue
+		}
+		text, meta := toolCallTrace(call)
+		s.record(cid, boss, trace, kindToolCall, "assistant", text, meta)
+	}
 
 	for _, call := range resp.ToolCalls {
 		if call.Function.Name == waitToolName {
@@ -289,6 +305,7 @@ func (s *Server) boardResult(st *taskState, call llm.ToolCall, content string) {
 		s.logger.Printf("工具 %s 的结果不属于当前任务（丢弃）", call.Function.Name)
 		return
 	}
+	job := st.pending[call.ID]
 	delete(st.pending, call.ID)
 	st.messages = append(st.messages, llm.Message{Role: "user", Content: resultText(call, content)})
 	st.gen++
@@ -296,7 +313,11 @@ func (s *Server) boardResult(st *taskState, call llm.ToolCall, content string) {
 	if mode == "batch" && remaining > 0 {
 		st.seen = st.gen // 攒批：非最后一条不唤醒
 	}
+	cid, boss, trace := st.cid, st.boss, st.trace
 	st.mu.Unlock()
+	if !job.async {
+		s.record(cid, boss, trace, kindToolResult, "tool", content, map[string]any{"tool": call.Function.Name, "call_id": call.ID})
+	}
 	s.logger.Printf("会话 %s：工具 %s 结果入账（还剩 %d 个在跑）", st.cid, call.Function.Name, remaining)
 	s.boardKick(st)
 }
@@ -346,7 +367,7 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 	replaced = st.closed
 	st.mu.Unlock()
 
-	s.Fire(s.memoryName(), "store", protocol.StorePayload{ConversationID: st.cid, Role: "assistant", Content: text}, st.trace, s.cfg.Name)
+	s.Fire(s.memoryName(), "store", protocol.StorePayload{ConversationID: st.cid, Role: "assistant", Content: text, Kind: "assistant", Seq: s.nextSeq()}, st.trace, s.cfg.Name)
 	s.boardClose(st)
 	if replaced {
 		s.logger.Printf("会话 %s：交付完成（在途已被新任务取代；答复已送达并记入记忆）", st.cid)

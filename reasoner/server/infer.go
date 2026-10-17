@@ -196,6 +196,13 @@ func (s *Server) trackAsync(svc, action string, st *taskState, call llm.ToolCall
 		trace:  st.trace,
 	})
 	s.logger.Printf("会话 %s：已受理异步动作 %s（item=%s, job=%s），等补报", st.cid, call.Function.Name, res.ItemID, call.ID)
+	// 标记这次调用是异步受理：它的回执只是「已排队」，不该当成终端输出记进轨迹。
+	st.mu.Lock()
+	if job, ok := st.pending[call.ID]; ok {
+		job.async = true
+		st.pending[call.ID] = job
+	}
+	st.mu.Unlock()
 }
 
 // toolSem 返回某会话的工具并发信号量（nil = 不限制）。信号量懒创建、按会话复用；
@@ -291,9 +298,7 @@ func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in 
 	}
 
 	// 记一条用户消息（尽力送达；幂等与去重在记忆服务侧处理）。
-	s.Fire(s.memoryName(), "store", protocol.StorePayload{
-		ConversationID: cid, Role: "user", Content: p.Text,
-	}, env.Trace, s.cfg.Name)
+	s.record(cid, "", env.Trace, "user", "user", p.Text, nil)
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},

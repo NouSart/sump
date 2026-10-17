@@ -7,7 +7,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import type { CenterEvent, CenterLink } from './center.ts';
 import { RemoteError } from './center.ts';
-import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type PendingApprovalItem, type TimerItem, type TrustConfig } from './portal.ts';
+import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type PendingApprovalItem, type ProgressUpdate, type TimerItem, type TrustConfig } from './portal.ts';
 import type { RosterPayload, ServiceSettings, SettingsResult } from './protocol.ts';
 
 export interface ApiConfig {
@@ -26,6 +26,8 @@ export interface ApiConfig {
   lang: string;
   /** 投递订阅（deliver → SSE）。 */
   portal: { on: (fn: (m: DeliverMessage) => void) => () => void };
+  /** 任务实况订阅（progress → SSE）：思考 / 命令 / 输出，进行中就能看见。 */
+  progress: { on: (fn: (p: ProgressUpdate) => void) => () => void };
   /** 计时快照订阅（timer_state → SSE）：新连接先补当前值，再推变化。 */
   timers: { current: () => TimerItem[]; on: (fn: (items: TimerItem[]) => void) => () => void };
   /** 待审命令：approval 推来的挂起项（approval_pending），以及用户裁决后的移除。 */
@@ -179,12 +181,13 @@ export function createRequestHandler(
 
   // fetchHistory 把该会话最近的对话从 memory 取回来（门户启动时回填界面用）。
   // 与 user_message 同一条链路：从名册解析 memory 的地址后直连，中心不转发。
-  const fetchHistory = async (res: ServerResponse, limit: number): Promise<void> => {
+  const fetchHistory = async (res: ServerResponse, limit: number, afterSeq: number): Promise<void> => {
     let data: { messages?: unknown } | undefined;
     try {
       data = (await center.jumpTo(cfg.memory, 'history', {
         conversation_id: PORTAL_CONVERSATION_ID,
         limit,
+        after_seq: afterSeq,
       })) as { messages?: unknown };
     } catch (err) {
       throw mapCenterError(err);
@@ -233,6 +236,9 @@ export function createRequestHandler(
     const unsubscribeDeliver = cfg.portal.on((m: DeliverMessage) => {
       send('deliver', m);
     });
+    const unsubscribeProgress = cfg.progress.on((p: ProgressUpdate) => {
+      send('progress', p);
+    });
     const unsubscribeTimers = cfg.timers.on((items) => {
       send('timers', items);
     });
@@ -246,6 +252,7 @@ export function createRequestHandler(
       clearInterval(keepalive);
       unsubscribe();
       unsubscribeDeliver();
+      unsubscribeProgress();
       unsubscribeTimers();
       unsubscribeApprovals();
     });
@@ -366,8 +373,10 @@ export function createRequestHandler(
     }
     if (pathname === '/api/history' && req.method === 'GET') {
       const raw = Number(url.searchParams.get('limit') ?? '');
-      const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.trunc(raw), 500) : 50;
-      await fetchHistory(res, limit);
+      const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.trunc(raw), 500) : 100;
+      const rawAfter = Number(url.searchParams.get('after_seq') ?? '');
+      const afterSeq = Number.isFinite(rawAfter) && rawAfter > 0 ? Math.trunc(rawAfter) : 0;
+      await fetchHistory(res, limit, afterSeq);
       return;
     }
     if (pathname === '/api/approvals' && req.method === 'GET') {

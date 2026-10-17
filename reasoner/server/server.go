@@ -59,6 +59,8 @@ type Server struct {
 	entryMu sync.Mutex        // 会话入口表锁（交付失败时往哪补一条）
 	entries map[string]string // 会话 → 入口服务名（user_message 的 from）
 
+	memSeq int64 // 会话记录的单调序号（atomic）：并发写（Fire 是 goroutine）也按真实先后落库
+
 	setMu   sync.Mutex    // 运行时可设项锁（设置下发 / 拉取即时生效）
 	notify  string        // 工具结果通知模式（each / batch）
 	conc    int           // 单会话工具并发上限（-1 = 不限制）

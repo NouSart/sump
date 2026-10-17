@@ -208,6 +208,11 @@
     "setting.common.images": "x",
     "setting.common.files": "x",
     "setting.common.portal": "x",
-    "setting.common.approval": "x"
+    "setting.common.approval": "x",
+    "ui.trace.thinking": "x",
+    "ui.trace.command": "x",
+    "ui.trace.output": "x",
+    "ui.trace.lines": "x",
+    "ui.trace.truncated": "x"
   }
 }

@@ -227,19 +227,36 @@ func TestInferChain(t *testing.T) {
 		t.Fatalf("第三轮请求应含记忆块: %+v", third.Messages)
 	}
 
-	// 记忆写入：用户消息（链入口）与最终答复（交付后）各记一条。
-	stores := waitStores(t, mem, 2, 5*time.Second)
-	var gotUser, gotAssistant bool
-	for _, s := range stores {
-		if s.Role == "user" && s.Content == "你好" {
-			gotUser = true
+	// 记忆写入：用户消息（链入口）、工具轨迹（命令 + 输出）与最终答复（交付后）都会记一条。
+	stores := waitStoresUntil(t, mem, func(ss []protocol.StorePayload) bool {
+		for _, s := range ss {
+			if s.Content == "最终答复：你好！" {
+				return true
+			}
 		}
-		if s.Role == "assistant" && s.Content == "最终答复：你好！" {
+		return false
+	}, 5*time.Second)
+	var gotUser, gotAssistant, gotCall, gotResult bool
+	lastSeq := int64(0)
+	for _, s := range stores {
+		if s.Seq <= lastSeq {
+			t.Fatalf("seq 必须单调递增: %+v", stores)
+		}
+		lastSeq = s.Seq
+		switch {
+		case s.Role == "user" && s.Kind == "user" && s.Content == "你好":
+			gotUser = true
+		case s.Role == "assistant" && s.Kind == "assistant" && s.Content == "最终答复：你好！":
 			gotAssistant = true
+		case s.Kind == "tool_call" && s.Content != "":
+			gotCall = true
+		case s.Kind == "tool_result" && s.Content != "":
+			gotResult = true
 		}
 	}
-	if !gotUser || !gotAssistant {
-		t.Fatalf("store 内容不符: %+v", stores)
+	if !gotUser || !gotAssistant || !gotCall || !gotResult {
+		t.Fatalf("store 内容不符（user=%v assistant=%v tool_call=%v tool_result=%v）: %+v",
+			gotUser, gotAssistant, gotCall, gotResult, stores)
 	}
 }
 
@@ -348,6 +365,20 @@ func waitStores(t *testing.T, m *stubMemory, n int, timeout time.Duration) []pro
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("等待 %d 条 store 超时（实际 %d）", n, len(m.Stores()))
+	return nil
+}
+
+// waitStoresUntil 等记忆替身收到满足条件的 store（记录数不再固定，按内容等更稳）。
+func waitStoresUntil(t *testing.T, m *stubMemory, ok func([]protocol.StorePayload) bool, timeout time.Duration) []protocol.StorePayload {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if s := m.Stores(); ok(s) {
+			return s
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("等待 store 条件超时（实际 %+v）", m.Stores())
 	return nil
 }
 

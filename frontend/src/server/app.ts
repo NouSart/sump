@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import type { WebSocketServer } from 'ws';
 import { createRequestHandler } from './api.ts';
 import { CenterLink } from './center.ts';
-import { createApprovalStore, createDeliverHub, createTimerStore, parsePendingApproval, type TrustConfig } from './portal.ts';
+import { createApprovalStore, createDeliverHub, createProgressHub, createTimerStore, parsePendingApproval, type TrustConfig } from './portal.ts';
 import { attachJumpEndpoint, parseTimerItems, portalProvides, portalSettings } from './service.ts';
 
 export const frontendDescription =
@@ -56,6 +56,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
   const selfURL = `ws://${addr}/ws`;
 
   const hub = createDeliverHub();
+  const progress = createProgressHub();
   const timers = createTimerStore();
   const approvals = createApprovalStore();
   const trust: TrustConfig = { boundAddr: addr, trustedHosts: cfg.trustedHosts };
@@ -86,6 +87,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
         localesDir: cfg.localesDir,
         lang: cfg.lang,
         portal: { on: hub.on },
+    progress: { on: progress.on },
         timers: { current: timers.current, on: timers.on },
         approvals: { current: approvals.list, on: approvals.on, remove: approvals.remove },
         approval: cfg.approval,
@@ -94,7 +96,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
       log,
     ),
   );
-  const wss: WebSocketServer = attachJumpEndpoint(server, '/ws', cfg.name, log, hub.publish, timers.apply, approvals.apply, trust);
+  const wss: WebSocketServer = attachJumpEndpoint(server, '/ws', cfg.name, log, hub.publish, timers.apply, approvals.apply, (p) => { progress.publish(p); return true; }, trust);
   link.start();
 
   // 冷启动兜一次：门户重启后 timer 不会主动重推在计时器，这里拉一次 list 补上。

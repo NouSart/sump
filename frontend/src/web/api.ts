@@ -1,5 +1,5 @@
 // 与前端服务 HTTP API 的通信（JSON 进出；失败统一抛 Error，消息即中文提示）。
-import type { Overview, PortalMessage, ServiceSettingsView } from './types';
+import type { Overview, PortalMessage, ServiceSettingsView, TraceMeta } from './types';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -20,17 +20,57 @@ export function fetchOverview(): Promise<Overview> {
   return request<Overview>('/api/overview');
 }
 
-// fetchHistory 取该会话最近的对话（门户启动时回填；真相在 memory 服务，门户不自己存）。
-export async function fetchHistory(limit = 50): Promise<PortalMessage[]> {
-  const r = await request<{ messages?: { role?: string; content?: string; at?: string }[] }>(
-    `/api/history?limit=${String(limit)}`,
-  );
+// fetchHistory 取该会话最近的记录（门户启动时回填；真相在 memory 服务，门户不自己存）。
+// afterSeq > 0 = 只要更新的那些（增量拉取）。返回按 seq/落库顺序排好的完整条目（含思考与工具轨迹）。
+export async function fetchHistory(limit = 100, afterSeq = 0): Promise<PortalMessage[]> {
+  const q = afterSeq > 0 ? `&after_seq=${String(afterSeq)}` : '';
+  const r = await request<{
+    messages?: { id?: number; seq?: number; role?: string; kind?: string; content?: string; meta?: string; at?: string }[];
+  }>(`/api/history?limit=${String(limit)}${q}`);
   const out: PortalMessage[] = [];
   for (const m of r.messages ?? []) {
-    if (m.role !== 'user' && m.role !== 'assistant') continue; // tool/system 不进对话视图
-    out.push({ author: m.role === 'user' ? 'user' : 'agent', text: m.content ?? '', at: m.at ?? '' });
+    const message = historyToMessage(m);
+    if (message !== null) out.push(message);
   }
   return out;
+}
+
+// historyToMessage 把一条落库记录翻成界面消息：对话消息进气泡，思考/命令/输出进轨迹条目。
+export function historyToMessage(m: {
+  id?: number;
+  seq?: number;
+  role?: string;
+  kind?: string;
+  content?: string;
+  meta?: string;
+  at?: string;
+}): PortalMessage | null {
+  const kind = m.kind ?? (m.role === 'user' ? 'user' : 'assistant');
+  const text = m.content ?? '';
+  const at = m.at ?? '';
+  const seq = m.seq ?? 0;
+  if (kind === 'user') return { author: 'user', kind: 'user', text, at, seq };
+  if (kind === 'assistant') return { author: 'agent', kind: 'assistant', text, at, seq };
+  if (kind === 'reasoning' || kind === 'tool_call' || kind === 'tool_result') {
+    return { author: 'agent', kind, text, at, seq, meta: parseMeta(m.meta) };
+  }
+  return null; // 其他 role（system 等）不进对话视图
+}
+
+// parseMeta 解析落库时带的附加信息（形状不对就当没有——展示层不该因为脏数据崩）。
+export function parseMeta(raw: string | undefined): TraceMeta | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  try {
+    const v = JSON.parse(raw) as Record<string, unknown>;
+    const meta: TraceMeta = {};
+    if (typeof v.tool === 'string') meta.tool = v.tool;
+    if (typeof v.call_id === 'string') meta.callId = v.call_id;
+    if (v.truncated === true) meta.truncated = true;
+    if (typeof v.full_chars === 'number') meta.fullChars = v.full_chars;
+    return meta;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function setSetting(service: string, key: string, value: string): Promise<ServiceSettingsView[]> {

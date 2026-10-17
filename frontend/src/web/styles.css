@@ -288,6 +288,51 @@ button { font: inherit; }
   color: var(--text-3); font-variant-numeric: tabular-nums; padding: 0 6px;
 }
 
+/* ---------- 过程轨迹（思考 / 终端命令 / 终端输出） ----------
+   它们是过程不是结论：细一号、灰一档、靠左，不抢气泡的视觉权重。 */
+.msg-trace {
+  max-width: 68ch;
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+.msg-trace > details > summary {
+  display: flex; align-items: baseline; gap: 8px;
+  cursor: pointer; list-style: none;
+  padding: 3px 6px; border-left: 1px solid var(--border);
+}
+.msg-trace > details > summary::-webkit-details-marker { display: none; }
+.msg-trace > details > summary::before { content: '▸'; color: var(--text-3); }
+.msg-trace > details[open] > summary::before { content: '▾'; }
+.msg-trace > details > summary:hover { color: var(--text-2); }
+.trace-kind {
+  flex: none; font-family: var(--font-mono); font-size: var(--fs-micro);
+  color: var(--text-2); letter-spacing: 0.02em;
+}
+.trace-preview {
+  min-width: 0; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.trace-text,
+.trace-pre {
+  margin: 4px 0 0 14px; padding: 8px 10px;
+  border-left: 1px solid var(--border);
+  color: var(--text-2);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 240px; overflow-y: auto;
+  font-family: var(--font-mono); font-size: var(--fs-micro); line-height: 1.6;
+}
+.trace-text { font-family: inherit; }
+.trace-cmd {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 3px 6px; border-left: 1px solid var(--border);
+}
+.trace-cmd-text {
+  min-width: 0; color: var(--text-2);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.trace-note { flex: none; color: var(--text-3); }
+
 /* ---------- 计时器（输入框上方一条极轻读数） ---------- */
 .timer-strip {
   width: min(var(--col), calc(100% - var(--gap-5) * 2));

@@ -97,6 +97,13 @@ func (s *Server) actionReportResult(_ context.Context, _ protocol.Envelope, in p
 		return map[string]any{"status": "ignored"}, nil
 	}
 	where := s.deliverFollowUp(j, reportText(j, p))
+	// 终态补报里有**真正的输出**（异步工具的回执只是"已排队"，输出在补报里）——
+	// 记一条轨迹，界面才看得见终端到底吐了什么。
+	if p.Final && strings.TrimSpace(p.Text) != "" {
+		s.record(j.cid, j.boss, j.trace, kindToolResult, "tool", p.Text, map[string]any{
+			"tool": j.name, "call_id": j.callID, "item_id": p.ItemID, "phase": p.Phase,
+		})
+	}
 	s.logger.Printf("会话 %s：补报 %s（phase=%s, final=%v）→ %s", j.cid, p.ItemID, p.Phase, p.Final, where)
 	return map[string]any{"status": "accepted", "delivery": where}, nil
 }

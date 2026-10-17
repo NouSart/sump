@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { decideApproval, fetchHistory, fetchOverview, resetSetting, sendMessage, setSetting } from './api';
+import { decideApproval, fetchHistory, fetchOverview, parseMeta, resetSetting, sendMessage, setSetting } from './api';
 import { PortalView } from './components/PortalView';
 import { IconChevronUp } from './components/icons';
 import { ServiceList } from './components/ServiceList';
@@ -10,6 +10,7 @@ import type {
   Overview,
   PendingApprovalView,
   PortalMessage,
+  ProgressEventView,
   RosterView,
   RowStatus,
   ServiceSettingsView,
@@ -23,9 +24,18 @@ let toastSeq = 0;
 type Theme = 'light' | 'dark';
 const ThemeKey = 'sump.portal.theme';
 
-// appendMessage 追加一条消息；与上一条完全同角色同文本时跳过——
-// 和 memory 的 store 幂等规则一致，避免"历史回填 + 实时推送"把同一条画两遍。
+// appendMessage 追加一条消息：
+//  - 有 seq（落库过的记录）就按 seq 去重与插入——实时推送与历史回填可能同时到，seq 是同一把尺子；
+//  - 没有 seq（本地回显的用户消息、deliver 送来的答复）就按"上一条同角色同文本"跳过。
 function appendMessage(prev: PortalMessage[], m: PortalMessage): PortalMessage[] {
+  const seq = m.seq ?? 0;
+  if (seq > 0) {
+    if (prev.some((p) => p.seq === seq)) return prev;
+    // 乱序到达（progress 是并发发出的）：插到第一个更大 seq 之前，而不是无脑追加。
+    const at = prev.findIndex((p) => (p.seq ?? 0) > seq);
+    if (at >= 0) return [...prev.slice(0, at), m, ...prev.slice(at)];
+    return [...prev, m];
+  }
   const last = prev[prev.length - 1];
   if (last !== undefined && last.author === m.author && last.text === m.text) return prev;
   return [...prev, m];
@@ -169,7 +179,16 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     // 门户投递：智能体经 deliver 送来的消息，落到对话里。
     es.addEventListener('deliver', (ev) => {
       const d = JSON.parse((ev as MessageEvent).data) as { text: string; at: string };
-      setMessages((prev) => appendMessage(prev, { author: 'agent', text: d.text, at: d.at }));
+      setMessages((prev) => appendMessage(prev, { author: 'agent', kind: 'assistant', text: d.text, at: d.at }));
+    });
+    // 任务实况：思考 / 终端命令 / 终端输出——进行中就画出来，不必等最终答复。
+    es.addEventListener('progress', (ev) => {
+      const d = JSON.parse((ev as MessageEvent).data) as ProgressEventView;
+      const kind = d.kind;
+      if (kind !== 'reasoning' && kind !== 'tool_call' && kind !== 'tool_result') return;
+      setMessages((prev) =>
+        appendMessage(prev, { author: 'agent', kind, text: d.content, at: d.at, seq: d.seq, meta: parseMeta(d.meta) }),
+      );
     });
     // 计时快照：timer 受理/到点/撤销后推来的**全量列表**（不是增量），直接覆盖。
     es.addEventListener('timers', (ev) => {

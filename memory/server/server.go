@@ -214,7 +214,8 @@ func (s *Server) limits() (history, core, coreChars, rel, relChars int) {
 
 // ---------- 动作 ----------
 
-// actionStore 记一条对话消息（幂等：与上一条完全相同时跳过）。
+// actionStore 记一条会话记录（对话消息幂等：与上一条完全相同时跳过）。
+// Kind 为空按 Role 推断；新类型（reasoning/tool_call/tool_result）不去重也不进 LLM 上下文。
 func (s *Server) actionStore(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p protocol.StorePayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
@@ -227,13 +228,13 @@ func (s *Server) actionStore(_ context.Context, _ protocol.Envelope, in protocol
 	if cid == "" {
 		cid = "default"
 	}
-	if err := s.cfg.Store.Append(cid, p.Role, p.Content); err != nil {
+	if err := s.cfg.Store.Record(cid, p.Role, p.Content, p.Kind, p.Meta, p.Seq); err != nil {
 		return nil, fmt.Errorf("落库失败: %w", err)
 	}
 	return map[string]any{}, nil
 }
 
-// actionHistory 把某会话最近的对话原样交还（界面回填用：不做记忆组装、不碰长期记忆、不改上下文）。
+// actionHistory 把某会话最近的记录原样交还（界面回填用：不做记忆组装、不碰长期记忆、不改上下文）。
 func (s *Server) actionHistory(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p protocol.HistoryPayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
@@ -243,7 +244,7 @@ func (s *Server) actionHistory(_ context.Context, _ protocol.Envelope, in protoc
 	if cid == "" {
 		cid = "default"
 	}
-	msgs, err := s.cfg.Store.History(cid, p.Limit)
+	msgs, err := s.cfg.Store.History(cid, p.Limit, p.AfterSeq)
 	if err != nil {
 		return nil, fmt.Errorf("查询历史失败: %w", err)
 	}

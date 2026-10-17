@@ -265,6 +265,37 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 - `seq` 服务内单调递增：中心丢弃比已记下更小的旧报（回传与补报的到达顺序都不保证）。
 - 服务侧实际值是**运行时态**：不落盘（中心重启后为空，等服务下次回传或注册对齐）。
 
+### 7.3 会话记录：对话 + 过程轨迹（已实现）
+
+记忆服务（memory）保管的不只是"用户说了什么 / 智能体答了什么"：
+
+| `kind` | 内容 | 谁写 |
+| ---- | ---- | ---- |
+| `user` / `assistant` | 对话本身 | reasoner（链入口 / 交付成功后） |
+| `reasoning` | 模型这一轮的思考（`reasoning_content`） | reasoner（每轮有思考就记一条） |
+| `tool_call` | 工具调用（shell 类工具直接给出 `command`） | reasoner（派发时，**执行前**落库） |
+| `tool_result` | 工具输出（异步工具取**终态补报**的文本，不是"已排队"回执） | reasoner（结果入账时） |
+
+- **只有 `user` / `assistant` 进 LLM 上下文**（`recall` 的 `Recent` 过滤）：思考回灌纯浪费，
+  工具结果缺少配对的 `tool_calls` 会被上游直接拒。轨迹是**给人看**的。
+- **`seq` 由写入方给**（微秒时间戳，跨重启仍递增）：`Fire` 是 goroutine，落地顺序不保证，
+  `seq` 保证"命令在输出之前"这种真实先后；门户也用它去重。**不能超过 2^53**——
+  它要经 JSON 到浏览器，纳秒级会被 JS 的 number 抹平，相邻记录可能撞成同一个数。
+- 单条上限 8000 字符，超出标 `meta.truncated = true` + `full_chars`（终端输出上限是 256KB，原样存会撑爆库和界面）。
+- 对话消息仍幂等去重（连续完全相同 = 重复交付）；**事件类记录不去重**——连跑两条一样的命令是两件事。
+- 老库平滑升级：`kind` / `meta` / `seq` 三列按需 `ALTER TABLE`，老数据 `kind` 按 `role` 推断、`seq` 用主键回填。
+
+| 动作（jump 到 `memory`） | 输入 | 输出 |
+| ---- | ---- | ---- |
+| `store` | `{conversation_id, role, content, kind?, meta?, seq?}` | `{}`（尽力落库；失败只记日志） |
+| `history` | `{conversation_id, limit?, after_seq?}` | `{conversation_id, messages:[{id, seq, role, kind, content, meta, at}]}` |
+
+- `after_seq` 是**增量拉取**：只回序号更大的记录（门户重连/回填不必每次全量重来）。
+- **实况推送**：reasoner 在落库的同时，若入口方（boss）在 `provides` 里声明了 `progress`，
+  就推一条 `{conversation_id, seq, kind, content, meta, at}`——界面进行中就能看见思考与命令，
+  不必等最终答复。**没声明的不推**（QQ 之类），否则对方只会回 unknown action。
+  记忆是真相，`progress` 只是"别等最后才看见"：丢一条不影响历史。
+
 
 - **错误上报（已实现·留接口）**：服务把错误上报给中心（`report`）——中心记一条日志并交给 `OnReport`
   消费挂点（前端 / 落盘 / 富日志后续接入此处）。**不含链路编号**（暂无链路记录者，记了无处可查）；

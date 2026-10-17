@@ -413,7 +413,11 @@ test('门户：GET /api/history 直连 memory 取历史（中心只给地址，�
 
   assert.equal(memory.jumps.length, 1, '应恰好跳一次');
   assert.equal(memory.jumps[0]?.action, 'history');
-  assert.deepEqual(memory.jumps[0]?.input, { conversation_id: 'web:private:owner', limit: 7 });
+  assert.deepEqual(memory.jumps[0]?.input, { conversation_id: 'web:private:owner', limit: 7, after_seq: 0 });
+
+  // 增量拉取：after_seq 原样带给 memory（门户不自己判断"哪些是新的"）
+  await fetch(`http://${handle.addr}/api/history?limit=9&after_seq=12`);
+  assert.deepEqual(memory.jumps[1]?.input, { conversation_id: 'web:private:owner', limit: 9, after_seq: 12 });
 });
 
 test('门户：GET /api/history 目标不在名册里 → 明确的错误而不是空列表', async (t) => {
@@ -528,6 +532,106 @@ test('门户：deliver 从 WS 端点进来 → 回执 + SSE 推给浏览器', as
   assert.match(ev, /event: deliver/);
   assert.match(ev, /任务完成/);
   assert.match(ev, /web:private:owner/, '未给 conversation_id 时用单用户默认会话');
+});
+
+test('门户：progress 从 WS 端点进来 → 回执 + SSE 推给浏览器；形状不对的丢弃', async (t) => {
+  const stub = new StubCenter();
+  const centerURL = await stub.start();
+  const handle = await startWithCenter(centerURL);
+  const ctrl = new AbortController();
+  t.after(async () => {
+    ctrl.abort();
+    await handle.close();
+    await stub.stop();
+  });
+  await waitFor(() => handle.link.connected, 3000, '前端接入中心');
+
+  const res = await fetch(`http://${handle.addr}/api/events`, { signal: ctrl.signal });
+  const reader = res.body?.getReader();
+  assert.ok(reader, 'SSE 响应应有 body');
+  const decoder = new TextDecoder();
+  let buf = '';
+  const readEvent = async (): Promise<string> => {
+    for (;;) {
+      const idx = buf.indexOf('\n\n');
+      if (idx >= 0) {
+        const ev = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        return ev;
+      }
+      const { value, done } = await reader.read();
+      if (done) throw new Error('SSE 提前结束');
+      buf += decoder.decode(value, { stream: true });
+    }
+  };
+  await readEvent(); // status
+  await readEvent(); // roster
+  await readEvent(); // timers
+
+  const ws = new WebSocket(`ws://${handle.addr}/ws`);
+  t.after(() => ws.terminate());
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve());
+    ws.once('error', reject);
+  });
+  let resolveReceipt: (v: { ok: boolean; data?: { accepted?: boolean } }) => void = () => {};
+  const receipt = new Promise<{ ok: boolean; data?: { accepted?: boolean } }>((resolve) => {
+    resolveReceipt = resolve;
+  });
+  ws.on('message', (data: RawData) => {
+    const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : new Uint8Array(data);
+    resolveReceipt((decode(bytes) as { payload: { ok: boolean; data?: { accepted?: boolean } } }).payload);
+  });
+
+  // 形状不对：缺 kind → 明确拒绝，且不往 SSE 推
+  ws.send(
+    encode({
+      v: 1,
+      id: 'progress-bad',
+      type: 'jump',
+      from: 'reasoner',
+      to: 'frontend',
+      payload: { action: 'progress', input: { content: '没有 kind' } },
+    }),
+  );
+  const bad = await receipt;
+  assert.equal(bad.ok, true);
+  assert.equal(bad.data?.accepted, false, '形状不对的实况应被丢弃');
+
+  const okReceipt = new Promise<{ ok: boolean; data?: { accepted?: boolean } }>((resolve) => {
+    ws.once('message', (data: RawData) => {
+      const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : new Uint8Array(data);
+      resolve((decode(bytes) as { payload: { ok: boolean; data?: { accepted?: boolean } } }).payload);
+    });
+  });
+  ws.send(
+    encode({
+      v: 1,
+      id: 'progress-1',
+      type: 'jump',
+      from: 'reasoner',
+      to: 'frontend',
+      payload: {
+        action: 'progress',
+        input: {
+          conversation_id: 'web:private:owner',
+          seq: 7,
+          kind: 'tool_call',
+          content: 'Get-Date',
+          meta: '{"tool":"shell__run","call_id":"c1"}',
+          at: '2026-10-17T10:00:03Z',
+        },
+      },
+    }),
+  );
+  const ok = await okReceipt;
+  assert.equal(ok.data?.accepted, true);
+
+  const ev = await readEvent();
+  assert.match(ev, /event: progress/);
+  assert.match(ev, /tool_call/);
+  assert.match(ev, /Get-Date/);
+  assert.match(ev, /"seq":7/);
 });
 
 test('门户：timer 推来快照 → 回执 + SSE 全量推给浏览器；旧序号的快照被丢弃', async (t) => {

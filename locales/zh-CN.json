@@ -208,6 +208,11 @@
     "setting.common.images": "图片服务",
     "setting.common.files": "文件服务",
     "setting.common.portal": "门户服务",
-    "setting.common.approval": "审批服务"
+    "setting.common.approval": "审批服务",
+    "ui.trace.thinking": "深度思考",
+    "ui.trace.command": "命令",
+    "ui.trace.output": "终端输出",
+    "ui.trace.lines": "行",
+    "ui.trace.truncated": "已截断"
   }
 }

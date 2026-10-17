@@ -395,6 +395,46 @@ describe('App', () => {
     await screen.findByText('任务完成');
   });
 
+  it('对话：progress 事件把思考 / 终端命令 / 终端输出画成轨迹条目', async () => {
+    boot({ openSettings: false });
+    await screen.findByRole('region', { name: '对话' });
+
+    for (const p of [
+      { seq: 2, kind: 'reasoning', content: '先看看现在几点，再决定要不要定闹钟。', meta: undefined },
+      { seq: 3, kind: 'tool_call', content: 'Get-Date', meta: '{"tool":"shell__run","call_id":"c1"}' },
+      { seq: 4, kind: 'tool_result', content: '2026-10-17 10:00:02\n第二行', meta: '{"tool":"shell__run","call_id":"c1"}' },
+    ]) {
+      await emitSSE('progress', {
+        conversationId: 'web:private:owner',
+        seq: p.seq,
+        kind: p.kind,
+        content: p.content,
+        meta: p.meta,
+        at: '2026-10-17T10:00:0' + String(p.seq) + 'Z',
+      });
+    }
+
+    // 思考与输出默认折叠：摘要在外面，正文在 details 里（折叠时 open=false）
+    assert.ok(await screen.findByText('深度思考'));
+    assert.equal(document.querySelector('.trace-text')?.textContent, '先看看现在几点，再决定要不要定闹钟。');
+    assert.ok(screen.getByText('Get-Date'));
+    assert.equal(screen.getAllByText('shell__run').length, 2, '命令与输出各带一次工具名');
+    const output = document.querySelector('.trace-output details') as HTMLDetailsElement;
+    assert.equal(output.open, false, '输出默认折叠');
+    assert.equal(output.querySelector('.trace-pre')?.textContent, '2026-10-17 10:00:02\n第二行');
+    assert.match(output.querySelector('summary')?.textContent ?? '', /2 行/);
+
+    // 同一 seq 再推一遍（重连/补发）→ 不画第二遍
+    await emitSSE('progress', {
+      conversationId: 'web:private:owner',
+      seq: 3,
+      kind: 'tool_call',
+      content: 'Get-Date',
+      meta: '{"tool":"shell__run","call_id":"c1"}',
+      at: '2026-10-17T10:00:02Z',
+    });
+    assert.equal(screen.getAllByText('Get-Date').length, 1);
+  });
   it('对话：发送 → POST /api/message + 本地回显', async () => {
     const { calls } = boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
