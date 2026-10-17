@@ -1,6 +1,6 @@
 module github.com/QAQ-awa-QAQ/sump/approval-integration
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/QAQ-awa-QAQ/sump/approval v0.0.0
@@ -16,6 +16,7 @@ require (
 	github.com/oklog/ulid/v2 v2.1.2 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 )
 
 replace github.com/QAQ-awa-QAQ/sump/approval => ../approval
