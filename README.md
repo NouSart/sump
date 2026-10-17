@@ -1,9 +1,9 @@
-# SUMP v2 · 2.0
+# SUMP v2
 
 [![CI](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml/badge.svg)](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-> 状态：**2.0 上线**（命令审批第二层：白名单外挂起 → 门户用户裁决） · M10（**设置全链路**：秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传） · M9（**shell 命令执行服务**：受理即回执 + 审批接缝（未接入 = 一律未通过）+ report_result 补报） · 长期记忆与 embedding 语义召回（M8，Python 服务） · **文件服务（含 Excel / Word 读写）** · 计时器（timer） · 前端服务 v1（设置中心可视化面板 + 待审命令裁决） · 命令审批：[说明](./COMMAND-APPROVAL.md) / [协议](./COMMAND-APPROVAL-PROTOCOL.md) · 设计文档：[DESIGN.md](./DESIGN.md)
+> 状态：**命令审批第二层**（白名单外挂起 → 门户用户裁决） · M10（**设置全链路**：秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传） · M9（**shell 命令执行服务**：受理即回执 + 审批接缝（未接入 = 一律未通过）+ report_result 补报） · 长期记忆与 embedding 语义召回（M8，Python 服务） · **文件服务（含 Excel / Word 读写）** · 计时器（timer） · 前端服务 v1（设置中心可视化面板 + 待审命令裁决） · 命令审批：[说明](./COMMAND-APPROVAL.md) / [协议](./COMMAND-APPROVAL-PROTOCOL.md) · 设计文档：[DESIGN.md](./DESIGN.md)
 
 SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独立运行（独立进程、独立数据库、任意语言），通过 WebSocket 按地址互相访问；智能体循环由 LLM 服务在服务网络之上自由跳转、组装。
 
