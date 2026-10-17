@@ -367,7 +367,7 @@ func TestUserReviewSecondLayer(t *testing.T) {
 	for _, tc := range []struct {
 		name, decision, wantPhase, wantOutcome string
 	}{
-		{"批准", "allow", "done", "Handles"},
+		{"批准", "allow", "done", "退出码 0"},
 		{"拒绝", "deny", "rejected", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
