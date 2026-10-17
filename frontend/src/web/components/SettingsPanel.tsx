@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { RowStatus, SettingViewData, ServiceCardView } from '../types';
+import { IconCheck, IconClose, IconPencil, IconUndo } from './icons';
 
 interface Props {
   service: ServiceCardView | null;
@@ -156,10 +157,12 @@ function SettingRow({ service, item, status, connected, onSave, onReset }: RowPr
               type="button"
               className="field-reset"
               data-armed={confirming ? 'true' : undefined}
+              aria-label={confirming ? `确认${clearLabel}` : clearLabel}
+              title={confirming ? `确认${clearLabel}` : clearLabel}
               onClick={() => void reset()}
               disabled={busy || !connected}
             >
-              {busy ? `${clearLabel}中…` : confirming ? `确认${clearLabel}` : clearLabel}
+              <IconUndo />
             </button>
           )}
         </span>
@@ -182,22 +185,39 @@ function SettingRow({ service, item, status, connected, onSave, onReset }: RowPr
             />
             <button
               type="button"
-              className="btn sm"
+              className="btn sm icon"
+              aria-label="保存"
+              aria-busy={busy}
+              title="保存"
               onClick={() => void save()}
               disabled={busy || !connected || (isSecret && draft === '')}
             >
-              {busy ? '保存中…' : '保存'}
+              <IconCheck />
             </button>
-            <button type="button" className="btn sm ghost" onClick={() => setEditing(false)} disabled={busy}>
-              取消
+            <button
+              type="button"
+              className="btn sm ghost icon"
+              aria-label="取消"
+              title="取消"
+              onClick={() => setEditing(false)}
+              disabled={busy}
+            >
+              <IconClose />
             </button>
           </>
         ) : (
           <>
             <span className="field-value">{isSecret ? (item.set ? SECRET_MASK : '—') : item.value || '—'}</span>
             {!isReadOnly && (
-              <button type="button" className="btn sm ghost" onClick={startEdit} disabled={busy || !connected}>
-                {isSecret ? (item.set ? '覆盖' : '设置') : '修改'}
+              <button
+                type="button"
+                className="btn sm ghost icon"
+                aria-label={isSecret ? (item.set ? '覆盖' : '设置') : '修改'}
+                title={isSecret ? (item.set ? '覆盖' : '设置') : '修改'}
+                onClick={startEdit}
+                disabled={busy || !connected}
+              >
+                <IconPencil />
               </button>
             )}
           </>

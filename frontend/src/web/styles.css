@@ -344,11 +344,12 @@ button { font: inherit; }
 .composer-row { display: flex; align-items: center; gap: var(--gap-2); }
 .grow { flex: 1; }
 
-/* ---------- 通用小按钮 ---------- */
+/* ---------- 通用小按钮（图标按钮：方形、圆角、留白靠 grid 居中） ---------- */
 .chip {
-  font-size: var(--fs-meta); color: var(--text-2);
-  padding: 5px 11px; border-radius: 999px;
-  border: 1px solid var(--border); background: transparent; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; padding: 0;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border); background: transparent; color: var(--text-2); cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .chip:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
@@ -373,9 +374,9 @@ button { font: inherit; }
 /* 主题切换（设置头部） */
 .theme-switch { display: flex; gap: 2px; padding: 2px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); }
 .theme-tab {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 10px; border-radius: 999px; border: 0; background: transparent;
-  color: var(--text-2); font-size: var(--fs-micro); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border-radius: 999px; border: 0; background: transparent;
+  color: var(--text-2); cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .theme-tab[aria-checked='true'] { background: var(--surface-strong); color: var(--text); }
@@ -424,8 +425,10 @@ button { font: inherit; }
 .tag-over { color: var(--text); border-color: var(--accent-line); background: var(--accent-soft); }
 .tag-drift { color: var(--text); border-color: var(--border-strong); background: var(--surface-strong); }
 .field-reset {
-  font-size: var(--fs-micro); color: var(--text-2); background: transparent;
-  border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; padding: 0;
+  color: var(--text-2); background: transparent;
+  border: 1px solid var(--border); border-radius: 999px; cursor: pointer;
 }
 .field-reset:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
 .field-reset[data-armed='true'] { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
@@ -448,6 +451,11 @@ button { font: inherit; }
 .btn:hover:not(:disabled) { filter: brightness(1.12); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.sm { padding: 4px 10px; font-size: var(--fs-micro); }
+/* 图标按钮：方形、居中，图标本身 16 网格 */
+.btn.icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+}
 .btn.ghost { background: transparent; border-color: var(--border); color: var(--text-2); }
 .btn.ghost:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
 

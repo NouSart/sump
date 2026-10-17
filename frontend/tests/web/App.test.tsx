@@ -66,9 +66,9 @@ function boot(over: { setResponse?: () => Response; messageResponse?: () => Resp
 
 // writeNewValue 在 images 的第一行进入编辑、改值并保存。
 function writeNewValue(value: string): void {
-  fireEvent.click(screen.getAllByText('修改')[0]!);
+  fireEvent.click(screen.getAllByRole('button', { name: '修改' })[0]!);
   fireEvent.change(screen.getByLabelText('max_mb 的新值'), { target: { value } });
-  fireEvent.click(screen.getByText('保存'));
+  fireEvent.click(screen.getByRole('button', { name: '保存' }));
 }
 
 // emitSSE 在 act 中触发一个 SSE 事件。
@@ -359,7 +359,7 @@ describe('App', () => {
     await screen.findByRole('region', { name: '对话' });
 
     fireEvent.change(screen.getByLabelText('消息'), { target: { value: '你好' } });
-    fireEvent.click(screen.getByText('发送'));
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
     await screen.findByText('你好'); // 本地回显（受理回执不代表已有回复）
     await waitFor(() => expect(calls.some((c) => c.url === '/api/message' && c.init?.method === 'POST')).toBe(true));
@@ -371,7 +371,7 @@ describe('App', () => {
     await screen.findByRole('region', { name: '对话' });
 
     fireEvent.change(screen.getByLabelText('消息'), { target: { value: '你好' } });
-    fireEvent.click(screen.getByText('发送'));
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
     await screen.findByText(/未送达：未知目标服务: reasoner/);
   });

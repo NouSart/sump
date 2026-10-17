@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PendingApprovalView, PortalMessage, TimerView } from '../types';
 import { ApprovalStrip } from './ApprovalStrip';
+import { IconPaperclip, IconSend, IconSliders, IconTerminal } from './icons';
 
 interface Props {
   connected: boolean;
@@ -131,18 +132,25 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
           }}
         />
         <div className="composer-row">
-          <button type="button" className="chip" onClick={onOpenSettings}>
-            设置
+          <button type="button" className="chip" onClick={onOpenSettings} aria-label="设置" title="设置">
+            <IconSliders />
           </button>
-          <button type="button" className="chip" disabled title="附件上传（下一步）">
-            添加附件
+          <button type="button" className="chip" disabled aria-label="添加附件" title="附件上传（下一步）">
+            <IconPaperclip />
           </button>
-          <button type="button" className="chip" disabled title="终端面板（下一步）">
-            终端
+          <button type="button" className="chip" disabled aria-label="终端" title="终端面板（下一步）">
+            <IconTerminal />
           </button>
           <span className="grow" />
-          <button type="submit" className="chip primary" disabled={!connected || busy || text.trim() === ''}>
-            {busy ? '发送中…' : '发送'}
+          <button
+            type="submit"
+            className="chip primary"
+            aria-label="发送"
+            aria-busy={busy}
+            title="发送（Enter）"
+            disabled={!connected || busy || text.trim() === ''}
+          >
+            <IconSend />
           </button>
         </div>
       </form>

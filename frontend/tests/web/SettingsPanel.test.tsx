@@ -73,7 +73,7 @@ describe('SettingsPanel', () => {
     assert.ok(screen.getByText('已覆盖'));
     assert.ok(screen.getByText('默认 —')); // 空默认值回落 —
     // 重置是覆盖行上的文字链，只在覆盖行出现
-    assert.equal(screen.getAllByText('重置').length, 1);
+    assert.equal(screen.getAllByRole('button', { name: '重置' }).length, 1);
   });
 
   it('秘密项已设置：只显示占位不当默认值，覆盖走密码框，值原样交给 onSave', async () => {
@@ -82,34 +82,34 @@ describe('SettingsPanel', () => {
     assert.ok(screen.getByText('已设置'));
     assert.ok(screen.getByText('••••••••'));
     assert.ok(screen.getByText(/值由服务自己保存/)); // 不是「默认 —」
-    assert.ok(screen.getByText('清空')); // 有值才有清空链
+    assert.ok(screen.getByRole('button', { name: '清空' })); // 有值才有清空链
 
-    fireEvent.click(screen.getByText('覆盖'));
+    fireEvent.click(screen.getByRole('button', { name: '覆盖' }));
     const input = screen.getByLabelText('llm.key 的新值') as HTMLInputElement;
     assert.equal(input.type, 'password'); // 输入期也不明文露脸
     assert.equal(input.value, ''); // 中心本来就没有值可回填
     // 不给值不让保存：清空是另一条链
-    assert.equal((screen.getByText('保存').closest('button') as HTMLButtonElement).disabled, true);
+    assert.equal((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled, true);
     fireEvent.change(input, { target: { value: 'sk-2f9c' } });
-    fireEvent.click(screen.getByText('保存'));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'llm.key', 'sk-2f9c'));
   });
 
   it('秘密项未设置：未设置 + 设置按钮，不出现清空链', () => {
     renderPanel({ settings: [secretUnsetRow] });
     assert.ok(screen.getByText('未设置'));
-    assert.ok(screen.getByText('设置'));
-    assert.equal(screen.queryByText('清空'), null);
-    assert.equal(screen.queryByText('覆盖'), null);
+    assert.ok(screen.getByRole('button', { name: '设置' }));
+    assert.equal(screen.queryByRole('button', { name: '清空' }), null);
+    assert.equal(screen.queryByRole('button', { name: '覆盖' }), null);
   });
 
   it('秘密项清空：两步确认后调 onReset（中心据此推空值给服务）', async () => {
     const onReset = vi.fn(async () => {});
     renderPanel({ settings: [secretRow], onReset });
-    fireEvent.click(screen.getByText('清空'));
-    assert.ok(screen.getByText('确认清空'));
+    fireEvent.click(screen.getByRole('button', { name: '清空' }));
+    assert.ok(screen.getByRole('button', { name: '确认清空' }));
     expect(onReset).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByText('确认清空'));
+    fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
     await waitFor(() => expect(onReset).toHaveBeenCalledWith('images', 'llm.key'));
   });
 
@@ -119,8 +119,8 @@ describe('SettingsPanel', () => {
     const tag = screen.getByText('不可改');
     assert.ok(tag.getAttribute('title')?.includes('重启')); // 说清楚为什么不能改
     assert.ok(screen.getByText(/启动参数带起来的只读值/));
-    assert.equal(screen.queryByText('修改'), null);
-    assert.equal(screen.queryByText('重置'), null);
+    assert.equal(screen.queryByRole('button', { name: '修改' }), null);
+    assert.equal(screen.queryByRole('button', { name: '重置' }), null);
   });
 
   it('服务侧自报值不一致：加「服务侧已变」标签 + 实际值走提示行', () => {
@@ -155,20 +155,20 @@ describe('SettingsPanel', () => {
 
   it('未连接：修改与重置按钮禁用', () => {
     renderPanel({ connected: false });
-    const modify = screen.getAllByText('修改')[0]!.closest('button');
-    const reset = screen.getByText('重置').closest('button');
-    assert.equal(modify?.disabled, true);
-    assert.equal(reset?.disabled, true);
+    const modify = screen.getAllByRole('button', { name: '修改' })[0] as HTMLButtonElement;
+    const reset = screen.getByRole('button', { name: '重置' }) as HTMLButtonElement;
+    assert.equal(modify.disabled, true);
+    assert.equal(reset.disabled, true);
   });
 
   it('编辑保存：调用 onSave(service,key,新值)，成功后退出编辑态', async () => {
     const onSave = vi.fn(async () => {});
     renderPanel({ onSave });
-    fireEvent.click(screen.getAllByText('修改')[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '修改' })[0]!);
     const input = screen.getByLabelText('max_mb 的新值') as HTMLInputElement;
     assert.equal(input.value, '32');
     fireEvent.change(input, { target: { value: '64' } });
-    fireEvent.click(screen.getByText('保存'));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'max_mb', '64'));
     await waitFor(() => assert.equal(screen.queryByLabelText('max_mb 的新值'), null));
   });
@@ -176,8 +176,8 @@ describe('SettingsPanel', () => {
   it('值未改动：保存直接退出，不调用 onSave', async () => {
     const onSave = vi.fn(async () => {});
     renderPanel({ onSave });
-    fireEvent.click(screen.getAllByText('修改')[0]!);
-    fireEvent.click(screen.getByText('保存'));
+    fireEvent.click(screen.getAllByRole('button', { name: '修改' })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
     await waitFor(() => assert.equal(screen.queryByLabelText('max_mb 的新值'), null));
     expect(onSave).not.toHaveBeenCalled();
   });
@@ -185,7 +185,7 @@ describe('SettingsPanel', () => {
   it('Escape 取消编辑，不调用 onSave', () => {
     const onSave = vi.fn(async () => {});
     renderPanel({ onSave });
-    fireEvent.click(screen.getAllByText('修改')[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '修改' })[0]!);
     const input = screen.getByLabelText('max_mb 的新值');
     fireEvent.keyDown(input, { key: 'Escape' });
     assert.equal(screen.queryByLabelText('max_mb 的新值'), null);
@@ -197,9 +197,9 @@ describe('SettingsPanel', () => {
       throw new Error('设置项未声明');
     });
     renderPanel({ onSave });
-    fireEvent.click(screen.getAllByText('修改')[1]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '修改' })[1]!);
     fireEvent.change(screen.getByLabelText('owner 的新值'), { target: { value: '20002' } });
-    fireEvent.click(screen.getByText('保存'));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('images', 'owner', '20002'));
     // 仍在编辑态
     assert.ok(screen.getByLabelText('owner 的新值'));
@@ -210,25 +210,25 @@ describe('SettingsPanel', () => {
     try {
       const onReset = vi.fn(async () => {});
       renderPanel({ onReset });
-      fireEvent.click(screen.getByText('重置'));
-      assert.ok(screen.getByText('确认重置'));
+      fireEvent.click(screen.getByRole('button', { name: '重置' }));
+      assert.ok(screen.getByRole('button', { name: '确认重置' }));
       expect(onReset).not.toHaveBeenCalled();
 
       // 3s 未确认 → 复位
       await act(async () => {
         await vi.advanceTimersByTimeAsync(3100);
       });
-      assert.ok(screen.getByText('重置'));
-      assert.equal(screen.queryByText('确认重置'), null);
+      assert.ok(screen.getByRole('button', { name: '重置' }));
+      assert.equal(screen.queryByRole('button', { name: '确认重置' }), null);
 
       // 再走一遍完整确认（假时钟下不用 waitFor——测试库的 waitFor 靠真实 interval 检测，会挂住）
-      fireEvent.click(screen.getByText('重置'));
-      fireEvent.click(screen.getByText('确认重置'));
+      fireEvent.click(screen.getByRole('button', { name: '重置' }));
+      fireEvent.click(screen.getByRole('button', { name: '确认重置' }));
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });
       expect(onReset).toHaveBeenCalledWith('images', 'owner');
-      assert.ok(screen.getByText('重置')); // 确认态退出
+      assert.ok(screen.getByRole('button', { name: '重置' })); // 确认态退出
     } finally {
       vi.useRealTimers();
     }

@@ -2,7 +2,7 @@
 // 所以左边栏、字标、收起按钮全都照旧可见可点——服务导航在左边栏里，不在这里。
 // 这里只负责三件事：标题、外观开关、退出设置（Esc 同效）。
 import { useEffect } from 'react';
-import { IconDark, IconLight } from './icons';
+import { IconClose, IconMoon, IconSun } from './icons';
 import { SettingsPanel } from './SettingsPanel';
 import type { RowStatus, SettingViewData, ServiceCardView } from '../types';
 
@@ -54,28 +54,30 @@ export function SettingsView({
             role="radio"
             aria-checked={theme === 'light'}
             className="theme-tab"
+            aria-label="浅色"
+            title="浅色"
             onClick={() => {
               onTheme('light');
             }}
           >
-            <IconLight />
-            浅色
+            <IconSun />
           </button>
           <button
             type="button"
             role="radio"
             aria-checked={theme === 'dark'}
             className="theme-tab"
+            aria-label="深色"
+            title="深色"
             onClick={() => {
               onTheme('dark');
             }}
           >
-            <IconDark />
-            深色
+            <IconMoon />
           </button>
         </div>
-        <button type="button" className="chip" onClick={onClose} aria-label="关闭设置">
-          关闭
+        <button type="button" className="chip" onClick={onClose} aria-label="关闭设置" title="关闭设置">
+          <IconClose />
         </button>
       </header>
       <div className="settings-body">

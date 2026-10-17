@@ -4,6 +4,7 @@
 // 没有"总是允许"——那等于在面板里偷偷改白名单（规则归 approval 的 policy.json）。
 import { useState } from 'react';
 import type { PendingApprovalView } from '../types';
+import { IconCheck, IconClose } from './icons';
 
 interface Props {
   items: PendingApprovalView[];
@@ -38,23 +39,28 @@ export function ApprovalStrip({ items, onDecide }: Props) {
           <div className="approval-actions">
             <button
               type="button"
-              className="btn sm"
+              className="btn sm icon"
+              aria-label={busy === it.itemId ? '提交中' : '批准执行'}
+              aria-busy={busy === it.itemId}
+              title="批准执行"
               disabled={busy !== null}
               onClick={() => {
                 void decide(it.itemId, 'allow');
               }}
             >
-              {busy === it.itemId ? '提交中…' : '批准执行'}
+              <IconCheck />
             </button>
             <button
               type="button"
-              className="btn sm ghost"
+              className="btn sm ghost icon"
+              aria-label="拒绝"
+              title="拒绝"
               disabled={busy !== null}
               onClick={() => {
                 void decide(it.itemId, 'deny');
               }}
             >
-              拒绝
+              <IconClose />
             </button>
           </div>
         </article>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { decideApproval, fetchOverview, resetSetting, sendMessage, setSetting } from './api';
 import { PortalView } from './components/PortalView';
+import { IconChevronUp } from './components/icons';
 import { ServiceList } from './components/ServiceList';
 import { SettingsView } from './components/SettingsView';
 import { Toasts, type Toast } from './components/Toasts';
@@ -344,7 +345,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
                 setCollapsed(true);
               }}
             >
-              ↑
+              <IconChevronUp />
             </button>
           </div>
         </aside>
