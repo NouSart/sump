@@ -6,6 +6,7 @@ require (
 	github.com/QAQ-awa-QAQ/sump/protocol v0.0.0
 	github.com/QAQ-awa-QAQ/sump/service v0.0.0
 	github.com/gorilla/websocket v1.5.3
+	golang.org/x/text v0.43.0
 )
 
 require (

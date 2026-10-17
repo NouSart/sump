@@ -596,3 +596,37 @@ func TestCommandRequired(t *testing.T) {
 		t.Fatal("空命令应被拒")
 	}
 }
+
+// TestChineseOutputDecoded：Windows PowerShell 5.1 在中文系统上按系统代码页（GBK）写 stdout，
+// 直接当 UTF-8 解会把汉字全换成替换符（模型看到的就是 `2026�10�17�`）。
+// 这里用**纯 ASCII 命令**产生中文输出（[char]0x4E2D+[char]0x6587 = 中文），避免参数编码干扰。
+// 非 Windows / 无 PowerShell 的环境跳过（该缺陷只在 Windows 代码页下出现）。
+func TestChineseOutputDecoded(t *testing.T) {
+	if filepath.Separator != '\\' {
+		t.Skip("只有 Windows 的 PowerShell 5.1 会按系统代码页输出")
+	}
+	pwsh, err := exec.LookPath("powershell")
+	if err != nil {
+		if pwsh, err = exec.LookPath("pwsh"); err != nil {
+			t.Skip("没有 PowerShell")
+		}
+	}
+	sc := startStubCenter(t)
+	cl := startCaller(t, sc, "caller")
+	s := startShell(t, sc, server.Config{Root: t.TempDir(), Shell: pwsh, Approver: allowAll{}})
+	c := dial(t, s.WsURL())
+
+	run(t, c, "Write-Output ([char]0x4E2D + [char]0x6587)", "")
+	waitReport(t, cl, "approved")
+	done := waitReport(t, cl, "done")
+	d := eventData(t, done)
+	if d.ExitCode != 0 {
+		t.Fatalf("退出码不符: %+v", d)
+	}
+	if !strings.Contains(d.Stdout, "中文") {
+		t.Fatalf("中文输出被解坏了（应含「中文」）: %q", d.Stdout)
+	}
+	if strings.ContainsRune(d.Stdout, 0xFFFD) {
+		t.Fatalf("输出里出现了替换符（说明按错误编码解）: %q", d.Stdout)
+	}
+}
