@@ -520,6 +520,10 @@ button { font: inherit; }
 .ro-group > summary::-webkit-details-marker { display: none; }
 .ro-group > summary::before { content: '▸ '; color: var(--text-3); }
 .ro-group[open] > summary::before { content: '▾ '; }
+.ro-group.about { margin-top: var(--gap-2); border-top: 0; padding-top: 0; }
+.ro-group.about > summary { font-size: var(--fs-micro); color: var(--text-3); }
+.ro-group.about[open] > summary { margin-bottom: 6px; }
+.ro-group.about .panel-addr { margin-top: 6px; }
 .ro-hint { margin: 6px 0 var(--gap-2); font-size: var(--fs-micro); color: var(--text-3); }
 .ro-list { margin: 0; display: flex; flex-direction: column; gap: 4px; }
 .ro-row { display: flex; gap: var(--gap-3); font-size: var(--fs-meta); }

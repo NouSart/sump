@@ -127,11 +127,11 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
             delete next[k];
             return next;
           });
-          if (wasPending) pushToast('ok', `已生效 ${k}${r.value ? ` = ${r.value}` : ''}`);
+          if (wasPending) pushToast('ok', `${t('ui.app.applied', '已生效')} ${k}${r.value ? ` = ${r.value}` : ''}`);
         } else {
           const reason = r.error ?? '未送达';
           setRowStates((prev) => ({ ...prev, [k]: { state: 'failed', error: reason } }));
-          if (wasPending) pushToast('error', `未生效 ${k}：${reason}`);
+          if (wasPending) pushToast('error', `${t('ui.app.notApplied', '未生效')} ${k}：${reason}`);
         }
       }
       void loadRef.current();
@@ -233,7 +233,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
           delete next[k];
           return next;
         });
-        pushToast('error', `写入失败：${(err as Error).message}`);
+        pushToast('error', `${t('ui.app.writeFailed', '写入失败：')}${(err as Error).message}`);
         throw err;
       }
     },
@@ -284,7 +284,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
         if (cancelled || history.length === 0) return;
         setMessages((prev) => mergeMessages(history, prev));
       } catch (err) {
-        if (!cancelled) setPortalError(`历史未取回：${(err as Error).message}`);
+        if (!cancelled) setPortalError(`${t('ui.app.historyFailed', '历史未取回：')}${(err as Error).message}`);
       }
     })();
     return () => {
@@ -299,7 +299,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     try {
       await sendMessage(text);
     } catch (err) {
-      setPortalError(`未送达：${(err as Error).message}`);
+      setPortalError(`${t('ui.app.undelivered', '未送达：')}${(err as Error).message}`);
     }
   }, []);
 
@@ -310,7 +310,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     try {
       await decideApproval(itemId, decision);
     } catch (err) {
-      setPortalError(`裁决未送达：${(err as Error).message}`);
+      setPortalError(`${t('ui.app.decisionFailed', '裁决未送达：')}${(err as Error).message}`);
     }
   }, []);
 
@@ -329,8 +329,12 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
         <span
           className={connected ? 'dot dot-on' : 'dot dot-off'}
           role="img"
-          aria-label={connected ? '已连接设置中心' : '未连接设置中心'}
-          title={overview ? `设置中心 ${overview.center} · ${connected ? '已连接' : '未连接'}` : '设置中心'}
+          aria-label={connected ? t('ui.app.connected', '已连接设置中心') : t('ui.app.disconnected', '未连接设置中心')}
+          title={
+            overview
+              ? `${t('ui.settings.title', '设置')} ${overview.center} · ${connected ? t('ui.app.on', '已连接') : t('ui.app.off', '未连接')}`
+              : t('ui.settings.title', '设置')
+          }
         />
       )}
 
@@ -339,8 +343,8 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
           type="button"
           className="sidebar sidebar-bar"
           aria-expanded={false}
-          aria-label="展开侧栏"
-          title="展开侧栏"
+          aria-label={t('ui.app.expand', '展开侧栏')}
+          title={t('ui.app.expand', '展开侧栏')}
           onClick={() => {
             setCollapsed(false);
           }}
@@ -349,7 +353,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
         <aside className="sidebar">
           <div className="brand-slot" aria-hidden="true" />
           {settingsOpen ? (
-            <nav className="threads" aria-label="服务列表">
+            <nav className="threads" aria-label={t('ui.settings.servicesNav', '服务列表')}>
               <p className="section-label">{t('ui.settings.services', '服务')} · {services.length}</p>
               <ServiceList
                 services={services}
@@ -360,12 +364,12 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
               />
             </nav>
           ) : (
-            <nav className="threads" aria-label="会话">
+            <nav className="threads" aria-label={t('ui.app.conversations', '会话')}>
               {/* 目前 reasoner 只有单会话（web:private:owner）：列表如实只显示这一条，
                   不做假的多会话条目——等多会话能力落地再长出来。 */}
-              <button type="button" className="thread is-active" aria-current="true" title="当前会话">
+              <button type="button" className="thread is-active" aria-current="true" title={t('ui.app.currentThread', '当前会话')}>
                 <span className="t-time">{threadLabel}</span>
-                <span className="t-title">当前会话</span>
+                <span className="t-title">{t('ui.app.currentThread', '当前会话')}</span>
               </button>
             </nav>
           )}
@@ -376,8 +380,8 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
               type="button"
               className="icon-btn"
               aria-expanded={true}
-              aria-label="收起侧栏"
-              title="收起侧栏"
+              aria-label={t('ui.app.collapse', '收起侧栏')}
+              title={t('ui.app.collapse', '收起侧栏')}
               onClick={() => {
                 setCollapsed(true);
               }}
@@ -391,7 +395,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
       <main className="stage">
         {loadError && (
           <p className="inline-error" role="alert">
-            加载失败：{loadError}
+            {t('ui.app.loadFailed', '加载失败：')}{loadError}
           </p>
         )}
         {settingsOpen ? (
@@ -424,6 +428,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
             onOpenSettings={() => {
               setSettingsOpen(true);
             }}
+            t={t}
           />
         )}
       </main>

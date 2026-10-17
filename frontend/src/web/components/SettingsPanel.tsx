@@ -28,10 +28,20 @@ export function SettingsPanel({ service, settings, connected, statusOf, onSave, 
   return (
     <div className="panel">
       <h1 className="panel-title">{title}</h1>
-      {(() => {
-        const desc = t(`service.${service.name}.desc`, service.description ?? '');
-        return desc !== '' ? <p className="panel-desc">{desc}</p> : null;
-      })()}
+      <details className="ro-group about">
+        <summary>{t('ui.settings.about', '关于这个服务')}</summary>
+        {(() => {
+          const desc = t(`service.${service.name}.desc`, service.description ?? '');
+          return desc !== '' ? (
+            <p className="panel-desc">{desc}</p>
+          ) : (
+            <p className="panel-desc">{t('ui.settings.noDesc', '这个服务没有留下说明')}</p>
+          );
+        })()}
+        <p className="panel-addr">
+          {t('ui.settings.address', '内部地址')}：{service.addr}
+        </p>
+      </details>
 
       {settings === null ? (
         <p className="empty">{t('ui.settings.loading', '加载中…')}</p>
