@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/QAQ-awa-QAQ/sump/memory/store"
+	"github.com/QAQ-awa-QAQ/sump/protocol"
 )
 
 // TestConversationTable 验证会话表：写入即建行、列表按活跃排序、改名、回填老库。
@@ -201,6 +202,50 @@ func TestConversationTouchThrottle(t *testing.T) {
 	}
 	if second.UpdatedAt != first.UpdatedAt {
 		t.Fatalf("30 秒内的连续写入不该推 updated_at: %q → %q", first.UpdatedAt, second.UpdatedAt)
+	}
+}
+
+// TestConversationBackfillFromTasks 验证老库里"只有任务、没有消息"的会话也能回填。
+// 任务可能在用户还没说话时就建好了（task_open 直接建），这种会话在 messages 里查不到——
+// 回填只按消息聚合就会漏掉它，历史记录页上于是一个有任务的工作凭空消失。
+func TestConversationBackfillFromTasks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old2.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.OpenTask("only-tasks", "只有任务没有消息"); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟老库：没有 conversations 表。
+	if _, err := st.DB().Exec(`DROP TABLE conversations`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	re, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer re.Close()
+
+	got, err := re.ListConversations(10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found protocol.Conversation
+	for _, c := range got {
+		if c.ID == "only-tasks" {
+			found = c
+		}
+	}
+	if found.ID == "" {
+		t.Fatalf("只有任务的会话应被回填出来: %+v", got)
+	}
+	if found.CreatedAt == "" || found.UpdatedAt == "" {
+		t.Fatalf("回填的时间不该是空: %+v", found)
 	}
 }
 

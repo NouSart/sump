@@ -13,6 +13,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -270,5 +271,87 @@ func TestReflectFailureDoesNotBreakDelivery(t *testing.T) {
 	}
 	if got := mem.Notes(); len(got) != 0 {
 		t.Fatalf("复盘失败时不该写经验，实际 %+v", got)
+	}
+}
+
+// TestReflectSettingLive 验证 reflect.on 是**热**的：门户上拨一下开关，下一次交付就变。
+// 启动时开/关只能证明配置接上了；真正在用的路径是运行时改（改不动就得重启服务）。
+func TestReflectSettingLive(t *testing.T) {
+	sc := startStubCenter(t)
+	client := &scriptedLLM{notes: `{"notes":[{"content":"一条经验","kind":"坑"}]}`}
+	s, boss, mem := startReflectEnv(t, sc, client, func(c *server.Config) { c.Reflect = true })
+	mem.setTask(&protocol.Task{ID: "task-live", ConversationID: "default", Name: "活着改", Status: "active"})
+
+	// 开着：第一次交付写一条。
+	sendUser(t, s, "第一件事")
+	waitDelivery(t, boss, "任务答复")
+	if got := noteEventually(t, mem, 1, 10*time.Second); len(got) != 1 {
+		t.Fatalf("开场应该写一条经验: %+v", got)
+	}
+
+	// 热关：再交付一次，不该再写，也不该再发复盘请求。
+	configure(t, s, protocol.ConfigurePayload{Key: "reflect.on", Value: "false", Default: "true", Overridden: true})
+	sendUser(t, s, "第二件事")
+	waitDelivery(t, boss, "任务答复")
+	time.Sleep(500 * time.Millisecond)
+	if got := mem.Notes(); len(got) != 1 {
+		t.Fatalf("关掉之后不该再写经验: %+v", got)
+	}
+	if n := client.Reflects(); n != 1 {
+		t.Fatalf("关掉之后不该再发复盘请求，实际 %d 次", n)
+	}
+
+	// 非法值：明确拒绝，不悄悄当成 false。
+	c := dialReasoner(t, s)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if rp := jump(t, c, "configure", protocol.ConfigurePayload{Key: "reflect.on", Value: "maybe"}, ctx); rp.OK {
+		t.Fatal("reflect.on 只接受 true / false，\"maybe\" 应被拒绝")
+	}
+
+	// 再打开：恢复写经验（证明开关是双向的，不是"一旦关掉就再也开不回来"）。
+	configure(t, s, protocol.ConfigurePayload{Key: "reflect.on", Value: "true", Default: "true", Overridden: true})
+	sendUser(t, s, "第三件事")
+	waitDelivery(t, boss, "任务答复")
+	if got := noteEventually(t, mem, 2, 10*time.Second); len(got) != 2 {
+		t.Fatalf("重新打开后应恢复写经验: %+v", got)
+	}
+}
+
+// TestThinkConcurrent 验证 think 之间互不阻塞：它是同步等模型，但不能把整个服务串起来。
+// 5 个并发调用若被同一把锁串行化，最慢的那个会把所有人都拖住。
+func TestThinkConcurrent(t *testing.T) {
+	sc := startStubCenter(t)
+	client := &scriptedLLM{thinkReply: "好"}
+	s, _, _ := startReflectEnv(t, sc, client)
+
+	c := dialReasoner(t, s)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	errs := make(chan string, 5)
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rp := jump(t, c, "think", protocol.ThinkPayload{Prompt: fmt.Sprintf("第 %d 问", i)}, ctx)
+			if !rp.OK {
+				errs <- rp.Error
+				return
+			}
+			var out protocol.ThinkResult
+			if err := protocol.DecodeRaw(rp.Data, &out); err != nil || out.Text != "好" {
+				errs <- fmt.Sprintf("第 %d 个结果不符: %+v err=%v", i, out, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Fatal(e)
+	}
+	if n := len(client.Requests()); n != 5 {
+		t.Fatalf("5 个并发 think 应产生 5 次补全，实际 %d 次", n)
 	}
 }

@@ -292,7 +292,8 @@ func (c *stubCaller) recallUntilReady(t *testing.T, memoryURL string, input prot
 }
 
 // startMemory 起一个真 memory server（临时库）。
-func startMemory(t *testing.T, centerURL string, historyLimit int) *server.Server {
+// opts 在 server.New 之前作用到 Config 上，同时把底层库交出去——经验网（memnet）要拿它开表。
+func startMemory(t *testing.T, centerURL string, historyLimit int, opts ...func(*server.Config, *store.Store)) *server.Server {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "memory.db"))
 	if err != nil {
@@ -303,8 +304,7 @@ func startMemory(t *testing.T, centerURL string, historyLimit int) *server.Serve
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger := log.New(os.Stdout, "[memory-test] ", log.LstdFlags)
-	srv := server.New(server.Config{
+	cfg := server.Config{
 		Name:              "memory",
 		Listen:            "127.0.0.1:0",
 		Center:            centerURL,
@@ -312,7 +312,12 @@ func startMemory(t *testing.T, centerURL string, historyLimit int) *server.Serve
 		Store:             st,
 		Longterm:          lt,
 		HistoryLimit:      historyLimit,
-	}, logger)
+	}
+	for _, opt := range opts {
+		opt(&cfg, st)
+	}
+	logger := log.New(os.Stdout, "[memory-test] ", log.LstdFlags)
+	srv := server.New(cfg, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Start(ctx); err != nil {

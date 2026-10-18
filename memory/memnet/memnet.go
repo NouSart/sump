@@ -333,15 +333,20 @@ func (s *Store) Attach(now time.Time, in AttachInput, vec []float32, model strin
 	if content == "" {
 		return AttachResult{}, errors.New("经验内容为空")
 	}
-	if in.Durability == "transient" {
+	// 耐用度是闭集，**必须校验**：拼成 "Core" 会被原样存下，而 Stability 只认小写 "core"，
+	// 于是"不该忘的经验"会照着遗忘曲线悄悄消失，全程没有一处报错。
+	switch in.Durability {
+	case "":
+		in.Durability = "durable"
+	case "core", "durable":
+	case "transient":
 		// 一次性的东西属于当前任务上下文，不属于经验。
 		return AttachResult{Skipped: true}, nil
+	default:
+		return AttachResult{}, fmt.Errorf("耐用度 %q 不认识（可选 core / durable / transient）", in.Durability)
 	}
 	if in.Source == "" {
 		in.Source = "agent"
-	}
-	if in.Durability == "" {
-		in.Durability = "durable"
 	}
 	ts := now.Format(time.RFC3339Nano)
 
@@ -459,12 +464,16 @@ func (s *Store) findNearDuplicate(vec []float32) (string, bool, error) {
 // reinforce 把已有条目"又遇到了一次"：命中 +1、刷新时间、主枝加粗。
 func (s *Store) reinforce(id string, vec []float32, now time.Time) error {
 	ts := now.Format(time.RFC3339Nano)
-	if len(vec) > 0 {
-		if _, err := s.db.Exec(`UPDATE mem_entries SET hits=hits+1, last_hit_at=?, embedding=? WHERE id=?`,
-			ts, encodeVec(vec), id); err != nil {
-			return err
-		}
-	} else if _, err := s.db.Exec(`UPDATE mem_entries SET hits=hits+1, last_hit_at=? WHERE id=?`, ts, id); err != nil {
+	// 只加命中、刷新时间，**不覆盖向量**：条目的 content 没变，它的向量就该跟着 content 走。
+	// 近重复阈值是松的（0.62），覆盖等于允许一次"看着像"的观察悄悄改写旧条目的几何——
+	// 之后内容与向量对不上，召回会越来越飘。
+	// 唯一的例外是原来压根没有向量（懒补齐场景）：这时补上是有益的。
+	if _, err := s.db.Exec(
+		`UPDATE mem_entries
+		    SET hits=hits+1,
+		        last_hit_at=?,
+		        embedding=CASE WHEN length(embedding)=0 THEN ? ELSE embedding END
+		  WHERE id=?`, ts, encodeVec(vec), id); err != nil {
 		return err
 	}
 	s.invalidateMean()

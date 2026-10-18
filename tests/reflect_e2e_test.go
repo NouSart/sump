@@ -210,6 +210,10 @@ func TestReflectWritesExperienceE2E(t *testing.T) {
 	}
 
 	// 交付完成之后复盘才开始，所以这里必须轮询（不能立刻断言）。
+	// 顺手验一件只有真链路能验的事：会话的「入口」是从 boss 灌进 conversations.entry 的
+	// （记录是 reasoner 代写的，env.From 永远是 reasoner，不是真正进门的那个人）。
+	conversationEntryEventually(t, memoryURL, "e2e-reflect", "e2e-boss", 10*time.Second)
+
 	deadline := time.Now().Add(30 * time.Second)
 	var lastHeads protocol.LineHeadsResult
 	for time.Now().Before(deadline) {
@@ -241,4 +245,29 @@ func TestReflectWritesExperienceE2E(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}
 	t.Fatalf("复盘写回的经验没进网（复盘请求 %d 次）；最后的线头: %+v", fakeLLM.Reflects(), lastHeads.Heads)
+}
+
+// conversationEntryEventually 轮询会话清单，直到该会话的入口变成 want。
+// "从哪扇门进来"只有真链路能验：记录是 reasoner 代写的，env.From 永远是 reasoner。
+func conversationEntryEventually(t *testing.T, memURL, id, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last []protocol.Conversation
+	for time.Now().Before(deadline) {
+		rp := memoryCall(t, memURL, "conversation_list", protocol.ConversationListPayload{})
+		if rp.OK {
+			var res protocol.ConversationListResult
+			if err := protocol.DecodeRaw(rp.Data, &res); err != nil {
+				t.Fatal(err)
+			}
+			last = res.Conversations
+			for _, c := range last {
+				if c.ID == id && c.Entry == want {
+					return
+				}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("会话 %q 的入口在超时前没变成 %q（最后看到: %+v）", id, want, last)
 }
