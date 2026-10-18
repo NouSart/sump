@@ -651,3 +651,76 @@ type ReportPayload struct {
 	Kind    string `msgpack:"kind,omitempty"` // 错误类别（上报方自定，如 fire / deliver / tool）
 	Message string `msgpack:"message"`        // 错误简述
 }
+
+// ---------- 经验网（记忆服务内的独立包 memnet） ----------
+
+// NotePayload 写一条经验。整理时机由调用方决定（收尾后 / 定时 / 手动）。
+type NotePayload struct {
+	Content        string `msgpack:"content"`
+	ConversationID string `msgpack:"conversation_id,omitempty"`
+	TaskID         string `msgpack:"task_id,omitempty"`
+	// Durability：core（不衰减）| durable（遗忘曲线，默认）| transient（不进网）。
+	Durability string `msgpack:"durability,omitempty"`
+}
+
+// NoteResult 是写入结果：Duplicate = 同一件事又说了一遍（只加了命中次数）。
+type NoteResult struct {
+	ID        string   `msgpack:"id"`
+	NodeIDs   []string `msgpack:"node_ids,omitempty"`
+	Duplicate bool     `msgpack:"duplicate,omitempty"`
+	Skipped   bool     `msgpack:"skipped,omitempty"`
+}
+
+// LineHeadsPayload 直接要线头（门户 / 调试用；recall 里是自动带的）。
+type LineHeadsPayload struct {
+	Query string `msgpack:"query"`
+	Limit int    `msgpack:"limit,omitempty"`
+}
+
+// LineHeadView 是一条线头：一行代表句 + 条数 + 来自哪个任务。
+type LineHeadView struct {
+	NodeID  string   `msgpack:"node_id"`
+	Text    string   `msgpack:"text"`
+	Count   int      `msgpack:"count"`
+	Score   float64  `msgpack:"score"`
+	TaskID  string   `msgpack:"task_id,omitempty"`
+	Members []string `msgpack:"members,omitempty"`
+}
+
+// LineHeadsResult 是线头列表。
+type LineHeadsResult struct {
+	Heads []LineHeadView `msgpack:"heads"`
+}
+
+// DigPayload 顺着线头往下扒：entry_id = 翻同簇兄弟，node_id = 展开整个大类。
+type DigPayload struct {
+	EntryID string `msgpack:"entry_id,omitempty"`
+	NodeID  string `msgpack:"node_id,omitempty"`
+	Limit   int    `msgpack:"limit,omitempty"`
+}
+
+// NoteView 是一条经验的只读视图。
+type NoteView struct {
+	ID         string `msgpack:"id"`
+	Content    string `msgpack:"content"`
+	TaskID     string `msgpack:"task_id,omitempty"`
+	Source     string `msgpack:"source,omitempty"`
+	Durability string `msgpack:"durability,omitempty"`
+	Hits       int    `msgpack:"hits"`
+}
+
+// DigResult 是下探结果。
+type DigResult struct {
+	EntryID string     `msgpack:"entry_id,omitempty"`
+	NodeID  string     `msgpack:"node_id,omitempty"`
+	Content string     `msgpack:"content"`
+	TaskID  string     `msgpack:"task_id,omitempty"`
+	Notes   []NoteView `msgpack:"notes"`
+	Total   int        `msgpack:"total"`
+}
+
+// PruneResult 是维护结果（软剪枝：只标状态，不删行）。
+type PruneResult struct {
+	Entries int `msgpack:"entries"`
+	Links   int `msgpack:"links"`
+}

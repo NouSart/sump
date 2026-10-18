@@ -15,6 +15,7 @@ import (
 
 	"github.com/QAQ-awa-QAQ/sump/memory/compose"
 	"github.com/QAQ-awa-QAQ/sump/memory/longterm"
+	"github.com/QAQ-awa-QAQ/sump/memory/memnet"
 	"github.com/QAQ-awa-QAQ/sump/memory/store"
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 	"github.com/QAQ-awa-QAQ/sump/service"
@@ -28,6 +29,7 @@ type Config struct {
 	HeartbeatInterval time.Duration   // 心跳间隔（默认 15s）
 	Store             *store.Store    // 会话库
 	Longterm          *longterm.Store // 长期记忆库（与会话库共享同一 SQLite 句柄）
+	Net               *memnet.Store   // 经验网（同上；边界独立，只吃 *sql.DB）
 	HistoryLimit      int             // recall 返回的最近消息条数（默认 12；作为声明预设上报）
 	Embedding         string          // embedding 服务名（默认 embedding；语义召回不可用时静默回落 bigram）
 	DBPath            string          // 数据库路径（只读项展示用：换它要重启）
@@ -62,6 +64,11 @@ type Server struct {
 	relLimit     int        // 相关记忆条数上限
 	relMaxChars  int        // 相关记忆字符预算
 	embedding    string     // 当前 embedding 服务名（recall.embedding 热改）
+
+	// 经验网的种子向量（懒补齐）：只在五个大类还没有定义向量时做一次，
+	// 失败就下次再试——embedding 服务此刻可能还没上线。
+	netSeedMu sync.Mutex
+	netSeeded bool
 }
 
 // embeddingName 返回当前 embedding 服务名（空 = 语义召回关闭，回落 bigram）。
@@ -106,6 +113,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "recall", Input: "任务上下文 {conversation_id, messages, boss}", Output: "受理回执；随后向调用方发送 resume（注入记忆后的上下文）"},
 			{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
 			{Action: "history", Input: "{conversation_id, limit}", Output: "{conversation_id, messages:[{role, content, at}]}（按时间正序；供界面回填，不做记忆组装）"},
+			{Action: "note", Input: "经验 {content, conversation_id?, task_id?, durability?}（core | durable | transient）", Output: "{id, node_ids, duplicate, skipped}（不进 provides：整理由复盘流程调；duplicate = 同一件事又说了一遍）"},
+			{Action: "dig", Tool: true, Input: "{entry_id?, node_id?, limit?}（entry_id = 翻同簇兄弟，node_id = 展开整个大类）", Output: "{notes[], total}（顺着线头往下扒）"},
+			{Action: "lineheads", Input: "{query, limit?}", Output: "{heads:[{node_id, text, count, score, task_id, members}]}（一行一条；recall 里自动带）"},
+			{Action: "prune", Input: "{}", Output: "{entries, links}（软剪枝：只标状态、只断干枯的线，不删行）"},
 			{Action: "remember", Tool: true, Input: "长期记忆条目 {kind, content, priority?}（kind 如 偏好/身份/知识/事件；priority>0 = 核心记忆，每次对话都会带上）", Output: "{id, created}（同 kind+content 已有 active 条目时幂等跳过）"},
 		},
 		Logger: logger,
@@ -179,6 +190,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("recall", s.actionRecall)
 	s.Handle("store", s.actionStore)
 	s.Handle("history", s.actionHistory)
+	s.Handle("note", s.actionNote)
+	s.Handle("dig", s.actionDig)
+	s.Handle("lineheads", s.actionLineHeads)
+	s.Handle("prune", s.actionNetPrune)
 	s.Handle("remember", s.actionRemember)
 	s.Handle("forget", s.actionForget)
 	// 任务：会话的结构（agent 在任务里工作；没有任务就没有上下文可取）。
@@ -426,6 +441,9 @@ func (s *Server) actionTaskList(_ context.Context, _ protocol.Envelope, in proto
 	return protocol.TaskListResult{Tasks: tasks}, nil
 }
 
+// nowFunc 统一取时间：便于测试替换（经验网的遗忘曲线全看它）。
+var nowFunc = time.Now
+
 // actionRemember 写一条长期记忆（内容重复时幂等跳过）；来源记调用方服务名。
 // 新建条目顺带算一次向量（派生数据；失败仅记日志——召回时会懒补齐）。
 func (s *Server) actionRemember(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
@@ -537,7 +555,8 @@ func (s *Server) actionRecall(ctx context.Context, env protocol.Envelope, in pro
 		}
 	}
 
-	final := compose.Inject(tc.Messages, compose.BuildMemory(history, core, relevant))
+	final := compose.Inject(tc.Messages, compose.BuildMemory(history, core, relevant,
+		s.experienceLines(ctx, env, recallQuery(tc.Messages))))
 
 	if err := s.fireResume(env, protocol.ResumePayload{Context: protocol.TaskContext{
 		ConversationID: cid,

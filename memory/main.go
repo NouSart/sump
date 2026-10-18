@@ -9,8 +9,10 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/QAQ-awa-QAQ/sump/memory/longterm"
+	"github.com/QAQ-awa-QAQ/sump/memory/memnet"
 	"github.com/QAQ-awa-QAQ/sump/memory/server"
 	"github.com/QAQ-awa-QAQ/sump/memory/store"
 )
@@ -38,12 +40,20 @@ func main() {
 		logger.Fatalf("初始化长期记忆失败: %v", err)
 	}
 
+	// 经验网与会话库共享同一个 SQLite 句柄（同进程同库：跨表事务才成立），
+	// 但它只认 *sql.DB——边界独立，将来整块搬走即可。
+	net, err := memnet.Open(st.DB(), time.Now())
+	if err != nil {
+		logger.Fatalf("初始化经验网失败: %v", err)
+	}
+
 	s := server.New(server.Config{
 		Name:         *name,
 		Listen:       *addr,
 		Center:       *center,
 		Store:        st,
 		Longterm:     lt,
+		Net:          net,
 		HistoryLimit: *history,
 		Embedding:    *embedding,
 		DBPath:       *dbPath,
