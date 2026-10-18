@@ -33,6 +33,7 @@ func TestHelloWeb(t *testing.T) {
 	startProc(t, alBin,
 		"-addr", fmt.Sprintf("127.0.0.1:%d", alPort),
 		"-center", centerURL,
+		"-reflect=false", // 复盘会多花一次模型调用；这条用例只验启动链
 	)
 
 	// 观察者客户端：作为第三方接入设置中心（不依赖任何服务内部状态）。

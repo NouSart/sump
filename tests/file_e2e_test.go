@@ -181,6 +181,7 @@ func TestQQFileE2E(t *testing.T) {
 		"-llm-base", fakeLLM.URL(),
 		"-llm-key", "test-key",
 		"-llm-model", "fake-model",
+		"-reflect=false", // 复盘会多花一次模型调用；这条用例只验取图链
 	)
 	waitWSReady(t, alURL, 60*time.Second)
 

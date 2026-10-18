@@ -17,22 +17,27 @@ import (
 )
 
 // startAsyncEnv 起一套最小环境：中心 / boss / 记忆 / 慢工具 / reasoner。
-func startAsyncEnv(t *testing.T, sc *stubCenter, fake *llm.Fake, notify string) (*server.Server, *stubBoss) {
+// opts 在 server.New 之前作用到 Config 上（复盘那类默认关闭的开关靠它打开）。
+func startAsyncEnv(t *testing.T, sc *stubCenter, client llm.Client, notify string, opts ...func(*server.Config)) (*server.Server, *stubBoss) {
 	t.Helper()
 	boss := startStubBoss(t, sc)
 	mem := startStubMemory(t, sc)
 	startStubSlow(t, sc)
 
-	logger := log.New(os.Stdout, "[async-test] ", log.LstdFlags)
-	s := server.New(server.Config{
+	cfg := server.Config{
 		Name:              "reasoner",
 		Listen:            "127.0.0.1:0",
 		Center:            sc.URL(),
 		HeartbeatInterval: 100 * time.Millisecond,
 		Memory:            "memory",
 		NotifyMode:        notify,
-		LLM:               fake,
-	}, logger)
+		LLM:               client,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	logger := log.New(os.Stdout, "[async-test] ", log.LstdFlags)
+	s := server.New(cfg, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel) // ctx 需活到测试结束：骨架的后台工作（心跳 / 设置拉取）挂在它上面
 	if err := s.Start(ctx); err != nil {

@@ -39,6 +39,7 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+
 	if err := migrate(db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -106,10 +107,31 @@ func migrate(db *sql.DB) error {
 	if _, err := db.Exec(activeTaskIndex); err != nil {
 		return err
 	}
+	// 老数据没有会话表：从 messages / tasks 里已有的 conversation_id 回填，
+	// 保证升级后历史记录页立刻能看到原来的会话（顺序按各会话的首末时间）。
+	if _, err := db.Exec(`INSERT OR IGNORE INTO conversations(id, title, entry, status, created_at, updated_at)
+		SELECT conversation_id, '', '', 'active', MIN(created_at), MAX(created_at)
+		FROM messages GROUP BY conversation_id`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO conversations(id, title, entry, status, created_at, updated_at)
+		SELECT conversation_id, '', '', 'active', MIN(created_at), MAX(updated_at)
+		FROM tasks GROUP BY conversation_id`); err != nil {
+		return err
+	}
 	return nil
 }
 
 const schema = `
+CREATE TABLE IF NOT EXISTS conversations (
+	id              TEXT PRIMARY KEY,
+	title           TEXT NOT NULL DEFAULT '',
+	entry           TEXT NOT NULL DEFAULT '',
+	status          TEXT NOT NULL DEFAULT 'active',
+	created_at      TEXT NOT NULL,
+	updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at);
 CREATE TABLE IF NOT EXISTS messages (
 	id              INTEGER PRIMARY KEY AUTOINCREMENT,
 	conversation_id TEXT NOT NULL,
@@ -187,7 +209,11 @@ func (s *Store) Record(conversationID, role, content, kind, meta string, seq int
 		 VALUES(?,?,?,?,?, COALESCE(NULLIF(?, 0), (SELECT COALESCE(MAX(seq),0)+1 FROM messages WHERE conversation_id=?)), ?, ?)`,
 		conversationID, role, content, kind, meta, seq, conversationID, time.Now().Format(time.RFC3339Nano), taskID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	// 会话的活跃时间跟着真正的写入走：写失败不推（否则列表里会有个"刚活跃过"的空会话）。
+	return s.touchConversation(conversationID)
 }
 
 // Append 是 Record 的简写（对话消息，不关心顺序与任务）：保留给老调用方与测试。

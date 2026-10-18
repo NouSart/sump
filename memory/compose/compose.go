@@ -73,9 +73,10 @@ func EntryLine(kind, content string) string {
 	return "- [" + kind + "] " + content
 }
 
-// BuildMemory 组装 v0 记忆文本：最近对话 + 核心记忆 + 相关记忆（空节省略）。
-// 核心 = priority>0 的条目（不看相关性）；相关 = bigram 打分命中的条目。
-func BuildMemory(history []protocol.Message, core, relevant []string) string {
+// BuildMemory 组装记忆文本：最近对话 + 核心记忆 + 相关记忆 + 经验线头（空节省略）。
+// 核心 = priority>0 的条目（不看相关性）；相关 = bigram/语义打分命中的条目；
+// 经验 = 经验网给出的线头（一行一条：代表句 + 条数 + 来自哪个任务）。
+func BuildMemory(history []protocol.Message, core, relevant, experience []string) string {
 	var sections []string
 	if text := BuildText(history); text != "" {
 		sections = append(sections, "（最近对话）\n"+text)
@@ -85,6 +86,11 @@ func BuildMemory(history []protocol.Message, core, relevant []string) string {
 	}
 	if len(relevant) > 0 {
 		sections = append(sections, "（相关记忆）\n"+strings.Join(relevant, "\n"))
+	}
+	if len(experience) > 0 {
+		sections = append(sections, "（经验线头）\n"+
+			"以下是以前干过的同类事，每条一行；想深挖就调 memory__dig（按 id）。\n"+
+			strings.Join(experience, "\n"))
 	}
 	return strings.Join(sections, "\n\n")
 }

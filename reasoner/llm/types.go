@@ -32,6 +32,9 @@ type ChatRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
 	Tools    []Tool    `json:"tools,omitempty"`
+	// MaxTokens 是输出的硬上限（0 = 不指定，交给服务端默认）。
+	// 只给"只要一段话"的场景用：不设上限时模型可能写一大篇，白花钱也白等。
+	MaxTokens int `json:"-"`
 	// Images 是待内联的图片数据（图片 id → data URL）。
 	// 携带数据的引用内联为多模态内容；无数据的引用转文本占位（不直接序列化进请求体）。
 	Images map[string]string `json:"-"`

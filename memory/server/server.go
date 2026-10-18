@@ -15,6 +15,7 @@ import (
 
 	"github.com/QAQ-awa-QAQ/sump/memory/compose"
 	"github.com/QAQ-awa-QAQ/sump/memory/longterm"
+	"github.com/QAQ-awa-QAQ/sump/memory/memnet"
 	"github.com/QAQ-awa-QAQ/sump/memory/store"
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 	"github.com/QAQ-awa-QAQ/sump/service"
@@ -28,6 +29,7 @@ type Config struct {
 	HeartbeatInterval time.Duration   // 心跳间隔（默认 15s）
 	Store             *store.Store    // 会话库
 	Longterm          *longterm.Store // 长期记忆库（与会话库共享同一 SQLite 句柄）
+	Net               *memnet.Store   // 经验网（同上；边界独立，只吃 *sql.DB）
 	HistoryLimit      int             // recall 返回的最近消息条数（默认 12；作为声明预设上报）
 	Embedding         string          // embedding 服务名（默认 embedding；语义召回不可用时静默回落 bigram）
 	DBPath            string          // 数据库路径（只读项展示用：换它要重启）
@@ -48,6 +50,10 @@ const recallMinScore = 0.45
 // embedTimeout 是单次 embed 调用的超时：超时视为不可用，静默回落 bigram（不阻塞 recall）。
 const embedTimeout = 3 * time.Second
 
+// netSeedCooldown 是"补种子向量"失败后的冷却时间。上游挂住时每次尝试都要等满
+// embedTimeout，而且所有 net 动作都堵在同一把锁上——冷却一下，别让每条经验都去撞墙。
+const netSeedCooldown = 30 * time.Second
+
 // Server 是 memory 服务实例（服务骨架 + 会话库）。
 type Server struct {
 	*service.Service
@@ -62,6 +68,14 @@ type Server struct {
 	relLimit     int        // 相关记忆条数上限
 	relMaxChars  int        // 相关记忆字符预算
 	embedding    string     // 当前 embedding 服务名（recall.embedding 热改）
+
+	// 经验网的种子向量（懒补齐）：只在五个大类还没有定义向量时做一次，
+	// 失败就下次再试——embedding 服务此刻可能还没上线。
+	// 但"下次"不能是"每一条经验都试一次"：上游挂住时每次都要等满一个 embedTimeout，
+	// 而且这段时间里所有 net 动作都堵在这把锁上。所以失败后冷却一小会儿再试。
+	netSeedMu   sync.Mutex
+	netSeeded   bool
+	netSeedNext time.Time // 冷却到期时间（零值 = 可以立刻试）
 }
 
 // embeddingName 返回当前 embedding 服务名（空 = 语义召回关闭，回落 bigram）。
@@ -106,6 +120,12 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "recall", Input: "任务上下文 {conversation_id, messages, boss}", Output: "受理回执；随后向调用方发送 resume（注入记忆后的上下文）"},
 			{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
 			{Action: "history", Input: "{conversation_id, limit}", Output: "{conversation_id, messages:[{role, content, at}]}（按时间正序；供界面回填，不做记忆组装）"},
+			{Action: "conversation_list", Input: "{limit?, include_archived?}", Output: "{conversations:[{id, title, entry, status, created_at, updated_at}]}（按最近活跃排序；不进 provides — 给界面列会话，不是给模型的工具）"},
+			{Action: "conversation_rename", Input: "{id, title}（空标题 = 清掉名字）", Output: "{conversation}（不进 provides）"},
+			{Action: "note", Input: "经验 {content, conversation_id?, task_id?, durability?}（core | durable | transient）", Output: "{id, node_ids, duplicate, skipped}（不进 provides：整理由复盘流程调；duplicate = 同一件事又说了一遍）"},
+			{Action: "dig", Tool: true, Input: "{entry_id?, node_id?, limit?}（entry_id = 翻同簇兄弟，node_id = 展开整个大类）", Output: "{notes[], total}（顺着线头往下扒）"},
+			{Action: "lineheads", Input: "{query, limit?}", Output: "{heads:[{node_id, text, count, score, task_id, members}]}（一行一条；recall 里自动带）"},
+			{Action: "prune", Input: "{}", Output: "{entries, links}（软剪枝：只标状态、只断干枯的线，不删行）"},
 			{Action: "remember", Tool: true, Input: "长期记忆条目 {kind, content, priority?}（kind 如 偏好/身份/知识/事件；priority>0 = 核心记忆，每次对话都会带上）", Output: "{id, created}（同 kind+content 已有 active 条目时幂等跳过）"},
 		},
 		Logger: logger,
@@ -179,6 +199,12 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("recall", s.actionRecall)
 	s.Handle("store", s.actionStore)
 	s.Handle("history", s.actionHistory)
+	s.Handle("conversation_list", s.actionConversationList)
+	s.Handle("conversation_rename", s.actionConversationRename)
+	s.Handle("note", s.actionNote)
+	s.Handle("dig", s.actionDig)
+	s.Handle("lineheads", s.actionLineHeads)
+	s.Handle("prune", s.actionNetPrune)
 	s.Handle("remember", s.actionRemember)
 	s.Handle("forget", s.actionForget)
 	// 任务：会话的结构（agent 在任务里工作；没有任务就没有上下文可取）。
@@ -253,6 +279,11 @@ func (s *Server) actionStore(_ context.Context, _ protocol.Envelope, in protocol
 	if err := s.cfg.Store.Record(cid, p.Role, p.Content, p.Kind, p.Meta, p.Seq, taskID); err != nil {
 		return nil, fmt.Errorf("落库失败: %w", err)
 	}
+	// 会话的入口只在第一次写时填上（Record 已保证会话行存在，这里只补入口，幂等）。
+	// 用 boss 而不是 env.From：记录是 reasoner 代写的，真正"从哪扇门进来"的是它替谁办事。
+	if err := s.cfg.Store.EnsureConversation(cid, "", p.Boss); err != nil {
+		s.logger.Printf("记录会话入口失败: %v", err)
+	}
 	if err := s.cfg.Store.TouchTask(taskID); err != nil {
 		s.logger.Printf("刷新任务活跃时间失败: %v", err)
 	}
@@ -305,6 +336,33 @@ func (s *Server) actionHistory(_ context.Context, _ protocol.Envelope, in protoc
 		return nil, fmt.Errorf("查询历史失败: %w", err)
 	}
 	return protocol.HistoryResult{ConversationID: cid, Messages: msgs}, nil
+}
+
+// actionConversationList 列会话（给门户的历史记录页分行）。
+// 不进 provides：这是界面导航，不是模型该自己调的决策。
+func (s *Server) actionConversationList(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.ConversationListPayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	list, err := s.cfg.Store.ListConversations(p.Limit, p.IncludeArchived)
+	if err != nil {
+		return nil, fmt.Errorf("查询会话列表失败: %w", err)
+	}
+	return protocol.ConversationListResult{Conversations: list}, nil
+}
+
+// actionConversationRename 改会话名（空标题 = 清掉名字）。不进 provides：起名是人的事。
+func (s *Server) actionConversationRename(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.ConversationRenamePayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	c, err := s.cfg.Store.RenameConversation(p.ID, strings.TrimSpace(p.Title))
+	if err != nil {
+		return nil, err
+	}
+	return protocol.ConversationResult{Conversation: c}, nil
 }
 
 // ---------- 任务 ----------
@@ -426,6 +484,9 @@ func (s *Server) actionTaskList(_ context.Context, _ protocol.Envelope, in proto
 	return protocol.TaskListResult{Tasks: tasks}, nil
 }
 
+// nowFunc 统一取时间：便于测试替换（经验网的遗忘曲线全看它）。
+var nowFunc = time.Now
+
 // actionRemember 写一条长期记忆（内容重复时幂等跳过）；来源记调用方服务名。
 // 新建条目顺带算一次向量（派生数据；失败仅记日志——召回时会懒补齐）。
 func (s *Server) actionRemember(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
@@ -537,7 +598,8 @@ func (s *Server) actionRecall(ctx context.Context, env protocol.Envelope, in pro
 		}
 	}
 
-	final := compose.Inject(tc.Messages, compose.BuildMemory(history, core, relevant))
+	final := compose.Inject(tc.Messages, compose.BuildMemory(history, core, relevant,
+		s.experienceLines(ctx, env, recallQuery(tc.Messages))))
 
 	if err := s.fireResume(env, protocol.ResumePayload{Context: protocol.TaskContext{
 		ConversationID: cid,

@@ -154,6 +154,7 @@ func TestPortalChainE2E(t *testing.T) {
 		"-llm-key", "test-key",
 		"-llm-model", "fake-model",
 		"-secret-file", filepath.Join(t.TempDir(), "reasoner-secret.json"),
+		"-reflect=false", // 复盘会多花一次模型调用；门户用例只验界面链路
 	)
 	waitWSReady(t, reasonerURL, 60*time.Second)
 
@@ -273,6 +274,7 @@ func TestDeliveryFailureNoticeE2E(t *testing.T) {
 		"-llm-key", "test-key",
 		"-llm-model", "fake-model",
 		"-secret-file", filepath.Join(t.TempDir(), "reasoner-secret.json"),
+		"-reflect=false", // 复盘会多花一次模型调用；门户用例只验界面链路
 	)
 	waitWSReady(t, reasonerURL, 60*time.Second)
 

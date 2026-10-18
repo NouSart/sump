@@ -24,6 +24,22 @@ type stubEmbedding struct {
 	mu       sync.Mutex
 	requests []protocol.EmbedPayload
 	vectors  map[string][]float64 // 文本 → 向量（未配置的文本回零向量）
+	delay    time.Duration        // 回复前先睡这么久（模拟慢/挂住的上游）
+	fail     bool                 // 回复一个错误（模拟上游报错）
+}
+
+// SetDelay 让替身每次回复前先睡 d（模拟"上游很慢甚至挂住"）。
+func (e *stubEmbedding) SetDelay(d time.Duration) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.delay = d
+}
+
+// SetFail 让替身回错误（模拟上游中途坏掉）。
+func (e *stubEmbedding) SetFail(f bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.fail = f
 }
 
 func startStubEmbedding(t *testing.T, center *stubCenter) *stubEmbedding {
@@ -132,6 +148,7 @@ func (e *stubEmbedding) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		e.mu.Lock()
 		e.requests = append(e.requests, p)
+		delay, fail := e.delay, e.fail
 		vecs := make([][]float64, 0, len(p.Texts))
 		for _, text := range p.Texts {
 			v := e.vectors[text]
@@ -141,6 +158,14 @@ func (e *stubEmbedding) handleWS(w http.ResponseWriter, r *http.Request) {
 			vecs = append(vecs, v)
 		}
 		e.mu.Unlock()
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		if fail {
+			resp, _ := protocol.NewResponse(env, "embedding", protocol.ResponsePayload{OK: false, Error: "stub: 上游挂了"})
+			_ = writeConn(ws, resp)
+			continue
+		}
 		dataOut, _ := protocol.EncodePayload(protocol.EmbedResult{Vectors: vecs, Dim: 2, Model: "stub-1"})
 		resp, _ := protocol.NewResponse(env, "embedding", protocol.ResponsePayload{OK: true, Data: dataOut})
 		_ = writeConn(ws, resp)
