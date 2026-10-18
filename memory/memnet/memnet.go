@@ -47,6 +47,11 @@ type Store struct {
 	mu        sync.Mutex
 	mean      []float32
 	meanDirty bool
+
+	// writeMu 串行化写入。写入是"先查近重复、再插入"两步，中间没有事务；
+	// 并发时五个请求会各查到"没有重复"然后各插一条——经验网会被同一句话灌满，
+	// 而且没有任何一处报错。写本来就少（一个任务一条），一把锁最省事也最不会错。
+	writeMu sync.Mutex
 }
 
 // Open 建表、铺预制网，并返回一张可用的网。
@@ -329,6 +334,8 @@ func (s *Store) Nodes() ([]Node, error) {
 // Attach 写一条经验：先查近重复（同一件事只留一条，加命中次数），
 // 否则按向量挂到大类上（argmax 必挂，其余够近的加挂）。
 func (s *Store) Attach(now time.Time, in AttachInput, vec []float32, model string) (AttachResult, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	content := strings.TrimSpace(in.Content)
 	if content == "" {
 		return AttachResult{}, errors.New("经验内容为空")

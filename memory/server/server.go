@@ -50,6 +50,10 @@ const recallMinScore = 0.45
 // embedTimeout 是单次 embed 调用的超时：超时视为不可用，静默回落 bigram（不阻塞 recall）。
 const embedTimeout = 3 * time.Second
 
+// netSeedCooldown 是"补种子向量"失败后的冷却时间。上游挂住时每次尝试都要等满
+// embedTimeout，而且所有 net 动作都堵在同一把锁上——冷却一下，别让每条经验都去撞墙。
+const netSeedCooldown = 30 * time.Second
+
 // Server 是 memory 服务实例（服务骨架 + 会话库）。
 type Server struct {
 	*service.Service
@@ -67,8 +71,11 @@ type Server struct {
 
 	// 经验网的种子向量（懒补齐）：只在五个大类还没有定义向量时做一次，
 	// 失败就下次再试——embedding 服务此刻可能还没上线。
-	netSeedMu sync.Mutex
-	netSeeded bool
+	// 但"下次"不能是"每一条经验都试一次"：上游挂住时每次都要等满一个 embedTimeout，
+	// 而且这段时间里所有 net 动作都堵在这把锁上。所以失败后冷却一小会儿再试。
+	netSeedMu   sync.Mutex
+	netSeeded   bool
+	netSeedNext time.Time // 冷却到期时间（零值 = 可以立刻试）
 }
 
 // embeddingName 返回当前 embedding 服务名（空 = 语义召回关闭，回落 bigram）。

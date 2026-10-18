@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/QAQ-awa-QAQ/sump/memory/memnet"
 	"github.com/QAQ-awa-QAQ/sump/protocol"
@@ -27,6 +28,9 @@ func (s *Server) ensureNetCentroids(ctx context.Context, env protocol.Envelope) 
 	if s.netSeeded {
 		return
 	}
+	if now := time.Now(); now.Before(s.netSeedNext) {
+		return // 刚失败过，冷却中：别让每条经验都替一个挂掉的上游等满超时
+	}
 	pending, err := s.cfg.Net.PendingCentroids()
 	if err != nil || len(pending) == 0 {
 		if len(pending) == 0 {
@@ -40,10 +44,18 @@ func (s *Server) ensureNetCentroids(ctx context.Context, env protocol.Envelope) 
 	}
 	vecs, model, err := s.embedTexts(ctx, env, texts, false)
 	if err != nil {
-		return // 下次再试
+		// 只在**慢失败**（超时）时冷却：那种失败每次都要等满一个 embedTimeout，
+		// 而且期间所有 net 动作都堵在这把锁上。
+		// 快速失败（服务没上线 / 明确报错，几毫秒）重试是免费的，不该被冷却挡住——
+		// 否则 embedding 一恢复，这边还要瞎等半分钟。
+		if errors.Is(err, context.DeadlineExceeded) {
+			s.netSeedNext = time.Now().Add(netSeedCooldown)
+		}
+		return
 	}
 	for i, n := range pending {
 		if err := s.cfg.Net.SetNodeCentroid(n.ID, vecs[i], model); err != nil {
+			s.netSeedNext = time.Now().Add(netSeedCooldown)
 			return
 		}
 	}
