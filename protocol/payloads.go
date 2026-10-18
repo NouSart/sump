@@ -377,6 +377,26 @@ type FileWordEditResult struct {
 	Replaced int    `msgpack:"replaced"`
 }
 
+// PptEditOperation 是 files.edit_ppt 的一次操作。
+// v0 仅支持 op="replace"；在所有幻灯片 XML 中替换出现的旧文本。
+type PptEditOperation struct {
+	Op  string `msgpack:"op"`            // 操作类型：replace
+	Old string `msgpack:"old,omitempty"` // replace 时被替换的文本
+	New string `msgpack:"new,omitempty"` // replace 时的新文本
+}
+
+// FilePptEditPayload 是 files.edit_ppt 的 payload：就地修改 .pptx 幻灯片文本。
+type FilePptEditPayload struct {
+	ID         string             `msgpack:"id"`
+	Operations []PptEditOperation `msgpack:"operations"`
+}
+
+// FilePptEditResult 是 files.edit_ppt 的结果：实际替换的条数。
+type FilePptEditResult struct {
+	ID       string `msgpack:"id"`
+	Replaced int    `msgpack:"replaced"`
+}
+
 // ---------- 设置中心：设置存取 ----------
 
 // SettingView 是一个设置项的当前状态（设置中心对外呈现）。
