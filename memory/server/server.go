@@ -113,6 +113,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "recall", Input: "任务上下文 {conversation_id, messages, boss}", Output: "受理回执；随后向调用方发送 resume（注入记忆后的上下文）"},
 			{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
 			{Action: "history", Input: "{conversation_id, limit}", Output: "{conversation_id, messages:[{role, content, at}]}（按时间正序；供界面回填，不做记忆组装）"},
+			{Action: "conversation_list", Input: "{limit?, include_archived?}", Output: "{conversations:[{id, title, entry, status, created_at, updated_at}]}（按最近活跃排序；不进 provides — 给界面列会话，不是给模型的工具）"},
+			{Action: "conversation_rename", Input: "{id, title}（空标题 = 清掉名字）", Output: "{conversation}（不进 provides）"},
 			{Action: "note", Input: "经验 {content, conversation_id?, task_id?, durability?}（core | durable | transient）", Output: "{id, node_ids, duplicate, skipped}（不进 provides：整理由复盘流程调；duplicate = 同一件事又说了一遍）"},
 			{Action: "dig", Tool: true, Input: "{entry_id?, node_id?, limit?}（entry_id = 翻同簇兄弟，node_id = 展开整个大类）", Output: "{notes[], total}（顺着线头往下扒）"},
 			{Action: "lineheads", Input: "{query, limit?}", Output: "{heads:[{node_id, text, count, score, task_id, members}]}（一行一条；recall 里自动带）"},
@@ -190,6 +192,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("recall", s.actionRecall)
 	s.Handle("store", s.actionStore)
 	s.Handle("history", s.actionHistory)
+	s.Handle("conversation_list", s.actionConversationList)
+	s.Handle("conversation_rename", s.actionConversationRename)
 	s.Handle("note", s.actionNote)
 	s.Handle("dig", s.actionDig)
 	s.Handle("lineheads", s.actionLineHeads)
@@ -268,6 +272,11 @@ func (s *Server) actionStore(_ context.Context, _ protocol.Envelope, in protocol
 	if err := s.cfg.Store.Record(cid, p.Role, p.Content, p.Kind, p.Meta, p.Seq, taskID); err != nil {
 		return nil, fmt.Errorf("落库失败: %w", err)
 	}
+	// 会话的入口只在第一次写时填上（Record 已保证会话行存在，这里只补入口，幂等）。
+	// 用 boss 而不是 env.From：记录是 reasoner 代写的，真正"从哪扇门进来"的是它替谁办事。
+	if err := s.cfg.Store.EnsureConversation(cid, "", p.Boss); err != nil {
+		s.logger.Printf("记录会话入口失败: %v", err)
+	}
 	if err := s.cfg.Store.TouchTask(taskID); err != nil {
 		s.logger.Printf("刷新任务活跃时间失败: %v", err)
 	}
@@ -320,6 +329,33 @@ func (s *Server) actionHistory(_ context.Context, _ protocol.Envelope, in protoc
 		return nil, fmt.Errorf("查询历史失败: %w", err)
 	}
 	return protocol.HistoryResult{ConversationID: cid, Messages: msgs}, nil
+}
+
+// actionConversationList 列会话（给门户的历史记录页分行）。
+// 不进 provides：这是界面导航，不是模型该自己调的决策。
+func (s *Server) actionConversationList(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.ConversationListPayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	list, err := s.cfg.Store.ListConversations(p.Limit, p.IncludeArchived)
+	if err != nil {
+		return nil, fmt.Errorf("查询会话列表失败: %w", err)
+	}
+	return protocol.ConversationListResult{Conversations: list}, nil
+}
+
+// actionConversationRename 改会话名（空标题 = 清掉名字）。不进 provides：起名是人的事。
+func (s *Server) actionConversationRename(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.ConversationRenamePayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	c, err := s.cfg.Store.RenameConversation(p.ID, strings.TrimSpace(p.Title))
+	if err != nil {
+		return nil, err
+	}
+	return protocol.ConversationResult{Conversation: c}, nil
 }
 
 // ---------- 任务 ----------

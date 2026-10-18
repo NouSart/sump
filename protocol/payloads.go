@@ -97,6 +97,46 @@ type HeartbeatPayload struct {
 	Status string `msgpack:"status,omitempty"`
 }
 
+// ---------- 会话（一段能起名字、能归档的上下文） ----------
+
+// Conversation 是一个会话的元信息：历史记录页按它分行列出。
+// 消息与任务是它的**内容**，这里只存"这一行怎么被列出来"——不给消息数、任务数做冗余，
+// 派生数据一律现算（否则两处真相迟早对不上）。
+// Title 为空 = 还没起名（界面自己回退一个占位，别在库里造假名字）。
+// Entry 是入口服务名（门户 / qq / shell）：同一套记忆，进来的门不同。
+// Status：active = 可在用；archived = 收起了（只读，列表默认不显示）。
+type Conversation struct {
+	ID        string `msgpack:"id"`
+	Title     string `msgpack:"title,omitempty"`
+	Entry     string `msgpack:"entry,omitempty"`
+	Status    string `msgpack:"status"`
+	CreatedAt string `msgpack:"created_at"`
+	UpdatedAt string `msgpack:"updated_at"`
+}
+
+// ConversationListPayload 列出会话（按最近活跃排序）。
+type ConversationListPayload struct {
+	Limit int `msgpack:"limit,omitempty"`
+	// IncludeArchived 为真时连归档的一起列（默认只列 active）。
+	IncludeArchived bool `msgpack:"include_archived,omitempty"`
+}
+
+// ConversationListResult 是会话清单。
+type ConversationListResult struct {
+	Conversations []Conversation `msgpack:"conversations"`
+}
+
+// ConversationRenamePayload 改会话名（空标题 = 清掉名字，回到未命名）。
+type ConversationRenamePayload struct {
+	ID    string `msgpack:"id"`
+	Title string `msgpack:"title"`
+}
+
+// ConversationResult 是单个会话查询/变更的结果。
+type ConversationResult struct {
+	Conversation Conversation `msgpack:"conversation"`
+}
+
 // ---------- 任务（一段有名字、有始有终的工作） ----------
 
 // Task 是一个任务：每条会话记录都归属某个任务。
@@ -191,8 +231,11 @@ type ResumePayload struct {
 // Seq 是**会话内单调序号**（由写入方给）：让并发写（Fire 是 goroutine）也能按真实先后落库与排序。
 // Meta 是给人看的附加信息（JSON 字符串，如工具名、命令、call_id、是否截断）。
 // TaskID 是这条记录属于哪个任务（空 = 由记忆服务归到当前任务）。
+// Boss 是这条记录所属会话的入口服务（门户 / qq）：记忆服务只在会话第一次落记录时记下它，
+// 用来在历史记录里分清"这段对话是从哪扇门进来的"。空值不改已有入口。
 type StorePayload struct {
 	ConversationID string `msgpack:"conversation_id"`
+	Boss           string `msgpack:"boss,omitempty"`
 	Role           string `msgpack:"role"`
 	Content        string `msgpack:"content"`
 	Kind           string `msgpack:"kind,omitempty"`

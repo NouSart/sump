@@ -77,7 +77,7 @@ func (s *Server) record(cid, boss, trace, taskID, kind, role, content string, me
 
 	seq := s.nextSeq()
 	s.Fire(s.memoryName(), "store", protocol.StorePayload{
-		ConversationID: cid, Role: role, Content: clamped, Kind: kind, Meta: metaJSON, Seq: seq,
+		ConversationID: cid, Boss: boss, Role: role, Content: clamped, Kind: kind, Meta: metaJSON, Seq: seq,
 	}, trace, s.cfg.Name)
 	if s.bossWantsProgress(boss) {
 		s.Fire(boss, "progress", protocol.ProgressPayload{

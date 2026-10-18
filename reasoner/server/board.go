@@ -412,7 +412,7 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 	st.mu.Unlock()
 
 	s.Fire(s.memoryName(), "store", protocol.StorePayload{
-		ConversationID: st.cid, Role: "assistant", Content: text, Kind: "assistant", Seq: s.nextSeq(), TaskID: st.taskID,
+		ConversationID: st.cid, Boss: st.boss, Role: "assistant", Content: text, Kind: "assistant", Seq: s.nextSeq(), TaskID: st.taskID,
 	}, st.trace, s.cfg.Name)
 	s.boardClose(st)
 	if replaced {

@@ -287,7 +287,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 
 | 动作（jump 到 `memory`） | 输入 | 输出 |
 | ---- | ---- | ---- |
-| `store` | `{conversation_id, role, content, kind?, meta?, seq?}` | `{}`（尽力落库；失败只记日志） |
+| `store` | `{conversation_id, boss?, role, content, kind?, meta?, seq?, task_id?}` | `{}`（尽力落库；失败只记日志） |
 | `history` | `{conversation_id, limit?, after_seq?}` | `{conversation_id, messages:[{id, seq, role, kind, content, meta, at}]}` |
 
 - `after_seq` 是**增量拉取**：只回序号更大的记录（门户重连/回填不必每次全量重来）。
@@ -325,6 +325,28 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 - **LLM 上下文按任务取**：`recall` 只取当前任务的对话消息（`Recent(..., taskID)`），换任务即换上下文。
 - **老数据**：迁移时每个会话补一个已完结的「历史记录」任务，旧消息全部挂上去（不丢历史）。
 - 任务现在**只存事实**（名字/状态/归属），不解释语义。要独立成服务时，把 `tasks` 表与这六个动作整体搬走即可。
+
+#### 会话本身也是一行（`conversations`）
+
+任务是"会话里的一段工作"，**会话**是比它更外一层的东西：能起名字、能分入口、能归档。
+没有这张表，历史记录页只能靠 `GROUP BY conversation_id` 现凑——起不了名，多会话也无从谈起。
+
+| 动作（jump 到 `memory`） | 输入 | 输出 |
+| ---- | ---- | ---- |
+| `conversation_list` | `{limit?, include_archived?}` | `{conversations:[{id, title, entry, status, created_at, updated_at}]}` |
+| `conversation_rename` | `{id, title}`（空串 = 清掉名字） | `{conversation}` |
+
+- **只存元信息**：`title` / `entry` / `status` / 两个时间。消息数、任务数、最后一句说什么全部现算——
+  冗余字段迟早和真相打架。
+- **写入即建行**：`store` 落库成功后自动 upsert（`Record` 内部），谁都不用显式建会话。
+  只有落库**成功**才推 `updated_at`，否则列表里会出现"刚活跃过"的空会话。
+- **`entry` 取 boss 不取 `env.From`**：记录是 reasoner 代写的，真正"从哪扇门进来"的是它替谁办事
+  （`frontend` / `qq`）。只在空时填，后来的不覆盖——第一次从哪进来就是哪。
+- **`title` 为空是真的空**，不造假名字：界面自己回退一个占位。起名是件明确的事（`conversation_rename`），
+  不靠"顺带"。
+- **老库回填**：从 `messages` / `tasks` 里已有的 `conversation_id` 聚合出会话行（首末时间为界），
+  升级后历史记录页立刻能用。
+- 两个动作都**不进 `provides`**：界面导航不是模型该自己做的决策。
 
 ### 7.5 经验网：把做过的事变成能"抓线头"的经验（已实现）
 
