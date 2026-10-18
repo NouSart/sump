@@ -14,15 +14,16 @@ const imagePlaceholder = "[图片]"
 // buildRequestBody 构造 /chat/completions 请求体。
 func buildRequestBody(req ChatRequest) ([]byte, error) {
 	type requestBody struct {
-		Model    string           `json:"model"`
-		Messages []map[string]any `json:"messages"`
-		Tools    []Tool           `json:"tools,omitempty"`
+		Model     string           `json:"model"`
+		Messages  []map[string]any `json:"messages"`
+		Tools     []Tool           `json:"tools,omitempty"`
+		MaxTokens int              `json:"max_tokens,omitempty"`
 	}
 	msgs := make([]map[string]any, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		msgs = append(msgs, marshalMessage(m, req.Images))
 	}
-	return json.Marshal(requestBody{Model: req.Model, Messages: msgs, Tools: req.Tools})
+	return json.Marshal(requestBody{Model: req.Model, Messages: msgs, Tools: req.Tools, MaxTokens: req.MaxTokens})
 }
 
 // marshalMessage 序列化一条消息；Images 是 图片 id → data URL。

@@ -695,6 +695,28 @@ type ReportPayload struct {
 	Message string `msgpack:"message"`        // 错误简述
 }
 
+// ---------- 单步推理（llm 服务的裸入口） ----------
+
+// ThinkPayload 是一次"给提示词、要一段文本"的单步推理请求。
+//
+// 这是**所有非任务型模型调用**的统一出口（复盘写经验、给经验簇起短标签…）：
+// 别的服务不配自己的 LLM 客户端，一律 jump 到 llm 服务。它不带工具、不开任务、
+// 不进黑板——就是一次补全，来去干净。
+//
+// Model 非空时覆盖默认模型（"最小不思考"用非推理模型就填这里）；
+// MaxTokens 上限 4096（防止误填一个天文数字把账单打飞）。
+type ThinkPayload struct {
+	System    string `msgpack:"system,omitempty"`
+	Prompt    string `msgpack:"prompt"`
+	Model     string `msgpack:"model,omitempty"`
+	MaxTokens int    `msgpack:"max_tokens,omitempty"`
+}
+
+// ThinkResult 是单步推理的结果。
+type ThinkResult struct {
+	Text string `msgpack:"text"`
+}
+
 // ---------- 经验网（记忆服务内的独立包 memnet） ----------
 
 // NotePayload 写一条经验。整理时机由调用方决定（收尾后 / 定时 / 手动）。

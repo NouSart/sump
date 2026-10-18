@@ -37,6 +37,7 @@ type Config struct {
 	ToolConcurrency   int           // 单会话工具并发上限（默认 10；负值 = 不限制；同一服务可并发重复）
 	ToolTimeout       time.Duration // 单个工具调用的执行超时（默认 60s）
 	NotifyMode        string        // 工具结果通知模式："each"（逐条唤醒，默认）/ "batch"（攒批唤醒）；设置中心 tool.notify_mode 覆盖此项
+	Reflect           bool          // 交付后是否复盘写经验（零值关闭；main.go 打开。测试默认不打开：复盘会多花一次模型调用）
 	SecretFile        string        // 秘密项（llm.key）的本地持久化路径（空 = data/<name>-secret.json；"-" = 不落盘）
 }
 
@@ -65,6 +66,7 @@ type Server struct {
 	notify  string        // 工具结果通知模式（each / batch）
 	conc    int           // 单会话工具并发上限（-1 = 不限制）
 	timeout time.Duration // 单个工具调用的执行超时
+	reflect bool          // 交付后是否复盘写经验（reflect.on）
 
 	liveMu   sync.RWMutex // 可热改运行配置快照锁（LLM 客户端 / 记忆与图片服务名）
 	llm      llm.Client   // 当前 LLM 客户端（llm.base/model/key 任一变化即重建；Key 为空 = nil）
@@ -101,6 +103,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		notify:    cfg.NotifyMode,
 		conc:      cfg.ToolConcurrency,
 		timeout:   cfg.ToolTimeout,
+		reflect:   cfg.Reflect,
 
 		llm:      cfg.LLM,
 		memory:   cfg.Memory,
@@ -118,6 +121,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Description:       "LLM 单步推理：任务先经记忆服务托管，收到来自记忆的 resume 才完全启动（调 LLM API）",
 		Provides: []protocol.Provide{
 			{Action: "user_message", Input: "用户消息文本 {text}", Output: "受理回执（最终结果由 deliver 另行送达）"},
+			{Action: "think", Input: "单步推理 {prompt, system?, model?, max_tokens?}", Output: "{text}（一次补全：不带工具、不开任务、不进黑板；所有非任务型模型调用的统一出口）"},
 			{Action: "echo", Input: "任意", Output: "原样返回（测试用）"},
 			{Action: "debug_jump", Input: "{to, action, input}", Output: "目标服务的响应数据（调试用）"},
 		},
@@ -155,6 +159,16 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Hint("到点还没回来就算这次失败"),
 		service.As("number"),
 		service.Unit("ms"))
+	s.HandleSetting("reflect.on", strconv.FormatBool(cfg.Reflect), func(v string) error {
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("需要 true / false，收到 %q", v)
+		}
+		s.setReflectOn(b)
+		return nil
+	}, service.Label("交付后复盘写经验"),
+		service.Hint("关掉之后每次交付不再多花一次模型调用；已经写进经验网的不会删"),
+		service.As("bool"))
 	// 推理侧可热改项：LLM 三件套 + 记忆 / 图片服务名（预设 = main.go 的启动 flag）。
 	s.HandleSetting("llm.base", cfg.LLMBase, func(v string) error {
 		if strings.TrimSpace(v) == "" {
@@ -211,6 +225,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.HandleReadOnly("center", cfg.Center)
 	s.Handle("echo", s.actionEcho)
 	s.Handle("debug_jump", s.actionDebugJump)
+	s.Handle("think", s.actionThink)
 	s.Handle("user_message", s.actionUserMessage)
 	s.Handle("step", s.actionStep)
 	s.Handle("resume", s.actionResume)
@@ -268,6 +283,20 @@ func (s *Server) notifyMode() string {
 func (s *Server) setNotifyMode(v string) {
 	s.setMu.Lock()
 	s.notify = v
+	s.setMu.Unlock()
+}
+
+// reflectOn 返回"交付后要不要复盘写经验"。
+func (s *Server) reflectOn() bool {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.reflect
+}
+
+// setReflectOn 开关复盘（设置下发 / 拉取调用）。
+func (s *Server) setReflectOn(v bool) {
+	s.setMu.Lock()
+	s.reflect = v
 	s.setMu.Unlock()
 }
 

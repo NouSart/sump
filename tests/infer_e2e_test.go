@@ -284,6 +284,7 @@ func TestInferChainE2E(t *testing.T) {
 		"-llm-base", fakeLLM.URL(),
 		"-llm-key", "test-key",
 		"-llm-model", "fake-model",
+		"-reflect=false", // 复盘会多花一次模型调用；这条用例只验推理链与工具派发
 	)
 	waitWSReady(t, reasonerURL, 60*time.Second)
 

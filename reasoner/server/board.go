@@ -420,6 +420,11 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 	} else {
 		s.logger.Printf("会话 %s：任务完成，已交付 boss(%s)", st.cid, st.boss)
 	}
+	// 复盘在交付之后、在后台：老板已经拿到答复，这里成败都不影响他（见 reflect.go）。
+	// 被取代的任务不记——“这次干到一半被打断”不是可复用的经验，是噪音。
+	if !replaced {
+		s.reflectOnTask(st, text)
+	}
 }
 
 // deliverToBoss 把最终结果直达 boss（短响应；Call 内部只对“拨号失败”安全重试）。

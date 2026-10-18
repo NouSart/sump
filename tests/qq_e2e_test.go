@@ -211,6 +211,7 @@ func TestQQFullChainE2E(t *testing.T) {
 		"-llm-base", fakeLLM.URL(),
 		"-llm-key", "test-key",
 		"-llm-model", "fake-model",
+		"-reflect=false", // 复盘会多花一次模型调用；QQ 用例只验入口链路
 	)
 	waitWSReady(t, alURL, 60*time.Second)
 

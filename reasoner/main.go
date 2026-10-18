@@ -27,6 +27,7 @@ func main() {
 	toolConc := flag.Int("tool-concurrency", 10, "单会话工具并发上限（-1 = 不限制）")
 	toolTimeout := flag.Duration("tool-timeout", 60*time.Second, "单个工具调用的执行超时")
 	toolNotify := flag.String("tool-notify", "each", "工具结果通知模式：each=逐条唤醒 / batch=攒批唤醒（设置中心 tool.notify_mode 覆盖此项）")
+	reflect := flag.Bool("reflect", true, "交付后复盘写经验（设置中心 reflect.on 可热改）")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "[reasoner] ", log.LstdFlags|log.Lmicroseconds)
@@ -35,7 +36,7 @@ func main() {
 	}
 
 	// LLM 客户端由 server.New 按启动值构建（Key 非空才建，空 = nil 轮次停住）；llm.* 可在设置中心热改。
-	s := server.New(server.Config{Name: *name, Listen: *addr, Center: *center, Memory: *memorySvc, Images: *imagesSvc, LLMBase: *llmBase, LLMModel: *llmModel, LLMKey: *llmKey, ToolConcurrency: *toolConc, ToolTimeout: *toolTimeout, NotifyMode: *toolNotify, SecretFile: *secretFile}, logger)
+	s := server.New(server.Config{Name: *name, Listen: *addr, Center: *center, Memory: *memorySvc, Images: *imagesSvc, LLMBase: *llmBase, LLMModel: *llmModel, LLMKey: *llmKey, ToolConcurrency: *toolConc, ToolTimeout: *toolTimeout, NotifyMode: *toolNotify, Reflect: *reflect, SecretFile: *secretFile}, logger)
 	if err := s.Start(context.Background()); err != nil {
 		logger.Fatalf("启动失败: %v", err)
 	}
