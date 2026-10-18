@@ -24,11 +24,21 @@ export interface Provide {
 export interface Setting {
   key: string;
   default?: string;
+  readonly?: boolean;
+  secret?: boolean;
+  set?: boolean;
+  /** 给**人**看的部分（可选）：中文名、说明、控件类型、枚举候选、数字单位。 */
+  label?: string;
+  hint?: string;
+  kind?: string;
+  options?: string[];
+  unit?: string;
 }
 
 export interface RegisterPayload {
   name: string;
   addr: string;
+  title?: string;
   description?: string;
   provides?: Provide[];
   settings?: Setting[];
@@ -38,6 +48,7 @@ export interface RegisterPayload {
 export interface ServiceCard {
   name: string;
   addr: string;
+  title?: string;
   description?: string;
   provides?: Provide[];
   heartbeat_ms?: number;
@@ -75,6 +86,18 @@ export interface SettingView {
   value: string;
   default: string;
   overridden: boolean;
+  // 秘密项：值由服务自己持有，中心只回「有没有值」（secret/set），value 恒空；
+  // 只读项：值来自服务启动参数，面板只展示不可改（readonly）；
+  // actual：服务自报的实际值（与 value 不一致 = 服务侧自己变了）；reported 区分"没报过"与"报了空值"。
+  secret?: boolean;
+  set?: boolean;
+  readonly?: boolean;
+  actual?: string;
+  reported?: boolean;
+  label?: string;
+  hint?: string;
+  kind?: string;
+  options?: string[];
 }
 
 export interface ServiceSettings {
@@ -164,7 +187,7 @@ export function decodeEnvelope(bytes: Uint8Array): Envelope {
 }
 
 // newEnvelope 构造一条消息：自动填协议版本与 id（trace 为空时自动生成）。
-export function newEnvelope(type: string, from: string, to: string, trace: string, payload?: unknown): Envelope {
+export function newEnvelope(type: string, from: string, to: string, trace: string, payload?: unknown, boss?: string): Envelope {
   return {
     v: ProtocolVersion,
     id: newID(),
@@ -172,6 +195,7 @@ export function newEnvelope(type: string, from: string, to: string, trace: strin
     type,
     from,
     to,
+    boss: boss || undefined,
     payload,
   };
 }

@@ -6,6 +6,8 @@ package tests
 import (
 	"bytes"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -213,5 +215,76 @@ func TestWriteXlsx(t *testing.T) {
 	bad4 := call(t, srv.WsURL(), "write", protocol.FileWritePayload{ID: id, Sheet: "Sheet1"})
 	if bad4.OK || !strings.Contains(bad4.Error, "edits 至少一条") {
 		t.Fatalf("空 edits 应报错: %+v", bad4)
+	}
+}
+
+// TestSaveByURLWithoutFilename：只给 URL 时按末段取名（模型抓网页/附件不该被迫先猜文件名）；
+// URL 末段不像文件名（以 / 结尾）时仍然要求显式 filename，不瞎造。
+func TestSaveByURLWithoutFilename(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("来自 URL 的内容"))
+	}))
+	t.Cleanup(srv.Close)
+
+	sc := startStubCenter(t)
+	fs := startFiles(t, sc.URL(), 4000)
+
+	// 1) URL 末段是文件名 → 自动取用
+	rp := call(t, fs.WsURL(), "save", protocol.FileSavePayload{URL: srv.URL + "/报告.txt"})
+	if !rp.OK {
+		t.Fatalf("只给 URL 竟然失败: %s", rp.Error)
+	}
+	var saved protocol.FileSaveResult
+	if err := protocol.DecodeRaw(rp.Data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Filename != "报告.txt" {
+		t.Fatalf("应从 URL 末段取名，实际 %q", saved.Filename)
+	}
+	rr := readFile(t, fs.WsURL(), saved.ID)
+	if !strings.Contains(rr.Text, "来自 URL 的内容") {
+		t.Fatalf("读回来不对: %q", rr.Text)
+	}
+
+	// 2) URL 以 / 结尾（末段不是文件名）→ 明确要求 filename
+	rp2 := call(t, fs.WsURL(), "save", protocol.FileSavePayload{URL: srv.URL + "/"})
+	if rp2.OK {
+		t.Fatal("URL 末段不是文件名时应当明确拒绝，而不是瞎造一个名字")
+	}
+	if !strings.Contains(rp2.Error, "filename 必填") {
+		t.Fatalf("错误文案应指向 filename: %s", rp2.Error)
+	}
+}
+
+// TestXlsxCellTabsEscaped：单元格里的制表符/换行必须转义，否则 TSV 会串列——
+// 模型按列读就会把一列看成两列（实测踩过）。
+func TestXlsxCellTabsEscaped(t *testing.T) {
+	f := excelize.NewFile()
+	defer func() { _ = f.Close() }()
+	if err := f.SetCellValue("Sheet1", "A1", "说明"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetCellValue("Sheet1", "B1", "含 tab\t与\n换行"); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := f.Write(&buf); err != nil {
+		t.Fatal(err)
+	}
+
+	sc := startStubCenter(t)
+	fs := startFiles(t, sc.URL(), 4000)
+	id := saveXlsx(t, fs.WsURL(), "含tab.xlsx", buf.Bytes())
+	rr := readFile(t, fs.WsURL(), id)
+	text := rr.Text
+	// 转义后必须仍然只有一列分隔（A1 与 B1 之间那一个真 tab）
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "说明") && strings.Count(line, "\t") != 1 {
+			t.Fatalf("行内真制表符数量不对（应恰好 1 个列分隔符）: %q", line)
+		}
+	}
+	if !strings.Contains(text, `含 tab\t与\n换行`) {
+		t.Fatalf("单元格内的 tab/换行应转成可见的 \\t \\n: %q", text)
 	}
 }

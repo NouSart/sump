@@ -29,6 +29,8 @@ type Config struct {
 	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
 	Store             *store.Store  // 图片库
 	MaxBytes          int64         // 单图上限（默认 32MiB，对齐 DeepSeek 图片限制；作为声明预设上报）
+	DBPath            string        // 元数据库路径（只读项展示用：换它要重启）
+	Dir               string        // 图片二进制目录（只读项展示用：换它要重启）
 }
 
 // 默认单图上限（32MiB）。
@@ -56,14 +58,15 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s := &Server{cfg: cfg, logger: logger, maxBytes: cfg.MaxBytes}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
+		Title:             "图片",
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		ActionTimeout:     60 * time.Second, // save 含下载，放宽动作超时
 		Description:       "图片服务：保存图片（URL/base64），按需转 base64 发回调用方",
 		Provides: []protocol.Provide{
-			{Action: "save", Input: "{url} 或 {data(base64), mime}", Output: "{id, mime, size}"},
-			{Action: "fetch", Input: "{id}", Output: "{id, mime, data(base64), size}"},
+			{Action: "save", Tool: true, Input: "{url} 或 {data(base64), mime}", Output: "{id, mime, size}"},
+			{Action: "fetch", Tool: true, Input: "{id}", Output: "{id, mime, data(base64), size}（图片索引转 base64；大图会很长）"},
 		},
 		Logger: logger,
 	})
@@ -77,9 +80,19 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.maxBytes = n << 20
 		s.setMu.Unlock()
 		return nil
-	})
+	}, service.Label("单张图片大小上限"),
+		service.Hint("超过这个大小的图片会被拒绝"),
+		service.As("number"),
+		service.Unit("MB"))
 	s.Handle("save", s.actionSave)
 	s.Handle("fetch", s.actionFetch)
+	// 只读项：启动参数带起来的（换它要重启服务）。db/dir 是存储身份——运行中换库/换目录
+	// 意味着一批在途读写换个落点，不做（宁可不给旋钮，也不给一个会撕开的旋钮）。
+	s.HandleReadOnly("db", cfg.DBPath)
+	s.HandleReadOnly("dir", cfg.Dir)
+	s.HandleReadOnly("name", cfg.Name)
+	s.HandleReadOnly("addr", cfg.Listen)
+	s.HandleReadOnly("center", cfg.Center)
 	return s
 }
 

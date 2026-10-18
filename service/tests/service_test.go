@@ -44,7 +44,14 @@ type stubCenter struct {
 	byes     int
 	conns    map[*stubConn]struct{}
 	reports  []reportRecord
+	announce []announceRecord        // 收到的设置回传（report_setting）
 	settings protocol.SettingsResult // list_settings 的应答
+}
+
+// announceRecord 是中心收到的一条设置回传。
+type announceRecord struct {
+	From string
+	P    protocol.ReportSettingPayload
 }
 
 // reportRecord 是中心收到的一条错误上报。
@@ -136,6 +143,13 @@ func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 				}
 				resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true})
 				c.send(resp)
+			case "report_setting":
+				var p protocol.ReportSettingPayload
+				if err := protocol.DecodeRaw(jp.Input, &p); err == nil {
+					sc.mu.Lock()
+					sc.announce = append(sc.announce, announceRecord{From: env.From, P: p})
+					sc.mu.Unlock()
+				}
 			case "list_settings":
 				sc.mu.Lock()
 				res := sc.settings
@@ -170,6 +184,15 @@ func (sc *stubCenter) Reports() []reportRecord {
 	defer sc.mu.Unlock()
 	out := make([]reportRecord, len(sc.reports))
 	copy(out, sc.reports)
+	return out
+}
+
+// Announcements 返回收到的设置回传（并发安全快照）。
+func (sc *stubCenter) Announcements() []announceRecord {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	out := make([]announceRecord, len(sc.announce))
+	copy(out, sc.announce)
 	return out
 }
 

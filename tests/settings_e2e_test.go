@@ -119,7 +119,15 @@ func TestSettingsHotPathE2E(t *testing.T) {
 	if err := protocol.DecodeRaw(rp.Data, &res); err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Services) != 1 || len(res.Services[0].Settings) != 1 || res.Services[0].Settings[0].Value != "1" || !res.Services[0].Settings[0].Overridden {
+	// 回执视图含该服务的全部声明项（7 项：max_mb 普通项 + db/dir/name/addr/center 只读项…
+	// 这里只钉被改的那一项，其余项的存在由 images 侧测试负责）
+	found := false
+	for _, it := range res.Services[0].Settings {
+		if it.Key == "max_mb" {
+			found = it.Value == "1" && it.Overridden
+		}
+	}
+	if len(res.Services) != 1 || !found {
 		t.Fatalf("set_setting 回执视图不符: %+v", res)
 	}
 

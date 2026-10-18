@@ -1,6 +1,10 @@
 package protocol
 
-import "github.com/vmihailenco/msgpack/v5"
+import (
+	"math"
+
+	"github.com/vmihailenco/msgpack/v5"
+)
 
 // Provide 描述服务对外提供的一个动作（“接受什么输入、有什么输出”）。
 type Provide struct {
@@ -16,15 +20,31 @@ type Provide struct {
 }
 
 // Setting 是服务的一个可设置项。
+// 三种声明（互斥）：
+//   - 普通项：值由设置中心保管（覆盖值落盘于中心），注册时全量对齐下发；
+//   - Secret（`Secret`）：值**不进设置中心**（不落盘、不回显、list 恒回空串）——
+//     中心只转发一次，由**用它服务自己**持久化（见 service 骨架的 HandleSecret）；
+//     `Set` 表示该服务当前是否已有值（面板据此显示「已设置」，值本身永不上线）；
+//   - ReadOnly（`ReadOnly`）：启动参数带起来的只读值，进面板可见但不可改（`Default` 即启动值）。
 type Setting struct {
-	Key     string `msgpack:"key"`
-	Default string `msgpack:"default,omitempty"`
+	Key      string `msgpack:"key"`
+	Default  string `msgpack:"default,omitempty"`
+	Secret   bool   `msgpack:"secret,omitempty"`
+	ReadOnly bool   `msgpack:"readonly,omitempty"`
+	Set      bool   `msgpack:"set,omitempty"` // 仅 Secret 有意义：服务侧当前是否已有值
+	// 以下是给**人**看的部分（可选；缺省时面板退回显示 Key）。
+	Label   string   `msgpack:"label,omitempty"`   // 中文名，如「单文件大小上限」
+	Hint    string   `msgpack:"hint,omitempty"`    // 一句话：改它会发生什么
+	Kind    string   `msgpack:"kind,omitempty"`    // bool | number | enum | textarea | text | service | optional-service（缺省 text）
+	Options []string `msgpack:"options,omitempty"` // Kind=enum 的候选值
+	Unit    string   `msgpack:"unit,omitempty"`    // Kind=number 的单位符号（ms/MB/KB/chars/count），面板翻成人话
 }
 
 // RegisterPayload 是 register 请求的 payload：服务名片。
 type RegisterPayload struct {
 	Name        string    `msgpack:"name"`
 	Addr        string    `msgpack:"addr"`
+	Title       string    `msgpack:"title,omitempty"` // 中文短名（面板导航用），如「审批」
 	Description string    `msgpack:"description,omitempty"`
 	Provides    []Provide `msgpack:"provides,omitempty"`
 	Settings    []Setting `msgpack:"settings,omitempty"`
@@ -35,6 +55,7 @@ type RegisterPayload struct {
 type ServiceCard struct {
 	Name        string    `msgpack:"name"`
 	Addr        string    `msgpack:"addr"`
+	Title       string    `msgpack:"title,omitempty"` // 中文短名（面板导航用）
 	Description string    `msgpack:"description,omitempty"`
 	Provides    []Provide `msgpack:"provides,omitempty"`
 	HeartbeatMS int64     `msgpack:"heartbeat_ms,omitempty"` // 心跳间隔（毫秒；离线判定用）
@@ -45,6 +66,7 @@ func (r RegisterPayload) Card() ServiceCard {
 	return ServiceCard{
 		Name:        r.Name,
 		Addr:        r.Addr,
+		Title:       r.Title,
 		Description: r.Description,
 		Provides:    r.Provides,
 		HeartbeatMS: r.HeartbeatMS,
@@ -75,14 +97,82 @@ type HeartbeatPayload struct {
 	Status string `msgpack:"status,omitempty"`
 }
 
+// ---------- 任务（一段有名字、有始有终的工作） ----------
+
+// Task 是一个任务：每条会话记录都归属某个任务。
+// Status：active = 进行中（保留全部上下文，可恢复）；done = 已完结（只读，不可继续）。
+// 任务**只存事实**：谁在什么时候叫什么名字、什么状态。完成判定由 reasoner 负责，
+// 记忆服务不解释任务语义（只给出"当前是哪个任务"）。
+type Task struct {
+	ID             string `msgpack:"id"`
+	ConversationID string `msgpack:"conversation_id"`
+	Name           string `msgpack:"name"`
+	Status         string `msgpack:"status"`
+	CreatedAt      string `msgpack:"created_at"`
+	UpdatedAt      string `msgpack:"updated_at"`
+}
+
+// TaskCurrentPayload 取当前任务（最近活跃的 active 任务；没有就是空）。
+type TaskCurrentPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+}
+
+// TaskOpenPayload 新开一个任务（调用方保证此刻没有进行中的任务）。
+type TaskOpenPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+	Name           string `msgpack:"name"`
+}
+
+// TaskFinishPayload 完结一个任务（可顺带把名字改准）。
+type TaskFinishPayload struct {
+	TaskID string `msgpack:"task_id"`
+	Name   string `msgpack:"name,omitempty"`
+}
+
+// TaskRenamePayload 改任务名（进行中的任务也可以改：模型判定时顺手把标题写准）。
+type TaskRenamePayload struct {
+	TaskID string `msgpack:"task_id"`
+	Name   string `msgpack:"name"`
+}
+
+// TaskResumePayload 恢复一个未完结任务（把它顶成当前任务）。
+type TaskResumePayload struct {
+	TaskID string `msgpack:"task_id"`
+}
+
+// TaskListPayload 列出某会话的任务（按最近活跃排序）。
+type TaskListPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+	Limit          int    `msgpack:"limit,omitempty"`
+}
+
+// TaskResult 是单个任务查询/变更的结果（Task 为 nil = 没有当前任务）。
+type TaskResult struct {
+	Task *Task `msgpack:"task,omitempty"`
+}
+
+// TaskListResult 是任务清单。
+type TaskListResult struct {
+	Tasks []Task `msgpack:"tasks"`
+}
+
+// TaskResumeResult 是恢复任务的结果：任务本身 + 该任务的记录。
+type TaskResumeResult struct {
+	Task     Task           `msgpack:"task"`
+	Messages []HistoryEntry `msgpack:"messages"`
+}
+
 // ---------- 记忆往返（完全启动链） ----------
 
 // TaskContext 是 LLM 服务的任务上下文：随“记忆往返”托管给记忆服务。
 // Messages 是推理中的完整消息链；Boss 是原任务发起者（不可丢失，由记忆服务原样带回）。
+// Task 是这次工作所属的任务：由记忆服务在 recall 时确定（没有进行中的任务就地新建），
+// 随 resume 带回 reasoner——**没有任务这条链就走不起来**。
 type TaskContext struct {
 	ConversationID string    `msgpack:"conversation_id,omitempty"`
 	Messages       []Message `msgpack:"messages"`
 	Boss           string    `msgpack:"boss,omitempty"`
+	Task           *Task     `msgpack:"task,omitempty"`
 }
 
 // RecallPayload 是 recall（向记忆请求记忆）的 payload：把任务上下文交给记忆服务。
@@ -96,11 +186,62 @@ type ResumePayload struct {
 	Context TaskContext `msgpack:"context"`
 }
 
-// StorePayload 是 store 的 payload：向记忆服务记一条对话消息。
+// StorePayload 是 store 的 payload：向记忆服务记一条会话记录。
+// Kind 区分记录类型（空 = 按 Role 推断）：user / assistant / reasoning / tool_call / tool_result。
+// Seq 是**会话内单调序号**（由写入方给）：让并发写（Fire 是 goroutine）也能按真实先后落库与排序。
+// Meta 是给人看的附加信息（JSON 字符串，如工具名、命令、call_id、是否截断）。
+// TaskID 是这条记录属于哪个任务（空 = 由记忆服务归到当前任务）。
 type StorePayload struct {
 	ConversationID string `msgpack:"conversation_id"`
 	Role           string `msgpack:"role"`
 	Content        string `msgpack:"content"`
+	Kind           string `msgpack:"kind,omitempty"`
+	Meta           string `msgpack:"meta,omitempty"`
+	Seq            int64  `msgpack:"seq,omitempty"`
+	TaskID         string `msgpack:"task_id,omitempty"`
+}
+
+// HistoryPayload 是 history 的 payload：向记忆服务要某会话最近的消息（供门户回填对话视图）。
+// AfterSeq > 0 时只取序号更大的记录（增量拉取，避免每次全量重拉）。
+// TaskID 非空时只取该任务的记录；为空时取**当前任务**（门户默认看到的那段）。
+// AllTasks 为真时取整个会话（门户按任务分段展示时要的就是这一段）。
+type HistoryPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+	Limit          int    `msgpack:"limit,omitempty"`
+	AfterSeq       int64  `msgpack:"after_seq,omitempty"`
+	TaskID         string `msgpack:"task_id,omitempty"`
+	AllTasks       bool   `msgpack:"all_tasks,omitempty"`
+}
+
+// HistoryEntry 是一条落库的会话记录（带落库时间，供界面按时间排序）。
+type HistoryEntry struct {
+	ID      int64  `msgpack:"id"`
+	Seq     int64  `msgpack:"seq,omitempty"`
+	Role    string `msgpack:"role"`
+	Kind    string `msgpack:"kind,omitempty"`
+	Content string `msgpack:"content"`
+	Meta    string `msgpack:"meta,omitempty"`
+	At      string `msgpack:"at"`
+	TaskID  string `msgpack:"task_id,omitempty"`
+}
+
+// HistoryResult 是 history 的结果：按时间正序。
+type HistoryResult struct {
+	ConversationID string         `msgpack:"conversation_id"`
+	Messages       []HistoryEntry `msgpack:"messages"`
+}
+
+// ProgressPayload 是 progress 的 payload：任务进行中的一条实况（思考 / 命令 / 输出），
+// 推给**声明了 provides=progress** 的入口方（门户）。收到即渲染，不必等最终答复。
+// 与 store 同源同 seq：落库是真相，progress 只是让界面不必等到最后。
+type ProgressPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+	TaskID         string `msgpack:"task_id,omitempty"`
+	Seq            int64  `msgpack:"seq"`
+	Kind           string `msgpack:"kind"` // reasoning / tool_call / tool_result
+	Content        string `msgpack:"content"`
+	Meta           string `msgpack:"meta,omitempty"`
+	At             string `msgpack:"at,omitempty"`
 }
 
 // ---------- 任务链入口 ----------
@@ -119,6 +260,7 @@ type UserMessagePayload struct {
 type DeliverPayload struct {
 	Text           string `msgpack:"text"`
 	ConversationID string `msgpack:"conversation_id,omitempty"`
+	TaskID         string `msgpack:"task_id,omitempty"` // 这条答复属于哪个任务（门户据此刻画）
 }
 
 // ImageSavePayload 是 images.save 的 payload：URL 与 base64 二选一。
@@ -258,11 +400,24 @@ type FilePptEditResult struct {
 // ---------- 设置中心：设置存取 ----------
 
 // SettingView 是一个设置项的当前状态（设置中心对外呈现）。
+// Secret 项的 Value 恒为空串（中心根本没有值可回：秘密由服务自己持有）；
+// ReadOnly 项的 Value 是服务的启动值，不可改。
 type SettingView struct {
 	Key        string `msgpack:"key"`
-	Value      string `msgpack:"value"`      // 当前生效值（有覆盖值时为覆盖值，否则为默认值）
-	Default    string `msgpack:"default"`    // 服务注册时声明的默认值
-	Overridden bool   `msgpack:"overridden"` // 是否被设置中心覆盖
+	Value      string `msgpack:"value"`              // 当前生效值（中心口径：覆盖值 ?? 声明预设；Secret 恒空；ReadOnly 为启动值）
+	Default    string `msgpack:"default"`            // 服务注册时声明的默认值（Secret 恒空）
+	Overridden bool   `msgpack:"overridden"`         // 是否处于覆盖状态（Secret 恒 false）
+	Secret     bool   `msgpack:"secret,omitempty"`   // 值由服务自己持有，不回显
+	ReadOnly   bool   `msgpack:"readonly,omitempty"` // 不可改（需重启改启动参数）
+	Set        bool   `msgpack:"set,omitempty"`      // 仅 Secret：服务侧当前是否已有值
+	Actual     string `msgpack:"actual"`             // 服务侧自报的实际值（没回传过为空串）
+	Reported   bool   `msgpack:"reported,omitempty"` // 服务是否回传过实际值（Actual 为空串时靠它区分"没报过"与"报了空值"）
+	// 给**人**看的部分：由服务声明时给出，面板据此画中文名、说明与合适的控件。
+	Label   string   `msgpack:"label,omitempty"`
+	Hint    string   `msgpack:"hint,omitempty"`
+	Kind    string   `msgpack:"kind,omitempty"`
+	Options []string `msgpack:"options,omitempty"`
+	Unit    string   `msgpack:"unit,omitempty"`
 }
 
 // ServiceSettings 是一个服务的设置清单（按声明顺序）。
@@ -302,6 +457,47 @@ type ConfigurePayload struct {
 	Value      string `msgpack:"value"`      // 生效值 = 覆盖值 ?? 声明默认值
 	Default    string `msgpack:"default"`    // 服务声明的默认值
 	Overridden bool   `msgpack:"overridden"` // 是否处于覆盖状态
+}
+
+// ReportSettingPayload 是「服务 → 设置中心」的设置回传（动作 report_setting）：
+// 服务侧的值**自己变了**时主动报个事实，中心据此更新服务侧实际值（面板实时可见），
+// 它**不改**中心手里的覆盖值（谁的值是谁的，两边都看得见）。
+// Secret 项 Value 恒空（值永不上线：只回「有没有值」）；Seq 服务内单调递增，
+// 中心丢弃乱序到达的旧报（补报与回传的到达顺序都没有保证）。
+type ReportSettingPayload struct {
+	Service string `msgpack:"service"`
+	Key     string `msgpack:"key"`
+	Value   string `msgpack:"value,omitempty"`
+	Set     bool   `msgpack:"set,omitempty"`
+	Seq     int64  `msgpack:"seq,omitempty"`
+}
+
+// NormalizeJSONNumbers 把 JSON 解出来的数字归一化：整数值的 float64 → int64，其余原样（递归）。
+//
+// 为什么需要它：LLM 给的工具参数是 JSON，`encoding/json` 把数字一律解成 float64，
+// 直接 msgpack 编码会写成浮点（0xcb），而服务侧载荷里的整数字段（ms、priority…）解码会
+// 直接失败（"msgpack: invalid code=cb decoding int64"）。凡是把 **LLM 给的 JSON 转成协议载荷**
+// 的地方，都先过一遍这个函数。
+func NormalizeJSONNumbers(v any) any {
+	switch t := v.(type) {
+	case float64:
+		if t == math.Trunc(t) && !math.IsInf(t, 0) && t >= -9223372036854775808 && t < 9223372036854775808 {
+			return int64(t)
+		}
+		return t
+	case map[string]any:
+		for k, val := range t {
+			t[k] = NormalizeJSONNumbers(val)
+		}
+		return t
+	case []any:
+		for i, val := range t {
+			t[i] = NormalizeJSONNumbers(val)
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 // SettingResult 是一次下发中单个设置项的结果（settings 事件用）。
@@ -370,18 +566,19 @@ type ShellRunResult struct {
 
 // ShellEventData 是 shell 补报的结构化补充（report_result 的 data）。
 type ShellEventData struct {
-	Command     string `msgpack:"command,omitempty"`
-	WorkDir     string `msgpack:"work_dir,omitempty"`
-	Shell       string `msgpack:"shell,omitempty"` // 实际使用的 shell 可执行文件
-	ExitCode    int    `msgpack:"exit_code"`       // 退出码（未执行 / 超时终止时为 0 / -1）
-	Stdout      string `msgpack:"stdout,omitempty"`
-	Stderr      string `msgpack:"stderr,omitempty"`
-	StdoutBytes int64  `msgpack:"stdout_bytes,omitempty"` // 实际收到多少字节（截断前的总数）
-	StderrBytes int64  `msgpack:"stderr_bytes,omitempty"`
-	TimedOut    bool   `msgpack:"timed_out,omitempty"`
-	Truncated   bool   `msgpack:"truncated,omitempty"` // 输出超过上限被截断
-	DurationMS  int64  `msgpack:"duration_ms,omitempty"`
-	Error       string `msgpack:"error,omitempty"` // 未执行 / 未能执行完的原因
+	Approval    *CommandApprovalResult `msgpack:"approval,omitempty"` // 第一层裁决及完整 LLM 反馈
+	Command     string                 `msgpack:"command,omitempty"`
+	WorkDir     string                 `msgpack:"work_dir,omitempty"`
+	Shell       string                 `msgpack:"shell,omitempty"` // 实际使用的 shell 可执行文件
+	ExitCode    int                    `msgpack:"exit_code"`       // 退出码（未执行 / 超时终止时为 0 / -1）
+	Stdout      string                 `msgpack:"stdout,omitempty"`
+	Stderr      string                 `msgpack:"stderr,omitempty"`
+	StdoutBytes int64                  `msgpack:"stdout_bytes,omitempty"` // 实际收到多少字节（截断前的总数）
+	StderrBytes int64                  `msgpack:"stderr_bytes,omitempty"`
+	TimedOut    bool                   `msgpack:"timed_out,omitempty"`
+	Truncated   bool                   `msgpack:"truncated,omitempty"` // 输出超过上限被截断
+	DurationMS  int64                  `msgpack:"duration_ms,omitempty"`
+	Error       string                 `msgpack:"error,omitempty"` // 未执行 / 未能执行完的原因
 }
 
 // ---------- 长期记忆（memory） ----------
@@ -408,6 +605,62 @@ type ForgetPayload struct {
 // ForgetResult 是 forget 的结果。
 type ForgetResult struct {
 	ID int64 `msgpack:"id"`
+}
+
+// ---------- timer（计时器服务） ----------
+
+// TimerSleepPayload 是 timer.sleep 的输入：多久之后把一条补报跳回调用方。
+// Note 会原样带回到点补报里（给调用方自己看的备注，长度有上限，超出截断）。
+type TimerSleepPayload struct {
+	MS   int64  `msgpack:"ms"`             // 时长（毫秒）
+	Note string `msgpack:"note,omitempty"` // 到点补报里原样带回的一句话
+}
+
+// TimerSleepResult 是 timer.sleep 的受理回执：计时已登记，到点由 report_result 补报送达。
+// Phase 与补报（AsyncResultPayload.Phase）用同一词汇：受理回执就是这次计时的第一个阶段（queued）。
+type TimerSleepResult struct {
+	ItemID string `msgpack:"item_id"` // 受理句柄（补报原样带回）
+	Phase  string `msgpack:"phase"`   // 阶段：queued
+	FireAt string `msgpack:"fire_at"` // 预计到点时刻（RFC3339，本地时区；仅供人看）
+}
+
+// TimerCancelPayload 是 timer.cancel 的输入：撤掉一次已受理、尚未到点的计时。
+type TimerCancelPayload struct {
+	ItemID string `msgpack:"item_id"`
+}
+
+// TimerCancelResult 是 timer.cancel 的回执。
+// Status：canceled（已撤销，并已发出一条 final 补报）/ unknown（没有这个句柄——早就到点、已被撤销或从不存在）。
+type TimerCancelResult struct {
+	ItemID string `msgpack:"item_id"`
+	Status string `msgpack:"status"`
+}
+
+// TimerItem 是一条在计时器的对外描述（list 与门户快照共用）。
+type TimerItem struct {
+	ItemID string `msgpack:"item_id"`
+	Caller string `msgpack:"caller"`  // 到点补报回谁
+	MS     int64  `msgpack:"ms"`      // 时长（毫秒）
+	FireAt string `msgpack:"fire_at"` // 到点时刻（RFC3339；门户据此倒计时）
+	Note   string `msgpack:"note,omitempty"`
+}
+
+// TimerListResult 是 timer.list 的输出：当前所有在计时器。
+// 门户冷启动时拉一次（之后的变动由 timer 主动推 timer_state 快照）。
+type TimerListResult struct {
+	Seq    int64       `msgpack:"seq"` // 快照序号（单调递增；门户据此丢弃乱序到达的旧快照）
+	Timers []TimerItem `msgpack:"timers"`
+}
+
+// TimerStatePayload 是 timer 主动推给门户的快照（门户据此展示倒计时）。
+// Boss 指明这批计时属于谁（信封 boss 原样带来）——门户据此认领该给哪个会话展示；
+// 空 Boss 表示无主的计时，门户可自行归到默认会话。
+// Seq 单调递增：骨架的 Fire 各自成 goroutine 投递、**到达顺序无保证**，
+// 门户只接受比已见序号大的快照，旧的自然丢弃。
+type TimerStatePayload struct {
+	Boss   string      `msgpack:"boss,omitempty"`
+	Seq    int64       `msgpack:"seq"`
+	Timers []TimerItem `msgpack:"timers"` // 空数组 = 该 boss 的计时已清空
 }
 
 // ---------- 错误上报（服务 → 设置中心） ----------

@@ -18,6 +18,8 @@ import {
 
 export interface CenterOptions {
   name: string;
+  /** 中文短名（面板导航用）。 */
+  title: string;
   centerURL: string;
   selfURL: string;
   description: string;
@@ -45,6 +47,59 @@ const maxBackoff = 30_000;
 // RemoteError 表示“中心明确回执的拒绝”（ok=false，带原因）——
 // 与传输类失败（断开 / 超时）区分，API 层据此映射 400 与 502。
 export class RemoteError extends Error {}
+
+/**
+ * dialOnce 直连目标服务发一条 jump 并等响应（不复用连接）。
+ * 中心**不转发** jump——目标地址从名册解析后直连，与 Go 骨架的 callOnce 同语义。
+ * @param addr - 目标服务的 WS 地址。
+ * @param env - 已构造好的 jump 信封。
+ * @param timeoutMS - 拨号 + 等响应的总时限。
+ * @returns 响应载荷里的 data。
+ * @throws RemoteError 目标明确回执 ok=false；其余为传输类失败（连接 / 超时）。
+ */
+function dialOnce(addr: string, env: Envelope, timeoutMS: number): Promise<unknown> {
+  return new Promise<unknown>((resolve, reject) => {
+    const ws = new WebSocket(addr);
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      try {
+        ws.close();
+      } catch {
+        // 尽力
+      }
+      fn();
+    };
+    timer = setTimeout(() => {
+      finish(() => reject(new Error(`跳转等待响应超时（${timeoutMS}ms）: ${addr}`)));
+    }, timeoutMS);
+    ws.on('error', (err: Error) => {
+      finish(() => reject(err));
+    });
+    ws.on('open', () => {
+      ws.send(encodeEnvelope(env), (err?: Error) => {
+        if (err) finish(() => reject(err));
+      });
+    });
+    ws.on('message', (data: RawData) => {
+      let resp: Envelope;
+      try {
+        resp = decodeEnvelope(frameBytes(data));
+      } catch {
+        return; // 坏帧：忽略，交给超时兜底
+      }
+      if (resp.type !== TypeResponse || resp.id !== env.id) return;
+      const rp = resp.payload as ResponsePayloadView | undefined;
+      finish(() => {
+        if (rp?.ok !== true) reject(new RemoteError(rp?.error || '远端错误'));
+        else resolve(rp.data);
+      });
+    });
+  });
+}
 
 export class CenterLink {
   private readonly opts: CenterOptions;
@@ -114,6 +169,18 @@ export class CenterLink {
     return this.callSocket(ws, env, timeoutMS);
   }
 
+  // jumpTo 跳转到名册里的另一个服务并等响应——门户的"用户 → 智能体"这一跳走它。
+  // boss 带发起方自己：一跳的结果归属就是发起的服务（对方最终经 deliver 直达 boss）——
+  // 少了它，请求照样送达，但回答会找不到回来的路（reasoner 只认 boss）。
+  async jumpTo(to: string, action: string, input?: unknown, timeoutMS: number = callTimeoutDefault): Promise<unknown> {
+    const card = this.rosterValue?.services?.find((c) => c.name === to);
+    if (!card || !card.addr) throw new Error(`未知目标服务: ${to}（不在名册里）`);
+    const body: Record<string, unknown> = { action };
+    if (input !== undefined) body.input = input;
+    const env = newEnvelope(TypeJump, this.opts.name, card.name, '', body, this.opts.name);
+    return dialOnce(card.addr, env, timeoutMS);
+  }
+
   private connect(): void {
     if (this.closed) return;
     const ws = new WebSocket(this.opts.centerURL);
@@ -139,6 +206,7 @@ export class CenterLink {
   private async register(ws: WebSocket): Promise<void> {
     const payload: RegisterPayload = {
       name: this.opts.name,
+      title: this.opts.title,
       addr: this.opts.selfURL,
       description: this.opts.description,
       provides: this.opts.provides,

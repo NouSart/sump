@@ -21,17 +21,30 @@ type stubMemory struct {
 	srv *http.Server
 
 	mu          sync.Mutex
+	name        string // 服务名（默认 memory；服务名热改测试用别的名字）
+	recalls     int    // 收到的 recall 次数
 	reasonerURL string // resume 的投递目标（reasoner 启动后设置）
 	stores      []protocol.StorePayload
+
+	task     *protocol.Task // 非空时随 resume 带回（模拟"记忆已经确定了当前任务"）
+	finished []protocol.TaskFinishPayload
+	renamed  []protocol.TaskRenamePayload
 }
 
+// startStubMemory 起一个服务名为 "memory" 的记忆替身。
 func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
+	t.Helper()
+	return startStubMemoryNamed(t, center, "memory")
+}
+
+// startStubMemoryNamed 起一个自定义服务名的记忆替身（服务名热改测试用）。
+func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMemory {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &stubMemory{ln: ln}
+	m := &stubMemory{ln: ln, name: name}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", m.handleWS)
 	m.srv = &http.Server{Handler: mux}
@@ -40,11 +53,11 @@ func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
 
 	// 把记忆名片放进中心（reasoner 从 roster 解析它的地址）。
 	center.mu.Lock()
-	center.cards["memory"] = protocol.ServiceCard{
-		Name:        "memory",
+	center.cards[name] = protocol.ServiceCard{
+		Name:        name,
 		Addr:        m.URL(),
 		Description: "记忆测试替身",
-		Provides:    []protocol.Provide{{Action: "recall"}, {Action: "store"}},
+		Provides:    []protocol.Provide{{Action: "recall"}, {Action: "store"}, {Action: "task_finish"}, {Action: "task_rename"}},
 	}
 	center.mu.Unlock()
 	return m
@@ -58,6 +71,31 @@ func (m *stubMemory) setReasonerURL(u string) {
 	m.mu.Unlock()
 }
 
+// setTask 设置随 resume 带回的任务（nil = 没有当前任务）。
+func (m *stubMemory) setTask(t *protocol.Task) {
+	m.mu.Lock()
+	m.task = t
+	m.mu.Unlock()
+}
+
+// Finished 返回收到的 task_finish（任务完结）。
+func (m *stubMemory) Finished() []protocol.TaskFinishPayload {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]protocol.TaskFinishPayload, len(m.finished))
+	copy(out, m.finished)
+	return out
+}
+
+// Renamed 返回收到的 task_rename（任务改名）。
+func (m *stubMemory) Renamed() []protocol.TaskRenamePayload {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]protocol.TaskRenamePayload, len(m.renamed))
+	copy(out, m.renamed)
+	return out
+}
+
 // Stores 返回已收到的 store 请求快照。
 func (m *stubMemory) Stores() []protocol.StorePayload {
 	m.mu.Lock()
@@ -65,6 +103,13 @@ func (m *stubMemory) Stores() []protocol.StorePayload {
 	out := make([]protocol.StorePayload, len(m.stores))
 	copy(out, m.stores)
 	return out
+}
+
+// Recalls 返回已收到的 recall 次数。
+func (m *stubMemory) Recalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.recalls
 }
 
 func (m *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -97,13 +142,16 @@ func (m *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
 			m.mu.Lock()
 			m.stores = append(m.stores, p)
 			m.mu.Unlock()
-			resp, _ := protocol.NewResponse(env, "memory", protocol.ResponsePayload{OK: true})
+			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
 			c.send(resp)
 		case "recall":
 			var p protocol.RecallPayload
 			if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
 				continue
 			}
+			m.mu.Lock()
+			m.recalls++
+			m.mu.Unlock()
 			// 注入固定记忆块（插在第一条 system 之后）。
 			msgs := make([]protocol.Message, 0, len(p.Context.Messages)+1)
 			placed := false
@@ -114,17 +162,37 @@ func (m *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
 					placed = true
 				}
 			}
+			m.mu.Lock()
+			task := m.task
+			m.mu.Unlock()
 			raw, err := protocol.EncodePayload(protocol.ResumePayload{Context: protocol.TaskContext{
 				ConversationID: p.Context.ConversationID,
 				Messages:       msgs,
 				Boss:           p.Context.Boss,
+				Task:           task,
 			}})
 			if err != nil {
 				continue
 			}
-			resp, _ := protocol.NewResponse(env, "memory", protocol.ResponsePayload{OK: true})
+			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
 			c.send(resp)
 			m.fireResume(env.Trace, raw)
+		case "task_finish":
+			var p protocol.TaskFinishPayload
+			_ = protocol.DecodeRaw(jp.Input, &p)
+			m.mu.Lock()
+			m.finished = append(m.finished, p)
+			m.mu.Unlock()
+			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
+			c.send(resp)
+		case "task_rename":
+			var p protocol.TaskRenamePayload
+			_ = protocol.DecodeRaw(jp.Input, &p)
+			m.mu.Lock()
+			m.renamed = append(m.renamed, p)
+			m.mu.Unlock()
+			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
+			c.send(resp)
 		}
 	}
 }
@@ -143,7 +211,7 @@ func (m *stubMemory) fireResume(trace string, raw msgpack.RawMessage) {
 			return
 		}
 		defer c.Close()
-		env, err := protocol.NewEnvelope(protocol.TypeJump, "memory", "reasoner", trace, protocol.JumpPayload{Action: "resume", Input: raw})
+		env, err := protocol.NewEnvelope(protocol.TypeJump, m.name, "reasoner", trace, protocol.JumpPayload{Action: "resume", Input: raw})
 		if err != nil {
 			return
 		}

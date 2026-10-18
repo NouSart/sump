@@ -1,6 +1,8 @@
-go 1.26
+go 1.26.0
 
 use (
+	./approval-integration
+	./approval
 	./protocol
 	./service
 	./reasoner
@@ -9,6 +11,7 @@ use (
 	./files
 	./qq
 	./shell
+	./timer
 	./settings-center
 	./tests
 )

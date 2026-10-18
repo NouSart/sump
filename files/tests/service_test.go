@@ -44,6 +44,16 @@ func (c *stubConn) send(env protocol.Envelope) {
 type stubCenter struct {
 	ln  net.Listener
 	srv *http.Server
+
+	mu   sync.Mutex
+	regs []protocol.RegisterPayload // 收到的注册（断言名片声明用）
+}
+
+// Registers 返回收到的注册快照（并发安全）。
+func (sc *stubCenter) Registers() []protocol.RegisterPayload {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return append([]protocol.RegisterPayload(nil), sc.regs...)
 }
 
 var stubUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -83,6 +93,12 @@ func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		switch env.Type {
 		case protocol.TypeRegister:
+			var reg protocol.RegisterPayload
+			if err := env.DecodePayload(&reg); err == nil {
+				sc.mu.Lock()
+				sc.regs = append(sc.regs, reg)
+				sc.mu.Unlock()
+			}
 			roster := protocol.RosterPayload{Services: []protocol.ServiceCard{{Name: "settings-center", Addr: sc.URL()}}, Revision: 1}
 			respData, _ := protocol.EncodePayload(roster)
 			resp, _ := protocol.NewResponse(env, "settings-center", protocol.ResponsePayload{OK: true, Data: respData})
@@ -270,5 +286,33 @@ func TestReadTruncation(t *testing.T) {
 	}
 	if !rr.Truncated || rr.Text != "一二三四五六七八九十" {
 		t.Fatalf("截断不符: %+v", rr)
+	}
+}
+
+// TestToolExposure：模型能 save（URL 入库）→ read/write/edit_word，但 fetch 不暴露——
+// 它回的是 base64，进了模型上下文只是撑爆窗口。这条断言防的是"顺手把所有动作都开出去"。
+func TestToolExposure(t *testing.T) {
+	sc := startStubCenter(t)
+	srv := startFiles(t, sc.URL(), 4000)
+	_ = srv
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(sc.Registers()) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	tools := map[string]bool{}
+	for _, reg := range sc.Registers() {
+		for _, p := range reg.Provides {
+			if p.Tool {
+				tools[p.Action] = true
+			}
+		}
+	}
+	for _, want := range []string{"save", "read", "write", "edit_word"} {
+		if !tools[want] {
+			t.Fatalf("files.%s 没暴露给模型; 实际暴露=%v", want, tools)
+		}
+	}
+	if tools["fetch"] {
+		t.Fatal("files.fetch 不该暴露给模型（base64 会撑爆上下文）")
 	}
 }

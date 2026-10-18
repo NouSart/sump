@@ -46,6 +46,7 @@ func main() {
 		Longterm:     lt,
 		HistoryLimit: *history,
 		Embedding:    *embedding,
+		DBPath:       *dbPath,
 	}, logger)
 	if err := s.Start(context.Background()); err != nil {
 		logger.Fatalf("启动失败: %v", err)

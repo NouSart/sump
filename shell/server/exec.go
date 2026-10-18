@@ -13,6 +13,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 )
@@ -29,17 +32,32 @@ const waitDelay = 10 * time.Second
 // 共用同一个值，中途改设置不改变本次执行的口径。
 func (s *Server) runCommand(j *job, limit int64) (protocol.ShellEventData, error) {
 	res := protocol.ShellEventData{Command: j.command, WorkDir: j.workDir}
-	exe, args, err := s.commandLine(j.command)
+	var exe string
+	var args []string
+	var err error
+	if j.plan != nil {
+		exe = j.plan.ShellPath
+		args = append(append([]string{}, j.plan.Args...), j.plan.Command)
+	} else {
+		exe, args, err = s.commandLine(j.command)
+	}
 	if err != nil {
 		res.Error = err.Error()
 		return res, err
 	}
 	res.Shell = exe
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.timeoutNow())
+	timeout := s.timeoutNow()
+	if j.plan != nil {
+		timeout = time.Duration(j.plan.TimeoutMS) * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = j.workDir
+	if j.plan != nil {
+		cmd.Env = j.environment
+	}
 	cmd.SysProcAttr = sysProcAttr()
 	stdout, stderr := newLimitWriter(limit), newLimitWriter(limit)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -58,8 +76,8 @@ func (s *Server) runCommand(j *job, limit int64) (protocol.ShellEventData, error
 	}
 	werr := cmd.Wait()
 
-	res.Stdout = strings.ToValidUTF8(stdout.String(), "\uFFFD")
-	res.Stderr = strings.ToValidUTF8(stderr.String(), "\uFFFD")
+	res.Stdout = decodeOutput(stdout.Bytes())
+	res.Stderr = decodeOutput(stderr.Bytes())
 	res.StdoutBytes, res.StderrBytes = stdout.Total(), stderr.Total()
 	res.Truncated = stdout.Truncated() || stderr.Truncated()
 
@@ -244,6 +262,49 @@ func (w *limitWriter) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.buf.String()
+}
+
+// Bytes 返回已收下的原始字节（解码由 decodeOutput 负责：子进程写的可能不是 UTF-8）。
+func (w *limitWriter) Bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]byte, w.buf.Len())
+	copy(out, w.buf.Bytes())
+	return out
+}
+
+// decodeOutput 把子进程输出转成 UTF-8。
+//
+// 为什么不能直接当 UTF-8：Windows PowerShell 5.1 在中文系统上按系统代码页（GBK）写 stdout，
+// 字节不是合法 UTF-8——直接 ToValidUTF8 会把每个汉字换成替换符，模型看到的就是乱码
+// （实测：`Get-Date` 回来是 `2026�10�17�`）。顺序：
+//  1. 本来就是合法 UTF-8 → 原样（git / node 这类工具的输出）；
+//  2. 只是截断切在多字节字符中间 → 丢掉残尾（最多 3 字节）；
+//  3. Windows 上按 GBK 再解一次（含"GBK + 截断残尾"的情形）；
+//  4. 都不行才退到替换符兜底（不静默丢字节）。
+func decodeOutput(b []byte) string {
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	for cut := 1; cut <= 3 && cut < len(b); cut++ {
+		if utf8.Valid(b[:len(b)-cut]) {
+			return string(b[:len(b)-cut])
+		}
+	}
+	if runtime.GOOS == "windows" {
+		// 截断可能在 GBK 多字节字符中间：解码器会把残缺的那个字变成 U+FFFD 而不报错，
+		// 所以这里逐次去掉尾部 1~2 字节重试，**优先选解出来没有替换符的那一版**。
+		for cut := 0; cut <= 2 && cut < len(b); cut++ {
+			out, err := simplifiedchinese.GBK.NewDecoder().Bytes(b[:len(b)-cut])
+			if err != nil {
+				continue
+			}
+			if s := string(out); !strings.ContainsRune(s, utf8.RuneError) {
+				return s
+			}
+		}
+	}
+	return strings.ToValidUTF8(string(b), "\uFFFD")
 }
 
 // Total 返回截断前收到的总字节数。

@@ -29,6 +29,11 @@ jobs:
       - name: 安装 embedding 依赖（根 e2e 需要 Python 服务）
         run: pip install ./embedding
 
+      - name: 确认审批测试所需 PowerShell 可用
+        run: |
+          command -v pwsh
+          pwsh -NoLogo -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()'
+
       - name: gofmt 检查
         run: |
           out=$(gofmt -l $(git ls-files '*.go'))
@@ -40,9 +45,13 @@ jobs:
 
       - name: 各模块测试
         run: |
-          for m in protocol service settings-center reasoner memory images files qq shell; do
+          for m in protocol service settings-center reasoner memory images files qq shell timer approval approval-integration; do
             echo "== 模块: $m =="
-            (cd "$m" && go test ./... -count=1 -timeout 300s)
+            if [[ "$m" == approval* ]]; then
+              (cd "$m" && go test -v ./... -count=1 -timeout 300s)
+            else
+              (cd "$m" && go test ./... -count=1 -timeout 300s)
+            fi
           done
 
       - name: 端到端测试（真进程）
@@ -52,7 +61,7 @@ jobs:
 
       - name: 脱离工作区构建（GOWORK=off）
         run: |
-          for m in protocol service settings-center reasoner memory images files qq shell tests; do
+          for m in protocol service settings-center reasoner memory images files qq shell timer tests approval approval-integration; do
             echo "== $m =="
             (cd "$m" && GOWORK=off go build ./...)
           done
@@ -69,6 +78,12 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # 门户全链路 e2e 需要 Go（起中心 / 记忆 / reasoner 真进程）
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache: true
+
       - name: 安装依赖
         working-directory: frontend
         run: npm ci
@@ -80,6 +95,11 @@ jobs:
       - name: 测试（协议 / 中心链路 / HTTP API）
         working-directory: frontend
         run: npm test
+
+      # 必须排在 build 之后：这两个 e2e 要门户的构建产物（缺产物时它们会 skip，
+      # 所以上面 test 任务里的同名用例是 skip，这里是真跑）
+      - name: 门户全链路 e2e（真进程：中心 + 记忆 + reasoner + 门户 + 假 LLM）
+        run: go test ./tests -run 'TestPortalChainE2E|TestDeliveryFailureNoticeE2E' -count=1 -timeout 300s
 
   embedding:
     runs-on: ubuntu-latest

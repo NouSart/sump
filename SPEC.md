@@ -183,27 +183,43 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
     { "action": "fetch", "input": "{id}", "output": "{id, mime, data(base64), size}" }
   ],
   "settings": [                                  // 我可被设置哪些项（预设值 = 本服务启动引导值；只声明真正消费的项）
-    { "key": "max_mb", "default": "32" }
+    { "key": "max_mb", "default": "32",                                      // 普通项：值由中心保管
+      "label": "单张图片大小上限", "kind": "number", "unit": "MB" },          // 人话元数据（可选）：怎么显示、用什么控件
+    { "key": "llm.key", "secret": true, "set": false },                      // 秘密项：值由服务自己持有
+    { "key": "addr", "default": "127.0.0.1:9101", "readonly": true }         // 只读项：启动参数带起来的
   ]
 }
 ```
 
 - `provides[].input/output` 是**给人看的宽松描述**，不是 JSON Schema。
   精确的字段形状由协议包里的载荷类型定义（`protocol/payloads.go`）。
+- `settings[]` 的**人话元数据**全部可选——服务不给，面板就退回"键名 + 文本框"：
+
+| 字段 | 用途 |
+| ---- | ---- |
+| `label` | 中文名。面板优先取语言包 `setting.<service>.<key>.label`，再回落这里 |
+| `hint` | 一句话说明：改它会发生什么、留空意味着什么 |
+| `kind` | 控件类型：`bool` / `enum` / `number` / `text` / `textarea` / `service` / `optional-service`（缺省 `text`） |
+| `options` | `enum` 的候选**原值**；标签走语言包 `setting.<service>.<key>.opt.<value>`，缺了就显示原值 |
+| `unit` | `number` 的单位**符号**：`ms` / `MB` / `KB` / `chars` / `count`。面板翻成人话并在值旁给读法（`300000 ms → ≈ 5 分钟`）；服务收到的仍是原始数值 |
+
+`service` 表示值是一个服务名：面板从名册里列候选，但**名册只是候选，校验权仍在服务**
+（名册里没有的名字照样提交，服务自己拒）。`optional-service` 表示该项可以"没有"
+（清空 = 关闭这项能力），面板画成「开关 + 选择」，关掉提交空串、打开回落声明预设。
 - `settings[]` 声明“可设置项 + 预设值”（线路字段名沿用 `default`；预设值 = 服务自己给的引导值，可在重启后变化）。设置中心保管并提供动作：
 
 | 动作（jump 到 `settings-center`） | 输入 | 输出 |
 | ---- | ---- | ---- |
-| `list_settings` | `{service?}`（可选过滤） | `{services:[{service, settings:[{key,value,default,overridden}]}]}` |
+| `list_settings` | `{service?}`（可选过滤） | `{services:[{service, settings:[{key,value,default,overridden,secret?,readonly?,set?}]}]}` |
 | `set_setting` | `{service, key, value}` | 被改动服务的设置（同上结构） |
-| `reset_setting` | `{service, key}` | 同上（回落预设值） |
+| `reset_setting` | `{service, key}` | 同上（回落预设值；秘密项 = 让服务清空） |
 | `report` | `{kind?, message}` | `{status:"ok"}`（中心记日志并交给消费挂点） |
 
 - 生效值 = **覆盖值 ?? 服务声明的预设值**；覆盖值落盘于设置中心（`data/settings.json`）。
 - 校验两级：中心只校验“服务已注册、设置项已被声明”；**值是否合法由服务自己校验**——
   `configure` 被服务拒绝即保持旧值（中心把拒绝理由记入结果事件）。
 - **下发（注册即对齐 + 变更单键）**：中心在 `register` 响应发出后**异步**（不阻塞注册、不等待送达）
-  把该服务全部生效值逐键以 `configure` 跳转下发（有界重试 +0.5s、+2s；服务明确拒绝不重试）；
+  把该服务的普通项生效值逐键以 `configure` 跳转下发（有界重试 +0.5s、+2s；服务明确拒绝不重试）；
   `set_setting` / `reset_setting` 成功后单键下发。**受理回执只表示“已落盘受理”**，送达结果
   （含失败原因）以 `settings` 事件广播：`{cause, service, results:[{key, value?, ok, error?}]}`
   （cause = `register` / `set_setting` / `reset_setting`）——面板据此自动刷新与提示。
@@ -212,6 +228,105 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
   另暴露 `RefreshSettings()` 手动拉取。预设值由**服务自己决定**（库不规定来源）。
   非 Go 服务照此实现；**服务之间不新增任何设置同步通道**（设置只走服务 ↔ 中心）。
 - **离线一致性**：服务离线期间的变更**不排队补发**——其下次注册时全量对齐（幂等收敛）。
+
+### 7.1 三类设置项：普通 / 秘密 / 只读
+
+- **普通项**：值由中心保管（覆盖值落盘中心），注册时全量对齐下发。
+- **秘密项**（`secret: true`，如 API key、token）：值**不进中心**——中心不落盘、不回显
+  （`list_settings` 里 `value` 恒空），只在面板提交那一次把值**转发**给服务；由**用它的服务自己**
+  持久化（骨架 `HandleSecret` + `Config.SecretFile`，默认 `data/<name>-secret.json`；`"-"` = 不落盘），
+  服务 `Start()` 时自己加载并应用。名片里 `set` 只说明「服务侧当前有没有值」（面板据此显示「已设置」，
+  值本身永不上线）；**注册对齐不含秘密项**（中心手里没有值，推个空过去只会把服务那份抹掉）；
+  `reset_setting` = 推空值过去让服务自己清。一句话：**谁消费谁持有**。
+- **只读项**（`readonly: true`，含 `-name` / `-addr` / `-center` 这类引导三要素，以及各服务的存储身份
+  `db` / `dir` / 中心的 `settings`、门户的 `web`）：进面板只读展示
+  （值 = 启动值，放在 `default`），`set_setting` / `reset_setting` 一律明确拒绝——**改它要重启**
+  （重启按钮另做）。**路径类参数默认只做只读**：运行中换库/换目录等于让在途读写换个落点，不做。
+- **面板语义**：秘密项显示「已设置 / 未设置」+ 覆盖（密码框）+ 清空；只读项显示启动值、无修改入口。
+- **安全边界（说清楚，不假装）**：秘密文件是**明文**（本机单用户场景，等同 `.env`；写时目录 0700、
+  文件 0600、原子替换）；面板提交那一次的值走的是中心 ↔ 服务之间既有的本机 WS 通道（与其它协议流量同级）。
+  中心侧全程不留值：不落盘、不回显、日志掩码、`settings` 事件不带值。
+- 不做 `env:` 之类二级引用写法：**不叠机制**，要换值就在面板覆盖一次。
+
+### 7.2 服务自报：服务侧的值自己变了
+
+控制方向只有一条（中心 → 服务 `configure`）；反方向的 `report_setting` **只报事实**：
+
+| 动作（jump 到 `settings-center`） | 输入 | 输出 |
+| ---- | ---- | ---- |
+| `report_setting` | `{service, key, value, set?, seq}` | 被改动服务的设置（同上结构） |
+
+- 服务侧的值因自身原因变化时（自适应 / 规范化 / 程序内部改写），服务主动报一条——骨架 API
+  `AnnounceSetting(键)`：异步发出（**不阻塞**服务）、失败不排队（下次注册名片对齐收敛）。
+- 中心**不改**自己手里的覆盖值，只把这条记进「服务侧实际值」那一列：面板同时看得见
+  **中心口径的生效值**（`value`）与**服务侧实际值**（`actual`），不一致时给一个「服务侧已变」标记。
+  （`report_setting` 的下发成功那一步等价于服务侧已确认：此时两列相等，不报标记。）
+- **秘密项 `value` 恒空**：只回 `set`（服务侧有没有值），值永远不上线。
+- `seq` 服务内单调递增：中心丢弃比已记下更小的旧报（回传与补报的到达顺序都不保证）。
+- 服务侧实际值是**运行时态**：不落盘（中心重启后为空，等服务下次回传或注册对齐）。
+
+### 7.3 会话记录：对话 + 过程轨迹（已实现）
+
+记忆服务（memory）保管的不只是"用户说了什么 / 智能体答了什么"：
+
+| `kind` | 内容 | 谁写 |
+| ---- | ---- | ---- |
+| `user` / `assistant` | 对话本身 | reasoner（链入口 / 交付成功后） |
+| `reasoning` | 模型这一轮的思考（`reasoning_content`） | reasoner（每轮有思考就记一条） |
+| `tool_call` | 工具调用（shell 类工具直接给出 `command`） | reasoner（派发时，**执行前**落库） |
+| `tool_result` | 工具输出（异步工具取**终态补报**的文本，不是"已排队"回执） | reasoner（结果入账时） |
+
+- **只有 `user` / `assistant` 进 LLM 上下文**（`recall` 的 `Recent` 过滤）：思考回灌纯浪费，
+  工具结果缺少配对的 `tool_calls` 会被上游直接拒。轨迹是**给人看**的。
+- **`seq` 由写入方给**（微秒时间戳，跨重启仍递增）：`Fire` 是 goroutine，落地顺序不保证，
+  `seq` 保证"命令在输出之前"这种真实先后；门户也用它去重。**不能超过 2^53**——
+  它要经 JSON 到浏览器，纳秒级会被 JS 的 number 抹平，相邻记录可能撞成同一个数。
+- 单条上限 8000 字符，超出标 `meta.truncated = true` + `full_chars`（终端输出上限是 256KB，原样存会撑爆库和界面）。
+- 对话消息仍幂等去重（连续完全相同 = 重复交付）；**事件类记录不去重**——连跑两条一样的命令是两件事。
+- 老库平滑升级：`kind` / `meta` / `seq` 三列按需 `ALTER TABLE`，老数据 `kind` 按 `role` 推断、`seq` 用主键回填。
+
+| 动作（jump 到 `memory`） | 输入 | 输出 |
+| ---- | ---- | ---- |
+| `store` | `{conversation_id, role, content, kind?, meta?, seq?}` | `{}`（尽力落库；失败只记日志） |
+| `history` | `{conversation_id, limit?, after_seq?}` | `{conversation_id, messages:[{id, seq, role, kind, content, meta, at}]}` |
+
+- `after_seq` 是**增量拉取**：只回序号更大的记录（门户重连/回填不必每次全量重来）。
+- **实况推送**：reasoner 在落库的同时，若入口方（boss）在 `provides` 里声明了 `progress`，
+  就推一条 `{conversation_id, seq, kind, content, meta, at}`——界面进行中就能看见思考与命令，
+  不必等最终答复。**没声明的不推**（QQ 之类），否则对方只会回 unknown action。
+  记忆是真相，`progress` 只是"别等最后才看见"：丢一条不影响历史。
+
+### 7.4 任务：agent 在任务里工作（已实现）
+
+任务是**一段有名字、有始有终的工作**，会话记录挂在任务下；历史列表的标题就是任务名。
+
+| 动作（jump 到 `memory`） | 输入 | 输出 |
+| ---- | ---- | ---- |
+| `task_current` | `{conversation_id}` | `{task?}`（最近活跃的 active 任务；没有就是空） |
+| `task_open` | `{conversation_id, name}` | `{task}` |
+| `task_rename` | `{task_id, name}` | `{task}` |
+| `task_finish` | `{task_id, name?}` | `{task}`（status=done，之后只读） |
+| `task_resume` | `{task_id}` | `{task, messages[]}`（把未完结任务顶成当前，记录一并带走） |
+| `task_list` | `{conversation_id, limit?}` | `{tasks[]}`（最近活跃在前） |
+
+- **没有任务必须创建**：`recall` 里先 `EnsureTask`——当前没有 active 任务就以这次用户消息命名建一个，
+  随 `resume` 带回 reasoner。拿不到任务，这一轮不该开工。
+- **一个会话最多一个 active 任务**：靠 SQLite 部分唯一索引
+  `CREATE UNIQUE INDEX ... ON tasks(conversation_id) WHERE status='active'` 保证；
+  并发下建不上的那一方回头读现有的那个（任务不会分叉）。
+- **完成判定权在 reasoner**：内置工具 `task_status{status: done|continue, title?, note?}`，
+  收尾门禁要求交付前必须调用一次（没判就催一轮，最多两次；两次都不判按 continue 记账）。
+  `done` → `task_finish`（顺带用 `title` 把任务名改准）；`continue` → `task_rename`（任务保持进行中）。
+- **完结 = 不再续**：已完结任务不接受继续（`task_resume` 明确拒绝）。但它的记录还在会话里：
+  门户按**任务分节**连续展示整段会话，侧栏是"会话 → 任务"的目录，点任务只是跳到那一段（不切换视图、不过滤）。
+  **未完结 = 可恢复**：它的记录都还在（`task_id` 一列），点开就回到那一段继续。
+- **记录归属**：`store` 带 `task_id`；没带时——`user` 记录会触发 `EnsureTask`，
+  其他记录（答复/轨迹）挂到**最近一个任务**上，绝不拿它们的内容当任务名。
+- **LLM 上下文按任务取**：`recall` 只取当前任务的对话消息（`Recent(..., taskID)`），换任务即换上下文。
+- **老数据**：迁移时每个会话补一个已完结的「历史记录」任务，旧消息全部挂上去（不丢历史）。
+- 任务现在**只存事实**（名字/状态/归属），不解释语义。要独立成服务时，把 `tasks` 表与这六个动作整体搬走即可。
+
+
 - **错误上报（已实现·留接口）**：服务把错误上报给中心（`report`）——中心记一条日志并交给 `OnReport`
   消费挂点（前端 / 落盘 / 富日志后续接入此处）。**不含链路编号**（暂无链路记录者，记了无处可查）；
   **防刷在上报方**：退避 1s 起逐档翻倍、封顶 30s，静默 60s 重置，被节流即丢弃；中心视为**永远在线**，
@@ -222,10 +337,14 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 ## 8. 链机制要点（写“参与链”的服务必读）
 
 - **boss（结果归属）**：每跳自带其 boss，逐跳自定、**不可丢失**；任务发起者必须收到最终结果。
+  入口服务必须把 boss 设成**自己**（qq 与门户都如此）：少了它，回答照样生成，但**回不来**——
+  reasoner 只按 boss 交付，boss 认错就是静默丢弃。交付**失败**时 reasoner 会向会话入口
+  （`user_message` 的信封 `from`）补一条 `[交付失败] …`（"最后失败了再补一条给 A"）。
 - **trace**：同一条用户请求全链共享，用于调试 / 审计。
 - **deliver**：链终点判定结束后**直达 boss**（不沿链逆向回传）。发起任务的接入服务（如 qq）必须实现 `deliver`。
 - **完全启动（记忆往返）**：任务入口先 `recall` 给记忆服务托管上下文；**只有收到 `from=memory` 的 `resume`** 才调用 LLM API。任务内的各轮由黑板延续——不再重复经记忆（上下文已在线程里）。
 - **工具结果入账**：结果到达 → 注入黑板 → 按通知模式唤醒下一轮（`each` 逐条 / `batch` 攒批，见 §6.4）。
+  **工具参数的数字一律按整数归一**（LLM 的 JSON 数字是 float64，直接进 msgpack 会让服务侧的整数字段解码失败）。
 - **发出即完**：一步 = 收到 → 处理 → 发出下一跳 → 结束；没有长挂起的链（`wait` 是唯一的阻塞点）。
 - **失败处理（现状）**：拨号失败（连接未建立、消息可证明未送达）自动安全重试（+0.5s、+2s）；
   送达后的失败不重试——可能已被处理，重试需要幂等键（待定）。工具调用失败会作为结果消息注入（错误文本交回模型决断）；
@@ -261,8 +380,8 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | 3 | 连接自愈 | **已实现**（`service/` 骨架）：指数退避重连 + 重新注册 + 注册去重 | — |
 | 4 | 设置热链 | **已实现 M7**：注册即全量下发（异步、不等待）+ set/reset 单键下发 + `settings` 事件回传结果；骨架通用接收（`HandleSetting` + 注册后拉取兜底）；各服务设置项（reasoner 3 / memory 5 / images 1 / qq 1 / 中心自身 2） | “调度 = 设置行为、设计工作流”的完整形态 |
 | 5 | 连接时长自适应 | 全短连接（注释已标注） | 热保留 / 冷回落，参数可配置（实现前不声明设置项） |
-| 6 | 审批链路 | **接缝已就位**：`shell` 的审批只有一个入口（`Approver` 接口）+ 一个出口（补报未通过的原因）；未接入审批时一律未通过（fail-closed） | 审批服务定义协议（`approval_request` / `approval_result`）；shell 据协议实现 `Approver` |
-| 6.1 | 命令执行的护栏（shell） | **已实现**：工作目录根 + 越界即拒（含软链解析）、执行超时、单流输出上限、并行上限、待执行队列上限（满即拒）；命令白名单 / 用户审批策略**未做** | 护栏归审批服务与设置项演进，服务只报事实 |
+| 6 | 审批链路 | **已实现第一层**：PowerShell AST 规则引擎 + 执行摘要绑定 + fail-closed；shell 通过 `approval_request` 取得裁决，并沿 `report_result` 反馈；**第二层已实现**：白名单外挂起 → 推门户 → 用户裁决（`approval_pending` / `approval_decide` / `approval_list`，TTL 默认 10 分钟）| 解释（LLM 解读）与富通知未做；`approval_result` 占名未采用 |
+| 6.1 | 命令执行的护栏（shell） | **已实现**：工作目录根 + 越界即拒（含软链解析）、执行超时、单流输出上限、并行上限、待执行队列上限（满即拒）；命令规则已由 approval 第一层实现，用户审批策略**未做** | 护栏归审批服务与设置项演进，服务只报事实 |
 | 7 | 服务骨架复用 | **已实现**：`service/` 薄骨架库（注册/心跳/名册/自愈/告别），四服务共用 | — |
 | 8 | 链级失败策略 | 拨号失败已安全重试；送达后失败不重试（无幂等键）；工具超时 / 任务取代的结果丢弃已定义 | 幂等键；失败上报 boss（降级回复） |
 | 9 | 工具结果通知模式 | **已实现**：设置项 `tool.notify_mode`（each 默认 / batch）+ 注册下发 + 拉取兜底 + `-tool-notify` | — |
@@ -281,9 +400,11 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | images | Go | save（URL/base64 落盘）返回 id；fetch（id → base64） |
 | files | Go | save（URL/base64 + filename 落盘）返回 id；fetch（id → base64）；read（id → 截断文本 / .xlsx 转 TSV / .docx/.pptx 提取正文，`tool: true`）；write（`{id, sheet, edits:[{cell, value}]}` 单元格编辑，`tool: true`——就地修改 .xlsx 权威副本）；edit_word（`{id, operations:[{op, old, new}]}` 纯文本替换，`tool: true`——就地修改 .docx 正文）；edit_ppt（`{id, operations:[{op, old, new}]}` 纯文本替换，`tool: true`——就地修改 .pptx 幻灯片文本） |
 | shell | Go | 受理即回执的命令执行（并行 + 待执行队列 + 超时终止 + 输出截断）；审批接缝（未接入 = 一律未通过）；结果由 `report_result` 补报 |
+| approval | Go | 终端命令审批第一层：PowerShell AST + 不可变规则快照 + 执行摘要绑定；第二层仅接口 |
+| timer | Go | 计时器：受理「N 毫秒后唤醒我」（受理即回执，不阻塞调用方）→ 到点把 `report_result` 跳回调用方；在计时器按 boss 分组推给门户（倒计时） |
 | embedding | Python | 文本 → 向量（onnxruntime + tokenizers，CLS pooling + L2 归一）；动作 `embed`；fake 后端供测试与 CI |
 | qq | Go | 把主人私聊消息（图先存 images）打成 user_message 发给 reasoner；实现 deliver 回发私聊 |
-| frontend | TS | 设置中心可视化面板：注册为服务节点（心跳 / 名册广播）；浏览器 HTTP JSON + SSE；设置查看 / 修改 / 重置（中心受理并下发） |
+| frontend | TS | 用户交互门户（与 qq 同类）＋ 设置中心面板：对外提供 `deliver`（推给浏览器），自己跳 `user_message` 给 reasoner；浏览器 HTTP JSON + SSE；**单用户** + 浏览器信任栅栏（Host 挡 DNS rebinding、Origin 挡跨站） |
 | tests | Go | 跨服务真进程端到端（不属于任何服务） |
 
 > 非 Go 实现只需遵循本规范；`protocol/`（协议实现）与 `service/`（服务骨架：注册 / 心跳 / 重连 / 告别 / 设置）是 Go 侧的便利库，不是准入条件。
@@ -297,8 +418,14 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | 类别 | 规则 | 现有值 |
 | ---- | ---- | ------ |
 | 消息类型（`type`） | 裸名词；请求 / 响应 / 事件方向固定（事件型只由中心广播） | `register` `response` `roster` `jump` `heartbeat`；事件：`roster` `settings` |
-| 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §6.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting` `embed` `run` `report_result`；骨架保留：`configure`；服务自定义（已实现）：`remember` `forget` `read` `write` `edit_word` `edit_ppt` |
-| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms`；文件链：`filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated` `operations` `op` `old` `new` `replaced`；embedding：`texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms` |
-| 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `files` `qq` `shell` `frontend` `embedding` |
-| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `max_mb` `read_max_chars` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.concurrency` `exec.queue_limit` `approval.service` `approval.timeout_ms` |
+| 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §6.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting` `report_setting` `embed` `run` `report_result` `approval_request` `approval_pending` `approval_decide` `approval_list` `capabilities`；骨架保留：`configure`；timer：`sleep` `cancel` `list`；memory：`remember` `forget`；files：`read` `write` `edit_word` `edit_ppt` |
+| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms`；设置项三类标记：`secret` `readonly` `set`；服务自报：`actual` `reported`；文件链：`filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated` `operations` `op` `old` `new` `replaced`；embedding：`texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms`；timer：`ms` `note` `fire_at` `seq` `timers` `caller` `status` |
+| 审批载荷字段 | snake_case；结构由 `protocol/approval.go` 定义 | `schema_version` `plan` `decision` `decision_id` `plan_digest` `policy_version` `reason_code` `valid_for_ms` `llm_feedback` `summary` `unknowns` `rule_ids`；补报新增 `approval`；第二层：`requested_by` `created_ms` `expires_ms` `note` |
+| exec 域执行描述字段 | 当前 `plan` 是命令域专用结构；每个字段只保留一个语义 | `version` `command` `work_dir` `shell_path` `args` `dialect` `platform` `profile` `timeout_ms` `max_output_bytes`；`dialect` 只表示 shell 方言，`profile` 只表示执行环境约定 |
+| 域判别字段（将来） | 新增第二个执行域时定义独立字段；当前协议尚未发送，不复用 `dialect` | 建议 `kind`，取值如 `exec` / `fs` / `http`；其他域各自声明执行字段组，裁决包、摘要绑定、有效期、fail-closed 共用 |
+| 审批枚举 | 取值由 approval 服务定义，见 [审批协议](./COMMAND-APPROVAL-PROTOCOL.md) | `decision`：`allow` / `deny` / `review`；`reason_code`：`RULE_ALLOW` `POLICY_DENY` `DYNAMIC_BEHAVIOR` `NO_MATCHING_RULE` `PARSE_ERROR` `UNSUPPORTED_DIALECT` `CONTEXT_UNKNOWN` `RUNTIME_MISMATCH` `LIMIT_EXCEEDED`，第二层用户裁决：`USER_APPROVED` `USER_DENIED` |
+| 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `files` `qq` `shell` `timer` `frontend` `embedding` `approval` |
+| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `recall.embedding` `max_mb` `read_max_chars` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.concurrency` `exec.queue_limit` `approval.service` `approval.timeout_ms` `policy.json` `max_ms` `max_pending` `portal` `llm.base` `llm.model` `llm.key` `memory` `images` `name` `addr` `center` `napcat.url` `napcat.token` `reasoner` `db` `dir` `settings` `web` |
 | 名片字段（`provides[]`） | 小写下划线；跨语言一致 | `action` `input` `output` `tool` `async` |
+
+审批设置键补充：`policy.json`（approval 声明的规则快照配置）。`approval_result` 没有注册为动作；审批结果作为 `approval_request` 的响应返回，并由 shell 的 `report_result` 承载后续反馈。

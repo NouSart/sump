@@ -53,10 +53,14 @@ func isLegacyPpt(mime, filename string) bool {
 }
 
 // pptxToText 把 .pptx 按幻灯片提取文本，每页以 "# 幻灯片 N" 分节，超 maxChars 在幻灯片边界截断。
-func pptxToText(data []byte, maxChars int) (string, bool, error) {
+// budget 是解压后的字节上限（压缩炸弹防线），与 .xlsx/.docx 同口径。
+func pptxToText(data []byte, maxChars int, budget int64) (string, bool, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return "", false, fmt.Errorf("解析 pptx 失败: %w", err)
+	}
+	if err := checkExpandBudget(zr, budget); err != nil {
+		return "", false, err
 	}
 
 	// 按文件名顺序读取 ppt/slides/slideN.xml，保证幻灯片顺序稳定。
@@ -229,10 +233,13 @@ func readZipFile(zr *zip.Reader, name string) ([]byte, error) {
 }
 
 // openPptxDoc 解析 .pptx 并把所有幻灯片 XML 读入内存。
-func openPptxDoc(data []byte) (*pptxDoc, error) {
+func openPptxDoc(data []byte, budget int64) (*pptxDoc, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("解析 pptx 失败: %w", err)
+	}
+	if err := checkExpandBudget(zr, budget); err != nil {
+		return nil, err
 	}
 	names := slideXMLNames(zr)
 	if len(names) == 0 {
@@ -302,8 +309,8 @@ func pptOpReplace(doc *pptxDoc, op protocol.PptEditOperation) (int, error) {
 
 // editPptx 对 .pptx 的所有幻灯片执行操作列表，返回新字节和替换条数。
 // 所有操作成功后才统一写回（save），任一失败即整体报错，保证原子性。
-func editPptx(data []byte, ops []protocol.PptEditOperation) ([]byte, int, error) {
-	doc, err := openPptxDoc(data)
+func editPptx(data []byte, ops []protocol.PptEditOperation, budget int64) ([]byte, int, error) {
+	doc, err := openPptxDoc(data, budget)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -488,6 +489,11 @@ type stubFiles struct {
 }
 
 func startStubFiles(t *testing.T, center *stubCenter) *stubFiles {
+	return startStubFilesNamed(t, center, "files")
+}
+
+// startStubFilesNamed 同上，但可指定注册名（测 files 设置项热改用）。
+func startStubFilesNamed(t *testing.T, center *stubCenter, name string) *stubFiles {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -501,7 +507,7 @@ func startStubFiles(t *testing.T, center *stubCenter) *stubFiles {
 	t.Cleanup(func() { _ = sf.srv.Close() })
 
 	center.mu.Lock()
-	center.cards["files"] = protocol.ServiceCard{Name: "files", Addr: sf.URL(), Description: "文件测试替身"}
+	center.cards[name] = protocol.ServiceCard{Name: name, Addr: sf.URL(), Description: "文件测试替身"}
 	center.mu.Unlock()
 	return sf
 }
@@ -545,6 +551,13 @@ func (sf *stubFiles) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// savesLen 返回已收到的 save 条数（并发安全）。
+func (sf *stubFiles) savesLen() int {
+	sf.mu.Lock()
+	defer sf.mu.Unlock()
+	return len(sf.saves)
+}
+
 func (sf *stubFiles) waitSave(t *testing.T, timeout time.Duration) fileSave {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -576,6 +589,8 @@ func startQQ(t *testing.T, sc *stubCenter, nc *stubNapCat, owner string) *server
 		Owner:             owner,
 		Reasoner:          "reasoner",
 		Images:            "images",
+		// 秘密项落盘：指到临时目录，别写进仓库工作目录
+		SecretFile: filepath.Join(t.TempDir(), "qq-secret.json"),
 	}, logger)
 	// t.Context()：随测试结束取消——napcat 连接循环需要活的 ctx，不能用 defer cancel()。
 	if err := srv.Start(t.Context()); err != nil {

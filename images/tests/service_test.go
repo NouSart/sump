@@ -43,6 +43,16 @@ func (c *stubConn) send(env protocol.Envelope) {
 type stubCenter struct {
 	ln  net.Listener
 	srv *http.Server
+
+	mu   sync.Mutex
+	regs []protocol.RegisterPayload // 收到的注册（断言名片声明用）
+}
+
+// Registers 返回收到的注册快照（并发安全）。
+func (sc *stubCenter) Registers() []protocol.RegisterPayload {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return append([]protocol.RegisterPayload(nil), sc.regs...)
 }
 
 var stubUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -82,6 +92,12 @@ func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		switch env.Type {
 		case protocol.TypeRegister:
+			var reg protocol.RegisterPayload
+			if err := env.DecodePayload(&reg); err == nil {
+				sc.mu.Lock()
+				sc.regs = append(sc.regs, reg)
+				sc.mu.Unlock()
+			}
 			roster := protocol.RosterPayload{Services: []protocol.ServiceCard{{Name: "settings-center", Addr: sc.URL()}}, Revision: 1}
 			respData, _ := protocol.EncodePayload(roster)
 			resp, _ := protocol.NewResponse(env, "settings-center", protocol.ResponsePayload{OK: true, Data: respData})
@@ -194,5 +210,42 @@ func TestSaveFetchFlow(t *testing.T) {
 	rp4 := call(t, srv.WsURL(), "fetch", protocol.ImageFetchPayload{ID: "不存在"})
 	if rp4.OK {
 		t.Fatal("不存在的 id 应报错")
+	}
+}
+
+// TestToolExposure：images 是图片索引（存 → 按 id 转 base64 发回），两个动作都对模型可用。
+// 声明错一个 flag，模型就看不见这个能力——所以这里钉住暴露面。
+func TestToolExposure(t *testing.T) {
+	sc := startStubCenter(t)
+	st, err := store.Open(filepath.Join(t.TempDir(), "m.db"), filepath.Join(t.TempDir(), "files"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv := server.New(server.Config{Name: "images", Listen: "127.0.0.1:0", Center: sc.URL(),
+		HeartbeatInterval: 200 * time.Millisecond, Store: st}, log.New(os.Stdout, "[images-test] ", log.LstdFlags))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv.Shutdown)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(sc.Registers()) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	tools := map[string]bool{}
+	for _, reg := range sc.Registers() {
+		for _, p := range reg.Provides {
+			if p.Tool {
+				tools[p.Action] = true
+			}
+		}
+	}
+	for _, want := range []string{"save", "fetch"} {
+		if !tools[want] {
+			t.Fatalf("images.%s 没暴露给模型（Tool: true 缺失）; 实际暴露=%v", want, tools)
+		}
 	}
 }
