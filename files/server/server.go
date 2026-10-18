@@ -71,13 +71,14 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		ActionTimeout:     60 * time.Second, // save 含下载，放宽动作超时
-		Description:       "文件服务：保存文件（URL/base64），按需取回（fetch）或读取文本内容（read）",
+		Description:       "文件服务：保存文件（URL/base64），按需取回（fetch）或读取文本内容（read：文本类/.xlsx/.docx/.pptx）",
 		Provides: []protocol.Provide{
 			{Action: "save", Input: "{url} 或 {data(base64), filename, mime}", Output: "{id, filename, mime, size}"},
 			{Action: "fetch", Input: "{id}", Output: "{id, filename, mime, data(base64), size}"},
-			{Action: "read", Input: "{id}", Output: "{id, filename, text, truncated}（文本类 / .xlsx 转 TSV / .docx 提取正文；其余二进制报错）", Tool: true},
+			{Action: "read", Input: "{id}", Output: "{id, filename, text, truncated}（文本类 / .xlsx 转 TSV / .docx/.pptx 提取正文；其余二进制报错）", Tool: true},
 			{Action: "write", Input: "{id, sheet, edits:[{cell, value}]}", Output: "{id, sheet, updated}（就地修改 .xlsx；先 read 看清坐标再改）", Tool: true},
 			{Action: "edit_word", Input: "{id, operations:[{op, old, new}]}", Output: "{id, replaced}（就地修改 .docx 正文；v0 仅 op='replace'）", Tool: true},
+			{Action: "edit_ppt", Input: "{id, operations:[{op, old, new}]}", Output: "{id, replaced}（就地修改 .pptx 幻灯片文本；v0 仅 op='replace'）", Tool: true},
 		},
 		Logger: logger,
 	})
@@ -107,6 +108,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("read", s.actionRead)
 	s.Handle("write", s.actionWrite)
 	s.Handle("edit_word", s.actionEditWord)
+	s.Handle("edit_ppt", s.actionEditPpt)
 	return s
 }
 
@@ -214,14 +216,18 @@ func (s *Server) actionRead(_ context.Context, _ protocol.Envelope, in protocol.
 		return nil, errors.New("read: 旧版 .xls 不支持，请另存为 .xlsx 后重试")
 	case isLegacyDoc(meta.Mime, meta.Filename):
 		return nil, errors.New("read: 旧版 .doc 不支持，请另存为 .docx 后重试")
+	case isLegacyPpt(meta.Mime, meta.Filename):
+		return nil, errors.New("read: 旧版 .ppt 不支持，请另存为 .pptx 后重试")
 	case isExcelFile(meta.Mime, meta.Filename):
 		return s.readXlsx(p.ID, meta)
 	case isWordFile(meta.Mime, meta.Filename):
 		return s.readDocx(p.ID, meta)
+	case isPptFile(meta.Mime, meta.Filename):
+		return s.readPptx(p.ID, meta)
 	case isTextual(meta.Mime, meta.Filename):
 		return s.readText(p.ID, meta)
 	default:
-		return nil, fmt.Errorf("read: 该文件类型（%s）暂不支持阅读，仅支持文本类、.xlsx 与 .docx", meta.Mime)
+		return nil, fmt.Errorf("read: 该文件类型（%s）暂不支持阅读，仅支持文本类、.xlsx、.docx 与 .pptx", meta.Mime)
 	}
 }
 
@@ -266,6 +272,20 @@ func (s *Server) readDocx(id string, meta store.Meta) (any, error) {
 		return nil, fmt.Errorf("read: 解析 %s 为 docx 失败: %w", meta.Filename, err)
 	}
 	s.logger.Printf("已读取 docx %s（%s, %d 字节, 截断=%v）", id, meta.Filename, len(data), truncated)
+	return protocol.FileReadResult{ID: id, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
+}
+
+// readPptx .pptx 读取：按幻灯片提取文本（幻灯片边界截断，单页内按字符截断）。
+func (s *Server) readPptx(id string, meta store.Meta) (any, error) {
+	data, _, err := s.cfg.Store.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	text, truncated, err := pptxToText(data, s.readMaxCharsNow())
+	if err != nil {
+		return nil, fmt.Errorf("read: 解析 %s 为 pptx 失败: %w", meta.Filename, err)
+	}
+	s.logger.Printf("已读取 pptx %s（%s, %d 字节, 截断=%v）", id, meta.Filename, len(data), truncated)
 	return protocol.FileReadResult{ID: id, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
 }
 
@@ -345,6 +365,43 @@ func (s *Server) actionEditWord(_ context.Context, _ protocol.Envelope, in proto
 	}
 	s.logger.Printf("已编辑 docx %s（%s, %d 处）", p.ID, meta.Filename, n)
 	return protocol.FileWordEditResult{ID: p.ID, Replaced: n}, nil
+}
+
+// actionEditPpt 编辑 .pptx 幻灯片文本（LLM 工具，就地修改权威副本）。
+// 校验链：id 存在 → 必须 .pptx → operations 非空 → 预检查所有 old 存在 → 写回库。
+func (s *Server) actionEditPpt(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.FilePptEditPayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	if p.ID == "" {
+		return nil, errors.New("edit_ppt: id 必填")
+	}
+	if len(p.Operations) == 0 {
+		return nil, errors.New("edit_ppt: operations 至少一条")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	meta, err := s.cfg.Store.Stat(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !isPptFile(meta.Mime, meta.Filename) {
+		return nil, fmt.Errorf("edit_ppt: 仅支持编辑 .pptx 文件（%s 的类型是 %s）", meta.Filename, meta.Mime)
+	}
+	data, _, err := s.cfg.Store.Load(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	out, n, err := editPptx(data, p.Operations)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.cfg.Store.Overwrite(p.ID, out); err != nil {
+		return nil, fmt.Errorf("edit_ppt: 写回库失败: %w", err)
+	}
+	s.logger.Printf("已编辑 pptx %s（%s, %d 处）", p.ID, meta.Filename, n)
+	return protocol.FilePptEditResult{ID: p.ID, Replaced: n}, nil
 }
 
 // ---------- 文本类判定与截断 ----------

@@ -26,7 +26,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - **长期记忆**：`remember`（声明在 `provides` 里，自动成为 LLM 工具——加能力零 reasoner 改动）/ `forget` 软删；召回 = **语义召回（embedding 服务，余弦 ≥0.45）+ bigram 兜底（服务缺席/超时静默回落）** + 核心注入（priority）；recall 组装为「最近对话 / 核心记忆 / 相关记忆」三节；条目向量是派生数据（懒补齐、可重建）
 - **记忆激活（完全启动）**：LLM 调 API 前先把任务上下文托管给记忆服务；只有收到 `from=memory` 的 `resume` 才“完全启动”——注入什么记忆由记忆服务决定
 - **图片链路**：QQ 图片存入 images 服务（独立进程/独立库）；llm 推理前自动取“最近一条消息”的图转 base64 内联给模型（更早的消息转文本占位）
-- **文件链路**：QQ 文件存入 files 服务（独立进程/独立库）；链上只传 id + 占位文本（`[文件: 名, id=...]`），`read` 声明 `tool: true` 自动成为 LLM 工具（`files__read`）——模型凭 id 自取文本（截断；二进制明确拒绝；xlsx 转 TSV、docx 提取正文），`write` 支持单元格级 Excel 编辑，`edit_word` 支持 .docx 纯文本替换，reasoner 零改动
+- **文件链路**：QQ 文件存入 files 服务（独立进程/独立库）；链上只传 id + 占位文本（`[文件: 名, id=...]`），`read` 声明 `tool: true` 自动成为 LLM 工具（`files__read`）——模型凭 id 自取文本（截断；二进制明确拒绝；xlsx 转 TSV、docx/pptx 提取正文），`write` 支持单元格级 Excel 编辑，`edit_word` 支持 .docx 纯文本替换，`edit_ppt` 支持 .pptx 纯文本替换，reasoner 零改动
 - **受理即回执与补报（`async` → `report_result`）**：耗时不可预期的动作（如跑命令）响应只表示已受理（带回 `item_id`），后续进展由该服务补报回调用方；reasoner 收到补报时——任务在跑就注入同一条链、已收尾就开“补报轮”补一句给用户（结果不丢）；`item_id` 对不上的补报忽略；`wait` 如实披露“已受理未回报”的条数但不阻塞等待
 
 ## 本地运行
@@ -62,7 +62,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - [x] 工具暴露显式声明（`provides` 里 `tool: true`）+ 设置下发（`configure`）：中心 set/reset 后推送生效值，reasoner 实时应用（启动拉取兜底）
 - [x] 设置热链（M7）：注册即全量下发（受理回执不等待送达）｜`settings` 事件回传结果（ok=true / ok=false + 原因）｜骨架通用接收（`HandleSetting` 声明 + 校验 + 应用；注册后异步拉取兜底）｜设置项接入全部服务（reasoner 3 / memory 5 / images 1 / qq 1 / 中心 2）｜面板事件驱动自动刷新（无刷新按钮）
 - [x] 前端服务 v1（`frontend`）：设置中心可视化面板——TS 服务节点（注册 / 心跳 / 名册）+ HTTP JSON + SSE；设置查看 / 修改（configure 下发）/ 重置；瑞典极简界面（React/Vite + 系统无衬线字体）；协议以 Go 产出夹具做跨语言字节级锚定
-- [x] 文件服务（含 Excel/Word 读写）：`files` 服务（save/fetch/read/write/edit_word，独立进程/独立库）；QQ 私聊文件消息 → 存库 → 占位带 id 上链；`read` 声明 `tool: true` 自动成为 LLM 工具（文本截断 / 二进制明确拒绝 / xlsx 转 TSV / docx 提取正文）；`write` 单元格级编辑 / `edit_word` .docx 纯文本替换——含服务级测试、qq 接缝测试与全链真进程 e2e
+- [x] 文件服务（含 Excel/Word/PPT 读写）：`files` 服务（save/fetch/read/write/edit_word/edit_ppt，独立进程/独立库）；QQ 私聊文件消息 → 存库 → 占位带 id 上链；`read` 声明 `tool: true` 自动成为 LLM 工具（文本截断 / 二进制明确拒绝 / xlsx 转 TSV / docx/pptx 提取正文）；`write` 单元格级编辑 / `edit_word` .docx 纯文本替换 / `edit_ppt` .pptx 纯文本替换——含服务级测试、qq 接缝测试与全链真进程 e2e
 - [x] embedding 服务（M8，Python）：文本 → 向量（onnxruntime + tokenizers 本地推理；fake 后端供测试与 CI）；协议 / 注册自愈 / 双后端
 - [x] 语义召回（M8）：memory 接入 embedding——向量列（派生、懒补齐）+ 余弦 ≥0.45 阈值 + **bigram 兜底**（服务缺席/超时静默回落）；跨语言真进程 e2e；query 前缀 A/B 实测（no-prefix 胜出）
 - [x] shell 命令执行服务（M9）：受理即回执（审批与执行不占响应）｜审批接缝（`Approver` 接口；未接入 = 一律未通过）｜结果以 `report_result` 补报（reasoner：在跑则注入、已收尾则开补报轮）｜护栏：工作目录根（越界即拒）+ 执行超时（终止整棵进程树）+ 输出上限（截断标注）+ 并行/队列上限（满即拒）｜8 个设置项（`exec.*` / `approval.*`）
