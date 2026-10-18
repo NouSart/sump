@@ -16,7 +16,7 @@ func TestActionThink(t *testing.T) {
 	fake := &llm.Fake{Replies: []llm.Message{{Role: "assistant", Content: "一句话答案"}}}
 	s := &Server{llm: fake, logger: log.New(os.Stdout, "[think-test] ", 0), cfg: Config{Name: "reasoner"}}
 
-	in, err := protocol.EncodePayload(protocol.ThinkPayload{System: "你是助手", Prompt: "给个答案", MaxTokens: 99_999})
+	in, err := protocol.EncodePayload(protocol.ThinkPayload{System: "你是助手", Prompt: "给个答案", MaxTokens: 99_999, Model: "cheap-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,6 +38,10 @@ func TestActionThink(t *testing.T) {
 	// 上限是硬夹紧的：填一个天文数字不能原样发出去。
 	if req.MaxTokens != thinkMaxTokens {
 		t.Fatalf("max_tokens 应夹到 %d，实际 %d", thinkMaxTokens, req.MaxTokens)
+	}
+	// 模型可以按调用覆盖（"最小不思考"就是靠这个指一个非推理模型）。
+	if req.Model != "cheap-model" {
+		t.Fatalf("model 覆盖没传下去: %q", req.Model)
 	}
 	if len(req.Tools) != 0 {
 		t.Fatalf("think 不带工具: %+v", req.Tools)

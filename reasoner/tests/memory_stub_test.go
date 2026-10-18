@@ -29,6 +29,7 @@ type stubMemory struct {
 	task     *protocol.Task // 非空时随 resume 带回（模拟"记忆已经确定了当前任务"）
 	finished []protocol.TaskFinishPayload
 	renamed  []protocol.TaskRenamePayload
+	notes    []protocol.NotePayload // 复盘写回的经验（交付后由 reasoner 异步发来）
 }
 
 // startStubMemory 起一个服务名为 "memory" 的记忆替身。
@@ -57,7 +58,10 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 		Name:        name,
 		Addr:        m.URL(),
 		Description: "记忆测试替身",
-		Provides:    []protocol.Provide{{Action: "recall"}, {Action: "store"}, {Action: "task_finish"}, {Action: "task_rename"}},
+		Provides: []protocol.Provide{
+			{Action: "recall"}, {Action: "store"}, {Action: "task_finish"},
+			{Action: "task_rename"}, {Action: "note"},
+		},
 	}
 	center.mu.Unlock()
 	return m
@@ -110,6 +114,15 @@ func (m *stubMemory) Recalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.recalls
+}
+
+// Notes 返回已收到的 note（复盘写回的经验）快照。
+func (m *stubMemory) Notes() []protocol.NotePayload {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]protocol.NotePayload, len(m.notes))
+	copy(out, m.notes)
+	return out
 }
 
 func (m *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -190,6 +203,14 @@ func (m *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
 			_ = protocol.DecodeRaw(jp.Input, &p)
 			m.mu.Lock()
 			m.renamed = append(m.renamed, p)
+			m.mu.Unlock()
+			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
+			c.send(resp)
+		case "note":
+			var p protocol.NotePayload
+			_ = protocol.DecodeRaw(jp.Input, &p)
+			m.mu.Lock()
+			m.notes = append(m.notes, p)
 			m.mu.Unlock()
 			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
 			c.send(resp)

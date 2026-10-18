@@ -33,9 +33,10 @@ const reflectNote = "e2e 复盘经验：并发写要带会话内单调序号，�
 type reflectFakeLLM struct {
 	srv *httptest.Server
 
-	mu    sync.Mutex
-	calls int // 非复盘调用数（任务轮次）
-	loads int // 复盘调用数
+	mu      sync.Mutex
+	calls   int      // 非复盘调用数（任务轮次）
+	loads   int      // 复盘调用数
+	prompts []string // 复盘请求的 user 提示词（供断言流水里真的带上了这次任务）
 }
 
 func startReflectFakeLLM(t *testing.T) *reflectFakeLLM {
@@ -68,6 +69,11 @@ func startReflectFakeLLM(t *testing.T) *reflectFakeLLM {
 		if isReflect {
 			f.mu.Lock()
 			f.loads++
+			for _, m := range req.Messages {
+				if m.Role == "user" {
+					f.prompts = append(f.prompts, m.Content)
+				}
+			}
 			f.mu.Unlock()
 			// 故意包一层 ```json 围栏：真模型常这么干，解析要能吃下。
 			msg = map[string]any{
@@ -106,6 +112,15 @@ func (f *reflectFakeLLM) Reflects() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.loads
+}
+
+// Prompts 返回复盘请求的 user 提示词快照。
+func (f *reflectFakeLLM) Prompts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.prompts))
+	copy(out, f.prompts)
+	return out
 }
 
 // TestReflectWritesExperienceE2E 验证复盘真的落进了经验网。
@@ -210,6 +225,14 @@ func TestReflectWritesExperienceE2E(t *testing.T) {
 					}
 					if h.TaskID == "" {
 						t.Fatalf("经验应带上来源任务（可回溯）: %+v", h)
+					}
+					// 流水里必须真的带上这次任务的内容，否则复盘就是在凭空编。
+					prompts := fakeLLM.Prompts()
+					if len(prompts) == 0 || !strings.Contains(prompts[0], "把并发写的序号问题修一下") {
+						t.Fatalf("复盘提示词里应带上用户这次说的话: %q", prompts)
+					}
+					if !strings.Contains(prompts[0], "[最终答复]") {
+						t.Fatalf("复盘提示词里应带上最终答复: %.300s", prompts[0])
 					}
 					return
 				}

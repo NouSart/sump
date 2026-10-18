@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -116,6 +117,90 @@ func TestConversationTable(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("显式要归档时应列出 c3: %+v", all)
+	}
+}
+
+// TestConversationTitleAndLimit 验证两件容易出错的小事：
+// 标题只填空不覆盖（起名是件明确的事，不能被"顺带"改掉），以及 limit 的夹紧（别让人一次拉空整库）。
+func TestConversationTitleAndLimit(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "m.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.EnsureConversation("c1", "第一次起的名字", ""); err != nil {
+		t.Fatal(err)
+	}
+	// 第二次带了个新名字：已有的名字不能被覆盖。
+	if err := st.EnsureConversation("c1", "第二次起的名字", ""); err != nil {
+		t.Fatal(err)
+	}
+	c, err := st.ConversationByID("c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Title != "第一次起的名字" {
+		t.Fatalf("标题不该被后来的覆盖: %q", c.Title)
+	}
+	// 原来空着的，可以补上。
+	if err := st.EnsureConversation("c2", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.EnsureConversation("c2", "补上的名字", ""); err != nil {
+		t.Fatal(err)
+	}
+	if c2, err := st.ConversationByID("c2"); err != nil || c2.Title != "补上的名字" {
+		t.Fatalf("空标题应能被补上: %+v err=%v", c2, err)
+	}
+
+	// limit 夹紧：0 当默认 50，超大的当 200。造 55 个会话验证 0 → 50。
+	for i := 0; i < 55; i++ {
+		if err := st.EnsureConversation(fmt.Sprintf("bulk-%02d", i), "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := st.ListConversations(0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 50 {
+		t.Fatalf("limit=0 应按默认 50 条，实际 %d", len(got))
+	}
+	// 超大的 limit 夹到上限（200），**不是**退回默认值 50——两回事，混了会悄悄少给行。
+	if many, err := st.ListConversations(9999, false); err != nil || len(many) <= 50 {
+		t.Fatalf("limit=9999 应夹到上限 200（当前会话数 57），不该退回默认 50：实际 %d err=%v", len(many), err)
+	}
+}
+
+// TestConversationTouchThrottle 验证 updated_at 的节流：30 秒内的连续写入不重复推时间。
+// 热路径每来一条消息就写一次 updated_at 纯属浪费，而且同一毫秒内的值根本区分不出来。
+func TestConversationTouchThrottle(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "m.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.Append("c1", "user", "第一句"); err != nil {
+		t.Fatal(err)
+	}
+	first, err := st.ConversationByID("c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 紧接着再写两条：updated_at 不该动。
+	for _, text := range []string{"第二句", "第三句"} {
+		if err := st.Append("c1", "user", text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	second, err := st.ConversationByID("c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.UpdatedAt != first.UpdatedAt {
+		t.Fatalf("30 秒内的连续写入不该推 updated_at: %q → %q", first.UpdatedAt, second.UpdatedAt)
 	}
 }
 

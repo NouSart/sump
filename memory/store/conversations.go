@@ -72,8 +72,11 @@ func (s *Store) touchConversation(id string) error {
 
 // ListConversations 列出会话（按最近活跃排序）。零会话时返回空切片，不是 nil。
 func (s *Store) ListConversations(limit int, includeArchived bool) ([]protocol.Conversation, error) {
-	if limit <= 0 || limit > 200 {
+	if limit <= 0 {
 		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
 	}
 	q := `SELECT id, title, entry, status, created_at, updated_at FROM conversations`
 	if !includeArchived {

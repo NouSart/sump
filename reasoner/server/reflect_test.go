@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
 )
@@ -153,6 +154,44 @@ func TestTranscriptDropsOldest(t *testing.T) {
 	}
 	if !strings.Contains(got, "最后一句") {
 		t.Fatalf("丢掉的一定是最老的，最后一句必须还在")
+	}
+}
+
+// TestClipDoesNotSplitRunes 验证按字符（不是字节）截断：中文被拦腰砍成半个字会变乱码，
+// 而工具输出里中文很常见。
+func TestClipDoesNotSplitRunes(t *testing.T) {
+	// 每个汉字 3 字节：按字节截 4 会砍碎第二个字。
+	got := clip("一二三四五", 2)
+	if got != "一二…" {
+		t.Fatalf("应按字符截断: %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("截断后不是合法 UTF-8: %q", got)
+	}
+	if clip("短", 10) != "短" {
+		t.Fatal("没超长就不该加省略号")
+	}
+	if clip("任意", 0) != "" {
+		t.Fatal("预算为 0 时应返回空串")
+	}
+}
+
+// TestToolCallLineTruncatesArgs 验证工具参数在流水里会被截：
+// 一条 grep 的参数能有一屏，9 条工具调用就能把预算吃光。
+func TestToolCallLineTruncatesArgs(t *testing.T) {
+	call := llm.ToolCall{Function: llm.FunctionCall{
+		Name:      "shell__exec",
+		Arguments: `{"cmd":"` + strings.Repeat("x", 500) + `"}`,
+	}}
+	short := toolCallLine(call, 50)
+	if n := len([]rune(short)); n > 50+len("[工具调用]: shell__exec()")+5 {
+		t.Fatalf("参数没被截断: %d 字", n)
+	}
+	if !strings.Contains(short, "…") {
+		t.Fatalf("截断应有明确的省略号: %q", short)
+	}
+	if long := toolCallLine(call, 0); !strings.Contains(long, strings.Repeat("x", 500)) {
+		t.Fatal("预算为 0 时表示不截断")
 	}
 }
 
