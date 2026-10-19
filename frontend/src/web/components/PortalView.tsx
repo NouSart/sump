@@ -4,6 +4,7 @@ import { ApprovalStrip } from './ApprovalStrip';
 import type { Translate } from '../i18n';
 import { IconAnswer, IconOutput, IconPaperclip, IconSend, IconSliders, IconSparkle, IconTerminal, IconUser } from './icons';
 import { Markdown } from './markdown';
+import { useTraceOpen, type WorkflowExpand } from '../workflowExpand';
 
 interface Props {
   connected: boolean;
@@ -16,6 +17,8 @@ interface Props {
   onOpenSettings: () => void;
   /** 任务清单：面板按任务分节，节头要用它的名字与状态。 */
   tasks: TaskView[];
+  /** 工作流展开档位：决定过程条目（思考 / 输出）什么时候自己摊开。 */
+  workflowExpand: WorkflowExpand;
   t: Translate;
 }
 
@@ -46,7 +49,7 @@ export function remainingText(leftMS: number): string {
 
 // Step 是对话里的一步：左边一个图标 + 竖线（把相邻图标连起来），右边是这一步的内容。
 // 图标按步骤类型分：我 / 深度思考 / 命令 / 输出 / 答复——一眼能看出这条链走到哪了。
-function Step({ m, t }: { m: PortalMessage; t: Translate }) {
+function Step({ m, t, workflowExpand }: { m: PortalMessage; t: Translate; workflowExpand: WorkflowExpand }) {
   const time = m.at === '' ? '' : m.at.slice(11, 19);
   const kind = m.kind ?? (m.author === 'user' ? 'user' : 'assistant');
 
@@ -74,14 +77,14 @@ function Step({ m, t }: { m: PortalMessage; t: Translate }) {
           <IconSparkle />
         </span>
         <div className="step-body">
-          <details className="step-details">
+          <TraceDetails mode={workflowExpand}>
             <summary className="step-head">
               <span className="step-title">{t('ui.trace.thinking', '深度思考')}</span>
               <span className="step-preview">{firstLine(m.text)}</span>
               <time className="step-time">{time}</time>
             </summary>
             <p className="trace-text">{m.text}</p>
-          </details>
+          </TraceDetails>
         </div>
       </li>
     );
@@ -113,7 +116,7 @@ function Step({ m, t }: { m: PortalMessage; t: Translate }) {
           <IconOutput />
         </span>
         <div className="step-body">
-          <details className="step-details">
+          <TraceDetails mode={workflowExpand}>
             <summary className="step-head">
               <span className="step-title">{m.meta?.tool ?? t('ui.trace.output', '终端输出')}</span>
               <span className="step-preview">
@@ -123,7 +126,7 @@ function Step({ m, t }: { m: PortalMessage; t: Translate }) {
               <time className="step-time">{time}</time>
             </summary>
             <pre className="trace-pre">{m.text}</pre>
-          </details>
+          </TraceDetails>
         </div>
       </li>
     );
@@ -151,9 +154,24 @@ function firstLine(text: string): string {
   const line = text.split('\n').find((l) => l.trim() !== '') ?? '';
   return line.length > 80 ? `${line.slice(0, 80)}…` : line;
 }
+
+// TraceDetails 是可折叠的过程条目（深度思考 / 终端输出），行为由"工作流展开"档位决定：
+//  - 折叠：默认收起，用户点 summary 自己开；
+//  - 展开：始终展开；
+//  - 焦点展开：悬停或键盘聚焦时展开，移开/失焦收起——但一旦用户亲手点开过，
+//    就以用户的意志为准，不再跟着鼠标自动收起（否则刚点开就被抢着关掉，很恼人）。
+// 用受控 open 而不是 CSS：<details> 的展开是浏览器行为，样式表改不了 open 状态。
+function TraceDetails({ mode, children }: { mode: WorkflowExpand; children: React.ReactNode }) {
+  const detail = useTraceOpen(mode);
+  return (
+    <details className="step-details" open={detail.open} onToggle={detail.onToggle} {...detail.handlers}>
+      {children}
+    </details>
+  );
+}
 // PortalView 是门户的对话面：消息流铺满整个面板，输入区（含待审/计时器/报错）作为浮层压在底部——
 // 所以输入框是悬浮的，消息能滚到它背后透出来。消息只有两条来源：本地回显，与 SSE 送来的 deliver。
-export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend, onOpenSettings, tasks, t }: Props) {
+export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend, onOpenSettings, tasks, workflowExpand, t }: Props) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const listRef = useRef<HTMLOListElement>(null);
@@ -219,7 +237,7 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
                     </span>
                   </li>
                 )}
-                <Step m={m} t={t} />
+                <Step m={m} t={t} workflowExpand={workflowExpand} />
               </Fragment>
             );
           })

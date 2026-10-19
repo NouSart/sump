@@ -134,6 +134,12 @@
     "setting.shell.approval.timeout_ms.hint": "x",
     "setting.approval.policy.json.label": "x",
     "setting.approval.policy.json.hint": "x",
+    "setting.approval.auto_approve.label": "x",
+    "setting.approval.auto_approve.hint": "x",
+    "setting.approval.auto_approve.opt.off": "x",
+    "setting.approval.auto_approve.opt.low": "x",
+    "setting.approval.auto_approve.opt.medium": "x",
+    "setting.approval.auto_approve.opt.workspace": "x",
     "ui.portal.title": "x",
     "ui.portal.empty": "x",
     "ui.portal.timers": "x",
@@ -226,6 +232,15 @@
     "ui.task.empty": "x",
     "ui.task.active": "x",
     "ui.task.done": "x",
-    "ui.task.noRecords": "x"
+    "ui.task.noRecords": "x",
+    "ui.settings.workflow": "x",
+    "ui.settings.workflowExpand": "x",
+    "ui.settings.workflowExpandHint": "x",
+    "ui.settings.workflowExpand.collapsed": "x",
+    "ui.settings.workflowExpand.collapsed.hint": "x",
+    "ui.settings.workflowExpand.focus": "x",
+    "ui.settings.workflowExpand.focus.hint": "x",
+    "ui.settings.workflowExpand.expanded": "x",
+    "ui.settings.workflowExpand.expanded.hint": "x"
   }
 }
