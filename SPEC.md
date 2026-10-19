@@ -475,7 +475,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | 4 | 设置热链 | **已实现 M7**：注册即全量下发（异步、不等待）+ set/reset 单键下发 + `settings` 事件回传结果；骨架通用接收（`HandleSetting` + 注册后拉取兜底）；各服务设置项（reasoner 3 / memory 5 / images 1 / qq 1 / 中心自身 2） | “调度 = 设置行为、设计工作流”的完整形态 |
 | 5 | 连接时长自适应 | 全短连接（注释已标注） | 热保留 / 冷回落，参数可配置（实现前不声明设置项） |
 | 6 | 审批链路 | **已实现第一层**：PowerShell AST 规则引擎 + 执行摘要绑定 + fail-closed；shell 通过 `approval_request` 取得裁决，并沿 `report_result` 反馈；**第二层已实现**：白名单外挂起 → 推门户 → 用户裁决（`approval_pending` / `approval_decide` / `approval_list`，TTL 默认 10 分钟）| 解释（LLM 解读）与富通知未做；`approval_result` 占名未采用 |
-| 6.1 | 命令执行的护栏（shell） | **已实现**：工作目录根 + 越界即拒（含软链解析）、执行超时、单流输出上限、并行上限、待执行队列上限（满即拒）；命令规则已由 approval 第一层实现，用户审批策略**未做** | 护栏归审批服务与设置项演进，服务只报事实 |
+| 6.1 | 命令执行的护栏（shell） | **已实现**：工作目录根 + 越界即拒（含软链解析）、执行超时、单流输出上限、**窗口调度**（窗口间并行 / 窗口内串行 / 开满即拒，无全局排队）；命令规则已由 approval 第一层实现，用户审批策略**未做** | 护栏归审批服务与设置项演进，服务只报事实 |
 | 7 | 服务骨架复用 | **已实现**：`service/` 薄骨架库（注册/心跳/名册/自愈/告别），四服务共用 | — |
 | 8 | 链级失败策略 | 拨号失败已安全重试；送达后失败不重试（无幂等键）；工具超时 / 任务取代的结果丢弃已定义 | 幂等键；失败上报 boss（降级回复） |
 | 9 | 工具结果通知模式 | **已实现**：设置项 `tool.notify_mode`（each 默认 / batch）+ 注册下发 + 拉取兜底 + `-tool-notify` | — |
@@ -493,7 +493,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | memory | Go | 会话消息的唯一保管者；recall 取最近历史 + 长期记忆（核心注入 + bigram 召回）组装为记忆块后 resume 回调用方；remember 写入（幂等）/ forget 软删 |
 | images | Go | save（URL/base64 落盘）返回 id；fetch（id → base64） |
 | files | Go | save（URL/base64 + filename 落盘）返回 id；fetch（id → base64）；read（id → 截断文本 / .xlsx 转 TSV / .docx/.pptx 提取正文，`tool: true`）；write（`{id, sheet, edits:[{cell, value}]}` 单元格编辑，`tool: true`——就地修改 .xlsx 权威副本）；edit_word（`{id, operations:[{op, old, new}]}` 纯文本替换，`tool: true`——就地修改 .docx 正文）；edit_ppt（`{id, operations:[{op, old, new}]}` 纯文本替换，`tool: true`——就地修改 .pptx 幻灯片文本） |
-| shell | Go | 受理即回执的命令执行（并行 + 待执行队列 + 超时终止 + 输出截断）；审批接缝（未接入 = 一律未通过）；结果由 `report_result` 补报 |
+| shell | Go | 受理即回执的命令执行（**窗口内串行 / 窗口间并行**，开满即拒、不排队；超时终止 + 输出截断）；审批接缝（未接入 = 一律未通过）；结果由 `report_result` 补报（带 `window`） |
 | approval | Go | 终端命令审批第一层：PowerShell AST + 不可变规则快照 + 执行摘要绑定；第二层仅接口 |
 | timer | Go | 计时器：受理「N 毫秒后唤醒我」（受理即回执，不阻塞调用方）→ 到点把 `report_result` 跳回调用方；在计时器按 boss 分组推给门户（倒计时） |
 | embedding | Python | 文本 → 向量（onnxruntime + tokenizers，CLS pooling + L2 归一）；动作 `embed`；fake 后端供测试与 CI |
@@ -513,13 +513,13 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | ---- | ---- | ------ |
 | 消息类型（`type`） | 裸名词；请求 / 响应 / 事件方向固定（事件型只由中心广播） | `register` `response` `roster` `jump` `heartbeat`；事件：`roster` `settings` |
 | 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §6.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting` `report_setting` `embed` `run` `report_result` `approval_request` `approval_pending` `approval_decide` `approval_list` `capabilities`；骨架保留：`configure`；timer：`sleep` `cancel` `list`；memory：`remember` `forget`；files：`read` `write` `edit_word` `edit_ppt` |
-| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms`；设置项三类标记：`secret` `readonly` `set`；服务自报：`actual` `reported`；文件链：`filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated` `operations` `op` `old` `new` `replaced`；embedding：`texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms`；timer：`ms` `note` `fire_at` `seq` `timers` `caller` `status` |
+| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms`；设置项三类标记：`secret` `readonly` `set`；服务自报：`actual` `reported`；文件链：`filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated` `operations` `op` `old` `new` `replaced`；embedding：`texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `window` `windows` `running` `queued` `approving` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms`；timer：`ms` `note` `fire_at` `seq` `timers` `caller` `status` |
 | 审批载荷字段 | snake_case；结构由 `protocol/approval.go` 定义 | `schema_version` `plan` `decision` `decision_id` `plan_digest` `policy_version` `reason_code` `valid_for_ms` `llm_feedback` `summary` `unknowns` `rule_ids`；补报新增 `approval`；第二层：`requested_by` `created_ms` `expires_ms` `note` |
 | exec 域执行描述字段 | 当前 `plan` 是命令域专用结构；每个字段只保留一个语义 | `version` `command` `work_dir` `shell_path` `args` `dialect` `platform` `profile` `timeout_ms` `max_output_bytes`；`dialect` 只表示 shell 方言，`profile` 只表示执行环境约定 |
 | 域判别字段（将来） | 新增第二个执行域时定义独立字段；当前协议尚未发送，不复用 `dialect` | 建议 `kind`，取值如 `exec` / `fs` / `http`；其他域各自声明执行字段组，裁决包、摘要绑定、有效期、fail-closed 共用 |
 | 审批枚举 | 取值由 approval 服务定义，见 [审批协议](./COMMAND-APPROVAL-PROTOCOL.md) | `decision`：`allow` / `deny` / `review`；`reason_code`：`RULE_ALLOW` `POLICY_DENY` `DYNAMIC_BEHAVIOR` `NO_MATCHING_RULE` `PARSE_ERROR` `UNSUPPORTED_DIALECT` `CONTEXT_UNKNOWN` `RUNTIME_MISMATCH` `LIMIT_EXCEEDED`，第二层用户裁决：`USER_APPROVED` `USER_DENIED` |
 | 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `files` `qq` `shell` `timer` `frontend` `embedding` `approval` |
-| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `recall.embedding` `max_mb` `read_max_chars` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.concurrency` `exec.queue_limit` `approval.service` `approval.timeout_ms` `policy.json` `max_ms` `max_pending` `portal` `llm.base` `llm.model` `llm.key` `memory` `images` `name` `addr` `center` `napcat.url` `napcat.token` `reasoner` `db` `dir` `settings` `web` |
+| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `recall.embedding` `max_mb` `read_max_chars` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.max_windows` `approval.service` `approval.timeout_ms` `policy.json` `max_ms` `max_pending` `portal` `llm.base` `llm.model` `llm.key` `memory` `images` `name` `addr` `center` `napcat.url` `napcat.token` `reasoner` `db` `dir` `settings` `web` |
 | 名片字段（`provides[]`） | 小写下划线；跨语言一致 | `action` `input` `output` `tool` `async` |
 
 审批设置键补充：`policy.json`（approval 声明的规则快照配置）。`approval_result` 没有注册为动作；审批结果作为 `approval_request` 的响应返回，并由 shell 的 `report_result` 承载后续反馈。

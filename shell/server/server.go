@@ -3,10 +3,14 @@
 //
 // 形状（代理商：代客执行，自己不设判断）：
 //
-//	run 受理（立即回执，带 item 句柄）
+//	run 受理（立即回执，带回 item 句柄与**窗口名**）
 //	  → 审批（接缝，见 approval.go；未通过即补报 rejected 结束，不执行）
-//	  → 执行（并行上限 + 待执行队列上限；满即拒绝，不排队）
+//	  → 执行（**窗口内串行、窗口间并行**；没有全局等待队列）
 //	  → report_result 补报（approved / rejected / done / failed；结果可能晚于调用方收尾）
+//
+// 为什么没有排队：全局队列会让互不相干的命令互相阻塞，等多久还不可预期。
+// 这里的等待只有一种——调用方**自己指定了同一个窗口**，于是按登记顺序串行。
+// 窗口装不下了（超过 max_windows）就明确拒绝，不做"能跑但要你等"这种中间态。
 //
 // 执行不在受理路径上：调用方拿到回执即走人，后续每条进展各自一跳送达。
 package server
@@ -19,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,11 +36,10 @@ import (
 // 默认值（引导值；可被设置中心的覆盖值改写）。
 const (
 	defaultTimeout      = 5 * time.Minute
-	defaultMaxOutput    = 256 << 10 // 单流输出上限 256KiB
-	defaultConcurrency  = 8
-	defaultQueueLimit   = 32
+	defaultMaxOutput    = 256 << 10        // 单流输出上限 256KiB
+	defaultMaxWindows   = 64               // 同时存在的窗口上限（熔断，不是调度策略）
 	defaultApprovalWait = 10 * time.Minute // 第二层要等用户裁决；与 approval 的 -review-ttl 对齐
-	maxPendingApprovals = 64
+	maxPendingApprovals = 1024
 )
 
 var serviceNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
@@ -50,14 +54,13 @@ type Config struct {
 	Shell             string        // 命令解释器（默认自动探测：bash → pwsh → cmd / sh）
 	Timeout           time.Duration // 单条命令执行超时（默认 5 分钟）
 	MaxOutputBytes    int64         // 单流输出上限（默认 256KiB）
-	Concurrency       int           // 并行执行上限（默认 8）
-	QueueLimit        int           // 待执行队列上限（默认 32；满即拒绝执行）
+	MaxWindows        int           // 同时存在的窗口上限（默认 64；超了明确拒绝，不排队）
 	ApprovalService   string        // 审批服务名（默认空 = 未接入，一律未通过）
 	ApprovalTimeout   time.Duration // 等审批超时（默认 1 分钟；超时按未通过处理）
 	Approver          Approver      // 裁决实现（默认 nil = fail-closed，见 approval.go）
 }
 
-// Server 是 shell 服务实例（服务骨架 + 执行调度）。
+// Server 是 shell 服务实例（服务骨架 + 窗口调度）。
 type Server struct {
 	*service.Service
 
@@ -69,23 +72,34 @@ type Server struct {
 	shell           string     // 命令解释器（空 = 自动探测）
 	timeout         time.Duration
 	maxOutput       int64
-	conc            int
-	queueLimit      int
+	maxWindows      int
 	approvalService string
 	approvalWait    time.Duration
 
-	schedMu          sync.Mutex // 调度锁：running / waiting 只在此锁下读写
-	running          int
-	waiting          []*job
+	winMu            sync.Mutex         // 窗口表锁（窗口与队列只在此锁下读写）
+	windows          map[string]*window // 窗口名 → 窗口
+	winSeq           int                // 自动命名用的序号（w1、w2…）
 	pendingApprovals chan struct{}
 }
 
-// job 是一条已受理的命令：审批通过后进队列 / 执行，全程带着补报所需的信息。
+// window 是一条串行域：窗口内的命令按 jobs 的顺序执行，窗口之间完全并行。
+//
+// running 表示此刻窗口里有一条命令在跑。判定"轮到我"只看**队首**：
+// 队首没审批完就等它（不跳过——跳过就破坏了登记顺序），队首审批失败就出队看下一条。
+type window struct {
+	id      string
+	jobs    []*job // 有序：登记顺序 = 执行顺序（正在执行的那条已出队）
+	running bool
+	cur     *job // 正在执行的那条（running 为真时非空；仅用于 windows 查询）
+}
+
+// job 是一条已受理的命令：登记进窗口 → 审批 → 排队 / 执行，全程带着补报所需的信息。
 type job struct {
 	item          string // 受理句柄（补报原样带回）
 	caller        string // 受理时的调用方（补报目标）
 	trace         string // 链路 id（原样沿用）
 	boss          string // 受理时的 boss（原样沿用）
+	window        string // 所在窗口（受理回执里告诉调用方）
 	command       string
 	workDir       string
 	plan          *protocol.ExecutionPlan
@@ -94,6 +108,11 @@ type job struct {
 	approvedUntil time.Time
 	progressReady chan struct{} // 先完成 approved 的投递尝试，再允许执行结果发出。
 	progressOnce  sync.Once
+
+	// 审批结果（在 winMu 下读写）：tryAdvance 靠它判断队首能不能开跑。
+	approvalDone bool
+	approvalOK   bool
+	approvalErr  error
 }
 
 func (j *job) finishProgress() {
@@ -110,11 +129,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.MaxOutputBytes <= 0 {
 		cfg.MaxOutputBytes = defaultMaxOutput
 	}
-	if cfg.Concurrency <= 0 {
-		cfg.Concurrency = defaultConcurrency
-	}
-	if cfg.QueueLimit <= 0 {
-		cfg.QueueLimit = defaultQueueLimit
+	if cfg.MaxWindows <= 0 {
+		cfg.MaxWindows = defaultMaxWindows
 	}
 	if cfg.ApprovalTimeout <= 0 {
 		cfg.ApprovalTimeout = defaultApprovalWait
@@ -141,10 +157,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		shell:            strings.TrimSpace(cfg.Shell),
 		timeout:          cfg.Timeout,
 		maxOutput:        cfg.MaxOutputBytes,
-		conc:             cfg.Concurrency,
-		queueLimit:       cfg.QueueLimit,
+		maxWindows:       cfg.MaxWindows,
 		approvalService:  cfg.ApprovalService,
 		approvalWait:     cfg.ApprovalTimeout,
+		windows:          map[string]*window{},
 		pendingApprovals: make(chan struct{}, maxPendingApprovals),
 	}
 	s.Service = service.New(service.Config{
@@ -154,14 +170,20 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		ActionTimeout:     15 * time.Second, // 受理/校验是短动作（执行不在请求路径上，不占这里的超时）
-		Description:       "命令执行：受理即回执（审批通过后并行执行），结果由 report_result 补报送达",
+		Description:       "命令执行：受理即回执（审批后按窗口并行），结果由 report_result 补报送达",
 		Provides: []protocol.Provide{
 			{
 				Action: "run",
 				Tool:   true,
 				Async:  true,
-				Input:  "{command: 要执行的命令行（交给服务的 shell 解释）; work_dir?: 工作目录（须在服务根目录内，可省略）}",
-				Output: "受理回执 {item_id, phase}；执行结果稍后由 report_result 补报送达（可能在你收尾之后才到）",
+				Input:  "{command: 要执行的命令行（交给服务的 shell 解释）; work_dir?: 工作目录（须在服务根目录内，可省略）; window?: 窗口名（同一窗口内串行、不同窗口并行；空 = 新开一个）}",
+				Output: "受理回执 {item_id, window, phase}；执行结果稍后由 report_result 补报送达（带 window，可能在你收尾之后才到）",
+			},
+			{
+				Action: "windows",
+				Tool:   true,
+				Input:  "{window?: 只看这个窗口}",
+				Output: "{windows:[{id, running?:{item_id, command, work_dir}, queued:[…]}]}（当前各窗口跑到哪了；决定后续命令往哪个窗口塞时先看它）",
 			},
 		},
 		Logger: logger,
@@ -220,30 +242,17 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Hint("超出部分会被截断，太大会把模型上下文撑爆"),
 		service.As("number"),
 		service.Unit("KB"))
-	s.HandleSetting("exec.concurrency", strconv.Itoa(cfg.Concurrency), func(v string) error {
+	s.HandleSetting("exec.max_windows", strconv.Itoa(cfg.MaxWindows), func(v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
 			return fmt.Errorf("需要 ≥1 的整数，收到 %q", v)
 		}
 		s.setMu.Lock()
-		s.conc = n
+		s.maxWindows = n
 		s.setMu.Unlock()
 		return nil
-	}, service.Label("同时跑几条命令"),
-		service.Hint("跑满后新命令排队，不直接拒绝"),
-		service.As("number"),
-		service.Unit("count"))
-	s.HandleSetting("exec.queue_limit", strconv.Itoa(cfg.QueueLimit), func(v string) error {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			return fmt.Errorf("需要 ≥1 的整数，收到 %q", v)
-		}
-		s.setMu.Lock()
-		s.queueLimit = n
-		s.setMu.Unlock()
-		return nil
-	}, service.Label("排队等执行的上限"),
-		service.Hint("同时跑满后还能排几个；排满再来就直接拒绝"),
+	}, service.Label("最多同时开几个窗口"),
+		service.Hint("窗口之间并行、窗口内串行；开满再来新窗口会直接拒绝（不会让你干等）"),
 		service.As("number"),
 		service.Unit("count"))
 	s.HandleSetting("approval.service", cfg.ApprovalService, func(v string) error {
@@ -273,6 +282,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Unit("ms"))
 
 	s.Handle("run", s.actionRun)
+	s.Handle("windows", s.actionWindows)
 	return s
 }
 
@@ -283,22 +293,39 @@ func (s *Server) Start(ctx context.Context) error {
 
 // RunningCount 返回正在执行的命令数（退出时记日志用）。
 func (s *Server) RunningCount() int {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
-	return s.running
+	s.winMu.Lock()
+	defer s.winMu.Unlock()
+	n := 0
+	for _, w := range s.windows {
+		if w.running {
+			n++
+		}
+	}
+	return n
 }
 
-// QueueCount 返回队列中等待执行的命令数。
+// QueueCount 返回各窗口里等着执行的命令数（不含正在执行的）。
 func (s *Server) QueueCount() int {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
-	return len(s.waiting)
+	s.winMu.Lock()
+	defer s.winMu.Unlock()
+	n := 0
+	for _, w := range s.windows {
+		n += len(w.jobs)
+	}
+	return n
+}
+
+// WindowCount 返回当前存在的窗口数。
+func (s *Server) WindowCount() int {
+	s.winMu.Lock()
+	defer s.winMu.Unlock()
+	return len(s.windows)
 }
 
 // ---------- 受理 ----------
 
 // actionRun 受理一条命令：立即回执（不等审批、不等执行，后续由 report_result 补报）。
-// 同步拒绝的只有“请求本身不合法”：命令为空、工作目录越界或不可访问。
+// 同步拒绝的只有"请求本身不合法"或"窗口已开满"——绝不返回"已排队"这种要你干等的回执。
 func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	if len(in.Input) > 64<<10 {
 		return nil, errors.New("run: 请求超过 64 KiB")
@@ -320,7 +347,7 @@ func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol
 	select {
 	case s.pendingApprovals <- struct{}{}:
 	default:
-		return nil, errors.New("run: 待审批队列已满，请稍后重试")
+		return nil, errors.New("run: 同时待审批的命令太多，请稍后重试")
 	}
 	j := &job{
 		item:          protocol.NewID(),
@@ -331,78 +358,205 @@ func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol
 		workDir:       dir,
 		progressReady: make(chan struct{}),
 	}
-	s.logger.Printf("受理命令 %s（来自 %s，命令 %d 字节）", j.item, j.caller, len(j.command))
+	// **同步登记窗口与顺序**：这一步决定"谁先跑"，必须在回执之前做完。
+	// 放到后台 goroutine 里做的话，顺序就取决于调度运气——那是不可断言、也不可解释的。
+	win, ahead, err := s.enroll(p.Window, j)
+	if err != nil {
+		<-s.pendingApprovals
+		return nil, err
+	}
+	s.logger.Printf("受理命令 %s（来自 %s，窗口 %s，前方 %d 条，命令 %d 字节）", j.item, j.caller, win, ahead, len(j.command))
 	go s.process(j)
-	return protocol.ShellRunResult{ItemID: j.item, Phase: "queued"}, nil
+	return protocol.ShellRunResult{ItemID: j.item, Window: win, Phase: "queued"}, nil
 }
 
-// process 走完一条命令的全程：审批 → 排队 / 执行 → 补报。
+// enroll 把命令登记进窗口并返回窗口名与前方条数（不含自己）。
+// 窗口名留空 = 新开一个窗口（w1、w2…）；未见过但指定的名字 = 新建同名窗口。
+// 新建窗口数超过 max_windows 时明确拒绝——这是熔断，不是排队。
+func (s *Server) enroll(name string, j *job) (string, int, error) {
+	// 先读上限（拿 setMu）再拿 winMu：两个锁**不嵌套**，锁顺序永远只有一条路。
+	max := s.maxWindowsNow()
+	s.winMu.Lock()
+	defer s.winMu.Unlock()
+	id := strings.TrimSpace(name)
+	if id == "" {
+		s.winSeq++
+		id = fmt.Sprintf("w%d", s.winSeq)
+		for s.windows[id] != nil { // 防止调用方之前就用掉了这个自动名
+			s.winSeq++
+			id = fmt.Sprintf("w%d", s.winSeq)
+		}
+	}
+	w := s.windows[id]
+	if w == nil {
+		if len(s.windows) >= max {
+			return "", 0, fmt.Errorf("run: 窗口已开满（%d 个，上限 %d），本次未执行；要串行就指定已有窗口，要并行就先等前面的跑完", len(s.windows), max)
+		}
+		w = &window{id: id}
+		s.windows[id] = w
+	}
+	ahead := len(w.jobs) // 前面有几条（含正在执行的那条？不含——正在执行的已出队）
+	if w.running {
+		ahead++
+	}
+	w.jobs = append(w.jobs, j)
+	j.window = id
+	return id, ahead, nil
+}
+
+// actionWindows 列出各窗口的当前状态（模型据此决定后续命令往哪个窗口塞）。
+func (s *Server) actionWindows(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.ShellWindowsPayload
+	if len(in.Input) > 0 {
+		if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+			return nil, err
+		}
+	}
+	want := strings.TrimSpace(p.Window)
+
+	s.winMu.Lock()
+	ids := make([]string, 0, len(s.windows))
+	for id := range s.windows {
+		if want == "" || id == want {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	out := make([]protocol.ShellWindowView, 0, len(ids))
+	for _, id := range ids {
+		w := s.windows[id]
+		view := protocol.ShellWindowView{ID: id, Queued: make([]protocol.ShellWindowItem, 0, len(w.jobs))}
+		if w.running && w.cur != nil {
+			view.Running = &protocol.ShellWindowItem{
+				ItemID: w.cur.item, Command: w.cur.command, WorkDir: w.cur.workDir,
+			}
+		}
+		for _, j := range w.jobs {
+			view.Queued = append(view.Queued, protocol.ShellWindowItem{
+				ItemID: j.item, Command: j.command, WorkDir: j.workDir, Approving: !j.approvalDone,
+			})
+		}
+		out = append(out, view)
+	}
+	s.winMu.Unlock()
+	if want != "" && len(out) == 0 {
+		return nil, fmt.Errorf("windows: 没有窗口 %q（空窗口会被回收，模型可先用 run 指定它来新建）", want)
+	}
+	return protocol.ShellWindowsResult{Windows: out}, nil
+}
+
+// process 走完一条命令的全程：审批 → （排队 / 执行由 tryAdvance 决定）→ 补报。
 func (s *Server) process(j *job) {
 	defer func() { <-s.pendingApprovals }()
-	enqueued := false
 	defer func() {
 		// 不能因进展投递异常把终态反馈永久挂住。
 		defer j.finishProgress()
 		if r := recover(); r != nil {
 			s.Report("shell_internal", "审批或进展处理发生内部异常；item="+j.item)
-			if !enqueued {
-				s.report(j, "failed", "审批处理发生内部异常，本次未执行", protocol.ShellEventData{Error: "internal error"})
-			}
+			s.failJob(j, fmt.Errorf("审批处理发生内部异常，本次未执行"))
 		}
 	}()
 	svc := s.approvalServiceNow()
 	actx, cancel := context.WithTimeout(context.Background(), s.approvalWaitNow())
 	verr := s.approveJob(actx, j, svc)
 	cancel()
+
 	if verr != nil {
 		s.logger.Printf("命令 %s 未通过审批: %v", j.item, verr)
-		s.report(j, "rejected", fmt.Sprintf("未执行：审批未通过——%v\n$ %s", verr, j.command),
-			protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: verr.Error()})
+		s.failJob(j, verr)
 		return
 	}
-	state, err := s.enqueue(j)
-	if err != nil {
-		s.logger.Printf("命令 %s 被拒: %v", j.item, err)
-		s.report(j, "rejected", fmt.Sprintf("未执行：%v\n$ %s", err, j.command),
-			protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: err.Error()})
-		return
+	// 审批通过：交给窗口决定何时轮到它（同一窗口里前面还有人在跑就等，不占额外资源）。
+	s.winMu.Lock()
+	j.approvalDone = true
+	j.approvalOK = true
+	w := s.windows[j.window]
+	ahead := 0
+	if w != nil {
+		ahead = len(w.jobs)
+		if w.running {
+			ahead++
+		}
 	}
-	enqueued = true
-	s.report(j, "approved", fmt.Sprintf("审批通过，%s\n$ %s", state, j.command),
+	s.winMu.Unlock()
+
+	state := fmt.Sprintf("审批通过，在窗口 %s 执行", j.window)
+	if ahead > 0 {
+		state = fmt.Sprintf("审批通过，在窗口 %s 排队（前方 %d 条）", j.window, ahead)
+	}
+	s.report(j, "approved", fmt.Sprintf("%s\n$ %s", state, j.command),
 		protocol.ShellEventData{Command: j.command, WorkDir: j.workDir})
+	s.tryAdvance(j.window)
 }
 
-// ---------- 调度：并行上限 + 待执行队列 ----------
+// failJob 结算一条不执行（或被拒）的命令：登记审批结果、从窗口队列里摘掉、补报，
+// 再推进窗口。**必须先摘掉**：留着它，同一窗口后面所有命令都会被它卡住（单例拖住整队）。
+func (s *Server) failJob(j *job, cause error) {
+	s.winMu.Lock()
+	j.approvalDone = true
+	j.approvalOK = false
+	j.approvalErr = cause
+	if w := s.windows[j.window]; w != nil {
+		for i, x := range w.jobs {
+			if x == j {
+				w.jobs = append(w.jobs[:i], w.jobs[i+1:]...)
+				break
+			}
+		}
+	}
+	s.winMu.Unlock()
 
-// enqueue 把已通过审批的命令交给调度：有空闲槽立即执行；否则进等待队列（满即拒绝）。
-// 返回的字符串是给补报用的状态描述（已开始执行 / 已排队）。
-func (s *Server) enqueue(j *job) (string, error) {
-	s.schedMu.Lock()
-	if s.running < s.concNow() {
-		s.running++
-		s.schedMu.Unlock()
-		go s.execute(j)
-		return "准备执行", nil
-	}
-	if len(s.waiting) >= s.queueLimitNow() {
-		n, running := len(s.waiting), s.running
-		s.schedMu.Unlock()
-		return "", fmt.Errorf("执行队列已满（上限 %d：队列中 %d 条，正在执行 %d 条）", s.queueLimitNow(), n, running)
-	}
-	s.waiting = append(s.waiting, j)
-	ahead := len(s.waiting) - 1 // 不含自己：真正排在自己前面的条数
-	s.schedMu.Unlock()
-	return fmt.Sprintf("已排队（前方 %d 条）", ahead), nil
+	s.report(j, "rejected", fmt.Sprintf("未执行：%v\n$ %s", cause, j.command),
+		protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: cause.Error()})
+	s.tryAdvance(j.window)
 }
 
-// execute 执行一条命令并补报结果；结束后让出槽位、拉起下一条等待中的命令。
-func (s *Server) execute(j *job) {
-	// 执行槽只覆盖执行过程；反馈慢或暂未认领不能占住槽位。
-	phase, text, data := func() (string, string, protocol.ShellEventData) {
-		defer s.next()
-		return s.executeAndCollect(j)
-	}()
-	s.reportAfterProgress(j, phase, text, data)
+// ---------- 窗口调度 ----------
+
+// tryAdvance 推进一个窗口：只看队首——没审批完就等它，审批失败就出队看下一条，
+// 通过且窗口空闲就开跑。顺序由登记时固定，这里不做任何重排。
+func (s *Server) tryAdvance(id string) {
+	s.winMu.Lock()
+	w := s.windows[id]
+	if w == nil || w.running {
+		s.winMu.Unlock()
+		return
+	}
+	var next *job
+	for len(w.jobs) > 0 {
+		head := w.jobs[0]
+		if !head.approvalDone {
+			break // 队首还没审批完：后面的不能插队（插队就是破坏调用方声明的顺序）
+		}
+		w.jobs = w.jobs[1:]
+		if !head.approvalOK {
+			continue // 防御：失败的命令正常路径已在 failJob 里摘掉了
+		}
+		next = head
+		break
+	}
+	if next != nil {
+		w.running = true
+		w.cur = next
+	}
+	idle := len(w.jobs) == 0 && !w.running
+	if idle {
+		delete(s.windows, id) // 空窗口回收：同名再用等于新建，语义等价（没有并发命令）
+	}
+	s.winMu.Unlock()
+
+	if next != nil {
+		go func() {
+			// 执行完立刻让出窗口：补报可能慢（网络）或暂未被认领，不能让它占着窗口。
+			phase, text, data := s.executeAndCollect(next)
+			s.winMu.Lock()
+			w.running = false
+			w.cur = nil
+			s.winMu.Unlock()
+			s.tryAdvance(id)
+			s.reportAfterProgress(next, phase, text, data)
+		}()
+	}
 }
 
 func (s *Server) executeAndCollect(j *job) (string, string, protocol.ShellEventData) {
@@ -435,20 +589,6 @@ func (s *Server) reportAfterProgress(j *job, phase, text string, data protocol.S
 	s.report(j, phase, text, data)
 }
 
-// next 结束一条命令的执行：让出槽位；有等待中的命令就立即补位（保持并行度）。
-func (s *Server) next() {
-	s.schedMu.Lock()
-	if len(s.waiting) == 0 {
-		s.running--
-		s.schedMu.Unlock()
-		return
-	}
-	j := s.waiting[0]
-	s.waiting = s.waiting[1:]
-	s.schedMu.Unlock()
-	go s.execute(j)
-}
-
 // ---------- 补报 ----------
 
 // report 向调用方补报一条进展（受理回执已带走 item 句柄，这里只送后续消息）。
@@ -458,6 +598,7 @@ func (s *Server) report(j *job, phase, text string, data protocol.ShellEventData
 		s.logger.Printf("命令 %s 无调用方，补报丢弃（phase=%s）", j.item, phase)
 		return
 	}
+	data.Window = j.window
 	data.Approval = j.approval
 	if j.approval != nil && (phase == "approved" || phase == "rejected") {
 		text = fmt.Sprintf("[审批 %s / %s / 规则 %s] %s\n%s", j.approval.Decision, j.approval.ReasonCode, j.approval.PolicyVersion, j.approval.Feedback.Summary, text)
@@ -541,16 +682,10 @@ func (s *Server) maxOutputNow() int64 {
 	return s.maxOutput
 }
 
-func (s *Server) concNow() int {
+func (s *Server) maxWindowsNow() int {
 	s.setMu.Lock()
 	defer s.setMu.Unlock()
-	return s.conc
-}
-
-func (s *Server) queueLimitNow() int {
-	s.setMu.Lock()
-	defer s.setMu.Unlock()
-	return s.queueLimit
+	return s.maxWindows
 }
 
 func (s *Server) approvalServiceNow() string {

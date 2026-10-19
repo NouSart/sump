@@ -4,6 +4,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -440,8 +441,8 @@ func TestRunIsAcceptedThenRejectedByApproval(t *testing.T) {
 	if !p.Final {
 		t.Fatal("rejected 应为终态（final=true）")
 	}
-	if !strings.Contains(p.Text, "审批未通过") {
-		t.Fatalf("补报文本未说明未通过: %q", p.Text)
+	if !strings.Contains(p.Text, "未执行") {
+		t.Fatalf("补报文本未说明未执行: %q", p.Text)
 	}
 	if d := eventData(t, p); d.Error == "" {
 		t.Fatal("结构化补充应带上拒绝原因")
@@ -510,31 +511,168 @@ func TestWorkDirBoundary(t *testing.T) {
 	}
 }
 
-// TestQueueLimitRejectsWhenFull：并行上限 1 + 队列上限 1 → 第三条被立即拒绝（不排队等待）。
-func TestQueueLimitRejectsWhenFull(t *testing.T) {
+// ---------- 窗口：窗口间并行、窗口内串行 ----------
+
+// runIn 发起一次 run 并指定窗口（空 = 新开一个），返回回执。
+func runIn(t *testing.T, c *protocol.Client, command, window string) protocol.ShellRunResult {
+	t.Helper()
+	rp := jump(t, c, "shell", "run", protocol.ShellRunPayload{Command: command, Window: window})
+	if !rp.OK {
+		t.Fatalf("run(window=%q) 未被受理: %s", window, rp.Error)
+	}
+	var res protocol.ShellRunResult
+	if err := protocol.DecodeRaw(rp.Data, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.ItemID == "" || res.Window == "" {
+		t.Fatalf("受理回执应带回 item 与窗口名: %+v", res)
+	}
+	return res
+}
+
+// TestUnrelatedCommandsAllStartImmediately：无关联的命令**全部立刻开跑**。
+//
+// 这是"没有全局排队"的直接断言：旧模型（固定 8 个槽）在这里让第 9 条干等；
+// 新模型下 5 条各占一个窗口，全部同时进入执行。
+func TestUnrelatedCommandsAllStartImmediately(t *testing.T) {
 	sh, sleep := slowCommand(t, 2)
 	sc := startStubCenter(t)
+	s := startShell(t, sc, server.Config{Root: t.TempDir(), Shell: sh, Approver: allowAll{}})
+	c := dial(t, s.WsURL())
+
+	const n = 5
+	results := make([]protocol.ShellRunResult, n)
+	for i := 0; i < n; i++ {
+		results[i] = run(t, c, sleep, "")
+	}
+	// 每条都拿到了**不同**的窗口。
+	seen := map[string]bool{}
+	for _, r := range results {
+		if seen[r.Window] {
+			t.Fatalf("无关联的命令不该挤进同一个窗口: %+v", results)
+		}
+		seen[r.Window] = true
+	}
+	// 全部真的同时在跑（不是"排着队等执行"）。
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.RunningCount() == n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("应同时有 %d 条在执行，实际 %d 条（有人在排队 = 全局排队又回来了）", n, s.RunningCount())
+}
+
+// TestSameWindowRunsInOrder：同一窗口内严格串行——三条各睡 1 秒，总耗时必然 ≈3 秒。
+// 并行的话 ≈1 秒（这就是"窗口内串行"的可观测证据，不依赖补报到达顺序）。
+func TestSameWindowRunsInOrder(t *testing.T) {
+	sh, sleep := slowCommand(t, 1)
+	sc := startStubCenter(t)
 	cl := startCaller(t, sc, "caller")
-	s := startShell(t, sc, server.Config{Root: t.TempDir(), Shell: sh, Approver: allowAll{}, Concurrency: 1, QueueLimit: 1})
+	s := startShell(t, sc, server.Config{Root: t.TempDir(), Shell: sh, Approver: allowAll{}})
+	c := dial(t, s.WsURL())
+
+	start := time.Now()
+	first := run(t, c, sleep, "")
+	second := runIn(t, c, sleep, first.Window)
+	third := runIn(t, c, sleep, first.Window)
+	if first.Window != second.Window || second.Window != third.Window {
+		t.Fatalf("三条应落在同一窗口: %+v %+v %+v", first, second, third)
+	}
+	for _, item := range []string{first.ItemID, second.ItemID, third.ItemID} {
+		waitReportItem(t, cl, "done", item)
+	}
+	elapsed := time.Since(start)
+
+	// 1 秒的命令 ×3 串行 ≈3s；并行会 ≈1s。留足抖动余量，仍能清晰区分。
+	if elapsed < 2500*time.Millisecond {
+		t.Fatalf("同一窗口的三条命令没有串行（总耗时 %v，串行应≈3s）", elapsed)
+	}
+	if peak := s.RunningCount(); peak > 1 {
+		t.Fatalf("同一窗口不该同时跑多条，此刻在跑 %d 条", peak)
+	}
+}
+
+// TestWindowsQueryShowsQueued：windows 动作能看见"谁在跑、谁在等"。
+func TestWindowsQueryShowsQueued(t *testing.T) {
+	sh, sleep := slowCommand(t, 2)
+	sc := startStubCenter(t)
+	s := startShell(t, sc, server.Config{Root: t.TempDir(), Shell: sh, Approver: allowAll{}})
 	c := dial(t, s.WsURL())
 
 	first := run(t, c, sleep, "")
-	second := run(t, c, sleep, "")
-	third := run(t, c, sleep, "")
+	second := runIn(t, c, sleep, first.Window)
 
-	// 三条都有补报，按句柄认领（到达顺序不保证，见 waitReportItem）。
-	if p := waitReportItem(t, cl, "approved", first.ItemID); !strings.Contains(p.Text, "准备执行") {
-		t.Fatalf("第一条应已取得执行槽位: %q", p.Text)
+	// 等第二条审批完并排进队列（windows 里能看到 queued）。
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rp := jump(t, c, "shell", "windows", protocol.ShellWindowsPayload{Window: first.Window})
+		if rp.OK {
+			var res protocol.ShellWindowsResult
+			if err := protocol.DecodeRaw(rp.Data, &res); err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Windows) == 1 {
+				w := res.Windows[0]
+				if w.Running != nil && w.Running.ItemID == first.ItemID && len(w.Queued) == 1 && w.Queued[0].ItemID == second.ItemID {
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if p := waitReportItem(t, cl, "approved", second.ItemID); !strings.Contains(p.Text, "已排队") {
-		t.Fatalf("第二条应已排队: %q", p.Text)
+	t.Fatal("windows 应显示「第一条在跑、第二条在等」")
+}
+
+// TestOverMaxWindowsRejectedNotQueued：窗口开满 → **立刻拒绝**，不是"已排队"。
+func TestOverMaxWindowsRejectedNotQueued(t *testing.T) {
+	sh, sleep := slowCommand(t, 2)
+	sc := startStubCenter(t)
+	s := startShell(t, sc, server.Config{Root: t.TempDir(), Shell: sh, Approver: allowAll{}, MaxWindows: 1})
+	c := dial(t, s.WsURL())
+
+	first := run(t, c, sleep, "") // 占住唯一的窗口
+	rp := jump(t, c, "shell", "run", protocol.ShellRunPayload{Command: sleep})
+	if rp.OK {
+		t.Fatalf("窗口开满时应同步拒绝，实际受理了: %+v", rp)
 	}
-	if p := waitReportItem(t, cl, "rejected", third.ItemID); !strings.Contains(p.Text, "队列已满") {
-		t.Fatalf("拒绝原因应为队列已满: %q", p.Text)
+	if !strings.Contains(rp.Error, "窗口已开满") {
+		t.Fatalf("拒绝原因应说清楚是窗口开满: %q", rp.Error)
 	}
-	// 前两条最终都跑完（排队的那条会被补位）。
-	waitReportItem(t, cl, "done", first.ItemID)
-	waitReportItem(t, cl, "done", second.ItemID)
+	// 但往**已有**窗口里排队仍然允许——它不新开窗口，也不阻塞别的窗口。
+	if rp := jump(t, c, "shell", "run", protocol.ShellRunPayload{Command: sleep, Window: first.Window}); !rp.OK {
+		t.Fatalf("往已有窗口里排队不该被拒: %s", rp.Error)
+	}
+}
+
+// TestRejectedCommandDoesNotBlockWindow：审批失败的命令被摘出队列，不拖住同窗口后面的命令。
+func TestRejectedCommandDoesNotBlockWindow(t *testing.T) {
+	sh, sleep := slowCommand(t, 1)
+	sc := startStubCenter(t)
+	cl := startCaller(t, sc, "caller")
+	s := startShell(t, sc, server.Config{
+		Root: t.TempDir(), Shell: sh,
+		Approver: rejectIfContains{substr: "REJECT-ME"},
+	})
+	c := dial(t, s.WsURL())
+
+	// 第一条会被拒（命令里带 REJECT-ME），第二条正常。
+	first := run(t, c, sleep+" # REJECT-ME", "")
+	second := runIn(t, c, sleep, first.Window)
+
+	waitReportItem(t, cl, "rejected", first.ItemID)
+	waitReportItem(t, cl, "done", second.ItemID) // 关键：没被前面那条的拒绝卡住
+}
+
+// rejectIfContains 按命令内容决定裁决（测"一条被拒不影响同窗口后面的"）。
+type rejectIfContains struct{ substr string }
+
+func (a rejectIfContains) Approve(_ context.Context, req server.ApprovalRequest) error {
+	if strings.Contains(req.Command, a.substr) {
+		return errors.New("fixture: 这条按规则拒绝")
+	}
+	return nil
 }
 
 // TestTimeoutTerminates：执行超时 → 记录 timed_out 与退出码 -1；命令被终止（不是任它跑完）。

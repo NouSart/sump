@@ -595,21 +595,57 @@ type AsyncResultPayload struct {
 // ---------- shell（命令执行服务） ----------
 
 // ShellRunPayload 是 shell.run 的输入：一条待执行的命令。
+//
+// Window 是**窗口名**——窗口 = 一条串行域：
+//   - 空：新开一个窗口（服务自动命名 w1、w2…），命令立刻轮到它；
+//   - 已存在的窗口：进那个窗口的队尾，等前面的命令跑完；
+//   - 没见过的名字：新建一个同名窗口（可以先"预定"名字，不用先注册）。
+//
+// 同一窗口内的命令严格按登记顺序执行；不同窗口完全并行、互不认识。
+// 「排队」是指被别人的命令占住槽位；这里的等待是调用方**自己声明**要串行，范围与本窗口一致。
 type ShellRunPayload struct {
 	Command string `msgpack:"command"`            // 命令行（交给服务选定的 shell 解释）
 	WorkDir string `msgpack:"work_dir,omitempty"` // 工作目录（默认服务根目录；越界即拒）
+	Window  string `msgpack:"window,omitempty"`   // 窗口名（空 = 新开一个）
 }
 
-// ShellRunResult 是 shell.run 的受理回执：命令已入队列，执行结果由 report_result 补报送达。
+// ShellRunResult 是 shell.run 的受理回执：命令已登记到某个窗口，执行结果由 report_result 补报送达。
 // Phase 与补报（AsyncResultPayload.Phase）用同一词汇：受理回执就是这条命令的第一个阶段（queued）。
 type ShellRunResult struct {
 	ItemID string `msgpack:"item_id"` // 受理句柄（补报原样带回）
+	Window string `msgpack:"window"`  // 分到的窗口（后续命令指定它即可排在同一串行域里）
 	Phase  string `msgpack:"phase"`   // 阶段：queued
+}
+
+// ShellWindowsPayload 是 shell.windows 的输入（空 = 看全部窗口）。
+type ShellWindowsPayload struct {
+	Window string `msgpack:"window,omitempty"` // 只看这一个窗口
+}
+
+// ShellWindowView 是一个窗口的当前状态。
+type ShellWindowView struct {
+	ID      string            `msgpack:"id"`
+	Running *ShellWindowItem  `msgpack:"running,omitempty"` // 正在跑的命令（空 = 闲着）
+	Queued  []ShellWindowItem `msgpack:"queued"`            // 等着跑的命令（有序，前面的先跑）
+}
+
+// ShellWindowItem 是窗口里一条命令的摘要（够模型判断"该往哪个窗口塞"）。
+type ShellWindowItem struct {
+	ItemID    string `msgpack:"item_id"`
+	Command   string `msgpack:"command"`
+	WorkDir   string `msgpack:"work_dir,omitempty"`
+	Approving bool   `msgpack:"approving,omitempty"` // 还在等审批（会拖住同一窗口后面的命令，但不占别的窗口）
+}
+
+// ShellWindowsResult 是 shell.windows 的结果：窗口列表（按名字排序）。
+type ShellWindowsResult struct {
+	Windows []ShellWindowView `msgpack:"windows"`
 }
 
 // ShellEventData 是 shell 补报的结构化补充（report_result 的 data）。
 type ShellEventData struct {
 	Approval    *CommandApprovalResult `msgpack:"approval,omitempty"` // 第一层裁决及完整 LLM 反馈
+	Window      string                 `msgpack:"window,omitempty"`   // 这条命令所在的窗口
 	Command     string                 `msgpack:"command,omitempty"`
 	WorkDir     string                 `msgpack:"work_dir,omitempty"`
 	Shell       string                 `msgpack:"shell,omitempty"` // 实际使用的 shell 可执行文件

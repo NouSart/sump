@@ -208,8 +208,8 @@ func TestShellHotPathE2E(t *testing.T) {
 	if !p.Final {
 		t.Fatal("rejected 应为终态")
 	}
-	if !strings.Contains(p.Text, "审批未通过") {
-		t.Fatalf("补报文本未说明未通过: %q", p.Text)
+	if !strings.Contains(p.Text, "未执行") {
+		t.Fatalf("补报文本未说明未执行: %q", p.Text)
 	}
 	var data protocol.ShellEventData
 	if err := protocol.DecodeRaw(p.Data, &data); err != nil {
