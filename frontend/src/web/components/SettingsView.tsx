@@ -5,13 +5,16 @@ import { useEffect } from 'react';
 import { IconClose } from './icons';
 import { SettingsPanel } from './SettingsPanel';
 import { TimeThemePanel } from './TimeThemePanel';
+import { WorkflowExpandPanel } from './WorkflowExpandPanel';
 import type { TimeThemeControls } from '../timeTheme';
+import type { WorkflowExpandControls } from '../workflowExpand';
 import type { Translate } from '../i18n';
 import type { LocaleInfo } from '../i18n';
 import type { RowStatus, SettingViewData, ServiceCardView } from '../types';
 
 interface Props {
   timeTheme: TimeThemeControls;
+  workflowExpand: WorkflowExpandControls;
   portalName: string | null;
   onClose: () => void;
   service: ServiceCardView | null;
@@ -30,6 +33,7 @@ interface Props {
 
 export function SettingsView({
   timeTheme,
+  workflowExpand,
   portalName,
   onClose,
   service,
@@ -97,7 +101,10 @@ export function SettingsView({
           onReset={onReset}
           portalExtra={
             portalName !== null && service?.name === portalName ? (
-              <TimeThemePanel timeTheme={timeTheme} t={t} />
+              <>
+                <WorkflowExpandPanel workflowExpand={workflowExpand} t={t} />
+                <TimeThemePanel timeTheme={timeTheme} t={t} />
+              </>
             ) : undefined
           }
           t={t}

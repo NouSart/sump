@@ -15,6 +15,9 @@ import (
 	"github.com/QAQ-awa-QAQ/sump/service"
 )
 
+// defaultTier 是「自动批准档位」的默认值：低（只读命令自动放行，写/装/删照旧等人工）。
+const defaultTier = "low"
+
 type Config struct {
 	Name, Listen, Center, PolicyJSON string
 	Engine                           *engine.Engine
@@ -102,6 +105,15 @@ func New(cfg Config) (*Server, error) {
 			{Action: "capabilities", Input: "{}", Output: "{dialects,other_dialects,review_*}（能自动分析的方言、其它方言的处理方式、第二层状态）"},
 		},
 	})
+	// 声明档位的同时就把它设成引擎的初值：设置中心不在线也不影响默认口径
+	// （中心下发的全量对齐会再覆盖一次，幂等）。
+	if err := s.engine.UpdateTier(defaultTier); err != nil {
+		return nil, err
+	}
+	s.HandleSetting("auto_approve", defaultTier, s.engine.UpdateTier,
+		service.Label("自动批准档位"),
+		service.Hint("关 = 只有策略白名单里那几条直过，其余都等你点；低 = 只读命令（看目录/看文件/搜文本/看 git 状态）以及由若干只读命令拼起来的组合也自动放行，写文件、构建、装包、删东西、联网外发照旧等你点；中 = 反过来，只拦删除、改系统设置、装软件、提权、下载即执行、管道进 shell、往仓库外写，其余自动放行（python -c 这类判不出意图的也放）；工作区 = 把调用方传来的工作目录当边界，区内的读、写、删除、移动、复制、建目录、构建、跑脚本、本地 git 全部放行，只拦五类越界动作：路径跳出工作区、提权或装系统软件、联网外发、管道进解释器、碰密钥文件。注意它只读命令文本、不做运行时沙箱：区内的 python -c 若在代码里拼路径，未必看得出来。拒绝名单在任何档位下都优先。"),
+		service.As("enum", "off", "low", "medium", "workspace"))
 	s.HandleSetting("policy.json", cfg.PolicyJSON, s.engine.UpdatePolicy,
 		service.Label("命令审批策略"),
 		service.Hint("JSON 策略：deny_commands 里的命令直接拒绝；rules 里列出的命令免审批直过；其余挂起等你在门户点批准"),
@@ -116,7 +128,8 @@ func New(cfg Config) (*Server, error) {
 			"other_dialects": "review",
 			"feedback_route": "shell.report_result", "review_enabled": s.portalNow() != "",
 			"review_portal": s.portalNow(), "review_ttl_ms": s.pendingTTLNow().Milliseconds(),
-			"pending": len(s.pendingSnapshot()), "accepted": s.accepted.Load(), "busy": s.busy.Load()}, nil
+			"auto_approve": string(s.engine.Tier()),
+			"pending":      len(s.pendingSnapshot()), "accepted": s.accepted.Load(), "busy": s.busy.Load()}, nil
 	})
 	return s, nil
 }

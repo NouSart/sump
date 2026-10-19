@@ -112,7 +112,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		s.setNapcatURL(v)
 		return nil
 	}, service.Label("NapCat 地址"),
-		service.Hint("QQ 机器人网关的 WebSocket 地址，例如 ws://127.0.0.1:3001"),
+		service.Hint("QQ 机器人网关的 WebSocket 地址，例如 ws://127.0.0.1:3000"),
 		service.As("text"))
 	s.HandleSetting("reasoner", cfg.Reasoner, func(v string) error {
 		if strings.TrimSpace(v) == "" {
@@ -156,7 +156,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}
 	s.HandleSecret("napcat.token", applyToken,
 		service.Label("NapCat 访问令牌"),
-		service.Hint("网关开了鉴权才需要；只在你自己这边保存，中心不回显"))
+		service.Hint("网关开了鉴权才需要；值由本服务自己保存，中心不回显"))
 	if cfg.NapCatToken != "" {
 		_ = applyToken(cfg.NapCatToken)
 	}

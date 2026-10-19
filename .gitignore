@@ -4,6 +4,9 @@ bin/
 command-runtime/
 command-work/
 
+# 运行日志（serve.ps1 / reload-sump.ps1 落盘处，不入库）
+logs/
+
 # 本地配置（密钥等，不入库）
 local.yaml
 local.*.yaml

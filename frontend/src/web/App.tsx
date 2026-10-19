@@ -8,6 +8,7 @@ import { SettingsView } from './components/SettingsView';
 import { useLocalePack } from './i18n';
 import { Toasts, type Toast } from './components/Toasts';
 import { useTimeTheme } from './timeTheme';
+import { useWorkflowExpand } from './workflowExpand';
 import type {
   Overview,
   PendingApprovalView,
@@ -57,6 +58,8 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
   const [toasts, setToasts] = useState<Toast[]>([]);
   // 整站配色（底色 / 光斑 / 强调色 / 深浅面板）跟随本地时间；设置页只保留跟随开关与时段滑块。
   const timeTheme = useTimeTheme();
+  // 工作流展开：过程条目（思考 / 输出）什么时候自己摊开——本地偏好，与外观同一路数。
+  const workflowExpand = useWorkflowExpand();
   const [rowStates, setRowStates] = useState<Record<string, RowStatus>>({});
   // 视图：对话是主体；设置是右侧抽屉（从输入框的「设置」进入）。
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -465,6 +468,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
         {settingsOpen ? (
           <SettingsView
             timeTheme={timeTheme}
+            workflowExpand={workflowExpand}
             portalName={portalName}
             onClose={() => {
               setSettingsOpen(false);
@@ -497,6 +501,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
               setSettingsOpen(true);
             }}
             tasks={tasks}
+            workflowExpand={workflowExpand.mode}
             t={t}
           />
         )}

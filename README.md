@@ -39,13 +39,17 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - 自定义地址：`.\scripts\run-local.ps1 -CenterAddr 127.0.0.1:9000 -MemoryAddr 127.0.0.1:9201 -EmbeddingAddr 127.0.0.1:9601 -ImageAddr 127.0.0.1:9401 -FilesAddr 127.0.0.1:9802 -QQAddr 127.0.0.1:9301 -ShellAddr 127.0.0.1:9701 -TimerAddr 127.0.0.1:9801 -ReasonerAddr 127.0.0.1:9101 -FrontendAddr 127.0.0.1:9501` 
 - 门户：<http://127.0.0.1:9501/>——**对话**（回复按 Markdown 渲染，思考 / 终端命令 / 终端输出画成步骤时间线，时间戳悬停才显示）；侧栏是「会话 → 任务」目录，点任务跳到那一段；输入框旁的「设置」进设置页——门户排第一（外观：跟随时间 + 主题时段），各服务按设置项类型出控件（选项 / 开关 / 带单位的数字 / 服务下拉），修改由中心受理即回执、不等待服务送达，重置同路径；设置项分三类：普通项（值 + 默认值）/ 秘密项（只显示「已设置」与否，值由服务自己保存、不回显）/ 只读项（启动值 + 不可改）；名册、连接状态与设置结果（行状态：已覆盖·待确认 / 已覆盖·未送达；提示：已生效 / 未生效 + 原因）事件驱动实时刷新（SSE，无刷新按钮）；首次运行会自动 `npm install` + `npm run build`（需要 Node ≥ 22.18，推荐 24）
 - 前端单独开发：`cd frontend; npm run build`（构建）/ `npm test`（协议 + 链路 + API + 面板组件测试）
-- 接 QQ（NapCat 正向 WS，仅私聊）：`.\scripts\run-local.ps1 -Owner 2271917353 -NapCatURL ws://192.168.11.196:3001 -NapCatToken <token>`——连不上会自动重试，不影响其余服务
+- 接 QQ（NapCat 正向 WS，仅私聊）：`.\scripts\run-local.ps1 -Owner 2271917353 -NapCatURL ws://192.168.11.196:3000 -NapCatToken <token>`——连不上会自动重试，不影响其余服务
 - shell（命令执行，工作目录根 = 仓库根）：**审批未接入时一律“未通过”**——命令不会被真正执行（fail-closed）；已接通 approval：白名单直接放行，白名单外**挂起并在门户等用户裁决**（批准才执行，超时/离线/拒绝都不执行）。边界：工作目录越界即拒（含软链解析）、执行超时后终止整棵进程树、单流输出超上限截断并标注总数、并行上限与待执行队列上限（满即拒绝执行）。细则与设置项：[shell/README.md](./shell/README.md)
 - embedding 与语义召回（需要 Python ≥ 3.12，首次运行脚本自动建 venv 装依赖）：模型不入库——把 `model*.onnx + tokenizer.json + config.json`（bge-small-zh-v1.5 量级）放进 `data/models/bge-small-zh-v1.5/`；**没有模型时脚本以 fake 后端启动（显著警告，语义召回不可用），放置后重启即启用**。细则与实测记录：[embedding/README.md](./embedding/README.md)
 - 数据落在 `data/`（`memory.db` / `images.db` / `images/` / `files.db` / `files/` / `settings.json`，不入库）
 - 接入真 LLM：`$env:DEEPSEEK_API_KEY='sk-...'; .\scripts\run-local.ps1`（或显式 `-LlmKey/-LlmModel/-LlmBase`）
 - 真 LLM 冒烟测试：`$env:SUMP_LIVE_LLM='1'; $env:DEEPSEEK_API_KEY='sk-...'; cd reasoner; go test ./tests/ -run TestLiveDeepSeek -v`（平时自动跳过）
 - `Ctrl+C` 停止（脚本会清理全部子进程）
+- **重载（改完代码一条命令换掉整栈）**：`.\scripts\reload-sump.ps1`（或双击 `scripts\reload-sump.cmd`）——先按依赖逆序 `taskkill /T /F` 掉所有 SUMP 进程（含 shell 服务正在跑的命令进程、前端的 node、embedding 的 python），确认端口全部释放后，再用 `run-local.ps1` 重新拉起并等端口就绪
+  - `-DryRun` 只列出"会杀掉哪些进程"，不动手；`-Serve` 改成用 `serve.ps1`（长期守护形态）重启
+  - 进程识别看归属而不是看名字：服务可执行文件在 `%TEMP%\sump-v2-bin` 下或命令行里带本仓库根目录、启动器命令行里带 `run-local.ps1`/`serve.ps1`/`start-sump.cmd`，再顺父子关系收编 node / python——不会误杀别人家的 `qq.exe`、`node.exe`
+  - **从 SUMP 对话里（shell 服务）调用时加 `-Detach`**：脚本会自己识别（祖先进程里有 `shell.exe`/`reasoner.exe`）并强制后台派发（WMI 建进程，父进程不在 shell 的进程树里），否则重载在杀 `shell.exe` 的那一刻会把发起它的那条命令一起带走；日志落 `logs\reload-<时间>.log`
 - 跨服务端到端测试：`cd tests; go test ./... -count=1`
 
 ### 长期运行（上线用）

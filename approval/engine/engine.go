@@ -20,6 +20,8 @@ import (
 type Engine struct {
 	parser analysis.Parser
 	policy atomic.Pointer[policy.Snapshot]
+	// tier 是自动批准档位（off / low / medium），默认 off = 只走 policy 白名单。
+	tier atomic.Value
 }
 
 func New(parser analysis.Parser, policyJSON string) (*Engine, error) {
@@ -27,6 +29,7 @@ func New(parser analysis.Parser, policyJSON string) (*Engine, error) {
 		return nil, errors.New("缺少命令解析器")
 	}
 	e := &Engine{parser: parser}
+	e.tier.Store(TierOff)
 	if err := e.UpdatePolicy(policyJSON); err != nil {
 		return nil, err
 	}
