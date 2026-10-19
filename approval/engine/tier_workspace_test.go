@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -106,14 +107,19 @@ func TestWorkspaceAllowsEverydayWork(t *testing.T) {
 func TestWorkspaceBlocksLeavingWorkspace(t *testing.T) {
 	e := workspaceEngine(t)
 	work := t.TempDir()
+	// 盘符路径只在 Windows 上是绝对路径；POSIX 上换成 /tmp 才等价。
+	redirectOutside := "echo hi > C:/Windows/temp/x.txt"
+	if runtime.GOOS != "windows" {
+		redirectOutside = "echo hi > /tmp/x.txt"
+	}
 	cases := []struct{ cmd, mention string }{
 		{"cd .. && ls", "越出工作区"},
 		{"cat ../../etc/passwd", "越出工作区"},
 		{"cp a.txt ../other/x", "越出工作区"},
-		{"cp a.txt /tmp/out.txt", "工作区之外"},
-		{"mkdir /etc/evil", "工作区之外"},
+		{"cp a.txt /tmp/out.txt", "越出工作区"},
+		{"mkdir /etc/evil", "越出工作区"},
 		{"ls > /tmp/x", "重定向目标"},
-		{"echo hi > C:/Windows/temp/x.txt", "重定向目标"},
+		{redirectOutside, "重定向目标"},
 	}
 	for _, tc := range cases {
 		got := evalIn(t, e, work, tc.cmd)
@@ -219,8 +225,13 @@ func TestWorkspaceBlocksSecrets(t *testing.T) {
 func TestWorkspaceBlocksCodePaths(t *testing.T) {
 	e := workspaceEngine(t)
 	work := t.TempDir()
+	// 盘符路径只在 Windows 上是绝对路径；POSIX 上换成 /etc 才等价。
+	outside := `python -c "open('C:/Windows/x','w')"`
+	if runtime.GOOS != "windows" {
+		outside = `python -c "open('/etc/x','w')"`
+	}
 	for _, cmd := range []string{
-		`python -c "open('C:/Windows/x','w')"`,
+		outside,
 		`python -c "open('../../etc/x','w')"`,
 		`node -e "require('/etc/passwd')"`,
 	} {

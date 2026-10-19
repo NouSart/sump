@@ -162,7 +162,7 @@ func checkWorkspaceStage(stage analysis.Stage, cwd, root string) stageVerdict {
 		}
 		next, ok := resolveBashPath(stage.Command.Arguments[0].Value, cwd)
 		if !ok {
-			return stageVerdict{code: "PATH_OUTSIDE", text: "目标目录是工作区之外的绝对路径，本次未执行"}
+			return stageVerdict{code: "PATH_OUTSIDE", text: "目标目录越出工作区，本次未执行"}
 		}
 		if rel, err := filepath.Rel(root, next); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return stageVerdict{code: "PATH_OUTSIDE", text: "目标目录越出工作区"}

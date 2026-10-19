@@ -161,7 +161,7 @@ func bashPathViolation(args []analysis.Argument, workDir string) (string, string
 			}
 			target, ok := resolveBashPath(candidate, workDir)
 			if !ok {
-				return candidate, "参数是工作目录之外的绝对路径，本次未执行"
+				return candidate, "参数越出工作目录，本次未执行"
 			}
 			if rel, err := filepath.Rel(workDir, target); err != nil ||
 				rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -292,7 +292,7 @@ func bashPathViolationWithin(args []analysis.Argument, base, boundary string) (s
 			}
 			target, ok := resolveBashPath(candidate, base)
 			if !ok {
-				return candidate, "参数是工作目录之外的绝对路径，本次未执行"
+				return candidate, "参数越出工作目录，本次未执行"
 			}
 			if rel, err := filepath.Rel(boundary, target); err != nil ||
 				rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {

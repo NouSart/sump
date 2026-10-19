@@ -230,7 +230,7 @@ func checkLowStage(stage analysis.Stage, cwd, root string) stageVerdict {
 		}
 		next, ok := resolveBashPath(target, cwd)
 		if !ok {
-			return stageVerdict{code: "PATH_OUTSIDE", text: "参数是工作目录之外的绝对路径，本次未执行"}
+			return stageVerdict{code: "PATH_OUTSIDE", text: "参数越出工作目录，本次未执行"}
 		}
 		rel, err := filepath.Rel(root, next)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
