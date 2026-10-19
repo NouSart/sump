@@ -31,10 +31,8 @@ func TestSettingsValidation(t *testing.T) {
 		{"exec.timeout_ms", "2000", true},
 		{"exec.max_output_kb", "0", false},
 		{"exec.max_output_kb", "1", true},
-		{"exec.concurrency", "0", false},
-		{"exec.concurrency", "2", true},
-		{"exec.queue_limit", "0", false},
-		{"exec.queue_limit", "4", true},
+		{"exec.max_running", "0", false},
+		{"exec.max_running", "2", true},
 		{"approval.service", "approval", true}, // 已接入第一层命令审批协议。
 		{"approval.service", "invalid service!", false},
 		{"approval.service", "", true},

@@ -21,8 +21,7 @@ func main() {
 	sh := flag.String("shell", "", "命令解释器（默认自动探测：bash → pwsh → cmd）")
 	timeoutMS := flag.Int("timeout-ms", 300000, "单条命令执行超时（毫秒）")
 	maxKB := flag.Int("max-output-kb", 256, "单流输出上限（KB；超出即截断并标注）")
-	conc := flag.Int("concurrency", 8, "并行执行上限")
-	queue := flag.Int("queue-limit", 32, "待执行队列上限（满即拒绝执行，不排队）")
+	conc := flag.Int("max-running", 64, "同时在跑的命令上限（超过即拒绝，不排队）")
 	approval := flag.String("approval", "", "审批服务名（集成启动器使用 approval；留空仍不执行）")
 	approvalMS := flag.Int("approval-timeout-ms", 60000, "等审批超时（毫秒；超时按未通过处理）")
 	flag.Parse()
@@ -44,8 +43,7 @@ func main() {
 		Shell:           *sh,
 		Timeout:         time.Duration(*timeoutMS) * time.Millisecond,
 		MaxOutputBytes:  int64(*maxKB) << 10,
-		Concurrency:     *conc,
-		QueueLimit:      *queue,
+		MaxRunning:      *conc,
 		ApprovalService: *approval,
 		ApprovalTimeout: time.Duration(*approvalMS) * time.Millisecond,
 	}, logger)
@@ -57,5 +55,5 @@ func main() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	<-sig
-	logger.Printf("退出（在跑 %d 条，队列中 %d 条随进程丢弃）", s.RunningCount(), s.QueueCount())
+	logger.Printf("退出（在跑 %d 条随进程变孤儿）", s.RunningCount())
 }

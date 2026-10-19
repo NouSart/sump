@@ -43,31 +43,42 @@ func TestAutomaticApprovalShellPrefersPowerShell(t *testing.T) {
 	}
 }
 
-func TestFeedbackGateDoesNotHoldExecutionSlot(t *testing.T) {
+// TestFeedbackGateDoesNotHoldSlot 验证"补报慢不占执行名额"：
+// 命令执行完之后名额立刻该归还（后面来的命令能跑），而终态补报仍要等 approved 的投递尝试。
+func TestFeedbackGateDoesNotHoldSlot(t *testing.T) {
 	s := New(Config{Name: "shell", Root: t.TempDir(), Shell: "nonexistent-shell-fixture"}, log.New(io.Discard, "", 0))
-	j := &job{command: "fixture", workDir: s.rootNow(), progressReady: make(chan struct{})}
-	s.running = 1
+	j := &job{item: "gate-fixture", command: "fixture", workDir: s.rootNow(), progressReady: make(chan struct{})}
+	s.runMu.Lock()
+	s.running = 1 // 假装这个名额被它占着
+	s.runMu.Unlock()
+
 	done := make(chan struct{})
-	go func() { s.execute(j); close(done) }()
+	go func() {
+		phase, text, data := s.executeAndCollect(j)
+		s.release()                                 // 执行结束 → 立刻归还名额
+		s.reportAfterProgress(j, phase, text, data) // 卡在 progressReady 上
+		close(done)
+	}()
+
+	// 执行结束 → 名额必须已归还，而补报还卡着。
 	deadline := time.After(3 * time.Second)
 	for s.RunningCount() != 0 {
 		select {
 		case <-deadline:
-			j.finishProgress()
-			t.Fatal("feedback gate held execution slot")
+			t.Fatal("补报把执行名额占住了")
 		case <-time.After(time.Millisecond):
 		}
 	}
 	select {
 	case <-done:
-		t.Fatal("terminal feedback bypassed progress ordering")
+		t.Fatal("终态补报绕过了 approved 的投递顺序")
 	default:
 	}
 	j.finishProgress()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("feedback gate not released")
+		t.Fatal("progressReady 释放后终态补报没有继续")
 	}
 }
 
@@ -84,25 +95,27 @@ type fixtureApprover struct{}
 
 func (fixtureApprover) Approve(context.Context, ApprovalRequest) error { return nil }
 
+// TestProgressPanicReleasesGateAndSlot 验证内部异常不泄漏名额：
+// 补报时 panic → recover → 名额归还、审批名额归还、progress 门闸释放。
 func TestProgressPanicReleasesGateAndSlot(t *testing.T) {
 	s := New(Config{Name: "shell", Root: t.TempDir(), Shell: "nonexistent-shell-fixture", Approver: fixtureApprover{}}, log.New(panicOnApproved{}, "", 0))
 	j := &job{item: "panic-fixture", caller: "observer", command: "fixture", workDir: s.rootNow(), progressReady: make(chan struct{})}
 	s.pendingApprovals <- struct{}{}
-	s.process(j)
+	s.runMu.Lock()
+	s.running = 1
+	s.runMu.Unlock()
+
+	s.process(j) // 补报时 panic → recover
+
 	select {
 	case <-j.progressReady:
 	default:
-		t.Fatal("panic did not release progress gate")
-	}
-	deadline := time.After(time.Second)
-	for s.RunningCount() != 0 {
-		select {
-		case <-deadline:
-			t.Fatal("panic leaked execution slot")
-		case <-time.After(time.Millisecond):
-		}
+		t.Fatal("panic 没有释放 progress 门闸")
 	}
 	if len(s.pendingApprovals) != 0 {
-		t.Fatal("panic leaked approval slot")
+		t.Fatal("panic 泄漏了审批名额")
+	}
+	if n := s.RunningCount(); n != 0 {
+		t.Fatalf("panic 泄漏了执行名额（仍显示在跑 %d 条）", n)
 	}
 }
