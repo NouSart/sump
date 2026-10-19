@@ -52,18 +52,15 @@ func (s *Server) approveJob(ctx context.Context, j *job, svc string) error {
 }
 
 func (s *Server) preparePlan(j *job) (protocol.ExecutionPlan, []string, error) {
+	// 与执行侧（commandLine）用同一套探测：审批看到的解释器必须就是最终执行的那个，
+	// 否则会出现"审的是 PowerShell、跑的是 bash"这种分歧。
 	exe := s.shellNow()
 	if exe == "" {
-		// 首版审批支持 PowerShell；显式 exec.shell 仍优先，自动选择与解析器一致。
-		for _, name := range []string{"pwsh", "powershell"} {
-			if path, err := lookShell(name); err == nil {
-				exe = path
-				break
-			}
+		detected, ok := detectShell(s.logger)
+		if !ok {
+			return protocol.ExecutionPlan{}, nil, errors.New("没有可用的 shell（可用设置 exec.shell 指定解释器）")
 		}
-		if exe == "" {
-			return protocol.ExecutionPlan{}, nil, errors.New("审批需要 PowerShell，但未找到 pwsh 或 powershell；请安装或显式配置 exec.shell")
-		}
+		exe = detected
 	}
 	exe, err := lookShell(exe)
 	if err != nil {
@@ -77,6 +74,8 @@ func (s *Server) preparePlan(j *job) (protocol.ExecutionPlan, []string, error) {
 		exe = real
 	}
 	base := strings.ToLower(strings.TrimSuffix(filepath.Base(exe), ".exe"))
+	// 非 PowerShell 方言没有对应的自动分析器：profile 记 "unsupported"，审批侧据此跳过自动判定、
+	// 直接转第二层问用户——不是拒绝，也不是跳过审批。
 	dialect, profile := base, "unsupported"
 	args := shellArgs(exe, j.command)
 	args = args[:len(args)-1]

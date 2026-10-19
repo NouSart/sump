@@ -99,7 +99,7 @@ func New(cfg Config) (*Server, error) {
 			{Action: protocol.ApprovalAction, Input: "{schema_version,item_id,plan}", Output: "{decision,reason_code,llm_feedback,plan_digest,policy_version}"},
 			{Action: protocol.ApprovalDecideAction, Input: "{item_id,decision(allow|deny),note?}", Output: "{status,item_id,decision}（仅门户可调）"},
 			{Action: protocol.ApprovalListAction, Input: "{}", Output: "{items:[{item_id,command,work_dir,reason_code,summary,expires_ms}]}（仅门户可调）"},
-			{Action: "capabilities", Input: "{}", Output: "支持范围与第二层状态"},
+			{Action: "capabilities", Input: "{}", Output: "{dialects,other_dialects,review_*}（能自动分析的方言、其它方言的处理方式、第二层状态）"},
 		},
 	})
 	s.HandleSetting("policy.json", cfg.PolicyJSON, s.engine.UpdatePolicy,
@@ -110,7 +110,10 @@ func New(cfg Config) (*Server, error) {
 	s.Handle(protocol.ApprovalDecideAction, s.decide)
 	s.Handle(protocol.ApprovalListAction, s.list)
 	s.Handle("capabilities", func(context.Context, protocol.Envelope, protocol.JumpPayload) (any, error) {
+		// dialects 只列**能自动分析**的方言；别的方言不拒也不跳过审批，而是逐条转第二层
+		// （other_dialects 说明这一点，免得看的人以为"不支持 = 不审批"）。
 		return map[string]any{"schema_version": 1, "dialects": []string{"powershell"}, "profile": protocol.PowerShellProfile,
+			"other_dialects": "review",
 			"feedback_route": "shell.report_result", "review_enabled": s.portalNow() != "",
 			"review_portal": s.portalNow(), "review_ttl_ms": s.pendingTTLNow().Milliseconds(),
 			"pending": len(s.pendingSnapshot()), "accepted": s.accepted.Load(), "busy": s.busy.Load()}, nil

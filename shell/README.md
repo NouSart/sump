@@ -57,9 +57,43 @@ shell 不参与这个决定，也不承诺顺序。
 - 生产入口：[`remote_approval.go`](./server/remote_approval.go) 构造执行描述，调用 `approval_request`，核验裁决、摘要与有效期；
 - 出口：裁决包进入 `data.approval`，原因、规则与未知结构进入补报 `text`。
 
-`approval.service` 支持服务名；集成启动器设为 `approval` 并显式使用相同 PowerShell。留空仍 `FailClosed`，本次不执行。`Config.Approver` 保留为测试／自定义的显式注入接缝，会绕过远程审批，不应在生产中注入 allow-all。
+`approval.service` 支持服务名；集成启动器设为 `approval`。解释器不指定，交给自动探测（见下）。留空仍 `FailClosed`，本次不执行。`Config.Approver` 保留为测试／自定义的显式注入接缝，会绕过远程审批，不应在生产中注入 allow-all。
 
 命令超过 16 KiB、请求超过 64 KiB 或待审批任务达到 1024 条，会同步拒绝。审批通过后固定本次的解释器、目录、参数、环境、超时和输出上限，执行前复核；拿到裁决后迟迟未开始执行会因短期许可过期而拒绝。**许可期从拿到裁决的时刻起算**（30 秒）——第二层要等用户裁决，按发起时刻算会必然过期。完整范围见 [命令审批说明](../COMMAND-APPROVAL.md)。
+
+**非 PowerShell 方言（`exec.shell` 配 bash / cmd）照样审批。** 审批侧没有对应的自动分析器，`profile` 记为 `unsupported`，engine 直接判 `review` → 挂起问用户。代价不是"丢审批"，而是"丢掉白名单直过"：每条命令都要在门户点一次。`capabilities` 返回的 `other_dialects: "review"` 就是这件事。
+
+**POSIX shell（bash / sh / dash / zsh / ksh）例外：有内置只读白名单。** 它走一个纯 Go 的保守词法器（[`analysis/bash.go`](../approval/analysis/bash.go)），不起外部进程、也不要求机器上装着 bash：把命令切成 token，只要出现管道、重定向、命令替换、变量、通配、`~`、多语句或未闭合引号，就整条转人工；全部是字面量时才查白名单。
+
+| 直过（只读） | 上限参数 | 备注 |
+| ---- | ---- | ---- |
+| `pwd` | 0 | |
+| `ls` / `dir` | 8 | 含 `-la` 之类 |
+| `cat` / `head` / `tail` / `wc` | 4 | |
+| `grep` | 8 | |
+| `echo` | 32 | 字面量 |
+| `date` / `whoami` / `hostname` / `uname` / `df` / `du` / `ps` / `file` / `which` | 0–4 | 查询类 |
+| `git` | 8 | **仅** `status` / `log` / `diff` / `show` / `blame` |
+
+**刻意不收录**：`env` / `printenv`（会打出密钥）、`find`（`-delete` / `-exec`）、`xargs`、`sed` / `awk`（`-i` 直改文件）、`tee`、`dd`、以及一切写文件的命令。配置里的 `deny_commands` 仍然**先于**白名单生效（`rm` 是硬拒，不是转人工）。
+
+白名单是系统知识，写在代码里而非策略文件：一份可编辑的策略不该决定"哪些命令可以不经人工"。
+
+**路径边界**：白名单管"能做什么"（只读），路径边界管"能碰哪里"。
+
+- 参数里像路径的部分（含分隔符、以 `/` 或 `.`/`..` 开头、`--opt=value` 的 value）解析成绝对路径后，必须仍在 `WorkDir` 之下；`..` 逃逸与越界绝对路径一律 `PATH_OUTSIDE` → 转人工。
+- Git Bash 的 `/d/agent/x` 会按盘符转成 `D:\agent\x` 再判断；转不出来的（如 `/etc/passwd`）直接判越界。
+- `*-secret.json`（服务自己落盘的密钥文件）即便在工作目录内也拒绝——那是凭证，不是工作数据。
+- 不解析符号链接：能在工作目录里造软链的前提是先有写权限，而写操作一律要人工审批。
+
+**解释器怎么选**：`exec.shell` 显式指定优先；留空则自动探测，顺序为
+Git Bash 绝对路径 → `bash` → `pwsh` → `powershell` → `cmd`（Linux/macOS 为 `bash` → `sh`）。
+清单里把 Git Bash 的绝对路径排在裸名 `bash` 之前，是因为 PATH 里的 `bash` 通常是
+`C:\Windows\System32\bash.exe`——那是 WSL 启动器，Linux 文件系统、另一套工具链。
+
+**审批与执行必须是同一个解释器**：`preparePlan` 与执行侧的 `commandLine` 共用同一次探测。
+曾经两处各探测一次（审批只找 PowerShell、执行找 bash），会出现"审的和跑的不是一回事"；
+`TestAutomaticApprovalShellMatchesExecution` 钉住这条不变量。
 
 ## 补报时序（`report_result`）
 

@@ -104,7 +104,7 @@ func TestBoundariesAndAtomicPolicy(t *testing.T) {
 		code   string
 	}{
 		{"size", func(r *protocol.CommandApprovalRequest) { r.Plan.Command = strings.Repeat("x", (16<<10)+1) }, "LIMIT_EXCEEDED"},
-		{"dialect", func(r *protocol.CommandApprovalRequest) { r.Plan.Dialect = "bash" }, "UNSUPPORTED_DIALECT"},
+		{"dialect", func(r *protocol.CommandApprovalRequest) { r.Plan.Dialect = "cmd" }, "UNSUPPORTED_DIALECT"},
 		{"profile", func(r *protocol.CommandApprovalRequest) { r.Plan.Profile = "arbitrary" }, "CONTEXT_UNKNOWN"},
 		{"runtime", func(r *protocol.CommandApprovalRequest) { r.Plan.ShellPath = filepath.Join(t.TempDir(), "pwsh.exe") }, "RUNTIME_MISMATCH"},
 	} {

@@ -7,12 +7,17 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestAutomaticApprovalShellPrefersPowerShell(t *testing.T) {
+// TestAutomaticApprovalShellMatchesExecution 钉住一条不变量：
+// 审批看到的解释器与参数，必须就是执行侧真正会用的那一套。
+//
+// 曾经两次探测各走各的（审批只找 PowerShell、执行找 bash）→ "审的和跑的不是一回事"。
+func TestAutomaticApprovalShellMatchesExecution(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"bash", "pwsh", "powershell"} {
 		if runtime.GOOS == "windows" {
@@ -25,12 +30,19 @@ func TestAutomaticApprovalShellPrefersPowerShell(t *testing.T) {
 	}
 	t.Setenv("PATH", root)
 	s := New(Config{Name: "shell", Root: root, ApprovalService: "approval"}, log.New(io.Discard, "", 0))
-	plan, _, err := s.preparePlan(&job{command: "Get-Date", workDir: root})
+	plan, _, err := s.preparePlan(&job{command: "pwd", workDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Dialect != "powershell" || !strings.EqualFold(strings.TrimSuffix(filepath.Base(plan.ShellPath), ".exe"), "pwsh") {
-		t.Fatalf("automatic choice: %+v", plan)
+	exe, args, err := s.commandLine("pwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(plan.ShellPath, exe) {
+		t.Fatalf("审批与执行选了解释器不一致: plan=%s execution=%s", plan.ShellPath, exe)
+	}
+	if len(args) != len(plan.Args)+1 || !slices.Equal(plan.Args, args[:len(args)-1]) {
+		t.Fatalf("审批与执行参数不一致: plan=%v execution=%v", plan.Args, args)
 	}
 	// 显式设置不被自动探测覆盖；不支持的方言仍由审批拒绝。
 	s.shell = "bash"

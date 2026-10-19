@@ -1,9 +1,19 @@
-// Package analysis 只解析命令，不执行命令。首版支持 PowerShell 原生 AST。
+// Package analysis 只解析命令，不执行命令。
+// PowerShell 走原生 AST；POSIX shell 走保守词法器（见 bash.go）。
 package analysis
 
 import "context"
 
 const MaxCommandBytes = 16 << 10
+
+// LiteralArgument 是 Bash 词法器给出的参数种类：已确认是字面量，不含展开语义。
+const LiteralArgument = "Literal"
+
+// StringConstantArgument / ConstantArgument 是 PowerShell AST 给出的静态常量种类。
+const (
+	StringConstantArgument = "StringConstantExpressionAst"
+	ConstantArgument       = "ConstantExpressionAst"
+)
 
 type Argument struct {
 	Kind  string `json:"kind"`

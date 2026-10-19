@@ -3,7 +3,8 @@
 #       [-NapCatURL ws://127.0.0.1:3001] [-NapCatToken xxx] [-Owner 主人QQ] [-LlmKey sk-...] [-LlmModel deepseek-flash]
 # 停止：Ctrl+C（脚本会清理子进程）
 # 注：qq 连不上 NapCat 会自动重试，不影响其他服务；不填 -Owner 则拒绝所有 QQ 私聊
-# 注：shell 的工作目录根 = 仓库根；接入 approval 第一层，使用 PowerShell 默认有限规则。
+# 注：shell 的工作目录根 = 仓库根；接入 approval 第一层。解释器不指定，交给自动探测（Windows 上 bash 优先），
+#     bash 走只读白名单（不修改文件的命令直过），其余一律转人工；PowerShell 走 policy.json 规则。
 # 注：frontend 需要 Node ≥ 22；首次运行会自动 npm install + npm run build（面板 http://127.0.0.1:9501/）
 # 注：embedding 需要 Python ≥ 3.12；首次运行自动建 venv + 装依赖；模型缺席时以 fake 后端启动（语义召回不可用，控制台会显著警告）
 param(
@@ -173,7 +174,7 @@ try {
     Write-Host '[7/9] 启动 approval + shell + timer ...' -ForegroundColor Cyan
     $approvalSvc = Start-Process -FilePath (Join-Path $binDir 'sump-approval.exe') -ArgumentList 'serve', '-addr', $ApprovalAddr, '-center', "ws://$CenterAddr/ws", '-portal', 'frontend' -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $ApprovalAddr 60)) { throw 'approval 未在 60 秒内就绪' }
-    $shellSvc = Start-Process -FilePath (Join-Path $binDir 'shell.exe') -ArgumentList '-addr', $ShellAddr, '-center', "ws://$CenterAddr/ws", '-root', ('"' + $root + '"'), '-approval', 'approval', '-shell', ('"' + $approvalRuntime.Source + '"') -PassThru -WindowStyle Hidden
+    $shellSvc = Start-Process -FilePath (Join-Path $binDir 'shell.exe') -ArgumentList '-addr', $ShellAddr, '-center', "ws://$CenterAddr/ws", '-root', ('"' + $root + '"'), '-approval', 'approval' -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $ShellAddr 60)) { throw 'shell 未在 60 秒内就绪' }
     # -portal frontend：把在计时器推给门户展示倒计时（留空 = 不推）。
     $timerSvc = Start-Process -FilePath (Join-Path $binDir 'timer.exe') -ArgumentList '-addr', $TimerAddr, '-center', "ws://$CenterAddr/ws", '-portal', 'frontend' -PassThru -NoNewWindow
