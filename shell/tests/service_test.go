@@ -440,8 +440,8 @@ func TestRunIsAcceptedThenRejectedByApproval(t *testing.T) {
 	if !p.Final {
 		t.Fatal("rejected 应为终态（final=true）")
 	}
-	if !strings.Contains(p.Text, "审批未通过") {
-		t.Fatalf("补报文本未说明未通过: %q", p.Text)
+	if !strings.Contains(p.Text, "未执行") {
+		t.Fatalf("补报文本未说明未执行: %q", p.Text)
 	}
 	if d := eventData(t, p); d.Error == "" {
 		t.Fatal("结构化补充应带上拒绝原因")
@@ -510,31 +510,65 @@ func TestWorkDirBoundary(t *testing.T) {
 	}
 }
 
-// TestQueueLimitRejectsWhenFull：并行上限 1 + 队列上限 1 → 第三条被立即拒绝（不排队等待）。
-func TestQueueLimitRejectsWhenFull(t *testing.T) {
+// ---------- 并发：来几条跑几条，超了明确拒绝 ----------
+
+// TestUnrelatedCommandsAllStartImmediately：无关联的命令**全部立刻开跑**。
+// 旧模型（并发 8 + FIFO 队列）在超过上限时会让后来的干等；现在只有熔断，没有队列。
+func TestUnrelatedCommandsAllStartImmediately(t *testing.T) {
 	sh, sleep := slowCommand(t, 2)
 	sc := startStubCenter(t)
-	cl := startCaller(t, sc, "caller")
-	s := startShell(t, sc, server.Config{Root: t.TempDir(), Shell: sh, Approver: allowAll{}, Concurrency: 1, QueueLimit: 1})
+	s := startShell(t, sc, server.Config{Root: t.TempDir(), Shell: sh, Approver: allowAll{}})
 	c := dial(t, s.WsURL())
 
-	first := run(t, c, sleep, "")
-	second := run(t, c, sleep, "")
-	third := run(t, c, sleep, "")
+	const n = 5
+	for i := 0; i < n; i++ {
+		run(t, c, sleep, "")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.RunningCount() == n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("应同时有 %d 条在执行，实际 %d 条（有人在排队 = 队列又回来了）", n, s.RunningCount())
+}
 
-	// 三条都有补报，按句柄认领（到达顺序不保证，见 waitReportItem）。
-	if p := waitReportItem(t, cl, "approved", first.ItemID); !strings.Contains(p.Text, "准备执行") {
-		t.Fatalf("第一条应已取得执行槽位: %q", p.Text)
+// TestOverMaxRunningRejectedNotQueued：名额满了 → **同步拒绝**，不是"已排队"。
+func TestOverMaxRunningRejectedNotQueued(t *testing.T) {
+	sh, sleep := slowCommand(t, 2)
+	sc := startStubCenter(t)
+	s := startShell(t, sc, server.Config{Root: t.TempDir(), Shell: sh, Approver: allowAll{}, MaxRunning: 1})
+	c := dial(t, s.WsURL())
+
+	run(t, c, sleep, "") // 占住唯一的名额
+	rp := jump(t, c, "shell", "run", protocol.ShellRunPayload{Command: sleep})
+	if rp.OK {
+		t.Fatalf("名额满时应同步拒绝，实际受理了: %+v", rp)
 	}
-	if p := waitReportItem(t, cl, "approved", second.ItemID); !strings.Contains(p.Text, "已排队") {
-		t.Fatalf("第二条应已排队: %q", p.Text)
+	if !strings.Contains(rp.Error, "同时在跑") {
+		t.Fatalf("拒绝原因应说清楚是在跑条数达到上限: %q", rp.Error)
 	}
-	if p := waitReportItem(t, cl, "rejected", third.ItemID); !strings.Contains(p.Text, "队列已满") {
-		t.Fatalf("拒绝原因应为队列已满: %q", p.Text)
+}
+
+// TestSerialIsCallersJob：串行是调用方的选择——等上一条的补报再发下一条，总耗时自然串起来。
+// 服务不做顺序承诺，也不会替调用方串行。
+func TestSerialIsCallersJob(t *testing.T) {
+	sh, sleep := slowCommand(t, 1)
+	sc := startStubCenter(t)
+	cl := startCaller(t, sc, "caller")
+	s := startShell(t, sc, server.Config{Root: t.TempDir(), Shell: sh, Approver: allowAll{}})
+	c := dial(t, s.WsURL())
+
+	start := time.Now()
+	for i := 0; i < 2; i++ {
+		res := run(t, c, sleep, "")
+		waitReportItem(t, cl, "done", res.ItemID) // 等结果再发下一条 = 串行
 	}
-	// 前两条最终都跑完（排队的那条会被补位）。
-	waitReportItem(t, cl, "done", first.ItemID)
-	waitReportItem(t, cl, "done", second.ItemID)
+	elapsed := time.Since(start)
+	if elapsed < 1500*time.Millisecond {
+		t.Fatalf("等补报再发下一条应当串行（总耗时 %v，串行应≈2s）", elapsed)
+	}
 }
 
 // TestTimeoutTerminates：执行超时 → 记录 timed_out 与退出码 -1；命令被终止（不是任它跑完）。

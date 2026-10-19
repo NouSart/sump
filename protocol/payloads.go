@@ -595,12 +595,15 @@ type AsyncResultPayload struct {
 // ---------- shell（命令执行服务） ----------
 
 // ShellRunPayload 是 shell.run 的输入：一条待执行的命令。
+//
+// 这里**没有**"窗口"或"队列"字段：并行还是串行由调用方决定——一次派发几条就是几条，
+// 要串行就等上一条的补报再发下一条。执行器不替调用方做调度决定。
 type ShellRunPayload struct {
 	Command string `msgpack:"command"`            // 命令行（交给服务选定的 shell 解释）
 	WorkDir string `msgpack:"work_dir,omitempty"` // 工作目录（默认服务根目录；越界即拒）
 }
 
-// ShellRunResult 是 shell.run 的受理回执：命令已入队列，执行结果由 report_result 补报送达。
+// ShellRunResult 是 shell.run 的受理回执：命令已开始走审批，执行结果由 report_result 补报送达。
 // Phase 与补报（AsyncResultPayload.Phase）用同一词汇：受理回执就是这条命令的第一个阶段（queued）。
 type ShellRunResult struct {
 	ItemID string `msgpack:"item_id"` // 受理句柄（补报原样带回）
