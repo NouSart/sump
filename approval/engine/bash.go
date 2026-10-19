@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/QAQ-awa-QAQ/sump/approval/analysis"
@@ -182,15 +183,16 @@ func looksLikePath(v string) bool {
 
 // resolveBashPath 把参数解析成绝对路径；返回 false 表示"确定在工作目录之外"。
 func resolveBashPath(v, workDir string) (string, bool) {
-	if strings.HasPrefix(v, "/") {
-		// POSIX 绝对路径：`/d/agent/x` 是 Git Bash 的盘符写法；其余（如 /etc/passwd）
-		// 在 Windows 上没有对应位置，直接判越界。
+	if runtime.GOOS == "windows" && strings.HasPrefix(v, "/") {
+		// Git Bash 的 `/d/agent/x` 是盘符写法，要先转成 `D:\agent\x` 再比较。
+		// 转不出来的（如 /etc/passwd）在 Windows 上没有对应位置，直接判越界。
 		converted := posixDrivePath(v)
 		if converted == "" {
 			return "", false
 		}
 		v = converted
 	}
+	// 非 Windows：`/` 开头本来就是绝对路径，交给 filepath.IsAbs 判断。
 	if !filepath.IsAbs(v) {
 		v = filepath.Join(workDir, filepath.FromSlash(v))
 	}

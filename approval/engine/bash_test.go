@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"os"
 	"runtime"
 	"testing"
 
@@ -11,14 +12,17 @@ import (
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 )
 
-// bashRequest 构造一条 POSIX shell 的执行描述（解释器用 Git Bash 的典型路径名）。
+// bashRequest 构造一条 POSIX shell 的执行描述（解释器用各平台的典型路径名）。
+//
+// WorkDir 必须用**平台真实存在**的绝对路径：Windows 的 `C:\work` 在 Linux 上
+// 不是绝对路径，会让整批判定退化成 CONTEXT_UNKNOWN（CI 上就是这么红的）。
 func bashRequest(command string) protocol.CommandApprovalRequest {
 	shell := "/bin/bash"
 	if runtime.GOOS == "windows" {
 		shell = `C:\Program Files\Git\bin\bash.exe`
 	}
 	return protocol.CommandApprovalRequest{Version: 1, ItemID: "bash-item", Plan: protocol.ExecutionPlan{
-		Version: 1, Command: command, WorkDir: `C:\work`, ShellPath: shell, Args: []string{"-c"},
+		Version: 1, Command: command, WorkDir: os.TempDir(), ShellPath: shell, Args: []string{"-c"},
 		Dialect: "bash", Platform: runtime.GOOS, Profile: "unsupported", TimeoutMS: 5000, MaxOutputBytes: 4096,
 	}}
 }
@@ -127,22 +131,29 @@ func TestBashPathBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	work := t.TempDir()
-	cases := []struct{ name, command, decision, code string }{
-		{"inside_relative", "cat sub/file.txt", "allow", "RULE_ALLOW"},
-		{"inside_dot", "cat ./README.md", "allow", "RULE_ALLOW"},
-		{"bare_name", "cat README.md", "allow", "RULE_ALLOW"},
-		{"option_with_path", "grep -n func main.go", "allow", "RULE_ALLOW"},
+	cases := []struct {
+		name, command, decision, code string
+		windowsOnly                   bool
+	}{
+		{"inside_relative", "cat sub/file.txt", "allow", "RULE_ALLOW", false},
+		{"inside_dot", "cat ./README.md", "allow", "RULE_ALLOW", false},
+		{"bare_name", "cat README.md", "allow", "RULE_ALLOW", false},
+		{"option_with_path", "grep -n func main.go", "allow", "RULE_ALLOW", false},
 
-		{"escape_dotdot", "cat ../outside.txt", "review", "PATH_OUTSIDE"},
-		{"escape_nested", "cat a/../../outside.txt", "review", "PATH_OUTSIDE"},
-		{"absolute_posix", "cat /etc/passwd", "review", "PATH_OUTSIDE"},
-		{"absolute_windows", "cat C:/Windows/win.ini", "review", "PATH_OUTSIDE"},
-		{"secret_file", "cat data/memory-secret.json", "review", "PATH_OUTSIDE"},
-		{"secret_via_option", "grep --file=data/x-secret.json pattern", "review", "PATH_OUTSIDE"},
-		{"secret_bare", "cat memory-secret.json", "review", "PATH_OUTSIDE"},
+		{"escape_dotdot", "cat ../outside.txt", "review", "PATH_OUTSIDE", false},
+		{"escape_nested", "cat a/../../outside.txt", "review", "PATH_OUTSIDE", false},
+		{"absolute_posix", "cat /etc/passwd", "review", "PATH_OUTSIDE", false},
+		// 盘符路径只在 Windows 上是绝对路径；Linux 上 `C:/Windows/...` 是个普通相对文件名。
+		{"absolute_windows", "cat C:/Windows/win.ini", "review", "PATH_OUTSIDE", true},
+		{"secret_file", "cat data/memory-secret.json", "review", "PATH_OUTSIDE", false},
+		{"secret_via_option", "grep --file=data/x-secret.json pattern", "review", "PATH_OUTSIDE", false},
+		{"secret_bare", "cat memory-secret.json", "review", "PATH_OUTSIDE", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.windowsOnly && runtime.GOOS != "windows" {
+				t.Skip("盘符路径只在 Windows 上是绝对路径")
+			}
 			req := bashRequest(tc.command)
 			req.Plan.WorkDir = work
 			got, err := e.Evaluate(context.Background(), req)
