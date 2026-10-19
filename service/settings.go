@@ -137,6 +137,14 @@ func (s *Service) declare(key, preset string, kind settingKind, apply func(value
 	s.settingValues[key] = preset
 }
 
+// Settings 返回已声明的设置项（注册名片用的同一份声明）。
+// 给"服务自检声明是否正确"的调用方与测试用；面板侧走设置中心的 list_settings。
+func (s *Service) Settings() []protocol.Setting { return s.declarations() }
+
+// ApplySetting 校验并应用一个设置项——与设置中心下发（configure）走完全同一条路径，
+// 供服务自己或测试在不经过中心时验证"这个值能不能被接受"。
+func (s *Service) ApplySetting(key, value string) error { return s.applySetting(key, value) }
+
 // SettingValue 返回某设置项最近一次成功应用的生效值（未下发/拉取过时 = 声明预设）。
 // 秘密项返回的是**本服务自己**持有的值（中心那边没有）；日志/名片仍不回显。
 func (s *Service) SettingValue(key string) string {

@@ -60,6 +60,9 @@ var bashReadOnly = map[string]bashRule{
 	"ps":       {ID: "bash-ps", MaxArgs: 4, Reason: "查看进程列表"},
 	"file":     {ID: "bash-file", MaxArgs: 4, Reason: "判断文件类型"},
 	"which":    {ID: "bash-which", MaxArgs: 2, Reason: "查看命令位置"},
+	"sort":     {ID: "bash-sort", MaxArgs: 4, Reason: "对输入排序（只读）"},
+	"uniq":     {ID: "bash-uniq", MaxArgs: 2, Reason: "去重相邻行（只读）"},
+	"nl":       {ID: "bash-nl", MaxArgs: 2, Reason: "加行号输出（只读）"},
 	"git": {ID: "bash-git-readonly", MaxArgs: 8, Reason: "查看 git 状态/历史/差异（只读）",
 		Subcommands: []string{"status", "log", "diff", "show", "blame"}},
 }
@@ -79,6 +82,24 @@ func (e *Engine) evaluateBash(ctx context.Context, p protocol.ExecutionPlan, sna
 	}
 	if err := ctx.Err(); err != nil {
 		return protocol.CommandApprovalResult{}, err
+	}
+	// 拒绝名单先于一切：组合命令里出现被禁的名字也照样硬拒，
+	// 不能因为"整条判不出来"就把它降级成"等人点"。
+	compound, err := (analysis.Bash{}).ParseCompound(ctx, p.Command)
+	if err != nil {
+		// 切不开的命令（当前实现只会在上下文取消时出现）应当转人工，
+		// 而不是把审批本身变成一次"服务出错"——那会让用户看到的是故障，不是待审。
+		result, ferr := finish(protocol.DecisionReview, "DYNAMIC_BEHAVIOR", "命令无法切分成可判定的段；本次未执行，需要进一步审批")
+		return result, ferr
+	}
+	for _, name := range compoundNames(compound) {
+		if snapshot.Denied(name) {
+			return finish(protocol.DecisionDeny, "POLICY_DENY", "命令包含明确禁止的操作："+name+"；本次未执行")
+		}
+	}
+	// 档位为低/中时走逐段判定（组合命令也能自动放行）；"关"档保持只认单条简单命令。
+	if tier := e.Tier(); tier != TierOff {
+		return e.evaluateBashTier(ctx, p, snapshot, tier, finish)
 	}
 	facts, err := (analysis.Bash{}).Parse(ctx, p.Command)
 	if err != nil {
@@ -253,4 +274,31 @@ func finishWithRule(finish bashFinisher, rule bashRule) (protocol.CommandApprova
 	}
 	result.Feedback.RuleIDs = []string{rule.ID}
 	return result, nil
+}
+
+// bashPathViolationWithin 与 bashPathViolation 同义，但把"解析基准"和"边界"分开：
+// cd 之后相对路径按新目录解析，边界仍然是命令开始时的工作目录（沙箱边界不该被 cd 挪走）。
+func bashPathViolationWithin(args []analysis.Argument, base, boundary string) (string, string) {
+	if !filepath.IsAbs(boundary) || !filepath.IsAbs(base) {
+		return "", ""
+	}
+	for _, arg := range args {
+		if isSecretFile(arg.Value) {
+			return arg.Value, "参数指向本服务的秘密文件（密钥），本次未执行"
+		}
+		for _, candidate := range bashPathCandidates(arg.Value) {
+			if isSecretFile(candidate) {
+				return candidate, "参数指向本服务的秘密文件（密钥），本次未执行"
+			}
+			target, ok := resolveBashPath(candidate, base)
+			if !ok {
+				return candidate, "参数是工作目录之外的绝对路径，本次未执行"
+			}
+			if rel, err := filepath.Rel(boundary, target); err != nil ||
+				rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return candidate, "参数越出工作目录，本次未执行"
+			}
+		}
+	}
+	return "", ""
 }
