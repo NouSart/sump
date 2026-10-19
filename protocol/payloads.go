@@ -452,6 +452,28 @@ type FilePptEditResult struct {
 	Replaced int    `msgpack:"replaced"`
 }
 
+// PdfEditOperation 是 files.edit_pdf 的一次操作。
+// v0 支持 set_info / rotate / delete_pages / keep_pages；后续 op（watermark / merge / encrypt / form_fill …）
+// 只以 omitempty 追加字段，不改动已有字段语义。
+type PdfEditOperation struct {
+	Op         string            `msgpack:"op"`                   // 操作类型：set_info / rotate / delete_pages / keep_pages
+	Pages      string            `msgpack:"pages,omitempty"`      // 页选集（如 "1-3,5"），空=全部；仅页操作使用
+	Degrees    int               `msgpack:"degrees,omitempty"`    // rotate 的顺时针角度：90 / 180 / 270
+	Properties map[string]string `msgpack:"properties,omitempty"` // set_info 的元数据键值对（如 title / author）
+}
+
+// FilePdfEditPayload 是 files.edit_pdf 的 payload：就地修改 .pdf（元数据或页操作）。
+type FilePdfEditPayload struct {
+	ID         string             `msgpack:"id"`
+	Operations []PdfEditOperation `msgpack:"operations"`
+}
+
+// FilePdfEditResult 是 files.edit_pdf 的结果：实际生效的操作数（全成则等于 len(operations)）。
+type FilePdfEditResult struct {
+	ID      string `msgpack:"id"`
+	Applied int    `msgpack:"applied"`
+}
+
 // ---------- 设置中心：设置存取 ----------
 
 // SettingView 是一个设置项的当前状态（设置中心对外呈现）。

@@ -231,10 +231,10 @@ func TestSaveFetchReadFlow(t *testing.T) {
 	// 二进制文件 read → 明确拒绝
 	rp5 := call(t, srv.WsURL(), "save", protocol.FileSavePayload{
 		Data:     base64.StdEncoding.EncodeToString([]byte{0x25, 0x50, 0x44, 0x46, 0x01}),
-		Filename: "x.pdf", Mime: "application/pdf",
+		Filename: "x.bin", Mime: "application/octet-stream",
 	})
 	if !rp5.OK {
-		t.Fatalf("pdf save 失败: %s", rp5.Error)
+		t.Fatalf("binary save 失败: %s", rp5.Error)
 	}
 	var sr5 protocol.FileSaveResult
 	if err := protocol.DecodeRaw(rp5.Data, &sr5); err != nil {
