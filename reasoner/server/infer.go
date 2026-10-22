@@ -228,6 +228,7 @@ func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCa
 func (s *Server) trackAsync(svc, action string, st *taskState, call llm.ToolCall, data msgpack.RawMessage) {
 	var res struct {
 		ItemID string `msgpack:"item_id"`
+		Kind   string `msgpack:"kind"`
 	}
 	if err := protocol.DecodeRaw(data, &res); err != nil {
 		s.logger.Printf("异步动作 %s__%s 的受理回执无法解析（补报将无处归属）: %v", svc, action, err)
@@ -245,6 +246,7 @@ func (s *Server) trackAsync(svc, action string, st *taskState, call llm.ToolCall
 		trace:    st.trace,
 		taskID:   st.taskID,
 		taskName: st.taskName,
+		kind:     res.Kind,
 	})
 	s.logger.Printf("会话 %s：已受理异步动作 %s（item=%s, job=%s），等补报", st.cid, call.Function.Name, res.ItemID, call.ID)
 	// 标记这次调用是异步受理：它的回执只是「已排队」，不该当成终端输出记进轨迹。
@@ -351,9 +353,16 @@ func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in 
 	// 记一条用户消息（尽力送达；幂等与去重在记忆服务侧处理）。
 	s.record(cid, "", env.Trace, "", "user", "user", p.Text, nil)
 
+	// 用户说话了：解除停手，并把附注拼成前缀块（用户的话与系统附注在数据层是分开的）。
+	s.clearHold(cid)
+	text := p.Text
+	if notes := s.mergedNotes(cid, p.Notes); len(notes) > 0 {
+		text = renderNotes(notes) + "\n" + text
+	}
+
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: p.Text, ImageIDs: p.Images},
+		{Role: "user", Content: text, ImageIDs: p.Images},
 	}
 	// 记下入口：交付失败时往它补一条（boss 认错了/丢了的时候，入口是唯一还能回声的地方）。
 	s.noteEntry(cid, env.From)
