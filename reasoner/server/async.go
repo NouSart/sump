@@ -29,6 +29,7 @@ type asyncJob struct {
 	trace    string // 链路 id（原样沿用）
 	taskID   string // 归属任务（补报开的轮次也算在这个任务里）
 	taskName string
+	kind     string // once | resident（常驻任务不参与"其他任务是否全部结束"的判断）
 	at       time.Time
 }
 
@@ -97,6 +98,10 @@ func (s *Server) actionReportResult(_ context.Context, _ protocol.Envelope, in p
 	if !ok {
 		s.logger.Printf("补报 %s（phase=%s）没有对应的在途受理（已被取代 / 终态已收 / 服务重启过），忽略", p.ItemID, p.Phase)
 		return map[string]any{"status": "ignored"}, nil
+	}
+	// 次级停手的兜底：某个异步任务终结后，检查"其他可执行任务是否全部结束"。
+	if p.Final {
+		go s.noteAsyncDone(j.cid)
 	}
 	where := s.deliverFollowUp(j, reportText(j, p))
 	// 终态补报里有**真正的输出**（异步工具的回执只是"已排队"，输出在补报里）——

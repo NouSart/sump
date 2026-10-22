@@ -1,5 +1,5 @@
 ﻿# SUMP v2 本地开发：一键启动服务（settings-center + memory + embedding + images + files + qq + shell + approval + timer + reasoner + frontend）
-# 用法：.\scripts\run-local.ps1 [-CenterAddr 127.0.0.1:9000] [-MemoryAddr 127.0.0.1:9201] [-EmbeddingAddr 127.0.0.1:9601] [-ImageAddr 127.0.0.1:9401] [-FilesAddr 127.0.0.1:9802] [-QQAddr 127.0.0.1:9301] [-ShellAddr 127.0.0.1:9701] [-TimerAddr 127.0.0.1:9801] [-ApprovalAddr 127.0.0.1:9901] [-ReasonerAddr 127.0.0.1:9101] [-FrontendAddr 127.0.0.1:9501]
+# 用法：.\scripts\run-local.ps1 [-CenterAddr 127.0.0.1:9000] [-MemoryAddr 127.0.0.1:9201] [-EmbeddingAddr 127.0.0.1:9601] [-ImageAddr 127.0.0.1:9401] [-FilesAddr 127.0.0.1:9802] [-QQAddr 127.0.0.1:9301] [-ShellAddr 127.0.0.1:9701] [-TimerAddr 127.0.0.1:9801] [-ApprovalAddr 127.0.0.1:9901] [-BatchAddr 127.0.0.1:9951] [-ReasonerAddr 127.0.0.1:9101] [-FrontendAddr 127.0.0.1:9501]
 #       [-NapCatURL ws://127.0.0.1:3000] [-NapCatToken <令牌>] [-Owner 主人QQ] [-LlmKey sk-...] [-LlmModel deepseek-flash]
 # 停止：Ctrl+C（脚本会清理子进程）
 # 注：qq 连不上 NapCat 会自动重试，不影响其他服务；不填 -Owner 则拒绝所有 QQ 私聊
@@ -16,6 +16,7 @@ param(
     [string]$QQAddr = '127.0.0.1:9301',
     [string]$ShellAddr = '127.0.0.1:9701',
     [string]$ApprovalAddr = '127.0.0.1:9901',
+    [string]$BatchAddr = '127.0.0.1:9951',
     [string]$TimerAddr = '127.0.0.1:9801',
     [string]$ReasonerAddr = '127.0.0.1:9101',
     [string]$FrontendAddr = '127.0.0.1:9501',
@@ -67,7 +68,7 @@ function Wait-Port([string]$Addr, [int]$TimeoutSec, $Proc = $null) {
     return $false
 }
 
-foreach ($a in @($CenterAddr, $MemoryAddr, $EmbeddingAddr, $ImageAddr, $FilesAddr, $QQAddr, $ApprovalAddr, $ShellAddr, $TimerAddr, $ReasonerAddr, $FrontendAddr)) {
+foreach ($a in @($CenterAddr, $MemoryAddr, $EmbeddingAddr, $ImageAddr, $FilesAddr, $QQAddr, $ApprovalAddr, $BatchAddr, $ShellAddr, $TimerAddr, $ReasonerAddr, $FrontendAddr)) {
     Assert-PortFree $a
 }
 
@@ -89,6 +90,7 @@ try {
     go build -o (Join-Path $binDir 'shell.exe') 'github.com/QAQ-awa-QAQ/sump/shell'
     if ($LASTEXITCODE -ne 0) { throw 'shell 构建失败' }
     go build -o (Join-Path $binDir 'sump-approval.exe') 'github.com/QAQ-awa-QAQ/sump/approval'
+    go build -o (Join-Path $binDir 'batch.exe') 'github.com/QAQ-awa-QAQ/sump/batch'
     if ($LASTEXITCODE -ne 0) { throw 'approval 构建失败' }
     go build -o (Join-Path $binDir 'timer.exe') 'github.com/QAQ-awa-QAQ/sump/timer'
     if ($LASTEXITCODE -ne 0) { throw 'timer 构建失败' }
@@ -266,6 +268,8 @@ try {
     Write-Host '[7/9] 启动 approval + shell + timer ...' -ForegroundColor Cyan
     $approvalSvc = Start-Process -FilePath (Join-Path $binDir 'sump-approval.exe') -ArgumentList 'serve', '-addr', $ApprovalAddr, '-center', "ws://$CenterAddr/ws", '-portal', 'frontend' -PassThru -NoNewWindow
     if (-not (Wait-Port $ApprovalAddr 60 $approvalSvc)) { throw 'approval 未在 60 秒内就绪' }
+    $batchSvc = Start-Process -FilePath (Join-Path $binDir 'batch.exe') -ArgumentList '-addr', $BatchAddr, '-center', "ws://$CenterAddr/ws", '-db', (Join-Path $dataDir 'batch.db') -PassThru -NoNewWindow
+    if (-not (Wait-Port $BatchAddr 60 $batchSvc)) { throw 'batch 未在 60 秒内就绪' }
     $shellSvc = Start-Process -FilePath (Join-Path $binDir 'shell.exe') -ArgumentList '-addr', $ShellAddr, '-center', "ws://$CenterAddr/ws", '-root', ('"' + $root + '"'), '-approval', 'approval' -PassThru -NoNewWindow
     if (-not (Wait-Port $ShellAddr 60 $shellSvc)) { throw 'shell 未在 60 秒内就绪' }
     # -portal frontend：把在计时器推给门户展示倒计时（留空 = 不推）。
@@ -290,6 +294,7 @@ try {
     Write-Host "qq:              ws://$QQAddr/ws  (PID $($qq.Id))  napcat: $NapCatURL"
     Write-Host "shell:           ws://$ShellAddr/ws  (PID $($shellSvc.Id))  root: $root  审批: approval"
     Write-Host "approval:        ws://$ApprovalAddr/ws  (PID $($approvalSvc.Id))  PowerShell 第一层"
+    Write-Host "batch:           ws://$BatchAddr/ws  (PID $($batchSvc.Id))  db: data/batch.db"
     Write-Host "timer:           ws://$TimerAddr/ws  (PID $($timerSvc.Id))  门户: frontend"
     Write-Host "reasoner:       ws://$ReasonerAddr/ws  (PID $($reasoner.Id))"
     Write-Host "frontend:       http://$FrontendAddr/  (PID $($frontend.Id))  ← 设置面板" -ForegroundColor Green

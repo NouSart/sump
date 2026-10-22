@@ -112,6 +112,11 @@ func (s *Server) boardClose(st *taskState) {
 
 // boardKick 若有未处理的进展且当前没有轮在跑，开一轮（防轮次重入、防丢唤醒）。
 func (s *Server) boardKick(st *taskState) {
+	// 用户停手期间不开新轮次：消息先入账，等用户下一条消息或次级兜底再继续。
+	if s.heldFor(st.cid) {
+		s.logger.Printf("会话 %s：用户停手中，暂不开新轮次", st.cid)
+		return
+	}
 	st.mu.Lock()
 	if st.closed || st.running || st.gen == st.seen {
 		st.mu.Unlock()
@@ -296,6 +301,13 @@ func (s *Server) waitPending(st *taskState) string {
 func (s *Server) runToolJob(st *taskState, call llm.ToolCall) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.toolTimeout())
 	defer cancel()
+
+	// 用户停手期间不派发新工具：工具被"扣下"而不是执行——用户按暂停不是为了让 agent 继续干活。
+	if s.heldFor(st.cid) {
+		s.logger.Printf("会话 %s：用户停手中，工具 %s 不派发", st.cid, call.Function.Name)
+		s.boardResult(st, call, "错误: 用户已暂停当前任务，本次未执行（等用户下一条消息）")
+		return
+	}
 
 	if sem := s.toolSem(st.cid); sem != nil {
 		select {

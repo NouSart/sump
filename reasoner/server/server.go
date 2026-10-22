@@ -54,8 +54,11 @@ type Server struct {
 	boardMu sync.Mutex            // 黑板锁
 	board   map[string]*taskState // 会话 → 进行中的任务（窗口 = 任务在跑期）
 
-	asyncMu   sync.Mutex          // 异步受理登记表锁
-	asyncJobs map[string]asyncJob // 受理句柄（item_id）→ 在途的异步工具调用（见 async.go）
+	asyncMu sync.Mutex // 异步受理登记表锁
+
+	holdMu    sync.Mutex            // 用户停手状态（见 hold.go）
+	holds     map[string]*holdState // 会话 → 停手状态
+	asyncJobs map[string]asyncJob   // 受理句柄（item_id）→ 在途的异步工具调用（见 async.go）
 
 	entryMu sync.Mutex        // 会话入口表锁（交付失败时往哪补一条）
 	entries map[string]string // 会话 → 入口服务名（user_message 的 from）
@@ -99,6 +102,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		sems:      map[string]chan struct{}{},
 		board:     map[string]*taskState{},
 		asyncJobs: map[string]asyncJob{},
+		holds:     map[string]*holdState{},
 		entries:   map[string]string{},
 		notify:    cfg.NotifyMode,
 		conc:      cfg.ToolConcurrency,
@@ -230,6 +234,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("step", s.actionStep)
 	s.Handle("resume", s.actionResume)
 	s.Handle("report_result", s.actionReportResult)
+	// 用户停手（入口服务的控制面，不是模型工具）：见 hold.go。
+	s.Handle("user_hold", s.actionUserHold)
 	return s
 }
 

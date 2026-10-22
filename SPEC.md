@@ -496,6 +496,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | shell | Go | 受理即回执的命令执行（无队列：并行/串行归调用方，只有防爆熔断；超时终止 + 输出截断）；审批接缝（未接入 = 一律未通过）；结果由 `report_result` 补报 |
 | approval | Go | 终端命令审批第一层：PowerShell AST + 不可变规则快照 + 执行摘要绑定；第二层仅接口 |
 | timer | Go | 计时器：受理「N 毫秒后唤醒我」（受理即回执，不阻塞调用方）→ 到点把 `report_result` 跳回调用方；在计时器按 boss 分组推给门户（倒计时） |
+| batch | Go | 批处理：一次声明 N 项工作 + 并发度 + 唤醒时机；受理即回执，按 key / 首次失败 / 终态推至多三条；暂停可恢复、停止是终态；目标动作须显式声明 `Batchable` |
 | embedding | Python | 文本 → 向量（onnxruntime + tokenizers，CLS pooling + L2 归一）；动作 `embed`；fake 后端供测试与 CI |
 | qq | Go | 把主人私聊消息（图先存 images）打成 user_message 发给 reasoner；实现 deliver 回发私聊 |
 | frontend | TS | 用户交互门户（与 qq 同类）＋ 设置中心面板：对外提供 `deliver`（推给浏览器），自己跳 `user_message` 给 reasoner；浏览器 HTTP JSON + SSE；**单用户** + 浏览器信任栅栏（Host 挡 DNS rebinding、Origin 挡跨站） |
@@ -518,8 +519,8 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | exec 域执行描述字段 | 当前 `plan` 是命令域专用结构；每个字段只保留一个语义 | `version` `command` `work_dir` `shell_path` `args` `dialect` `platform` `profile` `timeout_ms` `max_output_bytes`；`dialect` 只表示 shell 方言，`profile` 只表示执行环境约定 |
 | 域判别字段（将来） | 新增第二个执行域时定义独立字段；当前协议尚未发送，不复用 `dialect` | 建议 `kind`，取值如 `exec` / `fs` / `http`；其他域各自声明执行字段组，裁决包、摘要绑定、有效期、fail-closed 共用 |
 | 审批枚举 | 取值由 approval 服务定义，见 [审批协议](./COMMAND-APPROVAL-PROTOCOL.md) | `decision`：`allow` / `deny` / `review`；`reason_code`：`RULE_ALLOW` `POLICY_DENY` `DYNAMIC_BEHAVIOR` `NO_MATCHING_RULE` `PARSE_ERROR` `UNSUPPORTED_DIALECT` `CONTEXT_UNKNOWN` `RUNTIME_MISMATCH` `LIMIT_EXCEEDED`，第二层用户裁决：`USER_APPROVED` `USER_DENIED` |
-| 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `files` `qq` `shell` `timer` `frontend` `embedding` `approval` |
-| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `recall.embedding` `max_mb` `read_max_chars` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.max_running` `approval.service` `approval.timeout_ms` `policy.json` `max_ms` `max_pending` `portal` `llm.base` `llm.model` `llm.key` `memory` `images` `name` `addr` `center` `napcat.url` `napcat.token` `reasoner` `db` `dir` `settings` `web` |
-| 名片字段（`provides[]`） | 小写下划线；跨语言一致 | `action` `input` `output` `tool` `async` |
+| 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `files` `qq` `shell` `timer` `batch` `frontend` `embedding` `approval` |
+| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `batch.concurrency` `batch.max_concurrency` `batch.max_inflight` `batch.max_items` `batch.item_timeout_ms` `batch.preview_bytes` `batch.job_ttl_ms` `batch.resume_on_start` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `recall.embedding` `max_mb` `read_max_chars` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.max_running` `approval.service` `approval.timeout_ms` `policy.json` `max_ms` `max_pending` `portal` `llm.base` `llm.model` `llm.key` `memory` `images` `name` `addr` `center` `napcat.url` `napcat.token` `reasoner` `db` `dir` `settings` `web` |
+| 名片字段（`provides[]`） | 小写下划线；跨语言一致 | `action` `input` `output` `tool` `async` `batchable` |
 
 审批设置键补充：`policy.json`（approval 声明的规则快照配置）。`approval_result` 没有注册为动作；审批结果作为 `approval_request` 的响应返回，并由 shell 的 `report_result` 承载后续反馈。

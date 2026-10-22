@@ -17,6 +17,9 @@ type Provide struct {
 	// Async 显式声明该动作是“受理即回执”：响应只表示已受理（带回句柄 item_id），
 	// 后续进展由该服务以 report_result 补报送达（可能晚于调用方收尾）。
 	Async bool `msgpack:"async,omitempty"`
+	// Batchable 显式声明该动作可被 batch 服务批量调用（默认 false）。
+	// 与 Tool 同一套哲学：能力由服务自己表态，不由调度方猜。
+	Batchable bool `msgpack:"batchable,omitempty"`
 }
 
 // Setting 是服务的一个可设置项。
@@ -295,6 +298,15 @@ type UserMessagePayload struct {
 	ConversationID string   `msgpack:"conversation_id,omitempty"`
 	Images         []string `msgpack:"images,omitempty"` // 图片引用（images 服务中的 id）
 	Files          []string `msgpack:"files,omitempty"`  // 文件引用（files 服务中的 id；占位文本亦随行，供模型凭 id 调 files__read）
+	// Notes 是随用户消息一起送进模型的附注：**不是用户说的话**，是入口服务替系统转达的事实。
+	//
+	// 通用通道。批量任务的用户操作是第一个使用者；以后别的东西（定时器触发、
+	// 后台任务结果……）需要"随用户下一条消息一起送到"时，都放这里。
+	//
+	// 规矩：只有入口服务（门户 / QQ）写；每条自描述（自带时间与前缀）；按时间正序；
+	// 最多 20 条 / 4 KiB；投递成功后清空。reasoner 把它渲染成前缀块，
+	// 首行必须写明"这不是用户现在说的话"。
+	Notes []string `msgpack:"notes,omitempty"`
 }
 
 // ---------- 交付与图片 ----------

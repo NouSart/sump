@@ -45,7 +45,7 @@ jobs:
 
       - name: 各模块测试
         run: |
-          for m in protocol service settings-center reasoner memory images files qq shell timer approval approval-integration; do
+          for m in protocol service settings-center reasoner memory images files qq shell timer batch approval approval-integration; do
             echo "== 模块: $m =="
             if [[ "$m" == approval* ]]; then
               (cd "$m" && go test -v ./... -count=1 -timeout 300s)
@@ -58,7 +58,7 @@ jobs:
         run: |
           # 竞态在这一类代码里最贵：Fire 各自成 goroutine、SQLite 单连接、黑板上多把锁。
           # 普通 go test 能全绿而数据其实是坏的（并发去重那条就是），所以单独跑一遍。
-          for m in protocol memory reasoner; do
+          for m in protocol memory reasoner batch; do
             echo "== 模块: $m (-race) =="
             (cd "$m" && go test ./... -count=1 -timeout 900s -race)
           done
@@ -70,7 +70,7 @@ jobs:
 
       - name: 脱离工作区构建（GOWORK=off）
         run: |
-          for m in protocol service settings-center reasoner memory images files qq shell timer tests approval approval-integration; do
+          for m in protocol service settings-center reasoner memory images files qq shell timer batch tests approval approval-integration; do
             echo "== $m =="
             (cd "$m" && GOWORK=off go build ./...)
           done
