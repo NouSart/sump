@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -119,7 +120,11 @@ func (s *Server) actionRun(ctx context.Context, env protocol.Envelope, in protoc
 	if service == s.cfg.Name {
 		return nil, fmt.Errorf("BATCH_NESTED: 不允许批量调用 batch 自己（深度固定为 1）")
 	}
-	if !s.batchable(service, action) {
+	found, batchable := s.resolveTarget(service, action)
+	if !found {
+		return nil, fmt.Errorf("BATCH_TARGET_UNKNOWN: 名册里没有服务 %q", service)
+	}
+	if !batchable {
 		return nil, fmt.Errorf("BATCH_NOT_BATCHABLE: %s.%s 没有声明可批量（Batchable）", service, action)
 	}
 
@@ -140,7 +145,7 @@ func (s *Server) actionRun(ctx context.Context, env protocol.Envelope, in protoc
 		onError = protocol.BatchOnErrorContinue
 	case protocol.BatchOnErrorStop:
 	default:
-		return nil, fmt.Errorf("BATCH_OP: on_error 只能是 continue 或 stop，收到 %q", p.OnError)
+		return nil, fmt.Errorf("BATCH_ONERROR: on_error 只能是 continue 或 stop，收到 %q", p.OnError)
 	}
 
 	wakeMode := strings.ToLower(strings.TrimSpace(p.Wake.Mode))
@@ -188,7 +193,13 @@ func (s *Server) actionRun(ctx context.Context, env protocol.Envelope, in protoc
 		job.items = append(job.items, queued{seq: i, key: it.Key, tag: it.Tag, input: it.Input})
 	}
 
-	if err := s.store.CreateJob(id, service, action, env.From, env.Boss, env.Trace, job.kind, p.Items, time.Now()); err != nil {
+	if err := s.store.CreateJob(id, service, action, env.From, env.Boss, env.Trace, job.kind,
+		store.Policy{
+			Concurrency: conc,
+			TimeoutMS:   int(timeout / time.Millisecond),
+			OnError:     onError,
+			WakeMode:    wakeMode,
+		}, p.Items, time.Now()); err != nil {
 		s.release(conc)
 		return nil, fmt.Errorf("落库失败: %w", err)
 	}
@@ -213,20 +224,23 @@ func countKeys(items []protocol.BatchItem) int {
 	return n
 }
 
-// batchable 查名册里目标动作是否声明了 Batchable。
-func (s *Server) batchable(service, action string) bool {
+// resolveTarget 查名册里的目标服务与动作。
+//
+// 分两种"不行"：服务根本没注册（BATCH_TARGET_UNKNOWN），还是动作没声明可批量
+// （BATCH_NOT_BATCHABLE）——报错要能让人知道该改哪儿。
+func (s *Server) resolveTarget(service, action string) (found, batchable bool) {
 	for _, c := range s.Roster() {
 		if c.Name != service {
 			continue
 		}
 		for _, p := range c.Provides {
 			if p.Action == action {
-				return p.Batchable
+				return true, p.Batchable
 			}
 		}
-		return false
+		return true, false
 	}
-	return false
+	return false, false
 }
 
 // reserve 预留全局槽位；不够返回 false。
@@ -262,6 +276,12 @@ func (s *Server) inflightNow() int {
 
 // runJob 起一次调度循环（暂停后恢复会再起一次）。
 func (s *Server) runJob(j *runningJob) {
+	j.mu.Lock()
+	done := j.finished
+	j.mu.Unlock()
+	if done {
+		return
+	}
 	if err := s.store.MarkStarted(j.id, time.Now()); err != nil {
 		s.logger.Printf("任务 %s 标记开始失败: %v", j.id, err)
 	}
@@ -272,6 +292,10 @@ func (s *Server) runJob(j *runningJob) {
 //
 // 这里**不排队**：任务内最多 concurrency 个 worker 在跑，剩下的就是调用方自己声明的项在等
 // 自己的槽位——不是执行器替别人保管意图。
+//
+// 外层循环是给"排空中途被恢复"留的：pause 后立刻 resume，老循环还在等 wg.Wait，新循环
+// 又因 schedRunning 起不来；如果老循环收尾时一看 paused=false 就直接 finishJob，剩下的项
+// 会被当成完成。所以收尾必须重新判断"还有没有活"。
 func (s *Server) runScheduler(j *runningJob) {
 	j.mu.Lock()
 	if j.schedRunning || j.finished {
@@ -284,31 +308,53 @@ func (s *Server) runScheduler(j *runningJob) {
 	sem := make(chan struct{}, j.concurrency)
 	var wg sync.WaitGroup
 	for {
-		sem <- struct{}{}
-		q, ok := j.claim()
-		if !ok {
-			<-sem
-			break
+		for {
+			sem <- struct{}{}
+			q, ok := j.claim()
+			if !ok {
+				<-sem
+				break
+			}
+			wg.Add(1)
+			go func(q queued) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				s.runItem(j, q)
+			}(q)
 		}
-		wg.Add(1)
-		go func(q queued) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			s.runItem(j, q)
-		}(q)
-	}
-	// 必须等在飞的项全部收尾，再判断要不要终结——否则会把还在跑的项算漏。
-	wg.Wait()
+		// 必须等在飞的项全部收尾，再判断要不要终结——否则会把还在跑的项算漏。
+		wg.Wait()
 
-	j.mu.Lock()
-	j.schedRunning = false
-	paused := j.paused
-	finished := j.finished
-	j.mu.Unlock()
-	if paused || finished {
-		return
+		// paused 与 schedRunning 必须在同一把锁里一起读/清：resume 是先清 paused 再起
+		// 循环，如果分开两次进锁，就可能出现"我读到 paused=true 就撤退、resume 那边看见
+		// schedRunning=true 也撤退"，没人再干活。
+		j.mu.Lock()
+		paused, finished := j.paused, j.finished
+		terminal := j.cancelled || j.stopped
+		remain := len(j.items)
+		j.schedRunning = false
+		j.mu.Unlock()
+
+		if finished {
+			return
+		}
+		// 取消 / 失败即停要落终态：它和"暂停"同时为真时，取消优先（暂停只是等，取消是了结）。
+		if terminal || remain == 0 {
+			s.finishJob(j)
+			return
+		}
+		if paused {
+			// 暂停且已排空：把任务占的全局槽位一次性还掉，别的任务才能进来。
+			// 必须等在这里之后还——在飞的项还占着真实并发，早还就等于放宽了上限。
+			j.mu.Lock()
+			drop := j.reserved
+			j.reserved = 0
+			j.mu.Unlock()
+			s.release(drop)
+			return
+		}
+		// 既没停也没取消、还有活没领，说明状态在两次读之间翻过面：再来一轮自己收敛。
 	}
-	s.finishJob(j)
 }
 
 // claim 领走下一项；false 表示不再开始新项（队列空 / 暂停 / 取消 / 失败即停）。
@@ -340,7 +386,7 @@ func (s *Server) runItem(j *runningJob, q queued) {
 		it.Error = err.Error()
 	} else {
 		it.Size = len(raw)
-		it.Preview = truncateBytes(raw, s.previewValue())
+		it.Preview = truncateBytes([]byte(previewText(raw)), s.previewValue())
 	}
 	if err := s.store.MarkItem(j.id, it); err != nil {
 		s.logger.Printf("任务 %s 第 %d 项落库失败: %v", j.id, q.seq+1, err)
@@ -369,6 +415,7 @@ func (s *Server) record(j *runningJob, q queued, it store.Item) {
 	if q.key && it.Status != protocol.BatchItemPending && it.Status != protocol.BatchItemRunning {
 		j.keyDone++
 	}
+	keyDone := j.keyDone
 	remaining := len(j.items) + j.inflight
 
 	keyWake := j.wakeMode == protocol.BatchWakeKey && q.key &&
@@ -398,13 +445,16 @@ func (s *Server) record(j *runningJob, q queued, it store.Item) {
 			s.logger.Printf("任务 %s：失败即停，%d 项转为跳过", j.id, n)
 		}
 	}
+	// 每个关键项结束都落一次进度：否则任务结束后从账本读到的 KeyDone 会停在
+	// "上次推送时的值"，甚至一直是 0——那是许愿，不是记账。
+	if q.key {
+		_ = s.store.SetKeyDone(j.id, keyDone)
+	}
 	if keyWake {
 		_ = s.store.SetWoken(j.id, true)
-		_ = s.store.SetKeyDone(j.id, snapshot.keyDone)
 		s.pushProgress(j, "key", keyWakeText(snapshot), now)
 	}
 	if failWake {
-		_ = s.store.SetKeyDone(j.id, snapshot.keyDone)
 		s.pushProgress(j, "failed", firstFailureText(snapshot, q, it), now)
 	}
 }
@@ -445,6 +495,10 @@ func (s *Server) finishJob(j *runningJob) {
 	}
 	j.finished = true
 	snapshot := j.snapshotLocked()
+	// 槽位一次只能还一次：暂停出口与本函数可能先后跑（暂停中取消），先把手里的数取走归零，
+	// 谁后到谁拿到 0。
+	reserved := j.reserved
+	j.reserved = 0
 	j.mu.Unlock()
 
 	if j.cancelled && len(drop) > 0 {
@@ -457,7 +511,7 @@ func (s *Server) finishJob(j *runningJob) {
 	if err := s.store.Finish(j.id, phase, snapshot.ok, snapshot.failed, snapshot.skipped, summary, now); err != nil {
 		s.logger.Printf("任务 %s 落终态失败: %v", j.id, err)
 	}
-	s.release(j.reserved)
+	s.release(reserved)
 	s.mu.Lock()
 	delete(s.jobs, j.id)
 	s.mu.Unlock()
@@ -513,6 +567,25 @@ func summaryText(j jobSnapshot) string {
 		out = string([]rune(out)[:maxChars]) + "…（已截断）"
 	}
 	return out
+}
+
+// previewText 把目标返回的 msgpack 原始数据转成人能看懂的一行 JSON。
+//
+// 不能直接 string(raw)：那是 msgpack 二进制，落进明细就是乱码——"只存摘要"不能变成
+// "只存看不懂的字节"。
+func previewText(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var v any
+	if err := msgpack.Unmarshal(raw, &v); err != nil {
+		return fmt.Sprintf("%v", raw)
+	}
+	b, err := json.Marshal(protocol.NormalizeJSONNumbers(v))
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
 }
 
 // oneLine 把多行错误压成一行（汇总里别被换行撑爆）。

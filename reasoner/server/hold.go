@@ -66,8 +66,14 @@ func (s *Server) actionUserHold(_ context.Context, _ protocol.Envelope, in proto
 		h = &holdState{paused: map[string]bool{}}
 		s.holds[cid] = h
 	}
-	// 一级优先：已经 primary 时不被 secondary 降级。
-	if level == protocol.UserHoldPrimary || h.level != protocol.UserHoldPrimary {
+	// 一级优先：已经 primary 时不被 secondary 降级；但 `none` 是显式解除，必须能生效
+	//（否则用户恢复全部任务后，停手永远解不掉）。
+	switch {
+	case level == protocol.UserHoldNone:
+		h.level = protocol.UserHoldNone
+	case level == protocol.UserHoldPrimary:
+		h.level = protocol.UserHoldPrimary
+	case h.level != protocol.UserHoldPrimary:
 		h.level = level
 	}
 	for _, id := range p.PausedItems {

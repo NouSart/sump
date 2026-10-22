@@ -56,6 +56,12 @@ func (s *Server) actionControl(ctx context.Context, env protocol.Envelope, in pr
 	if s.controlOne(op, id) {
 		affected = 1
 	}
+	// 恢复拿不到槽位时要明说，不能只回 affected=0 让人以为"本来就在跑"。
+	if affected == 0 && op == protocol.BatchOpResume {
+		if j, ok, err := s.store.Job(id); err == nil && ok && j.Phase == protocol.BatchPhasePaused {
+			return nil, fmt.Errorf("BATCH_BUSY: 全局在飞槽位不足，任务 %s 仍是暂停，稍后再 resume", id)
+		}
+	}
 	return s.controlResult(op, scope, affected), nil
 }
 
@@ -138,6 +144,8 @@ func (s *Server) controlMemory(op string, j *runningJob) bool {
 		j.paused = true
 		j.mu.Unlock()
 		_ = s.store.SetPhase(j.id, protocol.BatchPhasePaused)
+		// 槽位不在这里放：在飞的项还占着真实并发。等调度循环把在飞的收完、确认暂停后
+		// 再一次性归还（见 runScheduler 的暂停出口）。
 		s.logger.Printf("任务 %s 已暂停（在飞的项会跑完）", j.id)
 		return true
 	case protocol.BatchOpCancel:
@@ -146,7 +154,12 @@ func (s *Server) controlMemory(op string, j *runningJob) bool {
 			return false
 		}
 		j.cancelled = true
+		// 暂停中的任务没有调度循环在跑，没人会替它收尾——这里必须自己落终态。
+		idle := !j.schedRunning
 		j.mu.Unlock()
+		if idle {
+			s.finishJob(j)
+		}
 		s.logger.Printf("任务 %s 已取消（未开始的项作废，在飞的跑完）", j.id)
 		return true
 	case protocol.BatchOpResume:
@@ -154,6 +167,20 @@ func (s *Server) controlMemory(op string, j *runningJob) bool {
 			j.mu.Unlock()
 			return false
 		}
+		need := j.concurrency
+		if n := len(j.items) + j.inflight; need > n {
+			need = n
+		}
+		if need < 1 {
+			need = 1
+		}
+		// 锁序：j.mu → s.mu（别处没有反过来的嵌套）。
+		if !s.reserve(need) {
+			j.mu.Unlock()
+			s.logger.Printf("恢复任务 %s 失败：全局槽位不足（需要 %d）", j.id, need)
+			return false
+		}
+		j.reserved = need
 		j.paused = false
 		j.mu.Unlock()
 		_ = s.store.SetPhase(j.id, protocol.BatchPhaseRunning)

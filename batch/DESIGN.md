@@ -499,6 +499,7 @@ type UserHoldPayload struct {
 | 9 | 查询/控制不存在或已过期的任务 | `BATCH_JOB_UNKNOWN` |
 | 10 | `op` 不是 pause/resume/cancel，或 `scope` 不是 one/all | `BATCH_OP` |
 | 11 | `scope: one` 但没给 `item_id` | `BATCH_OP` |
+| 12 | `on_error` 不是 `continue`/`stop` | `BATCH_ONERROR` |
 
 **不排队的两层含义**：
 
@@ -507,6 +508,9 @@ type UserHoldPayload struct {
   不是执行器替别人保管意图。边界没糊。
 
 错误以 `ok:false` + `"CODE: 说明"` 返回（与 approval 的 reason code 同一形状）。
+
+**恢复的资源语义**：暂停排空后归还该任务占的全局槽位（`max_inflight` 名额），恢复时重新申请；
+申请不到就报 `BATCH_BUSY`，任务保持 `paused`——不会"假装在跑"。
 
 ## 5. 落盘（`data/batch.db`）
 
@@ -528,7 +532,11 @@ CREATE TABLE jobs (
   woken       INTEGER NOT NULL DEFAULT 0,
   created_at  INTEGER NOT NULL,
   started_at  INTEGER NOT NULL DEFAULT 0,
-  finished_at INTEGER NOT NULL DEFAULT 0
+  finished_at INTEGER NOT NULL DEFAULT 0,
+  concurrency INTEGER NOT NULL DEFAULT 0,  -- 声明的单任务并发
+  timeout_ms  INTEGER NOT NULL DEFAULT 0,  -- 声明的单项超时（0 = 用设置项）
+  on_error    TEXT NOT NULL DEFAULT 'continue',
+  wake_mode   TEXT NOT NULL DEFAULT 'all'
 );
 
 CREATE TABLE items (
@@ -537,16 +545,21 @@ CREATE TABLE items (
   tag      TEXT NOT NULL DEFAULT '',
   is_key   INTEGER NOT NULL DEFAULT 0,
   status   TEXT NOT NULL,     -- pending | running | ok | failed | skipped
+  input    BLOB,              -- 只在任务存活期间有值（重启恢复用），项一终结即置 NULL
   error    TEXT NOT NULL DEFAULT '',
-  preview  BLOB NOT NULL DEFAULT x'',
+  preview  BLOB NOT NULL DEFAULT x'',  -- 一行 JSON 文本（已把 msgpack 转成可读）
   size     INTEGER NOT NULL DEFAULT 0,
   ms       INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (item_id, seq)
 );
 ```
 
-- 不存原始 `input`（可能含隐私）；排查靠 `service`/`action`/`total`
-- `job_ttl_ms` 到期删 `jobs` + `items`
+- 原始 `input` 只在**任务存活期**落库（重启可恢复的前提），项一终结（`ok`/`failed`/`skipped`/
+  重启中断）立刻置 NULL；排查靠 `service`/`action`/`total` + 摘要
+- `preview` 是**人/模型能读的 JSON 文本**，不是 msgpack 原始字节
+- 执行策略（`concurrency`/`timeout_ms`/`on_error`/`wake_mode`）必须落库：
+  重启恢复要照调用方当初声明的跑，不能悄悄换成默认值
+- `job_ttl_ms` 到期删 `jobs` + `items`（只删终态任务）
 
 ## 6. 设置项
 
@@ -599,7 +612,7 @@ CREATE TABLE items (
 | 18 | **暂停可恢复** | 20 项跑到 5 项时 pause → 停住；再等 2s 计数不变；resume → 跑完剩下的 15 项，**前 5 项不重跑** |
 | 19 | 暂停释放槽位 | 全局上限 4 时暂停一个任务 → 新任务能进来（`BATCH_BUSY` 消失） |
 | 20 | pause vs cancel | pause 后未开始项仍是 `pending`；cancel 后是 `skipped` |
-| 21 | `scope: all` | 3 个任务（1 跑 1 暂停 1 完成）→ `pause_all` 的 `affected` = 2，完成那个不计 |
+| 21 | `scope: all` | 3 个任务（1 跑 1 暂停 1 完成）→ `pause_all` 的 `affected` = **1**（只有状态真变了那个）；暂停中的与已完成的一律不计（与 #22 同源） |
 | 22 | 幂等 | 对已完成任务 pause/cancel → `affected: 0`，**不报错** |
 | 23 | **重启恢复** | 跑到一半杀掉服务再起 → 任务 phase = `paused`；在飞的项变 `failed`（错误写明"重启中断"）；resume 后已 `ok` 的项不重跑 |
 | 24 | **用户操作不唤醒模型** | 从"前端"调 `control{pause}` → 模型侧**零推送**（`report_result` 一条都没有） |

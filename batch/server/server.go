@@ -341,6 +341,13 @@ func (s *Server) recoverAfterRestart() {
 				_ = s.store.SetCounts(j.ItemID, counts[protocol.BatchItemOK],
 					counts[protocol.BatchItemFailed], counts[protocol.BatchItemSkipped])
 			}
+			// 重算过的计数必须重新读回来：拿重启前的旧快照去重建，收尾时会把中断项
+			// 从总数里蒸发掉（3+0+0 对不上 total=4）。
+			if fresh, ok, err := s.store.Job(j.ItemID); err != nil {
+				s.logger.Printf("重读任务 %s 失败: %v", j.ItemID, err)
+			} else if ok {
+				j = fresh
+			}
 		}
 		if autoResume {
 			if rj, err := s.rebuildJob(j); err != nil {
@@ -365,17 +372,46 @@ func (s *Server) recoverAfterRestart() {
 	}
 }
 
-// rebuildJob 从账本重建一个可继续跑的任务（重启自动恢复用）。
+// rebuildJob 从账本重建一个可继续跑的任务（重启自动恢复 / 恢复暂停任务用）。
+//
+// 策略（并发、单项超时、on_error、唤醒档位）必须从账本读回来：否则恢复出来的任务和
+// 调用方当初声明的不是一回事。并发还要按当前上限与剩余项数夹一下。
 func (s *Server) rebuildJob(j store.Job) (*runningJob, error) {
 	items, err := s.store.PendingItems(j.ItemID)
 	if err != nil {
 		return nil, err
 	}
+	conc := j.Concurrency
+	if conc < 1 {
+		conc = s.concValue()
+	}
+	if max := s.maxConcValue(); conc > max {
+		conc = max
+	}
+	if len(items) > 0 && conc > len(items) {
+		conc = len(items)
+	}
+	timeout := s.timeoutValue()
+	if j.TimeoutMS > 0 {
+		timeout = time.Duration(j.TimeoutMS) * time.Millisecond
+	}
+	onError := j.OnError
+	switch onError {
+	case protocol.BatchOnErrorStop:
+	default:
+		onError = protocol.BatchOnErrorContinue
+	}
+	wakeMode := j.WakeMode
+	switch wakeMode {
+	case protocol.BatchWakeKey:
+	default:
+		wakeMode = protocol.BatchWakeAll
+	}
 	rj := &runningJob{
 		id: j.ItemID, service: j.Service, action: j.Action,
 		caller: j.Caller, boss: j.Boss, trace: j.Trace, kind: kindOf(j.Kind),
-		wakeMode: protocol.BatchWakeAll, onError: protocol.BatchOnErrorContinue,
-		timeout: s.timeoutValue(), concurrency: s.maxConcValue(),
+		wakeMode: wakeMode, onError: onError,
+		timeout: timeout, concurrency: conc, reserved: conc,
 		ok: j.Ok, failed: j.Failed, skipped: j.Skipped,
 		keyTotal: j.KeyTotal, keyDone: j.KeyDone, woken: j.Woken,
 		failures: map[string][]string{},

@@ -42,6 +42,12 @@ type Job struct {
 	CreatedAt  time.Time
 	StartedAt  time.Time
 	FinishedAt time.Time
+
+	// 声明的执行策略（重启恢复要照原样接着跑）。
+	Concurrency int
+	TimeoutMS   int
+	OnError     string
+	WakeMode    string
 }
 
 // Item 是一项的状态与结果摘要。
@@ -107,7 +113,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   summary     TEXT NOT NULL DEFAULT '',
   created_at  INTEGER NOT NULL,
   started_at  INTEGER NOT NULL DEFAULT 0,
-  finished_at INTEGER NOT NULL DEFAULT 0
+  finished_at INTEGER NOT NULL DEFAULT 0,
+  concurrency INTEGER NOT NULL DEFAULT 0,
+  timeout_ms  INTEGER NOT NULL DEFAULT 0,
+  on_error    TEXT NOT NULL DEFAULT 'continue',
+  wake_mode   TEXT NOT NULL DEFAULT 'all'
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at);
 CREATE TABLE IF NOT EXISTS items (
@@ -123,11 +133,68 @@ CREATE TABLE IF NOT EXISTS items (
   ms      INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (item_id, seq)
 );`)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.addMissingJobColumns()
 }
 
-// CreateJob 落一个新任务：状态 accepted，全部项 pending（Tag/Key 一并落下来）。
-func (s *Store) CreateJob(itemID, service, action, caller, boss, trace, kind string, items []protocol.BatchItem, now time.Time) error {
+// 后来加的列：老账本没有就补上（幂等）。
+var jobColumns = []struct{ name, ddl string }{
+	{"concurrency", `ALTER TABLE jobs ADD COLUMN concurrency INTEGER NOT NULL DEFAULT 0`},
+	{"timeout_ms", `ALTER TABLE jobs ADD COLUMN timeout_ms INTEGER NOT NULL DEFAULT 0`},
+	{"on_error", `ALTER TABLE jobs ADD COLUMN on_error TEXT NOT NULL DEFAULT 'continue'`},
+	{"wake_mode", `ALTER TABLE jobs ADD COLUMN wake_mode TEXT NOT NULL DEFAULT 'all'`},
+}
+
+func (s *Store) addMissingJobColumns() error {
+	rows, err := s.db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid, notNull, pk int
+			name, ctype      string
+			dflt             any
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	for _, c := range jobColumns {
+		if have[c.name] {
+			continue
+		}
+		if _, err := s.db.Exec(c.ddl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Policy 是一个任务的执行策略。
+//
+// 必须落库：重启恢复时如果丢掉声明，on_error=stop 会变成 continue、并发会顶到上限、
+// 唤醒档位会从 key 变 all——那是换了个任务在跑，不是"从断点继续"。
+type Policy struct {
+	Concurrency int
+	TimeoutMS   int
+	OnError     string
+	WakeMode    string
+}
+
+// CreateJob 落一个新任务：状态 accepted，全部项 pending（Tag/Key/策略一并落下来）。
+func (s *Store) CreateJob(itemID, service, action, caller, boss, trace, kind string, pol Policy,
+	items []protocol.BatchItem, now time.Time) error {
 	keyTotal := 0
 	for _, it := range items {
 		if it.Key {
@@ -140,10 +207,12 @@ func (s *Store) CreateJob(itemID, service, action, caller, boss, trace, kind str
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(`INSERT INTO jobs
-(item_id, service, action, caller, boss, trace, kind, phase, total, key_total, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+(item_id, service, action, caller, boss, trace, kind, phase, total, key_total, created_at,
+ concurrency, timeout_ms, on_error, wake_mode)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		itemID, service, action, caller, boss, trace, kind, protocol.BatchPhaseAccepted,
-		len(items), keyTotal, now.UnixMilli()); err != nil {
+		len(items), keyTotal, now.UnixMilli(),
+		pol.Concurrency, pol.TimeoutMS, pol.OnError, pol.WakeMode); err != nil {
 		return err
 	}
 	for i, it := range items {
@@ -168,9 +237,12 @@ func (s *Store) SetPhase(itemID, phase string) error {
 }
 
 // MarkStarted 记开始时间与 running。
+//
+// 只在 accepted 时生效：正常完成与"取消了还没起跑"都可能在它之前落终态，
+// 不能把终态又改回 running。
 func (s *Store) MarkStarted(itemID string, now time.Time) error {
-	_, err := s.db.Exec(`UPDATE jobs SET phase = ?, started_at = ? WHERE item_id = ?`,
-		protocol.BatchPhaseRunning, now.UnixMilli(), itemID)
+	_, err := s.db.Exec(`UPDATE jobs SET phase = ?, started_at = ? WHERE item_id = ? AND phase = ?`,
+		protocol.BatchPhaseRunning, now.UnixMilli(), itemID, protocol.BatchPhaseAccepted)
 	return err
 }
 
@@ -204,10 +276,20 @@ func (s *Store) SetKeyDone(itemID string, n int) error {
 	return err
 }
 
-// MarkItem 落一项的终态。
+// MarkItem 落一项的终态，并抹掉原始 input。
+//
+// 抹掉不是可选项：落盘窗口只覆盖任务存活期，项一终结就没有"还要重跑"的可能，
+// 留着就是纯隐私负担（DESIGN §3.5）。
+//
+// preview 列是 NOT NULL DEFAULT x”：直接写 nil 会被 SQLite 拒（DEFAULT 只在"没写这列"
+// 时生效），失败项本来就没有摘要，所以这里显式归一成空 BLOB。
 func (s *Store) MarkItem(itemID string, it Item) error {
-	_, err := s.db.Exec(`UPDATE items SET status = ?, error = ?, preview = ?, size = ?, ms = ?
-WHERE item_id = ? AND seq = ?`, it.Status, it.Error, it.Preview, it.Size, it.MS, itemID, it.Seq)
+	preview := it.Preview
+	if preview == nil {
+		preview = []byte{}
+	}
+	_, err := s.db.Exec(`UPDATE items SET status = ?, error = ?, preview = ?, size = ?, ms = ?, input = NULL
+WHERE item_id = ? AND seq = ?`, it.Status, it.Error, preview, it.Size, it.MS, itemID, it.Seq)
 	return err
 }
 
@@ -231,14 +313,15 @@ func (s *Store) SkipPending(itemID string) (int, error) {
 // Job 读一个任务。
 func (s *Store) Job(itemID string) (Job, bool, error) {
 	row := s.db.QueryRow(`SELECT item_id, service, action, caller, boss, trace, kind, phase,
-total, ok, failed, skipped, key_total, key_done, woken, summary, created_at, started_at, finished_at
+total, ok, failed, skipped, key_total, key_done, woken, summary, created_at, started_at, finished_at,
+concurrency, timeout_ms, on_error, wake_mode
 FROM jobs WHERE item_id = ?`, itemID)
 	var j Job
 	var created, started, finished int64
 	var woken int
 	err := row.Scan(&j.ItemID, &j.Service, &j.Action, &j.Caller, &j.Boss, &j.Trace, &j.Kind, &j.Phase,
 		&j.Total, &j.Ok, &j.Failed, &j.Skipped, &j.KeyTotal, &j.KeyDone, &woken, &j.Summary,
-		&created, &started, &finished)
+		&created, &started, &finished, &j.Concurrency, &j.TimeoutMS, &j.OnError, &j.WakeMode)
 	if err == sql.ErrNoRows {
 		return Job{}, false, nil
 	}
@@ -443,9 +526,9 @@ func (s *Store) Prune(now time.Time, ttl time.Duration) (int, error) {
 	return int(n), nil
 }
 
-// MarkInterrupted 把重启时"正在跑"的项标成失败（结果未知，不擅自重跑）。
+// MarkInterrupted 把重启时"正在跑"的项标成失败（结果未知，不擅自重跑），并抹掉原始输入。
 func (s *Store) MarkInterrupted(itemID, reason string) (int, error) {
-	res, err := s.db.Exec(`UPDATE items SET status = ?, error = ? WHERE item_id = ? AND status = ?`,
+	res, err := s.db.Exec(`UPDATE items SET status = ?, error = ?, input = NULL WHERE item_id = ? AND status = ?`,
 		protocol.BatchItemFailed, reason, itemID, protocol.BatchItemRunning)
 	if err != nil {
 		return 0, err
