@@ -15,6 +15,13 @@ var ErrConnClosed = errors.New("protocol: connection closed")
 // dialTimeout 是握手上限：死服务快速失败，避免默认 45s 的长时间挂起。
 const dialTimeout = 5 * time.Second
 
+// DialOptions 是客户端连接的可选限制；零值保持原有行为。
+type DialOptions struct {
+	// MaxMessageBytes 限制接收的单条 WS 消息字节数（含信封）。
+	// 正数在读取/解码前生效；零或负数不限制。超限关闭连接，等待方收到 ErrConnClosed。
+	MaxMessageBytes int64
+}
+
 // Client 是一条 WS 客户端连接：请求-响应配对 + 事件回调。
 //
 // M1 最小实现：不做断线重连与连接时长自适应（后续批次实现）。
@@ -40,11 +47,19 @@ func Dial(addr string, onEvent func(Envelope)) (*Client, error) {
 
 // DialContext 同 Dial，但拨号受 ctx 约束（取消 / 超时立即返回，可中断等待）。
 func DialContext(ctx context.Context, addr string, onEvent func(Envelope)) (*Client, error) {
+	return DialContextWithOptions(ctx, addr, onEvent, DialOptions{})
+}
+
+// DialContextWithOptions 同 DialContext，并在启动读循环前应用接收限制。
+func DialContextWithOptions(ctx context.Context, addr string, onEvent func(Envelope), opts DialOptions) (*Client, error) {
 	d := *websocket.DefaultDialer
 	d.HandshakeTimeout = dialTimeout
 	conn, _, err := d.DialContext(ctx, addr, nil)
 	if err != nil {
 		return nil, err
+	}
+	if opts.MaxMessageBytes > 0 {
+		conn.SetReadLimit(opts.MaxMessageBytes)
 	}
 	c := &Client{
 		conn:    conn,

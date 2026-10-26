@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
@@ -16,7 +17,7 @@ func newHoldServer() *Server {
 	return &Server{
 		logger:    log.New(io.Discard, "", 0),
 		holds:     map[string]*holdState{},
-		asyncJobs: map[string]asyncJob{},
+		asyncJobs: map[asyncKey]*asyncJob{},
 		board:     map[string]*taskState{},
 	}
 }
@@ -24,13 +25,13 @@ func newHoldServer() *Server {
 func (s *Server) testRegisterAsync(item, cid, kind string) {
 	s.asyncMu.Lock()
 	defer s.asyncMu.Unlock()
-	s.asyncJobs[item] = asyncJob{cid: cid, kind: kind}
+	s.asyncJobs[asyncKey{item: item}] = &asyncJob{cid: cid, kind: kind, at: time.Now()}
 }
 
 func (s *Server) testDropAsync(item string) {
 	s.asyncMu.Lock()
 	defer s.asyncMu.Unlock()
-	delete(s.asyncJobs, item)
+	delete(s.asyncJobs, asyncKey{item: item})
 }
 
 func hold(t *testing.T, s *Server, p protocol.UserHoldPayload) map[string]any {

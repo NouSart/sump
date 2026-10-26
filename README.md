@@ -32,7 +32,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 ## 本地运行
 
 ```powershell
-# 构建并启动十个服务（settings-center :9000 + memory :9201 + embedding :9601 + images :9401 + files :9802 + qq :9301 + shell :9701 + timer :9801 + reasoner :9101 + frontend :9501）
+# 构建并启动十三个服务（含 batch :9951、approval :9901、mcp 内部 WS :9902 / 外部 HTTP :9903）
 .\scripts\run-local.ps1
 ```
 
@@ -41,6 +41,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - 前端单独开发：`cd frontend; npm run build`（构建）/ `npm test`（协议 + 链路 + API + 面板组件测试）
 - 接 QQ（NapCat 正向 WS，仅私聊）：`.\scripts\run-local.ps1 -Owner 2271917353 -NapCatURL ws://192.168.11.196:3000 -NapCatToken <token>`——连不上会自动重试，不影响其余服务
 - shell（命令执行，工作目录根 = 仓库根）：**审批未接入时一律“未通过”**——命令不会被真正执行（fail-closed）；已接通 approval：白名单直接放行，白名单外**挂起并在门户等用户裁决**（批准才执行，超时/离线/拒绝都不执行）。边界：工作目录越界即拒（含软链解析）、执行超时后终止整棵进程树、单流输出超上限截断并标注总数、并行上限与待执行队列上限（满即拒绝执行）。细则与设置项：[shell/README.md](./shell/README.md)
+- MCP：独立协议翻译服务，内部 WS `:9902`，外部端点 `http://127.0.0.1:9903/mcp`。通过 `data/mcp.json` 显式配置能力；导入与导出分别授权，外部工具不会自动注册为原生服务。未设置入口 token 时拒绝所有外部请求。启动器可用 `-MCPAddr` / `-MCPHTTPAddr` 调整地址；当前开发范围与使用说明见 [mcp/README.md](./mcp/README.md)。
 - embedding 与语义召回（需要 Python ≥ 3.12，首次运行脚本自动建 venv 装依赖）：模型不入库——把 `model*.onnx + tokenizer.json + config.json`（bge-small-zh-v1.5 量级）放进 `data/models/bge-small-zh-v1.5/`；**没有模型时脚本以 fake 后端启动（显著警告，语义召回不可用），放置后重启即启用**。细则与实测记录：[embedding/README.md](./embedding/README.md)
 - 数据落在 `data/`（`memory.db` / `images.db` / `images/` / `files.db` / `files/` / `settings.json`，不入库）
 - 接入真 LLM：`$env:DEEPSEEK_API_KEY='sk-...'; .\scripts\run-local.ps1`（或显式 `-LlmKey/-LlmModel/-LlmBase`）
@@ -117,4 +118,5 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 | [shell/README.md](./shell/README.md) | shell 服务：边界、审批接缝、设置项、补报时序 |
 | [embedding/README.md](./embedding/README.md) | embedding 服务：模型放置、A/B 实测与阈值来源 |
 | [files/README.md](./files/README.md) | files 服务：文件存取、Excel 读写、设置项、错误处理 |
-| [MCP-ACCEPTANCE.md](./MCP-ACCEPTANCE.md) | MCP 接口验收标准（先 B 后 A）：边界 / 暴露白名单 / 鉴权 / 登记与测试要求 |
+| [mcp/README.md](./mcp/README.md) | MCP 服务：双向协议翻译、显式能力映射、鉴权与运行方式 |
+| [MCP-ACCEPTANCE.md](./MCP-ACCEPTANCE.md) | MCP 验收契约、验证方法与当前范围 |

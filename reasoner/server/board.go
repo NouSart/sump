@@ -49,16 +49,17 @@ type pendingJob struct {
 
 // taskState 是黑板里的一个会话任务（窗口 = 任务在跑期）。
 type taskState struct {
-	mu       sync.Mutex
-	cid      string
-	boss     string
-	trace    string
-	messages []llm.Message         // 最新完整历史（唯一副本；任务内各轮都基于它）
-	pending  map[string]pendingJob // call_id → 正在执行的工具
-	gen      int64                 // 消息链变化水位（每次变化 +1）
-	seen     int64                 // 已安排给“下一轮”的水位（gen != seen = 有未处理的进展）
-	running  bool                  // 是否有一轮 LLM 在跑（每会话同时至多一轮）
-	closed   bool                  // 已交付 / 被取代：残留事件一律丢弃
+	followUpOf *taskState // 补报轮的原任务；用于保持同 trace 下不同任务实例的边界。
+	mu         sync.Mutex
+	cid        string
+	boss       string
+	trace      string
+	messages   []llm.Message         // 最新完整历史（唯一副本；任务内各轮都基于它）
+	pending    map[string]pendingJob // call_id → 正在执行的工具
+	gen        int64                 // 消息链变化水位（每次变化 +1）
+	seen       int64                 // 已安排给“下一轮”的水位（gen != seen = 有未处理的进展）
+	running    bool                  // 是否有一轮 LLM 在跑（每会话同时至多一轮）
+	closed     bool                  // 已交付 / 被取代：残留事件一律丢弃
 
 	taskID      string // 这次工作所属的任务（记忆服务在 recall 时确定）
 	taskName    string // 任务名（写进系统提示，也是历史列表的标题）

@@ -28,18 +28,24 @@ type stubAsync struct {
 	ln     net.Listener
 	srv    *http.Server
 	itemID string
+	kind   string
 
-	got  chan protocol.ShellRunPayload // 收到的 run 输入
-	boss chan string                   // 受理时信封里的 boss
+	got       chan protocol.ShellRunPayload // 收到的 run 输入
+	envelope  chan protocol.Envelope
+	beforeAck func(protocol.Envelope)
+	boss      chan string // 受理时信封里的 boss
 }
 
-func startStubAsync(t *testing.T, center *stubCenter, itemID string) *stubAsync {
+func startStubAsync(t *testing.T, center *stubCenter, itemID string, kinds ...string) *stubAsync {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &stubAsync{ln: ln, itemID: itemID, got: make(chan protocol.ShellRunPayload, 8), boss: make(chan string, 8)}
+	a := &stubAsync{ln: ln, itemID: itemID, got: make(chan protocol.ShellRunPayload, 8), boss: make(chan string, 8), envelope: make(chan protocol.Envelope, 8)}
+	if len(kinds) > 0 {
+		a.kind = kinds[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", a.handleWS)
 	a.srv = &http.Server{Handler: mux}
@@ -87,8 +93,12 @@ func (a *stubAsync) handleWS(w http.ResponseWriter, r *http.Request) {
 		case a.boss <- env.Boss:
 		default:
 		}
+		a.envelope <- env
+		if a.beforeAck != nil {
+			a.beforeAck(env)
+		}
 		// 受理即回执：只回句柄，不执行。
-		out, _ := protocol.EncodePayload(map[string]any{"item_id": a.itemID, "phase": "queued"})
+		out, _ := protocol.EncodePayload(map[string]any{"item_id": a.itemID, "phase": "queued", "kind": a.kind})
 		resp, _ := protocol.NewResponse(env, "stub-async", protocol.ResponsePayload{OK: true, Data: out})
 		c.send(resp)
 	}
@@ -97,10 +107,13 @@ func (a *stubAsync) handleWS(w http.ResponseWriter, r *http.Request) {
 // ---------- 环境与辅助 ----------
 
 // startReportEnv 起一套最小环境：中心 / boss / 记忆 / reasoner（真实例）。
-func startReportEnv(t *testing.T, sc *stubCenter, fake *llm.Fake) (*server.Server, *stubBoss, *stubMemory) {
+func startReportEnv(t *testing.T, sc *stubCenter, fake *llm.Fake, setup ...func(*stubBoss, *stubMemory)) (*server.Server, *stubBoss, *stubMemory) {
 	t.Helper()
 	boss := startStubBoss(t, sc)
 	mem := startStubMemory(t, sc)
+	for _, configure := range setup {
+		configure(boss, mem)
+	}
 	logger := log.New(os.Stdout, "[report-test] ", log.LstdFlags)
 	s := server.New(server.Config{
 		Name:              "reasoner",
@@ -127,12 +140,21 @@ type asyncOutcome struct {
 }
 
 // fireReport 以“异步服务”的身份向 reasoner 送一条补报。
-func fireReport(t *testing.T, s *server.Server, item, phase, text string, final bool) asyncOutcome {
+func fireReport(t *testing.T, s *server.Server, trace, item, phase, text string, final bool) asyncOutcome {
 	t.Helper()
 	c := dialReasoner(t, s)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	rp := jump(t, c, "report_result", protocol.AsyncResultPayload{ItemID: item, Phase: phase, Text: text, Final: final}, ctx)
+	raw, _ := protocol.EncodePayload(protocol.AsyncResultPayload{ItemID: item, Phase: phase, Text: text, Final: final})
+	env, _ := protocol.NewEnvelope(protocol.TypeJump, "stub-async", "reasoner", trace, protocol.JumpPayload{Action: "report_result", Input: raw})
+	response, err := c.Call(ctx, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rp protocol.ResponsePayload
+	if err := response.DecodePayload(&rp); err != nil {
+		t.Fatal(err)
+	}
 	if !rp.OK {
 		t.Fatalf("补报未被受理: %s", rp.Error)
 	}
@@ -145,11 +167,11 @@ func fireReport(t *testing.T, s *server.Server, item, phase, text string, final 
 
 // reportUntilAccepted 重试送补报，直到 reasoner 认领。
 // 登记发生在受理回执返回之后（工具调用在后台跑），此处用“响应自证”代替 sleep 猜时序。
-func reportUntilAccepted(t *testing.T, s *server.Server, item, phase, text string, final bool) asyncOutcome {
+func reportUntilAccepted(t *testing.T, s *server.Server, trace, item, phase, text string, final bool) asyncOutcome {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		out := fireReport(t, s, item, phase, text, final)
+		out := fireReport(t, s, trace, item, phase, text, final)
 		if out.Status == "accepted" {
 			return out
 		}
@@ -234,7 +256,7 @@ func TestReportResultOpensSupplementAfterClose(t *testing.T) {
 	waitDelivery(t, boss, "已受理，结果稍后送达")
 
 	// 终态补报：任务已收尾 → 开补报轮。
-	out := reportUntilAccepted(t, s, "cmd-1", "done", "命令执行完成：hello", true)
+	out := reportUntilAccepted(t, s, (<-async.envelope).Trace, "cmd-1", "done", "命令执行完成：hello", true)
 	if out.Delivery != "new_task" {
 		t.Fatalf("任务已收尾时应开补报轮: %+v", out)
 	}
@@ -283,7 +305,7 @@ func TestReportResultInjectedIntoLiveTask(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	out := reportUntilAccepted(t, s, "cmd-2", "approved", "审批通过，已开始执行", false)
+	out := reportUntilAccepted(t, s, (<-async.envelope).Trace, "cmd-2", "approved", "审批通过，已开始执行", false)
 	if out.Delivery != "injected" {
 		t.Fatalf("任务在跑时应注入同一条链: %+v", out)
 	}
@@ -333,7 +355,7 @@ func TestReportWithoutMatchingItemIgnored(t *testing.T) {
 	fake := &llm.Fake{Replies: []llm.Message{{Role: "assistant", Content: "hi"}}}
 	s, boss, _ := startReportEnv(t, sc, fake)
 
-	out := fireReport(t, s, "no-such-item", "done", "x", true)
+	out := fireReport(t, s, "unknown-trace", "no-such-item", "done", "x", true)
 	if out.Status != "ignored" {
 		t.Fatalf("无对应受理的补报应被忽略: %+v", out)
 	}
@@ -352,5 +374,108 @@ func TestReportWithoutMatchingItemIgnored(t *testing.T) {
 	defer cancel()
 	if rp := jump(t, c, "report_result", protocol.AsyncResultPayload{Phase: "done"}, ctx); rp.OK {
 		t.Fatal("缺 item_id 的补报应被拒")
+	}
+}
+
+// TestReportBeforeAcceptanceResponse 使用真实 WS；工具必须先收到补报回执，才发送工具受理回执。
+// 因而时序由协议屏障决定，不依赖 sleep 或机器速度。
+func TestReportBeforeAcceptanceResponse(t *testing.T) {
+	sc := startStubCenter(t)
+	async := startStubAsync(t, sc, "early-item")
+	fake := &llm.Fake{Replies: []llm.Message{
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "early-call", Type: "function", Function: llm.FunctionCall{Name: "stub-async__run", Arguments: `{"command":"echo early"}`}}}},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "wait-call", Type: "function", Function: llm.FunctionCall{Name: "wait", Arguments: "{}"}}}},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{taskStatusCall("judge", `{"status":"done"}`)}},
+		{Role: "assistant", Content: "已收到提前完成的结果"},
+	}}
+	s, boss, mem := startReportEnv(t, sc, fake, func(b *stubBoss, m *stubMemory) {
+		m.setTask(&protocol.Task{ID: "original-task", Name: "早到回报", Status: "active"})
+		b.progress = make(chan protocol.ProgressPayload, 64)
+		sc.mu.Lock()
+		card := sc.cards["stub-boss"]
+		card.Provides = append(card.Provides, protocol.Provide{Action: "progress"})
+		sc.cards["stub-boss"] = card
+		sc.mu.Unlock()
+	})
+	result := make(chan string, 1)
+	async.beforeAck = func(call protocol.Envelope) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		c, err := protocol.DialContext(ctx, s.WsURL(), nil)
+		if err != nil {
+			result <- err.Error()
+			return
+		}
+		defer c.Close()
+		input, _ := protocol.EncodePayload(protocol.AsyncResultPayload{ItemID: "early-item", Phase: "done", Text: "实际早到的输出", Final: true})
+		env, _ := protocol.NewEnvelope(protocol.TypeJump, "stub-async", "reasoner", call.Trace, protocol.JumpPayload{Action: "report_result", Input: input})
+		reply, err := c.Call(ctx, env)
+		if err != nil {
+			result <- err.Error()
+			return
+		}
+		var rp protocol.ResponsePayload
+		if err := reply.DecodePayload(&rp); err != nil {
+			result <- err.Error()
+			return
+		}
+		if !rp.OK {
+			result <- rp.Error
+			return
+		}
+		var out asyncOutcome
+		if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
+			result <- err.Error()
+			return
+		}
+		mem.setTask(&protocol.Task{ID: "newer-task", Name: "新任务", Status: "active"})
+		result <- out.Status
+	}
+	sendUser(t, s, "测试早到回报")
+	select {
+	case status := <-result:
+		if status != "buffered" {
+			t.Fatalf("回执发送之前应已缓存，got %q", status)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("工具未完成补报屏障")
+	}
+	waitDelivery(t, boss, "已收到提前完成的结果")
+	if !requestHas(*fake.LastRequest(), "实际早到的输出", "job=early-call", "item=early-item") {
+		t.Fatalf("真实 Reasoner 未收到匹配的早到结果: %+v", fake.LastRequest().Messages)
+	}
+	// 记忆服务当前任务已经改变，历史输出仍必须带上原 task_id，不能依赖服务端猜归属。
+	deadline := time.Now().Add(5 * time.Second)
+	foundStore := false
+	for time.Now().Before(deadline) && !foundStore {
+		for _, stored := range mem.Stores() {
+			if stored.Kind == "tool_result" && stored.Content == "实际早到的输出" {
+				if stored.TaskID != "original-task" {
+					t.Fatalf("store 归错任务: %+v", stored)
+				}
+				foundStore = true
+			}
+		}
+		if !foundStore {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if !foundStore {
+		t.Fatal("没有收到补报输出的 store")
+	}
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case progress := <-boss.progress:
+			if progress.Kind == "tool_result" && progress.Content == "实际早到的输出" {
+				if progress.TaskID != "original-task" {
+					t.Fatalf("progress 归错任务: %+v", progress)
+				}
+				return
+			}
+		case <-timeout.C:
+			t.Fatal("没有收到补报输出的 progress")
+		}
 	}
 }

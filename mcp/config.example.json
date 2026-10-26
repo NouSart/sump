@@ -1,0 +1,45 @@
+{
+  "exports": [
+    "files__read"
+  ],
+  "remotes": [
+    {
+      "id": "catalog",
+      "url": "http://127.0.0.1:9910/mcp",
+      "token_required": true
+    }
+  ],
+  "imports": [
+    {
+      "action": "lookup",
+      "remote": "catalog",
+      "tool": "lookup",
+      "async": false,
+      "description": "Look up a value in the configured catalog",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

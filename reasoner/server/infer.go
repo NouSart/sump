@@ -213,49 +213,38 @@ func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCa
 	if err != nil {
 		return "", err
 	}
-	// boss 随跳转传下去：受理方若事后补报，才知道结果面向谁。
+	// 先登记待回执，再派发：远端后台补报可能抢在受理响应之前到达。
+	var pending *asyncJob
+	if p, ok := s.provideOf(svc, action); ok && p.Async {
+		pending, err = s.beginAsync(svc, st, call)
+		if err != nil {
+			return "", err
+		}
+		defer s.abandonAsync(pending)
+	}
 	data, err := s.Call(ctx, svc, action, rawIn, st.trace, st.boss)
 	if err != nil {
-		return "", err
+		return "", err // 无回执不代表远端未执行；不重放工具调用。
 	}
-	if p, ok := s.provideOf(svc, action); ok && p.Async {
-		s.trackAsync(svc, action, st, call, data)
+	if pending != nil {
+		var receipt struct {
+			ItemID string `msgpack:"item_id"`
+			Kind   string `msgpack:"kind"`
+		}
+		if err := protocol.DecodeRaw(data, &receipt); err != nil || receipt.ItemID == "" || len(receipt.ItemID) > 512 {
+			return "", errors.New("异步受理回执无有效 item_id；执行结果未知")
+		}
+		st.mu.Lock()
+		if job, ok := st.pending[call.ID]; ok {
+			job.async = true
+			st.pending[call.ID] = job
+		}
+		st.mu.Unlock()
+		if err := s.finishAsync(pending, receipt.ItemID, receipt.Kind); err != nil {
+			return "", err
+		}
 	}
 	return rawToJSONText(data), nil
-}
-
-// trackAsync 登记一次异步受理：从回执里取句柄（item_id），后续进展由 report_result 补报。
-func (s *Server) trackAsync(svc, action string, st *taskState, call llm.ToolCall, data msgpack.RawMessage) {
-	var res struct {
-		ItemID string `msgpack:"item_id"`
-		Kind   string `msgpack:"kind"`
-	}
-	if err := protocol.DecodeRaw(data, &res); err != nil {
-		s.logger.Printf("异步动作 %s__%s 的受理回执无法解析（补报将无处归属）: %v", svc, action, err)
-		return
-	}
-	if res.ItemID == "" {
-		s.logger.Printf("异步动作 %s__%s 的受理回执未带 item_id（补报将无处归属）", svc, action)
-		return
-	}
-	s.registerAsync(res.ItemID, asyncJob{
-		cid:      st.cid,
-		callID:   call.ID,
-		name:     call.Function.Name,
-		boss:     st.boss,
-		trace:    st.trace,
-		taskID:   st.taskID,
-		taskName: st.taskName,
-		kind:     res.Kind,
-	})
-	s.logger.Printf("会话 %s：已受理异步动作 %s（item=%s, job=%s），等补报", st.cid, call.Function.Name, res.ItemID, call.ID)
-	// 标记这次调用是异步受理：它的回执只是「已排队」，不该当成终端输出记进轨迹。
-	st.mu.Lock()
-	if job, ok := st.pending[call.ID]; ok {
-		job.async = true
-		st.pending[call.ID] = job
-	}
-	st.mu.Unlock()
 }
 
 // toolSem 返回某会话的工具并发信号量（nil = 不限制）。信号量懒创建、按会话复用；
