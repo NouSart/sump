@@ -2,7 +2,7 @@
 
 MCP 是一个独立的 SUMP 服务，提供双向协议翻译。设置中心只发现 `mcp` 本身；外部工具通过显式绑定导入，导入和对外发布相互独立。
 
-当前实现为 **M3.2：新版 SUMP 基线集成**，包含 M1 同步翻译、M2 异步关联和 M3.1 远程对接准备。SUMP 基线为 `440ba5b313200d452ada60248687282d4d8e8bad`。协议基线是 MCP `2026-07-28` Stateless HTTP，官方 Go SDK `v1.8.0`。异步导入使用原生受理回执与补报；异步导出使用主体私有的临时观察资源。目前不提供 MCP Tasks、stdio、OAuth 或远程 shell。
+支持同步与异步双向调用、HTTPS 远程接入和只读契约检查。协议基线是 MCP `2026-07-28` Stateless HTTP，使用官方 Go SDK `v1.8.0`。异步导入使用原生受理回执与补报；异步导出使用主体私有的临时观察资源。目前不提供 MCP Tasks、stdio、OAuth 或远程 shell。
 
 ## 架构
 
@@ -94,7 +94,7 @@ MCP 发出新的原生调用 ID/trace，以 `from=mcp,boss=mcp` 直接调用 fil
 
 ### SUMP → 外部 MCP
 
-配置中的每个 `imports.action` 注册为 `mcp` 自己的工具。`async` 省略或为 `false` 时保留 M1 同步行为；设为 `true` 时固定声明 `Provide.Async=true`，需要重启生效。同步调用例如：
+配置中的每个 `imports.action` 注册为 `mcp` 自己的工具。`async` 省略或为 `false` 时采用同步调用；设为 `true` 时固定声明 `Provide.Async=true`，需要重启生效。同步调用例如：
 
 ```text
 jump.to = mcp
@@ -241,6 +241,6 @@ cd ../tests
 go test . -run '^TestMCP(Bidirectional|RemoteTLSPreparation)$' -count=1 -timeout 180s
 ```
 
-单元测试包含独立 raw HTTP、官方 SDK 客户端、认证撤销、配置、读取限额、并发隔离、Schema 漂移、超时不重试、早到/迟到补报、私有资源、取消与退出。集成测试启动真实 settings-center/files/timer/mcp 进程，用独立进程的 HTTP 外部 fixture 验证同步和异步导入，并独立构造 JSON-RPC 验证文件导出、计时结果和取消。慢调用用屏障保持阻塞，先验证快调用完成，再放行慢调用；这不代表高负载性能基准。Reasoner 另有真实 WebSocket 工具在回执前补报的验证。HTTPS 集成测试在本机启动真实 TLS 服务进程并使用临时私有 CA，检查只读预检、双向调用和异步结果。另已通过 VMware Win11 仅主机网络的 HTTPS 计时器导出联调，验证两个任务独立完成及错误凭据、证书被拒绝；不代表反向跨设备、公网或真实第三方产品验收。CI 为 MCP 配置测试、静态检查和竞态检查，是否通过以当前提交的运行结果为准。完整范围与限制见 [验收契约](../MCP-ACCEPTANCE.md)。
+单元测试包含独立 raw HTTP、官方 SDK 客户端、认证撤销、配置、读取限额、并发隔离、Schema 漂移、超时不重试、早到/迟到补报、私有资源、取消与退出。集成测试启动真实 settings-center/files/timer/mcp 进程，用独立进程的 HTTP 外部 fixture 验证同步和异步导入，并独立构造 JSON-RPC 验证文件导出、计时结果和取消。慢调用用屏障保持阻塞，先验证快调用完成，再放行慢调用；这不代表高负载性能基准。Reasoner 另有真实 WebSocket 工具在回执前补报的验证。HTTPS 集成测试在本机启动真实 TLS 服务进程并使用临时私有 CA，检查只读预检、双向调用和异步结果。CI 为 MCP 配置测试、静态检查和竞态检查，是否通过以当前提交的运行结果为准。完整范围与限制见 [验收契约](../MCP-ACCEPTANCE.md)。
 
 参考：[MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28)、[官方 Go SDK v1.8.0](https://github.com/modelcontextprotocol/go-sdk/tree/v1.8.0)、[JSON Schema 库](https://github.com/google/jsonschema-go)。具体依赖锁定在 `go.mod` / `go.sum`；保留各依赖原许可证。
