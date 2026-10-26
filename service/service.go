@@ -32,6 +32,10 @@ type Config struct {
 	Description       string             // 名片：功能简介
 	Provides          []protocol.Provide // 名片：对外提供的动作
 	Logger            *log.Logger        // 日志（默认 log.Default）
+	// MaxMessageBytes 限制接收的单条 WS 消息（含信封）：入站 jump/补报、
+	// 出站 Call/Fire 的响应，以及中心注册/名册事件。正数生效，零或负数保持不限制。
+	// 限额在读取/解码前执行，超限关闭该连接；不限制发送方向。
+	MaxMessageBytes int64
 	// SecretFile 是秘密项（HandleSecret）的本地持久化文件路径。
 	// 留空 = <name> 的默认路径（data/<name>-secret.json）；传 "-" 表示只放内存不落盘。
 	SecretFile string
@@ -183,7 +187,7 @@ func (s *Service) Shutdown() {
 
 // connectAndRegister 建立一条中心连接、注册并启动心跳。
 func (s *Service) connectAndRegister(ctx context.Context) error {
-	c, err := protocol.Dial(s.cfg.Center, s.onCenterEvent)
+	c, err := protocol.DialContextWithOptions(context.Background(), s.cfg.Center, s.onCenterEvent, protocol.DialOptions{MaxMessageBytes: s.cfg.MaxMessageBytes})
 	if err != nil {
 		return err
 	}
@@ -393,6 +397,9 @@ func (s *Service) handleWS(w http.ResponseWriter, r *http.Request) {
 
 // serveConn 读循环：jump 交给后台 goroutine 处理（慢动作不阻塞读循环）。
 func (s *Service) serveConn(ws *websocket.Conn) {
+	if s.cfg.MaxMessageBytes > 0 {
+		ws.SetReadLimit(s.cfg.MaxMessageBytes)
+	}
 	c := &outConn{ws: ws}
 	defer c.Close()
 	for {
@@ -495,7 +502,7 @@ var errDialFailed = errors.New("拨号失败")
 
 // callOnce 执行一次跳转（不复用连接）。
 func (s *Service) callOnce(ctx context.Context, name, addr, action string, raw msgpack.RawMessage, trace, boss string) (msgpack.RawMessage, error) {
-	c, err := protocol.DialContext(ctx, addr, nil)
+	c, err := protocol.DialContextWithOptions(ctx, addr, nil, protocol.DialOptions{MaxMessageBytes: s.cfg.MaxMessageBytes})
 	if err != nil {
 		return nil, fmt.Errorf("%w: 连接 %s 失败: %v", errDialFailed, addr, err)
 	}

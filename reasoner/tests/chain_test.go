@@ -23,6 +23,7 @@ type stubBoss struct {
 	ln        net.Listener
 	srv       *http.Server
 	delivered chan protocol.DeliverPayload
+	progress  chan protocol.ProgressPayload
 }
 
 func startStubBoss(t *testing.T, center *stubCenter) *stubBoss {
@@ -74,6 +75,16 @@ func (b *stubBoss) handleWS(w http.ResponseWriter, r *http.Request) {
 		var jp protocol.JumpPayload
 		if err := env.DecodePayload(&jp); err != nil {
 			continue
+		}
+		if jp.Action == "progress" {
+			var p protocol.ProgressPayload
+			_ = protocol.DecodeRaw(jp.Input, &p)
+			select {
+			case b.progress <- p:
+			default:
+			}
+			resp, _ := protocol.NewResponse(env, "stub-boss", protocol.ResponsePayload{OK: true})
+			c.send(resp)
 		}
 		if jp.Action == "deliver" {
 			var p protocol.DeliverPayload

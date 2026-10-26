@@ -426,6 +426,17 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
   **防刷在上报方**：退避 1s 起逐档翻倍、封顶 30s，静默 60s 重置，被节流即丢弃；中心视为**永远在线**，
   不做补发队列——断连期间的上报直接丢弃（中心侧不排队、不回补、不落盘）。
 
+### 7.3 MCP 服务设置
+
+`mcp` 复用既有三类设置机制，不新增中心动作或配置存储。能力映射由本服务读取 `data/mcp.json`；外部连接和工具不登记为独立的原生服务，导入权限与对外发布权限分别配置。
+
+| 键 | 类型 | 含义 |
+| --- | --- | --- |
+| `http.token` | 秘密 | MCP HTTP 入口的 Bearer token；通过 `HandleSecret` 保存在服务自己的秘密文件 |
+| `name` / `addr` / `center` | 只读 | 服务名、内部 WS 监听地址、中心地址 |
+| `http.addr` | 只读 | 独立 MCP HTTP 监听地址 |
+| `config.path` | 只读 | 本服务配置文件路径；exports 经完整校验后热更新；路径、remotes、imports 与证书信任修改需重启 |
+
 ---
 
 ## 8. 链机制要点（写“参与链”的服务必读）
@@ -496,6 +507,7 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | shell | Go | 受理即回执的命令执行（无队列：并行/串行归调用方，只有防爆熔断；超时终止 + 输出截断）；审批接缝（未接入 = 一律未通过）；结果由 `report_result` 补报 |
 | approval | Go | 终端命令审批第一层：PowerShell AST + 不可变规则快照 + 执行摘要绑定；第二层仅接口 |
 | timer | Go | 计时器：受理「N 毫秒后唤醒我」（受理即回执，不阻塞调用方）→ 到点把 `report_result` 跳回调用方；在计时器按 boss 分组推给门户（倒计时） |
+| mcp | Go | 双向协议翻译：通过显式映射导出获准的原生能力、导入外部 MCP 工具；只登记自身，不自动传播下属能力或重新导出已导入工具 |
 | batch | Go | 批处理：一次声明 N 项工作 + 并发度 + 唤醒时机；受理即回执，按 key / 首次失败 / 终态推至多三条；暂停可恢复、停止是终态；目标动作须显式声明 `Batchable` |
 | embedding | Python | 文本 → 向量（onnxruntime + tokenizers，CLS pooling + L2 归一）；动作 `embed`；fake 后端供测试与 CI |
 | qq | Go | 把主人私聊消息（图先存 images）打成 user_message 发给 reasoner；实现 deliver 回发私聊 |
@@ -503,6 +515,18 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | tests | Go | 跨服务真进程端到端（不属于任何服务） |
 
 > 非 Go 实现只需遵循本规范；`protocol/`（协议实现）与 `service/`（服务骨架：注册 / 心跳 / 重连 / 告别 / 设置）是 Go 侧的便利库，不是准入条件。
+
+### 12.1 本地开发端口
+
+| 服务 | 默认端口 | 协议 |
+| --- | --- | --- |
+| settings-center / reasoner / memory / qq / images | 9000 / 9101 / 9201 / 9301 / 9401 | WS `/ws` |
+| frontend | 9501 | HTTP 面板与内部 WS |
+| embedding / shell / timer / files / approval | 9601 / 9701 / 9801 / 9802 / 9901 | WS `/ws` |
+| mcp | 9902 | 内部 WS `/ws`，常规注册与结果补报 |
+| mcp | 9903 | MCP Streamable HTTP `/mcp`，独立鉴权，默认回环监听 |
+
+地址可由启动参数调整；同一 `mcp` 进程持有两个监听地址，不是两个 SUMP 服务。端口分配与 `scripts/run-local.ps1` 一致。
 
 ---
 
@@ -519,8 +543,18 @@ reasoner 在执行前直接拒绝（错误作为工具结果回给模型——�
 | exec 域执行描述字段 | 当前 `plan` 是命令域专用结构；每个字段只保留一个语义 | `version` `command` `work_dir` `shell_path` `args` `dialect` `platform` `profile` `timeout_ms` `max_output_bytes`；`dialect` 只表示 shell 方言，`profile` 只表示执行环境约定 |
 | 域判别字段（将来） | 新增第二个执行域时定义独立字段；当前协议尚未发送，不复用 `dialect` | 建议 `kind`，取值如 `exec` / `fs` / `http`；其他域各自声明执行字段组，裁决包、摘要绑定、有效期、fail-closed 共用 |
 | 审批枚举 | 取值由 approval 服务定义，见 [审批协议](./COMMAND-APPROVAL-PROTOCOL.md) | `decision`：`allow` / `deny` / `review`；`reason_code`：`RULE_ALLOW` `POLICY_DENY` `DYNAMIC_BEHAVIOR` `NO_MATCHING_RULE` `PARSE_ERROR` `UNSUPPORTED_DIALECT` `CONTEXT_UNKNOWN` `RUNTIME_MISMATCH` `LIMIT_EXCEEDED`，第二层用户裁决：`USER_APPROVED` `USER_DENIED` |
-| 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `files` `qq` `shell` `timer` `batch` `frontend` `embedding` `approval` |
+| 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `files` `qq` `shell` `timer` `batch` `mcp` `frontend` `embedding` `approval` |
 | 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `batch.concurrency` `batch.max_concurrency` `batch.max_inflight` `batch.max_items` `batch.item_timeout_ms` `batch.preview_bytes` `batch.job_ttl_ms` `batch.resume_on_start` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `recall.embedding` `max_mb` `read_max_chars` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.max_running` `approval.service` `approval.timeout_ms` `policy.json` `max_ms` `max_pending` `portal` `llm.base` `llm.model` `llm.key` `memory` `images` `name` `addr` `center` `napcat.url` `napcat.token` `reasoner` `db` `dir` `settings` `web` |
 | 名片字段（`provides[]`） | 小写下划线；跨语言一致 | `action` `input` `output` `tool` `async` `batchable` |
 
 审批设置键补充：`policy.json`（approval 声明的规则快照配置）。`approval_result` 没有注册为动作；审批结果作为 `approval_request` 的响应返回，并由 shell 的 `report_result` 承载后续反馈。
+
+MCP 设置键补充：`http.token` 与 `remote.<id>.token`（秘密）、`http.addr` / `config.path`（只读），见 §7.3。MCP 的方法名、连接与工具目录属于 `mcp` 的外部协议，不新增 SUMP 信封字段。外部请求进入 SUMP 时，由 `mcp` 生成独立 trace 并作为结果归属方（`from=mcp`、`boss=mcp`）；反向调用沿用原始 SUMP 请求的响应关联。受理回执不得当作最终执行结果。
+
+MCP 导入动作的 `provides[].batchable` 为 `false`；导入授权不包含 batch 代理执行授权。batch 对此返回 `BATCH_NOT_BATCHABLE`，直接调用及其并发不受影响。
+
+MCP 同步导入结果：`phase` 为 `completed` / `failed`，`is_error` 表示远端工具是否明确失败，`content` 保留 MCP 内容块，`structured_content` 保留已校验的结构化结果；工具明确失败仍是已成功翻译的响应，`response.ok=true`。传输或契约失败使用 `response.ok=false`，不可据此认定远端没有执行。详见 [MCP 服务](./mcp/README.md)。
+
+MCP 异步导入由绑定配置 `async:true` 固定声明 `Provide.Async`。先返回 `{item_id,phase:"accepted"}`，再沿原来源、trace、boss 发送现有 `report_result`；`text` 是有界可读投影，`data` 保留翻译结果，`final:true` 表示本地观察结束。派发后失去结果时 `phase=outcome_unknown`，不能解释为操作未执行或已停止。`cancel_import` 输入仅 `item_id`，校验原调用服务身份；返回 `status=observation_cancelled/unknown` 和 `remote_outcome=unknown`，只取消本地等待。失败数据可带 `execution_outcome=not_submitted/unknown`，不新增信封字段或全局调度状态。
+
+异步调用方在派发前登记待回执，补报必须以来源服务、trace、item_id 共同关联。早到缓冲有界，确定终态仅交付一次。MCP 对外的 `sump://jobs/{job_id}` 观察资源归 HTTP 认证主体所有，不依赖传输会话；它是模块自己的临时记录，不是原生任务表或 MCP Tasks。

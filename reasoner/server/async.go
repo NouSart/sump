@@ -1,149 +1,315 @@
 package server
 
-// 异步受理的补报（report_result）：一个“受理即回执”的动作（Provide.Async）在受理之后
-// 由该服务发回后续消息——可能晚于任务收尾。
-//
-// 边界：
-//   - 受理回执就是这次工具调用的结果位（tool_calls 配对已闭合）；补报是独立的一跳；
-//   - 补报不进入任务的 pending 表：受理已经完成，模型的收尾不该被一条长命令扣住
-//     （wait 会如实披露“已受理未回报”的条数，但不阻塞等待它们）；
-//   - 任务还在跑 → 注入黑板并唤醒；任务已收尾 → 以补报开启“补报轮”，结果不丢。
+// 异步受理与补报：派发前预留登记，回执决定 item_id 的归属。
+// source + trace + item_id 共同关联；信封身份仍依赖 SUMP 可信网络，并非密码学认证。
+// 仅待回执期间缓存早到消息，且数量、体积、寿命都有上限；不接管服务的业务任务状态。
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
 )
 
-// asyncJob 记录一次已受理、等待补报的异步工具调用。
+type asyncKey struct{ source, trace, item string }
+
 type asyncJob struct {
-	cid      string // 会话（补报回到哪个任务）
-	callID   string // 该次工具调用的 job id（模型上下文里也是它）
-	name     string // 工具名（服务__动作）
-	boss     string // 任务原老板（补报轮交付用）
-	trace    string // 链路 id（原样沿用）
-	taskID   string // 归属任务（补报开的轮次也算在这个任务里）
-	taskName string
-	kind     string // once | resident（常驻任务不参与"其他任务是否全部结束"的判断）
-	at       time.Time
+	deliveryMu sync.Mutex // 单个句柄的进展与终态顺序处理，不阻塞其他调用。
+	final      bool
+	source     string
+	cid        string
+	callID     string
+	name       string
+	boss       string
+	trace      string
+	taskID     string
+	taskName   string
+	kind       string // once | resident; only the receipt establishes this classification
+	origin     *taskState
+	at         time.Time
 }
 
-// asyncJobTTL 是记录的兜底寿命：服务若中途死掉可能永远不发终态补报，过期即清（防无界增长）。
-// 取 24 小时——远大于任何合理的执行超时（`exec.timeout_ms` 预设 5 分钟），日常不会误清。
-const asyncJobTTL = 24 * time.Hour
+const (
+	asyncJobTTL       = 24 * time.Hour
+	asyncRecordLimit  = 512 // 已受理 + 待回执；满额在工具派发前拒绝。
+	asyncEarlyLimit   = 128
+	asyncEarlyBytes   = 2 << 20
+	asyncReportBytes  = 256 << 10
+	asyncEarlyPerItem = 8
+	asyncDoneTTL      = 10 * time.Minute
+)
 
-// followUpHint 是补报轮里追加给模型的说明（这是要发给用户的补充，不是内部思考）。
 const followUpHint = "（上面的内容是先前工具的后续补报——任务可能已经结束。请给用户一句简短补充：这就是要发送给用户的内容。）"
 
-// registerAsync 登记一条在途的异步受理（句柄来自受理回执）。
-func (s *Server) registerAsync(item string, j asyncJob) {
-	j.at = time.Now()
+func (s *Server) beginAsync(source string, st *taskState, call llm.ToolCall) (*asyncJob, error) {
+	// task_status 可能同时改名；先取得一致的任务快照，再登记异步调用。
+	// 两把锁分别持有，避免黑板锁与异步登记锁形成嵌套。
+	st.mu.Lock()
+	j := &asyncJob{source: source, cid: st.cid, callID: call.ID, name: call.Function.Name,
+		boss: st.boss, trace: st.trace, taskID: st.taskID, taskName: st.taskName,
+		origin: st, at: time.Now()}
+	st.mu.Unlock()
 	s.asyncMu.Lock()
 	defer s.asyncMu.Unlock()
-	s.asyncJobs[item] = j
 	s.sweepAsyncLocked(time.Now())
-}
-
-// takeAsync 取出某句柄的登记；final 为真（终态补报）时同时删除。
-// 顺带清理过期登记（服务死掉时的兜底）。
-func (s *Server) takeAsync(item string, final bool) (asyncJob, bool) {
-	s.asyncMu.Lock()
-	defer s.asyncMu.Unlock()
-	j, ok := s.asyncJobs[item]
-	if ok && final {
-		delete(s.asyncJobs, item)
+	if len(s.asyncJobs)+len(s.asyncPending) >= asyncRecordLimit {
+		return nil, errors.New("异步回报登记已满，工具尚未派发")
 	}
-	s.sweepAsyncLocked(time.Now())
-	return j, ok
+	s.asyncPending[j] = true
+	return j, nil
 }
 
-// outstandingAsync 返回某会话“已受理但尚未回报”的异步任务（wait 披露用）。
+// abandonAsync 仅取消本地待回执登记；绝不宣称远端工作已取消。
+func (s *Server) abandonAsync(j *asyncJob) {
+	s.asyncMu.Lock()
+	wasPending := s.asyncPending[j]
+	delete(s.asyncPending, j)
+	s.pruneEarlyLocked()
+	s.asyncMu.Unlock()
+	if wasPending {
+		s.noteAsyncDone(j.cid)
+	}
+}
+
+func (s *Server) hasPendingLocked(k asyncKey) bool {
+	for j := range s.asyncPending {
+		if j.source == k.source && j.trace == k.trace {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) pruneEarlyLocked() {
+	for k := range s.asyncEarly {
+		if !s.hasPendingLocked(k) {
+			delete(s.asyncEarly, k)
+		}
+	}
+}
+
+// finishAsync 在同一锁内将预留槽转成句柄登记并领取早到消息。
+// 发布登记前锁住该 job，防止新消息越过早到消息（尤其终态）。
+func (s *Server) finishAsync(j *asyncJob, item, kind string) error {
+	k := asyncKey{j.source, j.trace, item}
+	j.deliveryMu.Lock()
+	defer j.deliveryMu.Unlock()
+	s.asyncMu.Lock()
+	if !s.asyncPending[j] {
+		s.asyncMu.Unlock()
+		return errors.New("异步受理回执已失去本地登记；执行结果未知")
+	}
+	if s.asyncJobs[k] != nil || !s.asyncDone[k].IsZero() {
+		s.pruneEarlyLocked()
+		s.asyncMu.Unlock()
+		return errors.New("异步服务复用了在途或刚完成的 item_id；执行结果未知")
+	}
+	delete(s.asyncPending, j)
+	j.kind = kind
+	s.asyncJobs[k] = j
+	early := s.asyncEarly[k]
+	delete(s.asyncEarly, k)
+	s.pruneEarlyLocked()
+	s.asyncMu.Unlock()
+	for _, p := range early {
+		s.deliverAsyncLocked(k, j, p)
+	}
+	// A resident receipt may remove the last unknown, executable reservation.
+	s.noteAsyncDone(j.cid)
+	return nil
+}
+
 func (s *Server) outstandingAsync(cid string) []string {
 	s.asyncMu.Lock()
 	defer s.asyncMu.Unlock()
+	s.sweepAsyncLocked(time.Now())
 	var out []string
-	for item, j := range s.asyncJobs {
+	for k, j := range s.asyncJobs {
 		if j.cid == cid {
-			out = append(out, fmt.Sprintf("%s(job=%s, item=%s)", j.name, j.callID, item))
+			out = append(out, fmt.Sprintf("%s(job=%s, item=%s)", j.name, j.callID, k.item))
 		}
 	}
 	return out
 }
 
-// sweepAsyncLocked 清掉过期登记（调用方持有 asyncMu）。
 func (s *Server) sweepAsyncLocked(now time.Time) {
-	for item, j := range s.asyncJobs {
+	for k, j := range s.asyncJobs {
 		if now.Sub(j.at) > asyncJobTTL {
-			delete(s.asyncJobs, item)
-			s.logger.Printf("异步登记过期清理: item=%s（%s）", item, j.name)
+			delete(s.asyncJobs, k)
 		}
 	}
+	for j := range s.asyncPending {
+		if now.Sub(j.at) > asyncJobTTL {
+			delete(s.asyncPending, j)
+		}
+	}
+	for k, at := range s.asyncDone {
+		if now.Sub(at) > asyncDoneTTL {
+			delete(s.asyncDone, k)
+		}
+	}
+	s.pruneEarlyLocked()
 }
 
-// actionReportResult 承接异步补报：先前受理的工具调用（Provide.Async）的后续进展。
-func (s *Server) actionReportResult(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+// rememberDoneLocked 用有限的墓碑避免重复终态被当作下一次待回执的消息。
+func (s *Server) rememberDoneLocked(k asyncKey) {
+	if len(s.asyncDone) >= asyncRecordLimit {
+		var oldest asyncKey
+		var at time.Time
+		for key, t := range s.asyncDone {
+			if at.IsZero() || t.Before(at) {
+				oldest, at = key, t
+			}
+		}
+		delete(s.asyncDone, oldest)
+	}
+	s.asyncDone[k] = time.Now()
+}
+
+func asyncPayloadSize(p protocol.AsyncResultPayload) int {
+	return len(p.ItemID) + len(p.Phase) + len(p.Text) + len(p.Data)
+}
+
+func (s *Server) actionReportResult(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	if len(in.Input) > asyncReportBytes {
+		return nil, errors.New("report_result: 载荷超限")
+	}
 	var p protocol.AsyncResultPayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
 	}
-	if p.ItemID == "" {
-		return nil, errors.New("report_result: item_id 必填")
+	if p.ItemID == "" || len(p.ItemID) > 512 || len(p.Phase) > 128 {
+		return nil, errors.New("report_result: item_id 或 phase 无效")
 	}
-	j, ok := s.takeAsync(p.ItemID, p.Final)
-	if !ok {
-		s.logger.Printf("补报 %s（phase=%s）没有对应的在途受理（已被取代 / 终态已收 / 服务重启过），忽略", p.ItemID, p.Phase)
-		return map[string]any{"status": "ignored"}, nil
+	if env.From == "" || env.Trace == "" || env.To != s.cfg.Name {
+		return nil, errors.New("report_result: 来源、trace 或目标无效")
 	}
-	// 次级停手的兜底：某个异步任务终结后，检查"其他可执行任务是否全部结束"。
+	k := asyncKey{env.From, env.Trace, p.ItemID}
+	s.asyncMu.Lock()
+	s.sweepAsyncLocked(time.Now())
+	j := s.asyncJobs[k]
+	if j == nil {
+		if !s.asyncDone[k].IsZero() {
+			s.asyncMu.Unlock()
+			return map[string]any{"status": "duplicate"}, nil
+		}
+		if !s.hasPendingLocked(k) {
+			s.asyncMu.Unlock()
+			return map[string]any{"status": "ignored"}, nil
+		}
+		early := s.asyncEarly[k]
+		for _, old := range early {
+			if old.Final {
+				s.asyncMu.Unlock()
+				return map[string]any{"status": "duplicate"}, nil
+			}
+		}
+		count, bytes := 0, 0
+		for _, reports := range s.asyncEarly {
+			count += len(reports)
+			for _, report := range reports {
+				bytes += asyncPayloadSize(report)
+			}
+		}
+		if count >= asyncEarlyLimit || bytes+asyncPayloadSize(p) > asyncEarlyBytes || len(early) >= asyncEarlyPerItem {
+			s.asyncMu.Unlock()
+			return nil, errors.New("report_result: 早到回报缓冲已满，未接收该回报")
+		}
+		s.asyncEarly[k] = append(early, p)
+		s.asyncMu.Unlock()
+		return map[string]any{"status": "buffered"}, nil
+	}
+	s.asyncMu.Unlock()
+	j.deliveryMu.Lock()
+	defer j.deliveryMu.Unlock()
+	return s.deliverAsyncLocked(k, j, p), nil
+}
+
+// 调用方持有 job.deliveryMu；终态只处理一次，后续进度不能覆盖它。
+func (s *Server) deliverAsyncLocked(k asyncKey, j *asyncJob, p protocol.AsyncResultPayload) map[string]any {
+	if j.final {
+		return map[string]any{"status": "duplicate"}
+	}
+	// 等待同句柄的前一条投递期间，登记可能已经过期。
+	s.asyncMu.Lock()
+	current := s.asyncJobs[k] == j && time.Since(j.at) <= asyncJobTTL
+	s.asyncMu.Unlock()
+	if !current {
+		return map[string]any{"status": "ignored"}
+	}
 	if p.Final {
-		go s.noteAsyncDone(j.cid)
+		j.final = true
 	}
 	where := s.deliverFollowUp(j, reportText(j, p))
-	// 终态补报里有**真正的输出**（异步工具的回执只是"已排队"，输出在补报里）——
-	// 记一条轨迹，界面才看得见终端到底吐了什么。
 	if p.Final && strings.TrimSpace(p.Text) != "" {
 		s.record(j.cid, j.boss, j.trace, j.taskID, kindToolResult, "tool", p.Text, map[string]any{
 			"tool": j.name, "call_id": j.callID, "item_id": p.ItemID, "phase": p.Phase,
 		})
 	}
+	if p.Final {
+		s.asyncMu.Lock()
+		if s.asyncJobs[k] == j {
+			delete(s.asyncJobs, k)
+		}
+		s.rememberDoneLocked(k)
+		s.asyncMu.Unlock()
+		// Remove the final job before checking whether secondary hold can resume.
+		s.noteAsyncDone(j.cid)
+	}
 	s.logger.Printf("会话 %s：补报 %s（phase=%s, final=%v）→ %s", j.cid, p.ItemID, p.Phase, p.Final, where)
-	return map[string]any{"status": "accepted", "delivery": where}, nil
+	return map[string]any{"status": "accepted", "delivery": where}
 }
 
-// deliverFollowUp 把一条补报送进对应的任务：任务在跑就注入并唤醒，否则开一轮补报任务。
-func (s *Server) deliverFollowUp(j asyncJob, text string) string {
-	st := s.boardGet(j.cid)
+// 同一任务可注入或开补报轮；已切换任务时保留原 task_id 直接交付补报，
+// 绝不把旧内容塞进新任务，也不为了补报而替换用户当前正在进行的任务。
+func (s *Server) deliverFollowUp(j *asyncJob, text string) string {
+	s.boardMu.Lock()
+	st := s.board[j.cid]
 	if st != nil {
 		st.mu.Lock()
-		if !st.closed {
+		same := j.origin != nil && (st == j.origin || st.followUpOf == j.origin) && st.trace == j.trace && st.taskID == j.taskID && st.boss == j.boss
+		if !st.closed && same {
 			st.messages = append(st.messages, llm.Message{Role: "user", Content: text})
 			st.gen++
 			st.mu.Unlock()
+			s.boardMu.Unlock()
 			s.boardKick(st)
 			return "injected"
 		}
 		st.mu.Unlock()
 	}
 	if j.boss == "" {
-		// 没有老板就没有交付对象：补报轮无处可去，如实记下（不假装已送达）。
-		s.logger.Printf("会话 %s：补报到达但任务已收尾且无 boss，无法补交给用户", j.cid)
+		s.boardMu.Unlock()
 		return "dropped_no_boss"
 	}
-	st = s.boardOpen(j.cid, j.boss, j.trace, j.taskID, j.taskName, []llm.Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: text + "\n\n" + followUpHint},
-	})
-	s.boardKick(st)
-	return "new_task"
+	// 原任务仍是最近的任务且已收尾：沿用原有的补报轮行为。
+	// boardMu 覆盖检查与发布，避免新消息在两步之间被 boardOpen 取代。
+	if st == nil {
+		st = &taskState{followUpOf: j.origin, cid: j.cid, boss: j.boss, trace: j.trace, taskID: j.taskID, taskName: j.taskName,
+			pending: map[string]pendingJob{}, gen: 1,
+			messages: []llm.Message{{Role: "system", Content: systemPrompt}, {Role: "user", Content: text + "\n\n" + followUpHint}}}
+		s.board[j.cid] = st
+		s.boardMu.Unlock()
+		s.boardKick(st)
+		return "new_task"
+	}
+	s.boardMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := s.Call(ctx, j.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: j.cid, TaskID: j.taskID}, j.trace, ""); err != nil {
+		s.logger.Printf("会话 %s：原任务 %s 补报未确认送达: %v", j.cid, j.taskID, err)
+		return "delivery_failed"
+	}
+	return "delivered_original_task"
 }
 
 // reportText 把一条补报整理成注入消息链的文本（与 [工具结果] 同构：role=user 的外部回报）。
-func reportText(j asyncJob, p protocol.AsyncResultPayload) string {
+func reportText(j *asyncJob, p protocol.AsyncResultPayload) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[后续补报] %s（job=%s, item=%s, phase=%s）", j.name, j.callID, p.ItemID, p.Phase)
 	if !p.Final {

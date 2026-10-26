@@ -54,11 +54,13 @@ type Server struct {
 	boardMu sync.Mutex            // 黑板锁
 	board   map[string]*taskState // 会话 → 进行中的任务（窗口 = 任务在跑期）
 
-	asyncMu sync.Mutex // 异步受理登记表锁
-
-	holdMu    sync.Mutex            // 用户停手状态（见 hold.go）
-	holds     map[string]*holdState // 会话 → 停手状态
-	asyncJobs map[string]asyncJob   // 受理句柄（item_id）→ 在途的异步工具调用（见 async.go）
+	asyncMu      sync.Mutex // 异步登记、待回执及早到补报共用锁（见 async.go）
+	asyncJobs    map[asyncKey]*asyncJob
+	asyncPending map[*asyncJob]bool
+	asyncEarly   map[asyncKey][]protocol.AsyncResultPayload
+	asyncDone    map[asyncKey]time.Time
+	holdMu       sync.Mutex // user hold state; see hold.go
+	holds        map[string]*holdState
 
 	entryMu sync.Mutex        // 会话入口表锁（交付失败时往哪补一条）
 	entries map[string]string // 会话 → 入口服务名（user_message 的 from）
@@ -99,15 +101,18 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}
 	s := &Server{
 		cfg: cfg, logger: logger,
-		sems:      map[string]chan struct{}{},
-		board:     map[string]*taskState{},
-		asyncJobs: map[string]asyncJob{},
-		holds:     map[string]*holdState{},
-		entries:   map[string]string{},
-		notify:    cfg.NotifyMode,
-		conc:      cfg.ToolConcurrency,
-		timeout:   cfg.ToolTimeout,
-		reflect:   cfg.Reflect,
+		sems:         map[string]chan struct{}{},
+		board:        map[string]*taskState{},
+		asyncJobs:    map[asyncKey]*asyncJob{},
+		asyncPending: map[*asyncJob]bool{},
+		asyncEarly:   map[asyncKey][]protocol.AsyncResultPayload{},
+		asyncDone:    map[asyncKey]time.Time{},
+		holds:        map[string]*holdState{},
+		entries:      map[string]string{},
+		notify:       cfg.NotifyMode,
+		conc:         cfg.ToolConcurrency,
+		timeout:      cfg.ToolTimeout,
+		reflect:      cfg.Reflect,
 
 		llm:      cfg.LLM,
 		memory:   cfg.Memory,

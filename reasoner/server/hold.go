@@ -66,6 +66,7 @@ func (s *Server) actionUserHold(_ context.Context, _ protocol.Envelope, in proto
 		h = &holdState{paused: map[string]bool{}}
 		s.holds[cid] = h
 	}
+	wasHeld := h.level != protocol.UserHoldNone && h.level != ""
 	// 一级优先：已经 primary 时不被 secondary 降级；但 `none` 是显式解除，必须能生效
 	//（否则用户恢复全部任务后，停手永远解不掉）。
 	switch {
@@ -91,6 +92,10 @@ func (s *Server) actionUserHold(_ context.Context, _ protocol.Envelope, in proto
 
 	s.logger.Printf("会话 %s：用户停手 level=%s，暂停句柄 %d 个，待投递附注 %d 条", cid, cur, len(p.PausedItems), pending)
 
+	if level == protocol.UserHoldNone && wasHeld {
+		// Explicit resume also consumes reports queued while the user held the task.
+		s.releaseHold(cid, "用户恢复了任务")
+	}
 	if cur == protocol.UserHoldSecondary && !s.hasExecutableAsync(cid) {
 		// 没有别的可执行任务了：兜底条件当场成立，立刻唤醒（把附注送出去）。
 		s.releaseHold(cid, "没有其他可执行任务")
@@ -110,14 +115,21 @@ func (s *Server) hasExecutableAsync(cid string) bool {
 
 	s.asyncMu.Lock()
 	defer s.asyncMu.Unlock()
-	for item, j := range s.asyncJobs {
-		if j.cid != cid || paused[item] {
+	for key, j := range s.asyncJobs {
+		if j.cid != cid || paused[key.item] {
 			continue
 		}
 		if j.kind == protocol.BatchKindResident {
 			continue // 常驻任务不算可执行：等它等于永远等不到
 		}
 		return true
+	}
+	// Before its receipt arrives, a dispatched call has an unknown kind/item_id.
+	// Do not release secondary hold while that call could still be executable.
+	for j := range s.asyncPending {
+		if j.cid == cid {
+			return true
+		}
 	}
 	return false
 }
@@ -145,16 +157,23 @@ func (s *Server) takeNotes(cid string) []string {
 
 // releaseHold 解除停手并把附注作为一次唤醒送出去（次级兜底用）。
 func (s *Server) releaseHold(cid, why string) {
-	notes := s.takeNotes(cid)
 	s.holdMu.Lock()
-	if h := s.holds[cid]; h != nil {
-		h.level = protocol.UserHoldNone
-	}
-	s.holdMu.Unlock()
-	if len(notes) == 0 {
+	h := s.holds[cid]
+	// A newer primary hold must not be undone by a late secondary completion.
+	if h == nil || h.level == protocol.UserHoldPrimary {
+		s.holdMu.Unlock()
 		return
 	}
-	s.wakeWithNotes(cid, why, notes)
+	h.level = protocol.UserHoldNone
+	notes := h.notes
+	h.notes = nil
+	s.holdMu.Unlock()
+	if len(notes) > 0 {
+		s.wakeWithNotes(cid, why, notes)
+	} else if st := s.boardGet(cid); st != nil {
+		// Final output can already be queued even when the control event has no notes.
+		s.boardKick(st)
+	}
 }
 
 // clearHold 用户下一条消息到达时解除停手（附注由消息本身带走）。
@@ -220,21 +239,25 @@ func (s *Server) mergedNotes(cid string, fromMessage []string) []string {
 func (s *Server) wakeWithNotes(cid, why string, notes []string) {
 	text := renderNotes(notes) + "\n（" + why + "。你现在可以决定下一步：继续、恢复、还是问用户。）"
 
-	if st := s.boardGet(cid); st != nil {
+	meta, ok := s.lastAsyncMeta(cid)
+	// 与补报轮相同：检查和发布共用黑板锁，不能在间隙覆盖用户的新任务。
+	s.boardMu.Lock()
+	st := s.board[cid]
+	if st != nil {
 		st.mu.Lock()
 		if !st.closed {
 			st.messages = append(st.messages, llm.Message{Role: "user", Content: text})
 			st.gen++
 			st.mu.Unlock()
+			s.boardMu.Unlock()
 			s.boardKick(st)
 			s.logger.Printf("会话 %s：次级兜底唤醒（%s），注入 %d 条附注", cid, why, len(notes))
 			return
 		}
 		st.mu.Unlock()
 	}
-
-	meta, ok := s.lastAsyncMeta(cid)
 	if !ok {
+		s.boardMu.Unlock()
 		s.logger.Printf("会话 %s：次级兜底唤醒时找不到可用的任务元信息，附注暂存", cid)
 		s.holdMu.Lock()
 		if h := s.holds[cid]; h != nil {
@@ -243,19 +266,27 @@ func (s *Server) wakeWithNotes(cid, why string, notes []string) {
 		s.holdMu.Unlock()
 		return
 	}
-	st := s.boardOpen(cid, meta.boss, meta.trace, meta.taskID, meta.taskName, []llm.Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: text},
-	})
+	st = &taskState{
+		followUpOf: meta.origin,
+		cid:        cid, boss: meta.boss, trace: meta.trace, taskID: meta.taskID, taskName: meta.taskName,
+		pending: map[string]pendingJob{}, gen: 1,
+		messages: []llm.Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: text},
+		},
+	}
+	s.board[cid] = st
+	s.boardMu.Unlock()
 	s.boardKick(st)
 	s.logger.Printf("会话 %s：次级兜底唤醒（%s，新开一轮）", cid, why)
+
 }
 
 // lastAsyncMeta 从该会话最近的异步受理里取交付所需的信息。
-func (s *Server) lastAsyncMeta(cid string) (asyncJob, bool) {
+func (s *Server) lastAsyncMeta(cid string) (*asyncJob, bool) {
 	s.asyncMu.Lock()
 	defer s.asyncMu.Unlock()
-	var best asyncJob
+	var best *asyncJob
 	found := false
 	for _, j := range s.asyncJobs {
 		if j.cid != cid {

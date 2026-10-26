@@ -61,7 +61,7 @@ $binDir    = Join-Path $env:TEMP 'sump-v2-bin'
 $logDir    = Join-Path $root 'logs'
 $script:LogFile = $null
 
-$serviceExes     = @('settings-center.exe','memory.exe','sump-images.exe','sump-files.exe','qq.exe','shell.exe','sump-approval.exe','timer.exe','reasoner.exe')
+$serviceExes     = @('settings-center.exe','memory.exe','sump-images.exe','sump-files.exe','qq.exe','shell.exe','sump-approval.exe','batch.exe','sump-mcp.exe','timer.exe','reasoner.exe')
 $childExes       = $serviceExes + @('node.exe','python.exe','pythonw.exe')
 $launcherPattern = 'run-local\.ps1|serve\.ps1|start-sump\.cmd'
 
@@ -94,6 +94,8 @@ function Get-StopRank([string]$name) {
         'node.exe'            { return 4 }
         'python.exe'          { return 5 }
         'pythonw.exe'         { return 5 }
+        'sump-mcp.exe'        { return 5 }
+        'batch.exe'           { return 5 }
         'timer.exe'           { return 6 }
         'sump-approval.exe'   { return 7 }
         'qq.exe'              { return 8 }

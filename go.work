@@ -13,6 +13,7 @@ use (
 	./qq
 	./shell
 	./timer
+	./mcp
 	./settings-center
 	./tests
 )
