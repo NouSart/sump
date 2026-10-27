@@ -252,19 +252,77 @@ func (s *Service) applySetting(key, value string) error {
 		return fmt.Errorf("configure: %s 是只读项（启动参数带起来的，改它需要重启）", key)
 	}
 
+	// 秘密项：应用与落盘必须成对成败——落盘失败时把运行时值回滚（见 applySecret）。
+	if kind == settingSecret {
+		return s.applySecret(key, value, apply)
+	}
 	if apply != nil {
 		if err := apply(value); err != nil {
 			return fmt.Errorf("configure: %s: %w", key, err)
 		}
 	}
-	// 秘密项不进中心：由本服务自己落盘（普通项的覆盖值由中心保管）。
-	if kind == settingSecret {
-		if err := s.saveSecret(key, value); err != nil {
-			return fmt.Errorf("configure: %s: 秘密落盘失败: %w", key, err)
+	s.settingsMu.Lock()
+	s.settingValues[key] = value
+	s.settingsMu.Unlock()
+	return nil
+}
+
+// applySecret 应用并落盘一个秘密项；落盘失败 = 这次变更没发生：
+// 把运行时值恢复成上一个已生效值，避免"运行时是新值、生效值还是旧值"。
+// 调用方已持有 applyMu。
+func (s *Service) applySecret(key, value string, apply func(string) error) error {
+	s.settingsMu.Lock()
+	previous, known := s.settingValues[key], s.appliedSecrets[key]
+	s.settingsMu.Unlock()
+
+	if apply != nil {
+		if err := apply(value); err != nil {
+			return fmt.Errorf("configure: %s: %w", key, err)
+		}
+	}
+	if err := s.saveSecret(key, value); err != nil {
+		// 旧值此前通过过同一个回调；回滚失败只可能是服务自身的 bug——
+		// 记日志，但不掩盖原始的落盘错误。
+		// 只有骨架确实应用过旧值时才回滚：启动参数可能在骨架之外直接应用过值，
+		// 骨架不知道它，贸然回滚会把一个能用的值清掉。
+		if known && apply != nil {
+			if rollbackErr := apply(previous); rollbackErr != nil {
+				s.logger.Printf("秘密 %s 落盘失败后回滚运行时值失败（当前可能仍是新值）: %v", key, rollbackErr)
+			}
+		}
+		return fmt.Errorf("configure: %s: 秘密落盘失败: %w", key, err)
+	}
+	s.settingsMu.Lock()
+	s.settingValues[key] = value
+	s.appliedSecrets[key] = true
+	s.settingsMu.Unlock()
+	return nil
+}
+
+// applyLoadedSecret 应用一个从本地秘密文件读回的值：不再回写文件。
+// 加载路径以文件为权威副本，重复写盘只会在文件只读时制造假失败。
+func (s *Service) applyLoadedSecret(key, value string) error {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	s.settingsMu.Lock()
+	idx, ok := s.settingIndex[key]
+	var apply func(string) error
+	if ok {
+		apply = s.settings[idx].apply
+	}
+	s.settingsMu.Unlock()
+	if !ok {
+		return fmt.Errorf("configure: 未声明的设置项 %q", key)
+	}
+	if apply != nil {
+		if err := apply(value); err != nil {
+			return fmt.Errorf("configure: %s: %w", key, err)
 		}
 	}
 	s.settingsMu.Lock()
 	s.settingValues[key] = value
+	s.appliedSecrets[key] = true
 	s.settingsMu.Unlock()
 	return nil
 }

@@ -62,7 +62,7 @@ func (s *Service) loadSecrets() {
 			s.logger.Printf("秘密文件里的 %s 不是本服务声明的秘密项（保留在文件里，不应用）", key)
 			continue
 		}
-		if err := s.applySetting(key, value); err != nil {
+		if err := s.applyLoadedSecret(key, value); err != nil {
 			s.logger.Printf("秘密 %s 加载失败: %v", key, err)
 			continue
 		}
@@ -71,19 +71,33 @@ func (s *Service) loadSecrets() {
 }
 
 // saveSecret 记下一个秘密项并落盘；空值 = 清除该项（reset_setting 走这条）。
+// 先写候选快照、成功后再提交内存表：写盘失败时内存里不能留下这次失败的值，
+// 否则它会跟着下一次任意成功写盘被"顺带"持久化。
+// 调用方由 applySecret / applyLoadedSecret 串行化（applyMu）。
 func (s *Service) saveSecret(key, value string) error {
 	s.settingsMu.Lock()
-	if value == "" {
-		delete(s.secrets, key)
-	} else {
-		s.secrets[key] = value
-	}
-	snapshot := make(map[string]string, len(s.secrets))
+	next := make(map[string]string, len(s.secrets)+1)
 	for k, v := range s.secrets {
-		snapshot[k] = v
+		next[k] = v
+	}
+	if value == "" {
+		delete(next, key)
+	} else {
+		next[key] = value
 	}
 	s.settingsMu.Unlock()
-	return s.writeSecrets(snapshot)
+
+	write := s.writeSecretsHook
+	if write == nil {
+		write = s.writeSecrets
+	}
+	if err := write(next); err != nil {
+		return err
+	}
+	s.settingsMu.Lock()
+	s.secrets = next
+	s.settingsMu.Unlock()
+	return nil
 }
 
 // writeSecrets 原子落盘（先写临时文件再改名），避免半个文件。
@@ -102,7 +116,13 @@ func (s *Service) writeSecrets(secrets map[string]string) error {
 	}
 	tmp := s.cfg.SecretFile + ".tmp"
 	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		// 写了一半的临时文件同样含秘密，失败即清掉（尽力而为：删不掉也不掩盖原错误）。
+		_ = os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, s.cfg.SecretFile)
+	if err := os.Rename(tmp, s.cfg.SecretFile); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
