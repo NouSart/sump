@@ -323,6 +323,10 @@ func TestFailedSecretPersistenceDoesNotAuthorizeToken(t *testing.T) {
 	if _, err = s.verifyToken(ctx, replacement, nil); err == nil {
 		t.Fatal("rejected credential was authorized")
 	}
+	// 落盘失败 = 这次轮换没发生：旧凭据必须仍然可用（否则入口会全体 401）。
+	if _, err = s.verifyToken(ctx, gatewayToken, nil); err != nil {
+		t.Fatalf("failed rotation must leave the previous credential usable: %v", err)
+	}
 }
 
 func TestGatewayRevocationBeforeDispatch(t *testing.T) {

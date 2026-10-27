@@ -56,8 +56,12 @@ type Service struct {
 	settingIndex  map[string]int    // 键 → settings 下标
 	settingValues map[string]string // 最近一次成功应用的生效值（初始 = 预设）
 	secrets       map[string]string // 秘密项的值（不进设置中心；由本服务持久化）
-	announceSeq   int64             // 设置回传（AnnounceSetting）的单调序号（settingsMu 保护）
-	applyMu       sync.Mutex        // 应用串行化：多个下发不并发进回调
+	// appliedSecrets 记录骨架是否成功应用过某个秘密项：落盘失败时只有这里为真才回滚。
+	// 启动参数可能在骨架之外直接应用过值（如 reasoner 的 -llm-key），骨架不知道它，
+	// 贸然回滚会把一个能用的值清掉。
+	appliedSecrets map[string]bool
+	announceSeq    int64      // 设置回传（AnnounceSetting）的单调序号（settingsMu 保护）
+	applyMu        sync.Mutex // 应用串行化：多个下发不并发进回调
 
 	mu      sync.Mutex
 	roster  map[string]protocol.ServiceCard
@@ -69,6 +73,10 @@ type Service struct {
 
 	repMu       sync.Mutex     // 错误上报退避锁
 	repThrottle reportThrottle // 错误上报防刷（见 report.go）
+
+	// writeSecretsHook 仅供测试：非 nil 时替代 writeSecrets，用来稳定复现落盘失败。
+	// 必须在 Start 前设置；运行期只读。
+	writeSecretsHook func(map[string]string) error
 
 	httpSrv *http.Server
 }
@@ -88,13 +96,14 @@ func New(cfg Config) *Service {
 		cfg.SecretFile = filepath.Join("data", cfg.Name+"-secret.json")
 	}
 	s := &Service{
-		cfg:           cfg,
-		logger:        cfg.Logger,
-		actions:       map[string]Handler{},
-		settingIndex:  map[string]int{},
-		settingValues: map[string]string{},
-		secrets:       map[string]string{},
-		roster:        map[string]protocol.ServiceCard{},
+		cfg:            cfg,
+		logger:         cfg.Logger,
+		actions:        map[string]Handler{},
+		settingIndex:   map[string]int{},
+		settingValues:  map[string]string{},
+		secrets:        map[string]string{},
+		appliedSecrets: map[string]bool{},
+		roster:         map[string]protocol.ServiceCard{},
 	}
 	// "configure" 是骨架保留动作（设置下发专用）：不进 provides、不作 LLM 工具。
 	s.actions["configure"] = s.actionConfigure
