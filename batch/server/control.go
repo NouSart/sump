@@ -110,7 +110,13 @@ func (s *Server) controlOne(op, id string) bool {
 			s.mu.Lock()
 			s.jobs[id] = rj
 			s.mu.Unlock()
-			go s.runJob(rj)
+			if !s.startBackground(func() { s.runJob(rj) }) {
+				s.release(rj.reserved)
+				s.mu.Lock()
+				delete(s.jobs, id)
+				s.mu.Unlock()
+				return false
+			}
 			return true
 		case protocol.BatchOpCancel:
 			if _, err := s.store.SkipPending(id); err != nil {
@@ -184,7 +190,11 @@ func (s *Server) controlMemory(op string, j *runningJob) bool {
 		j.paused = false
 		j.mu.Unlock()
 		_ = s.store.SetPhase(j.id, protocol.BatchPhaseRunning)
-		go s.runScheduler(j)
+		if !s.startBackground(func() { s.runScheduler(j) }) {
+			s.release(need)
+			s.logger.Printf("任务 %s 恢复失败：服务正在关闭", j.id)
+			return false
+		}
 		s.logger.Printf("任务 %s 已恢复", j.id)
 		return true
 	}

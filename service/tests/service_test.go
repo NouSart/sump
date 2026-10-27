@@ -349,3 +349,27 @@ func TestErrorReport(t *testing.T) {
 		t.Fatal("退避窗口过后应再次放行上报")
 	}
 }
+
+// TestShutdownStopsBackgroundLogging：Shutdown 之后后台循环不能再写日志。
+// 回归：watchCenter 过去会在关闭连接后先打一条"1s 后重连"；测试 logger 绑 t 时
+// 会在测试结束后 panic（batch/tests 的 TestPauseReleasesGlobalSlots 就这么炸的）。
+func TestShutdownStopsBackgroundLogging(t *testing.T) {
+	sc := startStubCenter(t)
+	var lb logBuffer
+	s := service.New(service.Config{
+		Name:              "svc-quiet",
+		Listen:            "127.0.0.1:0",
+		Center:            sc.URL(),
+		HeartbeatInterval: 100 * time.Millisecond,
+		Logger:            log.New(&lb, "", 0),
+	})
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s.Shutdown()
+	// watchCenter 由 c.Done() 唤醒：旧实现会在此后打"1s 后重连"。
+	time.Sleep(300 * time.Millisecond)
+	if logs := lb.String(); strings.Contains(logs, "重连") {
+		t.Fatalf("Shutdown 后仍有重连日志:\n%s", logs)
+	}
+}
