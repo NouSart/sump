@@ -66,6 +66,14 @@ type Server struct {
 
 	stopOnce sync.Once
 	stopped  chan struct{}
+
+	// 生命周期：Shutdown 先取消，再等后台调度/清理循环退出，最后关账本。
+	// runMu 保护 closing 与 runWG.Add：关闭开始后不再 Add（避免 Add/Wait 并发）。
+	lifeCtx    context.Context
+	lifeCancel context.CancelFunc
+	runMu      sync.Mutex
+	runWG      sync.WaitGroup
+	closing    bool
 }
 
 // New 创建实例并注册动作。
@@ -275,19 +283,67 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("打开任务账本失败: %w", err)
 	}
 	s.store = st
+	lifeCtx, lifeCancel := context.WithCancel(context.Background())
+	s.runMu.Lock()
+	s.lifeCtx, s.lifeCancel = lifeCtx, lifeCancel
+	s.runMu.Unlock()
 	if err := s.Service.Start(ctx); err != nil {
+		lifeCancel()
 		_ = st.Close()
 		return err
 	}
 	s.recoverAfterRestart()
-	go s.pruneLoop()
+	s.startBackground(func() { s.pruneLoop() })
 	return nil
 }
 
-// Shutdown 停服务并关账本。
+// startBackground 启动一个随服务关闭而退出的后台循环；关闭开始后拒绝新任务。
+func (s *Server) startBackground(fn func()) bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.closing {
+		return false
+	}
+	s.runWG.Add(1)
+	go func() {
+		defer s.runWG.Done()
+		fn()
+	}()
+	return true
+}
+
+func (s *Server) isClosing() bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	return s.closing
+}
+
+// waitRunBackground 等后台调度退出；有上限，避免一个卡住的项把关闭挂死。
+func (s *Server) waitRunBackground() {
+	done := make(chan struct{})
+	go func() {
+		s.runWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		s.logger.Printf("batch 关闭等待超时：仍有后台任务未退出")
+	}
+}
+
+// Shutdown 停服务并关账本：先取消/停止，再等调度循环退出，最后关账本。
 func (s *Server) Shutdown() {
 	s.stopOnce.Do(func() { close(s.stopped) })
+	s.runMu.Lock()
+	s.closing = true
+	cancel := s.lifeCancel
+	s.runMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	s.Service.Shutdown()
+	s.waitRunBackground()
 	if s.store != nil {
 		_ = s.store.Close()
 	}
@@ -357,7 +413,12 @@ func (s *Server) recoverAfterRestart() {
 				s.mu.Lock()
 				s.jobs[rj.id] = rj
 				s.mu.Unlock()
-				go s.runJob(rj)
+				if !s.startBackground(func() { s.runJob(rj) }) {
+					s.release(rj.reserved)
+					s.mu.Lock()
+					delete(s.jobs, rj.id)
+					s.mu.Unlock()
+				}
 			} else {
 				s.logger.Printf("恢复任务 %s 失败：全局槽位不足，转暂停", j.ItemID)
 				_ = s.store.SetPhase(j.ItemID, protocol.BatchPhasePaused)

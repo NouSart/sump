@@ -339,6 +339,9 @@ func (s *Service) refreshSettings(ctx context.Context) {
 	defer cancel()
 	data, err := s.Call(cctx, "settings-center", "list_settings", protocol.SettingsListPayload{Service: s.cfg.Name}, s.cfg.Name, "")
 	if err != nil {
+		if cctx.Err() != nil || s.isClosed() {
+			return
+		}
 		s.logger.Printf("拉取设置失败（沿用当前值）: %v", err)
 		return
 	}

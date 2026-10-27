@@ -63,13 +63,16 @@ type Service struct {
 	announceSeq    int64      // 设置回传（AnnounceSetting）的单调序号（settingsMu 保护）
 	applyMu        sync.Mutex // 应用串行化：多个下发不并发进回调
 
-	mu      sync.Mutex
-	roster  map[string]protocol.ServiceCard
-	selfURL string
-	center  *protocol.Client // 当前中心连接（nil = 未连接）
-	closed  bool             // Shutdown 后为真（阻止继续重连）
-	started bool             // Start 后为真（阻止再声明设置项）
-	regs    int64            // 注册成功次数（日志用）
+	mu         sync.Mutex
+	roster     map[string]protocol.ServiceCard
+	selfURL    string
+	center     *protocol.Client // 当前中心连接（nil = 未连接）
+	closed     bool             // Shutdown 后为真（阻止继续重连）
+	started    bool             // Start 后为真（阻止再声明设置项）
+	regs       int64            // 注册成功次数（日志用）
+	lifeCtx    context.Context  // Start 创建、Shutdown 取消；后台循环据此退出
+	lifeCancel context.CancelFunc
+	bg         sync.WaitGroup // 生命周期后台循环（只含可取消、可快速退出的）
 
 	repMu       sync.Mutex     // 错误上报退避锁
 	repThrottle reportThrottle // 错误上报防刷（见 report.go）
@@ -141,11 +144,19 @@ func (s *Service) Start(ctx context.Context) error {
 	s.started = true
 	s.mu.Unlock()
 
+	// 生命周期 ctx：与启动 ctx 解耦——启动 ctx 只约束"注册这一段"，取消它
+	// 不该让已经在跑的服务停止收发；真正的退出由 Shutdown 取消。
+	lifeCtx, lifeCancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	s.lifeCtx, s.lifeCancel = lifeCtx, lifeCancel
+	s.mu.Unlock()
+
 	// 秘密项先落地：它们不在中心那边（中心没有值可下发），服务得自己带起来。
 	s.loadSecrets()
 
 	ln, err := net.Listen("tcp", s.cfg.Listen)
 	if err != nil {
+		lifeCancel()
 		return err
 	}
 	s.selfURL = "ws://" + ln.Addr().String() + "/ws"
@@ -161,42 +172,96 @@ func (s *Service) Start(ctx context.Context) error {
 	s.logger.Printf("%s 监听 %s", s.cfg.Name, s.selfURL)
 
 	if err := s.connectAndRegister(ctx); err != nil {
+		lifeCancel()
 		_ = s.httpSrv.Close() // 注册失败即放弃启动：回收监听，不留“半个服务”
 		return fmt.Errorf("注册失败: %w", err)
 	}
-	go s.watchCenter(ctx)
+	s.goBackground(func() { s.watchCenter(lifeCtx) })
 	return nil
 }
 
-// Shutdown 尽力告别（bye，中心立即摘除名册）并关闭服务端与中心连接。
-func (s *Service) Shutdown() {
+// goBackground 启动一个生命周期后台循环；Shutdown 开始后不再接受新任务。
+// 循环必须监听 lifeCtx 并在取消后尽快退出（不等待网络超时）。
+func (s *Service) goBackground(fn func()) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return
 	}
+	s.bg.Add(1)
+	s.mu.Unlock()
+	go func() {
+		defer s.bg.Done()
+		fn()
+	}()
+}
+
+func (s *Service) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+// waitBackground 等待后台循环退出；只用于"已经取消并断开连接"之后，且必须有上限。
+func (s *Service) waitBackground() {
+	done := make(chan struct{})
+	go func() {
+		s.bg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		s.logger.Printf("%s 关闭等待超时：仍有后台循环未退出", s.cfg.Name)
+	}
+}
+
+// Shutdown 尽力告别（bye，中心立即摘除名册）并关闭服务端与中心连接。
+// 顺序：先取消/断开让阻塞的读写立刻失败，再等后台循环退出（有上限），绝不持锁等待。
+func (s *Service) Shutdown() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		s.waitBackground()
+		return
+	}
 	s.closed = true
 	c := s.center
 	s.center = nil
+	cancel := s.lifeCancel
 	s.mu.Unlock()
 
+	if cancel != nil {
+		cancel()
+	}
 	if c != nil {
 		if env, err := protocol.NewEnvelope(protocol.TypeHeartbeat, s.cfg.Name, "settings-center", "",
 			protocol.HeartbeatPayload{Status: "bye"}); err == nil {
-			_ = c.Send(env) // 尽力：随后连接即关（TCP 有序，bye 先于关闭到达）
+			// 尽力告别，但不能被一个不读的中心拖住：Send 无写超时，卡住就由
+			// 下面的 Close 把它解开（TCP 有序时 bye 仍先于关闭到达）。
+			sent := make(chan struct{})
+			go func() {
+				_ = c.Send(env)
+				close(sent)
+			}()
+			select {
+			case <-sent:
+			case <-time.After(time.Second):
+			}
 		}
 		_ = c.Close()
 	}
 	if s.httpSrv != nil {
 		_ = s.httpSrv.Close()
 	}
+	s.waitBackground()
 }
 
 // ---------- 到设置中心的连接：注册 / 心跳 / 断线自愈 ----------
 
 // connectAndRegister 建立一条中心连接、注册并启动心跳。
 func (s *Service) connectAndRegister(ctx context.Context) error {
-	c, err := protocol.DialContextWithOptions(context.Background(), s.cfg.Center, s.onCenterEvent, protocol.DialOptions{MaxMessageBytes: s.cfg.MaxMessageBytes})
+	c, err := protocol.DialContextWithOptions(ctx, s.cfg.Center, s.onCenterEvent, protocol.DialOptions{MaxMessageBytes: s.cfg.MaxMessageBytes})
 	if err != nil {
 		return err
 	}
@@ -253,8 +318,16 @@ func (s *Service) connectAndRegister(ctx context.Context) error {
 	} else {
 		s.logger.Printf("%s 已重新接入设置中心（第 %d 次注册）", s.cfg.Name, regs)
 	}
-	go s.refreshSettings(ctx) // 兜底：注册后主动拉一次（与中心下发幂等）
-	go s.heartbeatLoop(ctx, c)
+	// 后台循环跟服务生命周期走：启动 ctx 可能只覆盖注册阶段（测试常用
+	// WithTimeout + cancel），不能让心跳/设置拉取跟着它一起停。
+	loopCtx := ctx
+	s.mu.Lock()
+	if s.lifeCtx != nil {
+		loopCtx = s.lifeCtx
+	}
+	s.mu.Unlock()
+	s.goBackground(func() { s.refreshSettings(loopCtx) }) // 兜底：注册后主动拉一次（与中心下发幂等）
+	s.goBackground(func() { s.heartbeatLoop(loopCtx, c) })
 	return nil
 }
 
@@ -273,6 +346,9 @@ func (s *Service) watchCenter(ctx context.Context) {
 
 		if c == nil {
 			if err := s.connectAndRegister(ctx); err != nil {
+				if ctx.Err() != nil || s.isClosed() {
+					return
+				}
 				s.logger.Printf("%s 重连设置中心失败: %v（%v 后重试）", s.cfg.Name, err, backoff)
 				select {
 				case <-time.After(backoff):
@@ -293,12 +369,17 @@ func (s *Service) watchCenter(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-c.Done():
-			// 连接断开：清空后快速重连（首试 1s，不做长退避）
+			// 连接断开：清空后快速重连（首试 1s，不做长退避）。
+			// Shutdown 也会关连接；先看 closed，避免"关闭后还打一行重连日志再等 1s"。
 			s.mu.Lock()
 			if s.center == c {
 				s.center = nil
 			}
+			closed := s.closed
 			s.mu.Unlock()
+			if closed {
+				return
+			}
 			s.logger.Printf("%s 与设置中心连接断开，1s 后重连", s.cfg.Name)
 			select {
 			case <-time.After(time.Second):
@@ -538,10 +619,23 @@ func (s *Service) callOnce(ctx context.Context, name, addr, action string, raw m
 // Fire 后台发起一跳（发出即完；完成与否仅记日志）。
 // 失败时向设置中心上报一条（kind=fire）——链路跳转未送达属于值得集中可见的错误。
 func (s *Service) Fire(to, action string, payload any, trace, boss string) {
+	s.mu.Lock()
+	base := s.lifeCtx
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return // 关闭后不再发起新跳转（避免测试结束后还在打日志）
+	}
+	if base == nil {
+		base = context.Background()
+	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(base, 60*time.Second)
 		defer cancel()
 		if _, err := s.Call(ctx, to, action, payload, trace, boss); err != nil {
+			if ctx.Err() != nil || s.isClosed() {
+				return // 关闭导致的中断不是"未送达"，也不该在 Shutdown 之后写日志
+			}
 			s.logger.Printf("跳转 %s(%s) 未确认送达: %v", to, action, err)
 			if to != "settings-center" {
 				s.Report("fire", fmt.Sprintf("跳转 %s(%s) 未送达: %v", to, action, err))

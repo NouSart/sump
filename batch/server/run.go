@@ -208,7 +208,13 @@ func (s *Server) actionRun(ctx context.Context, env protocol.Envelope, in protoc
 	s.jobs[id] = job
 	s.mu.Unlock()
 
-	go s.runJob(job)
+	if !s.startBackground(func() { s.runJob(job) }) {
+		s.release(conc)
+		s.mu.Lock()
+		delete(s.jobs, id)
+		s.mu.Unlock()
+		return nil, fmt.Errorf("BATCH_BUSY: 服务正在关闭")
+	}
 
 	return protocol.BatchRunResult{ItemID: id, Total: len(p.Items), Phase: protocol.BatchPhaseAccepted, Kind: job.kind}, nil
 }
@@ -307,9 +313,19 @@ func (s *Server) runScheduler(j *runningJob) {
 
 	sem := make(chan struct{}, j.concurrency)
 	var wg sync.WaitGroup
+	// 任何出口（尤其是 isClosing 提前 return）都必须等在飞项收尾：
+	// runWG 只跟踪调度循环本身，不等这些 item goroutine，账本就可能被提前关掉。
+	defer wg.Wait()
 	for {
+		if s.isClosing() {
+			return
+		}
 		for {
 			sem <- struct{}{}
+			if s.isClosing() {
+				<-sem
+				return
+			}
 			q, ok := j.claim()
 			if !ok {
 				<-sem
@@ -324,6 +340,9 @@ func (s *Server) runScheduler(j *runningJob) {
 		}
 		// 必须等在飞的项全部收尾，再判断要不要终结——否则会把还在跑的项算漏。
 		wg.Wait()
+		if s.isClosing() {
+			return
+		}
 
 		// paused 与 schedRunning 必须在同一把锁里一起读/清：resume 是先清 paused 再起
 		// 循环，如果分开两次进锁，就可能出现"我读到 paused=true 就撤退、resume 那边看见
@@ -374,11 +393,21 @@ func (j *runningJob) claim() (queued, bool) {
 func (s *Server) runItem(j *runningJob, q queued) {
 	_ = s.store.SetItemStatus(j.id, q.seq, protocol.BatchItemRunning)
 
-	ctx, cancel := context.WithTimeout(context.Background(), j.timeout)
+	base := s.lifeCtx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(base, j.timeout)
 	defer cancel()
 	start := time.Now()
 	raw, err := s.Call(ctx, j.service, j.action, q.input, j.trace, j.boss)
 	ms := time.Since(start).Milliseconds()
+
+	// 服务关闭导致的中断：不记失败、不落终态——留给下次启动的恢复流程
+	// 标记 interrupted（在飞项结果未知）。
+	if s.isClosing() && err != nil {
+		return
+	}
 
 	it := store.Item{Seq: q.seq, Status: protocol.BatchItemOK, MS: ms}
 	if err != nil {
