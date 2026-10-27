@@ -20,7 +20,8 @@ func (fakeDoc) ReadRange(ctx context.Context, s Selector) (Chunk, error) {
 func (fakeDoc) Patch(ctx context.Context, ops []PatchOp) (PatchResult, error) {
 	return PatchResult{}, nil
 }
-func (fakeDoc) Bytes() []byte { return []byte("fake") }
+func (fakeDoc) Bytes() []byte  { return []byte("fake") }
+func (fakeDoc) Digest() string { return Fingerprint("fake") }
 
 // TestRegisterAndOpen 注册表是"格式实现 → 服务层"的唯一连接点，必须能取到、
 // 未注册的类型要回 ErrUnsupported（服务层据此回可读错误）。

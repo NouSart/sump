@@ -8,8 +8,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/NouSart/sump/files/docmodel"
-	"github.com/NouSart/sump/files/docmodel/ooxml"
+	"github.com/QAQ-awa-QAQ/sump/files/docmodel"
+	"github.com/QAQ-awa-QAQ/sump/files/docmodel/ooxml"
 )
 
 // pieceKind 是段落文本里一个"投影片段"的来源。

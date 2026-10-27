@@ -11,8 +11,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/NouSart/sump/files/docmodel"
-	"github.com/NouSart/sump/files/docmodel/ooxml"
+	"github.com/QAQ-awa-QAQ/sump/files/docmodel"
+	"github.com/QAQ-awa-QAQ/sump/files/docmodel/ooxml"
 )
 
 // partDocument 是正文 part 名（页眉/页脚/脚注是别的 part，P0 只编辑正文）。

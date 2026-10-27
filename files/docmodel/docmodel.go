@@ -204,6 +204,9 @@ type Document interface {
 	ReadRange(ctx context.Context, sel Selector) (Chunk, error)
 	Patch(ctx context.Context, ops []PatchOp) (PatchResult, error)
 	Bytes() []byte
+	// Digest 是整篇可见文本的规范化指纹：服务层把它当一个"整篇版本号"用——
+	// outline / read_range / find 返回它，patch 可带上它做乐观锁（对不上就整批拒绝）。
+	Digest() string
 }
 
 // Opener 打开一份文档（data 是完整文件字节）。

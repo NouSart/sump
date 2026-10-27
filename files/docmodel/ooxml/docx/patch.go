@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/NouSart/sump/files/docmodel"
-	"github.com/NouSart/sump/files/docmodel/ooxml"
+	"github.com/QAQ-awa-QAQ/sump/files/docmodel"
+	"github.com/QAQ-awa-QAQ/sump/files/docmodel/ooxml"
 )
 
 // Patch 按节点地址改文档；要么整批生效，要么原样返回（不留半成品）。

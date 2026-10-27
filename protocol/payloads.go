@@ -432,6 +432,142 @@ type FileWordEditResult struct {
 	Replaced int    `msgpack:"replaced"`
 }
 
+// ---------- 文档模型链（按节点地址读 / 改；P0 起为 .docx） ----------
+//
+// 与 edit_word 的差别：edit_word 是"整篇字符串替换"（命中几处改几处），
+// 这一组是"先看结构 → 定位节点 → 只改那一处 → 能证明只改了那一处"。
+
+// DocOutlinePayload 是 files.outline 的 payload：先看目录，再决定读哪段。
+type DocOutlinePayload struct {
+	ID    string `msgpack:"id"`
+	Depth int    `msgpack:"depth,omitempty"` // 1（默认）= 只列正文块；2 = 展开表格到单元格段落
+}
+
+// DocNode 是结构树上的一个节点（与 docmodel.Node 一一对应的线上形态）。
+type DocNode struct {
+	ID        string    `msgpack:"id"`
+	Type      string    `msgpack:"type"` // paragraph / table / row / cell
+	Text      string    `msgpack:"text,omitempty"`
+	Level     int       `msgpack:"level,omitempty"`
+	Truncated bool      `msgpack:"truncated,omitempty"`
+	Children  []DocNode `msgpack:"children,omitempty"`
+}
+
+// DocOutlineResult 是 files.outline 的结果：结构树 + 规模 + 整篇指纹。
+// digest 是整篇可见文本的指纹，后续 patch 可把它当 anchor 用（防止照着旧目录改）。
+type DocOutlineResult struct {
+	ID        string    `msgpack:"id"`
+	Kind      string    `msgpack:"kind"` // docx
+	Digest    string    `msgpack:"digest"`
+	Nodes     []DocNode `msgpack:"nodes"`
+	NodeCount int       `msgpack:"node_count"`
+	Chars     int       `msgpack:"chars"`
+	Tables    int       `msgpack:"tables,omitempty"`
+	Parts     int       `msgpack:"parts,omitempty"`
+	Warnings  []string  `msgpack:"warnings,omitempty"`
+}
+
+// DocReadPayload 是 files.read_range 的 payload：按节点分页读，绕开 read 的字数上限。
+type DocReadPayload struct {
+	ID     string `msgpack:"id"`
+	Node   string `msgpack:"node,omitempty"`   // 空 = 整篇（段落以换行分隔）
+	Offset int    `msgpack:"offset,omitempty"` // 起始字符（rune）
+	Limit  int    `msgpack:"limit,omitempty"`  // 本次最多返回多少字；0 = 默认 4000
+}
+
+// DocReadResult 是 files.read_range 的结果：next 非 0 表示还有下一块，续读带上它当 offset。
+type DocReadResult struct {
+	ID     string `msgpack:"id"`
+	Kind   string `msgpack:"kind"`
+	Digest string `msgpack:"digest"`
+	Node   string `msgpack:"node"`
+	Text   string `msgpack:"text"`
+	Total  int    `msgpack:"total"`
+	Next   int    `msgpack:"next,omitempty"`
+}
+
+// DocFindPayload 是 files.find 的 payload：只找位置，不改文档。
+type DocFindPayload struct {
+	ID    string `msgpack:"id"`
+	Text  string `msgpack:"text"`
+	Node  string `msgpack:"node,omitempty"`  // 限定在某个节点内（空 = 全文）
+	Regex bool   `msgpack:"regex,omitempty"` // text 按 Go 正则解释
+	Limit int    `msgpack:"limit,omitempty"` // 默认 20，上限 200
+}
+
+// DocMatch 是一处命中：节点地址 + 字符区间（rune，左闭右开）+ 上下文。
+type DocMatch struct {
+	Node    string `msgpack:"node"`
+	Run     string `msgpack:"run,omitempty"` // 命中起点所在的 run 地址（docx：body/p12/r3）
+	Start   int    `msgpack:"start"`
+	End     int    `msgpack:"end"`
+	Context string `msgpack:"context,omitempty"`
+}
+
+// DocFindResult 是 files.find 的结果：命中列表（同一个节点多处会各占一条）。
+type DocFindResult struct {
+	ID      string     `msgpack:"id"`
+	Digest  string     `msgpack:"digest"`
+	Matches []DocMatch `msgpack:"matches"`
+}
+
+// DocRange 是节点文本投影上的字符区间（rune，左闭右开）。
+type DocRange struct {
+	Start int `msgpack:"start"`
+	End   int `msgpack:"end"`
+}
+
+// DocPatchOp 是一次编辑操作。
+type DocPatchOp struct {
+	Op     string    `msgpack:"op"`               // replace_text / delete_node（P0）
+	Node   string    `msgpack:"node"`             // 节点地址（body/p12、body/tbl1/r1/c1/p1）
+	Range  *DocRange `msgpack:"range,omitempty"`  // replace_text 的区间；省略 = 整段
+	Text   string    `msgpack:"text,omitempty"`   // replace_text 的新文本（\n / \t 按格式语义展开）
+	Anchor string    `msgpack:"anchor,omitempty"` // 节点当前文本指纹（见 docmodel.Fingerprint）
+}
+
+// DocPatchPayload 是 files.patch 的 payload：一次调用里多条操作要么全生效，要么全不动。
+// anchor 是整篇指纹（outline / read_range 返回的 digest）：非空且不匹配即整批拒绝。
+type DocPatchPayload struct {
+	ID         string       `msgpack:"id"`
+	Anchor     string       `msgpack:"anchor,omitempty"`
+	Operations []DocPatchOp `msgpack:"operations"`
+}
+
+// DocDiff 是一条可回放的变更（改前 / 改后截断成可读长度）。
+type DocDiff struct {
+	Op     string `msgpack:"op"`
+	Node   string `msgpack:"node"`
+	Before string `msgpack:"before,omitempty"`
+	After  string `msgpack:"after,omitempty"`
+}
+
+// DocPatchResult 是 files.patch 的结果：diff 说明改了什么，digest 是改后的整篇指纹。
+type DocPatchResult struct {
+	ID       string    `msgpack:"id"`
+	Applied  int       `msgpack:"applied"`
+	Digest   string    `msgpack:"digest"`
+	Diff     []DocDiff `msgpack:"diff,omitempty"`
+	Warnings []string  `msgpack:"warnings,omitempty"`
+}
+
+// DocVerifyPayload 是 files.verify 的 payload：改完自查。
+// digest 是期望的整篇指纹；contains / not_contains 是必须出现 / 必须不出现的片段。
+type DocVerifyPayload struct {
+	ID          string   `msgpack:"id"`
+	Digest      string   `msgpack:"digest,omitempty"`
+	Contains    []string `msgpack:"contains,omitempty"`
+	NotContains []string `msgpack:"not_contains,omitempty"`
+}
+
+// DocVerifyResult 是 files.verify 的结果：ok=false 时 failures 逐条说明哪项没通过。
+type DocVerifyResult struct {
+	ID       string   `msgpack:"id"`
+	OK       bool     `msgpack:"ok"`
+	Digest   string   `msgpack:"digest"`
+	Failures []string `msgpack:"failures,omitempty"`
+}
+
 // PptEditOperation 是 files.edit_ppt 的一次操作。
 // v0 仅支持 op="replace"；在所有幻灯片 XML 中替换出现的旧文本。
 type PptEditOperation struct {
