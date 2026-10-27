@@ -18,7 +18,7 @@
 ## 快速开始
 
 ```powershell
-git clone https://github.com/QAQ-awa-QAQ/sump.git
+git clone https://github.com/NouSart/sump.git
 cd sump
 
 # 跑某一个模块的测试（推荐先跑一遍确认环境正常）

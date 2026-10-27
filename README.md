@@ -1,9 +1,9 @@
 # SUMP v2
 
-[![CI](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml/badge.svg)](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml)
+[![CI](https://github.com/NouSart/sump/actions/workflows/ci.yml/badge.svg)](https://github.com/NouSart/sump/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-> 版本：**v0.0.1-beta.1**（[发布说明](https://github.com/QAQ-awa-QAQ/sump/releases/tag/v0.0.1-beta.1)） · 门户 v2：**对话时间线**（深度思考 / 终端命令 / 终端输出 + Markdown 渲染）、**任务板块**（会话 → 任务目录、点任务跳转、完成判定权在 reasoner）、**设置项说人话**（选项 / 开关 / 单位）与语言包、**整站配色跟本地时段走** · 命令审批第二层（白名单外挂起 → 门户用户裁决） · 设置全链路（秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传） · shell 命令执行服务（受理即回执 + 未接审批即不执行 + 补报） · 长期记忆与 embedding 语义召回（Python 服务） · 文件服务（含 Excel / Word 读写） · 命令审批：[说明](./COMMAND-APPROVAL.md) / [协议](./COMMAND-APPROVAL-PROTOCOL.md) · 设计文档：[DESIGN.md](./DESIGN.md)
+> 版本：**v0.0.1-beta.1**（[发布说明](https://github.com/NouSart/sump/releases/tag/v0.0.1-beta.1)） · 门户 v2：**对话时间线**（深度思考 / 终端命令 / 终端输出 + Markdown 渲染）、**任务板块**（会话 → 任务目录、点任务跳转、完成判定权在 reasoner）、**设置项说人话**（选项 / 开关 / 单位）与语言包、**整站配色跟本地时段走** · 命令审批第二层（白名单外挂起 → 门户用户裁决） · 设置全链路（秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传） · shell 命令执行服务（受理即回执 + 未接审批即不执行 + 补报） · 长期记忆与 embedding 语义召回（Python 服务） · 文件服务（含 Excel / Word 读写） · 命令审批：[说明](./COMMAND-APPROVAL.md) / [协议](./COMMAND-APPROVAL-PROTOCOL.md) · 设计文档：[DESIGN.md](./DESIGN.md)
 
 SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独立运行（独立进程、独立数据库、任意语言），通过 WebSocket 按地址互相访问；智能体循环由 LLM 服务在服务网络之上自由跳转、组装。
 
