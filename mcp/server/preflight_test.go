@@ -32,7 +32,7 @@ func TestImportCheckAuthenticatesWithoutCallingTools(t *testing.T) {
 	defer endpoint.Close()
 	a, b := lookupImport(), lookupImport()
 	b.Action = "aaa_lookup"
-	i, err := NewImports([]RemoteConfig{{ID: "demo", URL: endpoint.URL, TokenRequired: true}}, []ImportConfig{a, b}, time.Second, 16384, func(string) string { return token })
+	i, err := NewImports([]RemoteConfig{{ID: "demo", URL: endpoint.URL, TokenRequired: true}}, []ImportConfig{a, b}, time.Second, 16384, func(string) (string, uint64) { return token, 0 })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestImportCheckAuthenticatesWithoutCallingTools(t *testing.T) {
 		t.Fatalf("actual invocation count: %v / %d", err, calls.Load())
 	}
 	for _, secret := range []string{"", "wrong"} {
-		other, err := NewImports([]RemoteConfig{{ID: "demo", URL: endpoint.URL, TokenRequired: true}}, []ImportConfig{a}, time.Second, 16384, func(string) string { return secret })
+		other, err := NewImports([]RemoteConfig{{ID: "demo", URL: endpoint.URL, TokenRequired: true}}, []ImportConfig{a}, time.Second, 16384, func(string) (string, uint64) { return secret, 0 })
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -33,7 +33,7 @@ func CheckRemoteConfig(ctx context.Context, cfg Config) (RemoteCheckReport, erro
 	if err != nil {
 		return report, err
 	}
-	imports, err := NewImports(policy.Remotes, policy.Imports, cfg.CallTimeout, cfg.MaxOutputBytes, func(key string) string { return secrets[key] })
+	imports, err := NewImports(policy.Remotes, policy.Imports, cfg.CallTimeout, cfg.MaxOutputBytes, func(key string) (string, uint64) { return secrets[key], 0 })
 	if err != nil {
 		return report, err
 	}

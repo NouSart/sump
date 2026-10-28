@@ -67,12 +67,12 @@ func (i *Imports) checkImport(ctx context.Context, tool importedTool) ImportChec
 		return fail(err)
 	}
 	defer func() { <-target.slots }()
-	session, err := i.connectChecked(ctx, target, tool, token)
+	session, err := i.connectChecked(ctx, target, tool, token.value)
 	if err != nil {
 		return fail(err)
 	}
 	defer session.Close()
-	if ctx.Err() != nil || i.closed.Load() || token != i.token(target.config.SecretKey()) {
+	if ctx.Err() != nil || i.closed.Load() || token != i.credential(target.config.SecretKey()) {
 		result.Code, result.Message = "MCP_CHECK_CANCELLED", "preflight cancelled or credential changed; no tool submitted"
 		return result
 	}
