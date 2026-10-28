@@ -216,17 +216,13 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Hint("需要看图时交给哪个服务"),
 		service.As("service"))
 	// 秘密项：值不进中心（面板提交那一次由中心转发过来），由本服务自己落盘 / 加载（Config.SecretFile）。
-	applyKey := func(v string) error {
-		s.setLLMKey(v)
-		return nil
-	}
-	s.HandleSecret("llm.key", applyKey,
+	s.HandleSecretWithCommit("llm.key", nil, s.setLLMKey,
 		service.Label("模型 API Key"),
 		service.Hint("只在你自己这边保存，中心不落盘也不回显；换 key 直接覆盖"))
 	if cfg.LLMKey != "" {
-		// 启动参数（flag / 环境变量）给了 Key：与下发同路径先应用一次。
+		// 启动参数先作为运行时初值使用，不因面板首次保存失败而被替换。
 		// 秘密文件里若有值，Start 加载时会覆盖（文件才是面板提交的最新状态）。
-		_ = applyKey(cfg.LLMKey)
+		s.setLLMKey(cfg.LLMKey)
 	}
 	// 只读项：启动参数带起来的，进面板可见但不可改（改它需要重启）。
 	s.HandleReadOnly("name", cfg.Name)
@@ -348,8 +344,7 @@ func (s *Server) setLLMModel(v string) {
 }
 
 // setLLMKey 更新 LLM API Key 并立即重建客户端（空值 = 清除，客户端置 nil）。
-// 用回调参数 v 而不是 SettingValue("llm.key")：骨架在回调返回之后才更新生效值表，
-// 回调里读 SettingValue 只会拿到旧值。
+// 面板变更由保存后的 commit 回调进入；构造启动初值时也使用此函数。
 func (s *Server) setLLMKey(v string) {
 	s.liveMu.Lock()
 	s.llmKey = v
