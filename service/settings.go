@@ -23,10 +23,13 @@ const (
 
 // settingEntry 是一个已声明的设置项。
 type settingEntry struct {
-	key    string
-	preset string
-	kind   settingKind
-	apply  func(value string) error
+	key     string
+	preset  string
+	kind    settingKind
+	apply   func(value string) error
+	version uint64 // 进程内版本；成功改变生效值时递增，不进入设置协议或日志。
+	// commit 非空时，apply 只校验；秘密保存成功后才发布运行时状态。
+	commit func(value string)
 	// 给**人**看的部分（可选）：中文名、一句话说明、控件类型、枚举候选、数字单位。
 	label   string
 	hint    string
@@ -90,8 +93,20 @@ func (s *Service) HandleSetting(key, preset string, apply func(value string) err
 // HandleSecret 声明一个**秘密项**：值不进设置中心——中心不落盘、不回显、list 恒回空串，
 // 只在面板提交那一次把值转发过来；由**本服务自己**持久化（Config.SecretFile）并在 Start
 // 时加载（中心那边没有值可下发）。一句话：谁消费谁持有。
+// 回调若会切换身份、客户端或连接，应使用 HandleSecretWithCommit，避免保存前产生副作用。
 func (s *Service) HandleSecret(key string, apply func(value string) error, opts ...Option) {
 	s.declare(key, "", settingSecret, apply, opts...)
+}
+
+// HandleSecretWithCommit 将秘密的校验与运行时发布分开，适用于带身份、连接等派生状态的值。
+// validate 不得修改运行时状态；失败时不写盘、不调用 commit。
+// 保存成功并更新 SettingValue 后才调用 commit；启动加载时同样校验、发布，但不回写文件。
+// commit 只做不会失败的本地状态切换，可释放旧连接，但不发起或等待网络请求。
+// 可读 SettingValue / SettingSnapshot，不可重入 ApplySetting。
+// 两个回调与其他设置变更串行执行。声明必须在 Start 前完成。
+func (s *Service) HandleSecretWithCommit(key string, validate func(value string) error, commit func(value string), opts ...Option) {
+	opts = append(opts, func(e *settingEntry) { e.commit = commit })
+	s.declare(key, "", settingSecret, validate, opts...)
 }
 
 // HandleReadOnly 声明一个**只读项**：启动参数带起来的值，进面板可见但不可改
@@ -148,9 +163,29 @@ func (s *Service) ApplySetting(key, value string) error { return s.applySetting(
 // SettingValue 返回某设置项最近一次成功应用的生效值（未下发/拉取过时 = 声明预设）。
 // 秘密项返回的是**本服务自己**持有的值（中心那边没有）；日志/名片仍不回显。
 func (s *Service) SettingValue(key string) string {
+	value, _ := s.SettingSnapshot(key)
+	return value
+}
+
+// SettingSnapshot 在同一把锁内读取生效值与进程内版本，供调用方识别 A→B→A 的变更。
+// 仅成功改变生效值时递增；失败或重复保存不变。版本不持久化，不能跨进程比较。
+// 秘密值仅供本服务使用，不得写入日志、名片或对外消息。
+func (s *Service) SettingSnapshot(key string) (value string, version uint64) {
 	s.settingsMu.Lock()
 	defer s.settingsMu.Unlock()
-	return s.settingValues[key]
+	idx, ok := s.settingIndex[key]
+	if !ok {
+		return "", 0
+	}
+	return s.settingValues[key], s.settings[idx].version
+}
+
+// 调用方持有 settingsMu；值和版本一起发布，避免读到不属于同一次提交的组合。
+func (s *Service) setSettingValueLocked(key, value string) {
+	if s.settingValues[key] != value {
+		s.settings[s.settingIndex[key]].version++
+	}
+	s.settingValues[key] = value
 }
 
 // isSecret 判断某键是否声明为秘密项（日志据此决定要不要回显值）。
@@ -239,9 +274,11 @@ func (s *Service) applySetting(key, value string) error {
 	s.settingsMu.Lock()
 	idx, ok := s.settingIndex[key]
 	var apply func(string) error
+	var commit func(string)
 	kind := settingNormal
 	if ok {
 		apply = s.settings[idx].apply
+		commit = s.settings[idx].commit
 		kind = s.settings[idx].kind
 	}
 	s.settingsMu.Unlock()
@@ -252,9 +289,9 @@ func (s *Service) applySetting(key, value string) error {
 		return fmt.Errorf("configure: %s 是只读项（启动参数带起来的，改它需要重启）", key)
 	}
 
-	// 秘密项：应用与落盘必须成对成败——落盘失败时把运行时值回滚（见 applySecret）。
+	// 秘密项：保存失败不能发布新状态；传统回调通过回滚恢复（见 applySecret）。
 	if kind == settingSecret {
-		return s.applySecret(key, value, apply)
+		return s.applySecret(key, value, apply, commit)
 	}
 	if apply != nil {
 		if err := apply(value); err != nil {
@@ -262,15 +299,15 @@ func (s *Service) applySetting(key, value string) error {
 		}
 	}
 	s.settingsMu.Lock()
-	s.settingValues[key] = value
+	s.setSettingValueLocked(key, value)
 	s.settingsMu.Unlock()
 	return nil
 }
 
 // applySecret 应用并落盘一个秘密项；落盘失败 = 这次变更没发生：
-// 把运行时值恢复成上一个已生效值，避免"运行时是新值、生效值还是旧值"。
+// 有 commit 时尚未发布运行时状态，无需回滚；传统 apply 则恢复上一个已生效值。
 // 调用方已持有 applyMu。
-func (s *Service) applySecret(key, value string, apply func(string) error) error {
+func (s *Service) applySecret(key, value string, apply func(string) error, commit func(string)) error {
 	s.settingsMu.Lock()
 	previous, known := s.settingValues[key], s.appliedSecrets[key]
 	s.settingsMu.Unlock()
@@ -285,7 +322,7 @@ func (s *Service) applySecret(key, value string, apply func(string) error) error
 		// 记日志，但不掩盖原始的落盘错误。
 		// 只有骨架确实应用过旧值时才回滚：启动参数可能在骨架之外直接应用过值，
 		// 骨架不知道它，贸然回滚会把一个能用的值清掉。
-		if known && apply != nil {
+		if commit == nil && known && apply != nil {
 			if rollbackErr := apply(previous); rollbackErr != nil {
 				s.logger.Printf("秘密 %s 落盘失败后回滚运行时值失败（当前可能仍是新值）: %v", key, rollbackErr)
 			}
@@ -293,9 +330,12 @@ func (s *Service) applySecret(key, value string, apply func(string) error) error
 		return fmt.Errorf("configure: %s: 秘密落盘失败: %w", key, err)
 	}
 	s.settingsMu.Lock()
-	s.settingValues[key] = value
+	s.setSettingValueLocked(key, value)
 	s.appliedSecrets[key] = true
 	s.settingsMu.Unlock()
+	if commit != nil {
+		commit(value)
+	}
 	return nil
 }
 
@@ -308,8 +348,10 @@ func (s *Service) applyLoadedSecret(key, value string) error {
 	s.settingsMu.Lock()
 	idx, ok := s.settingIndex[key]
 	var apply func(string) error
+	var commit func(string)
 	if ok {
 		apply = s.settings[idx].apply
+		commit = s.settings[idx].commit
 	}
 	s.settingsMu.Unlock()
 	if !ok {
@@ -321,9 +363,12 @@ func (s *Service) applyLoadedSecret(key, value string) error {
 		}
 	}
 	s.settingsMu.Lock()
-	s.settingValues[key] = value
+	s.setSettingValueLocked(key, value)
 	s.appliedSecrets[key] = true
 	s.settingsMu.Unlock()
+	if commit != nil {
+		commit(value)
+	}
 	return nil
 }
 
