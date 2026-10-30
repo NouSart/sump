@@ -8,7 +8,7 @@
 
 危险命令**默认拦住**，等用户点头才执行——系统不代管决定。两道闸：
 
-1. **第一层（规则引擎）**：PowerShell AST 结构化解析 + 不可变规则快照 + 执行摘要绑定，给不出 `allow` 就交第二层。
+1. **第一层（规则引擎）**：按方言提取结构（PowerShell 原生 AST / POSIX shell 保守词法器）+ 不可变规则快照 + 执行摘要绑定，给不出 `allow` 就交第二层。
 2. **第二层（用户裁决）**：命令挂起并推到门户，用户点批准 / 拒绝。
 
 **fail-closed**：shell 没接通审批时，任何命令都按「未通过」处理，不会执行。
@@ -17,7 +17,7 @@
 
 1. LLM 或客户端调用 `shell.run`；shell 校验目录和大小，立即返回 `item_id`。
 2. shell 固定本次的命令、目录、解释器、参数、环境、超时和输出限额，再请求 `approval.approval_request`。
-3. approval 校验上下文，用原生 AST 提取结构，按不可变规则快照返回一份裁决，附模型反馈。
+3. approval 校验上下文，按方言提取结构（PowerShell 原生 AST / POSIX shell 保守词法器），按不可变规则快照返回一份裁决，附模型反馈。
 4. shell 核验任务、摘要和有效期。仅 `allow` 可以进入执行队列；`deny`、`review`、服务失联或响应不完整都停止本次命令。
 5. shell 发送 `approved` 的同时可执行命令；`approved` 的投递尝试结束后再发送 `done` / `failed`；拒绝则发送 `rejected`。补报含结构化裁决，以及 reasoner 可直接读到的原因、命中规则与未知结构。
 6. reasoner 把补报加入当前模型上下文，或在任务收尾后启动补报轮；用户输出沿原有 deliver 通道返回。
@@ -48,6 +48,7 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 ```
 
 - `args` 不包含最后的 command；工具把命令作为一个独立启动参数交给解释器，不能重新拼出不同命令。
+- 以下上下文校验针对 PowerShell；bash 请求改为校验 POSIX shell 形状、固定 `-c` 参数、工作目录与路径边界，不能套用 PowerShell 的环境约定。
 - 执行路径必须与审批进程选定的可信 PowerShell 路径一致（Windows 大小写不敏感）。
 - 工作目录由 shell 解析符号链接并验证是否在根目录内。
 - **固定环境**：清除继承的 `PSMODULE*`、`POWERSHELL_*`、`PSEXECUTIONPOLICYPREFERENCE`，模块路径限定为解释器安装目录下 `Modules`，不加载用户 profile。其余环境在送审前由 shell 快照；不支持动态环境展开，所以不依赖变量取值做允许判断。这个约定依赖可信执行方和可信安装目录，**不是远程沙箱证明**。
@@ -67,7 +68,7 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 | `valid_for_ms` | `allow` 为 30000；其他结果为 0 |
 | `llm_feedback.summary` | 给模型的原因说明 |
 | `llm_feedback.rule_ids` | 可选，命中的允许规则 ID |
-| `llm_feedback.unknowns` | 可选，未覆盖的 AST 结构或解析错误 ID |
+| `llm_feedback.unknowns` | 可选，未覆盖的结构 / 动态语义或解析错误 ID |
 
 原因码：`RULE_ALLOW`、`POLICY_DENY`、`DYNAMIC_BEHAVIOR`、`NO_MATCHING_RULE`、`PARSE_ERROR`、`UNSUPPORTED_DIALECT`、`CONTEXT_UNKNOWN`、`RUNTIME_MISMATCH`、`LIMIT_EXCEEDED`；第二层另有 `USER_APPROVED` / `USER_DENIED`。
 
@@ -92,7 +93,7 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 ## 6. 限额与失败处理
 
 - 单条命令 16 KiB；审批与 shell handler 在解码前限制业务载荷 64 KiB。
-- AST 节点超过 4096 或出现未知结构，不允许；解析子进程 5 秒超时，输出最多 256 KiB。
+- PowerShell AST 节点或 bash 简单命令词元超过 4096、出现未知结构，不允许；bash 组合命令另受 16 KiB 命令长度上限约束。PowerShell 解析子进程 5 秒超时、输出最多 256 KiB；bash 词法器在进程内同步完成。
 - approval 同时处理 8 条（`1–64` 可配）；满时返回 busy，**不建无限等待队列**。
 - shell 待审批 / 投递进展的后台任务最多 64；执行并发与队列默认 8 / 32。
 - 上述是业务层限额；公共传输层未增加 WebSocket ReadLimit 或身份认证。
@@ -104,9 +105,9 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 
 默认规则在 `approval/policy/default.json`：规则包定义版本、禁止命令名、允许命令名与静态参数数量上限；**禁止规则优先**。规则可以在 `approval/policy/default.json` 或启动 `-policy` 指定的文件里维护，运行时也可下发 `approval.policy.json`；**改内嵌默认文件后必须重新构建**，而中心已有的覆盖值不会自动被新默认替换。别名只接受显式列入配置的名称。命令名不是自然语言敏感词，不翻译用户内容，也不按语言封禁字面参数。
 
-首版只批准完整 AST 中的**单一静态命令**。对参数带路径、写文件、网络访问、外部程序等业务，应增加相应事实提取与专门参数规则，而不是简单扩大命令名前缀允许范围。
+首版只批准完整结构中的**单一静态命令**（PowerShell AST 与 bash 词元都必须全是字面量）。对参数带路径、写文件、网络访问、外部程序等业务，应增加相应事实提取与专门参数规则，而不是简单扩大命令名前缀允许范围。
 
-- **新增 shell 方言（仍属 exec 域）**：实现 Parser，并同时定义执行 profile、路径身份和正反例测试；不能只改 `dialect` 字符串就套用 PowerShell 结果。
+- **新增 shell 方言（仍属 exec 域）**：实现 Parser，并同时定义执行 profile、路径身份和正反例测试；不能只改 `dialect` 字符串就套用 PowerShell 结果。当前已支持 `powershell` 与 `bash`；`bash` 方言族覆盖 bash / sh / dash / zsh / ksh（shell 传解释器名），只读白名单与边界见 [shell/README.md](../../shell/README.md)。
 - **新增执行域（如 fs / http / 后台任务）**：先定义独立域判别字段（建议 `kind`），不让 `dialect` 兼任域名。各域声明自己的执行字段组、上下文校验、事实提取器和规则段；事实提取器注册在 approval 侧，**不能接受调用方自报「安全」结论**。裁决包、摘要绑定、有效期和 fail-closed 原则共用。当前 `plan` 的字段全部属于 exec 域；域判别字段只约定了扩展方向，尚未发送。
 
 ## 8. 第二层：用户裁决
