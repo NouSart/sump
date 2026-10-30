@@ -1,6 +1,6 @@
 // Package service 是 SUMP v2 的服务骨架（Go 便捷库，非服务）：
 // 注册 / 心跳 / 名册 / 断线自愈（重连 + 重新注册）/ 优雅下线（bye）/ WS 服务端 / 跳转调用。
-// 协议本身见 protocol 包；非 Go 服务只需遵循 SPEC.md，不必使用本库。
+// 协议本身见 protocol 包；非 Go 服务只需遵循 docs/concepts/protocol.md，不必使用本库。
 package service
 
 import (

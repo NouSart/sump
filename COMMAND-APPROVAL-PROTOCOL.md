@@ -85,7 +85,7 @@
 
 **新增 shell 方言（仍属于 exec 域）**：实现 Parser，并同时定义执行 profile、路径身份和正反例测试；不能只修改 `dialect` 字符串就套用 PowerShell 结果。
 
-**新增执行域（例如 fs、http、后台任务）**：先定义独立域判别字段（建议 `kind`），不让 `dialect` 兼任域名。各域声明自己的执行字段组、上下文校验、事实提取器和规则段；事实提取器注册在 approval 侧，不能接受调用方自报“安全”结论。裁决包、摘要绑定、有效期和 fail-closed 原则共用。当前 `plan` 的 command/work_dir/shell_path/args/dialect/platform/profile/timeout_ms/max_output_bytes 都是 exec 域字段；本次只约定扩展方向，没有新增域判别字段或执行域实现，见 SPEC.md §13。
+**新增执行域（例如 fs、http、后台任务）**：先定义独立域判别字段（建议 `kind`），不让 `dialect` 兼任域名。各域声明自己的执行字段组、上下文校验、事实提取器和规则段；事实提取器注册在 approval 侧，不能接受调用方自报“安全”结论。裁决包、摘要绑定、有效期和 fail-closed 原则共用。当前 `plan` 的 command/work_dir/shell_path/args/dialect/platform/profile/timeout_ms/max_output_bytes 都是 exec 域字段；本次只约定扩展方向，没有新增域判别字段或执行域实现，见 docs/concepts/protocol.md 的命名基线。
 
 ## 第二层：用户裁决（已实现）
 

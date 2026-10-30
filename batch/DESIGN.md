@@ -643,7 +643,7 @@ CREATE TABLE items (
 - [ ] `protocol/batch.go`（新）
 - [ ] `go.work` 加 `./batch`
 - [ ] `.github/workflows/ci.yml` **两处**模块循环都要加 `batch`（约第 48 行的测试循环、第 73 行的 vet/构建循环）
-- [ ] `SPEC.md` §12 服务表 + §13 命名基线 + §7 设置项
+- [ ] `docs/concepts/architecture.md` 服务表 + `docs/concepts/protocol.md` 命名基线 + `docs/guides/add-a-service.md` 设置项
 - [ ] 端口 `127.0.0.1:9951`（已实测空闲）
 - [ ] `scripts/run-local.ps1` 一键起（**保住 UTF-8 BOM**）
 - [ ] `batch/README.md`

@@ -3,7 +3,7 @@
 [![CI](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml/badge.svg)](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-> 版本：**v0.0.1-beta.1**（[发布说明](https://github.com/QAQ-awa-QAQ/sump/releases/tag/v0.0.1-beta.1)） · 门户 v2：**对话时间线**（深度思考 / 终端命令 / 终端输出 + Markdown 渲染）、**任务板块**（会话 → 任务目录、点任务跳转、完成判定权在 reasoner）、**设置项说人话**（选项 / 开关 / 单位）与语言包、**整站配色跟本地时段走** · 命令审批第二层（白名单外挂起 → 门户用户裁决） · 设置全链路（秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传） · shell 命令执行服务（受理即回执 + 未接审批即不执行 + 补报） · 长期记忆与 embedding 语义召回（Python 服务） · 文件服务（含 Excel / Word 读写） · 命令审批：[说明](./COMMAND-APPROVAL.md) / [协议](./COMMAND-APPROVAL-PROTOCOL.md) · 设计文档：[DESIGN.md](./DESIGN.md)
+> 版本：**v0.0.1-beta.1**（[发布说明](https://github.com/QAQ-awa-QAQ/sump/releases/tag/v0.0.1-beta.1)） · 门户 v2：**对话时间线**（深度思考 / 终端命令 / 终端输出 + Markdown 渲染）、**任务板块**（会话 → 任务目录、点任务跳转、完成判定权在 reasoner）、**设置项说人话**（选项 / 开关 / 单位）与语言包、**整站配色跟本地时段走** · 命令审批第二层（白名单外挂起 → 门户用户裁决） · 设置全链路（秘密项谁消费谁持有 + 只读项入面板 + 服务侧变化实时回传） · shell 命令执行服务（受理即回执 + 未接审批即不执行 + 补报） · 长期记忆与 embedding 语义召回（Python 服务） · 文件服务（含 Excel / Word 读写） · 文档入口见下方[文档](#文档)
 
 SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独立运行（独立进程、独立数据库、任意语言），通过 WebSocket 按地址互相访问；智能体循环由 LLM 服务在服务网络之上自由跳转、组装。
 
@@ -113,7 +113,11 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 | ---- | ---- |
 | [DESIGN.md](./DESIGN.md) | 重构设计：背景 / 架构 / 目录约定 / 实施路线 / 待决问题 |
 | [frontend/README.md](./frontend/README.md) | 门户：HTTP API、SSE 事件、设计系统与主题、测试结构 |
-| [SPEC.md](./SPEC.md) | 服务规范（草案）：写一个新服务要满足什么（独立性 / 最小实现 / 动作词汇 / 工具暴露 / 异步补报 / 兼容规则 / 待定事项） |
+| [docs/concepts/protocol.md](./docs/concepts/protocol.md) | 协议契约：独立性硬约束 / 生命周期 / 帧与信封 / 动作词汇与工具暴露 / 异步补报 / 链机制 / 兼容规则 / 命名基线 |
+| [docs/guides/add-a-service.md](./docs/guides/add-a-service.md) | 写一个服务：名片字段、三类设置项与下发、服务自报、测试要求 |
+| [docs/concepts/architecture.md](./docs/concepts/architecture.md) | 架构：服务清单、一次对话怎么流动、数据归属、刻意不做的事 |
+| [docs/concepts/agent-loop.md](./docs/concepts/agent-loop.md) | 运行时语义：工具异步、会话记录、任务、经验网、复盘 |
+| [docs/quickstart.md](./docs/quickstart.md) | 快速开始：依赖、一键启动、端口、测试、长期运行 |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | 参与开发指南：环境 / 测试 / 提交规范 / 三条硬规则 |
 | [shell/README.md](./shell/README.md) | shell 服务：边界、审批接缝、设置项、补报时序 |
 | [embedding/README.md](./embedding/README.md) | embedding 服务：模型放置、A/B 实测与阈值来源 |

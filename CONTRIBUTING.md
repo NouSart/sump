@@ -1,6 +1,6 @@
 # 参与开发
 
-感谢愿意一起做 SUMP！本文是操作版指南——**规范本身在 [SPEC.md](./SPEC.md)，动手前请先通读**（一页，不多）。
+感谢愿意一起做 SUMP！本文是操作版指南。**动手前先读两份**：[AGENTS.md](./AGENTS.md)（红线，一页）与 [docs/concepts/protocol.md](./docs/concepts/protocol.md)（协议契约）。写新服务看 [docs/guides/add-a-service.md](./docs/guides/add-a-service.md)，跑起来看 [docs/quickstart.md](./docs/quickstart.md)。
 
 ## 你会得到什么
 

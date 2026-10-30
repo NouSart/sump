@@ -1,6 +1,6 @@
 # MCP 双向翻译：范围与验收契约
 
-本契约定义 MCP 2026-07-28 和 Go SDK v1.8.0 实现的功能边界及验收方法。配置和启动方法见 [mcp/README.md](./mcp/README.md)，原生协议见 [SPEC.md](./SPEC.md)。
+本契约定义 MCP 2026-07-28 和 Go SDK v1.8.0 实现的功能边界及验收方法。配置和启动方法见 [mcp/README.md](./mcp/README.md)，原生协议见 [docs/concepts/protocol.md](./docs/concepts/protocol.md)。
 
 ## 职责和交付范围
 
