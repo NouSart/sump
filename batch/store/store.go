@@ -1,7 +1,7 @@
 // Package store 是 batch 的任务账本（SQLite）。
 //
 // 只存摘要：原始 input 不入库（可能含隐私），完整响应也不入库（需要就再调一次目标动作）。
-// 任务与项都在库里，所以服务重启后能给出明确归宿（见 batch/DESIGN.md §3.6）。
+// 任务与项都在库里，所以服务重启后能给出明确归宿（见 batch/README.md 的「重启行为」）。
 package store
 
 import (
