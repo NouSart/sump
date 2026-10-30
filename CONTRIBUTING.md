@@ -35,7 +35,7 @@
 改动 `frontend`（TS）时另加：`cd frontend; npm test`（协议 / 中心链路 / HTTP API / 面板组件测试；`npm run build` 内含类型检查，含测试）。
 改动 `embedding`（Python）时另加：`cd embedding; python -m pytest tests -q`（CI 只装核心依赖——真模型冒烟在本地以 `SUMP_EMBED_MODEL_DIR` 开启）。
 
-CI（GitHub Actions）会替你跑全部内容；本地先过一遍能省一轮等待。
+CI（GitHub Actions）会跑各模块测试、根 e2e、前端与 embedding；Windows 专属分支（PowerShell 5.1 代码页、盘符路径等）由单独的 Windows 任务执行；`-race` 只覆盖并发敏感模块。本地先过一遍能省一轮等待。
 
 ## 三条硬规则（架构红线）
 

@@ -74,8 +74,8 @@ func (s *Server) preparePlan(j *job) (protocol.ExecutionPlan, []string, error) {
 		exe = real
 	}
 	base := strings.ToLower(strings.TrimSuffix(filepath.Base(exe), ".exe"))
-	// 非 PowerShell 方言没有对应的自动分析器：profile 记 "unsupported"，审批侧据此跳过自动判定、
-	// 直接转第二层问用户——不是拒绝，也不是跳过审批。
+	// POSIX shell（bash/sh/dash/zsh/ksh）有内置只读词法器；其它非 PowerShell 方言没有，
+	// profile 只描述 PowerShell 的固定环境，这里用 "unsupported" 占位（bash 分析不读它）。
 	dialect, profile := base, "unsupported"
 	args := shellArgs(exe, j.command)
 	args = args[:len(args)-1]

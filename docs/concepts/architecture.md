@@ -43,7 +43,7 @@ SUMP 是「服务的互联网」：每个服务是独立进程、独立数据库
 | images | Go | save（URL/base64 落盘）返回 id；fetch（id → base64） |
 | files | Go | save / fetch / read（文本截断、xlsx 转 TSV、docx/pptx 提取正文）/ write（单元格级编辑）/ edit_word / edit_ppt |
 | shell | Go | 受理即回执的命令执行（无队列，只有防爆熔断；超时终止 + 输出截断）；审批接缝（未接入 = 一律未通过）；结果由 `report_result` 补报 |
-| approval | Go | 终端命令审批：PowerShell AST + 不可变规则快照 + 执行摘要绑定 + fail-closed；第二层用户裁决 |
+| approval | Go | 终端命令审批：PowerShell AST / POSIX 保守词法器 + 不可变规则快照 + 执行摘要绑定 + fail-closed；第二层用户裁决 |
 | timer | Go | 计时器：受理「N 毫秒后唤醒我」（即时回执）→ 到点把 `report_result` 跳回调用方；按 boss 分组推倒计时 |
 | batch | Go | 批处理：一次声明 N 项工作 + 并发度 + 唤醒时机；暂停可恢复、停止是终态；目标动作须显式声明 `Batchable` |
 | mcp | Go | 双向协议翻译：显式映射导出获准的原生能力、导入外部 MCP 工具；只登记自身，不自动传播下属能力 |

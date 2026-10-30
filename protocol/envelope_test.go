@@ -97,6 +97,50 @@ func TestResponseDataPassthrough(t *testing.T) {
 	}
 }
 
+// TestUnknownFieldsAreIgnored 钉住向前兼容：新版本多带的字段不得让旧版本解码失败，
+// 已认识的字段必须原样保留（信封顶层与 payload 内层都要成立）。
+func TestUnknownFieldsAreIgnored(t *testing.T) {
+	raw, err := msgpack.Marshal(map[string]any{
+		"v": 1, "id": "01UNKNOWN0000000000000000", "trace": "TRACE-FUTURE",
+		"type": TypeRegister, "from": "svc-a", "to": "settings-center",
+		"future_top": map[string]any{"x": 1},
+		"payload": map[string]any{
+			"name": "svc-a", "addr": "ws://127.0.0.1:9999/ws",
+			"future_payload": 42,
+			"provides":       []any{map[string]any{"action": "echo", "future_flag": true}},
+			"settings":       []any{map[string]any{"key": "demo.setting", "future_default": "x"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env, err := Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("未知字段不应导致解码失败: %v", err)
+	}
+	if env.V != ProtocolVersion || env.Type != TypeRegister || env.From != "svc-a" || env.To != "settings-center" {
+		t.Fatalf("已知信封字段不符: %+v", env)
+	}
+	if env.Trace != "TRACE-FUTURE" {
+		t.Fatalf("trace 不符: %q", env.Trace)
+	}
+
+	var reg RegisterPayload
+	if err := env.DecodePayload(&reg); err != nil {
+		t.Fatalf("未知 payload 字段不应导致解码失败: %v", err)
+	}
+	if reg.Name != "svc-a" || reg.Addr != "ws://127.0.0.1:9999/ws" {
+		t.Fatalf("已知 payload 字段不符: %+v", reg)
+	}
+	if len(reg.Provides) != 1 || reg.Provides[0].Action != "echo" {
+		t.Fatalf("provides 不符: %+v", reg.Provides)
+	}
+	if len(reg.Settings) != 1 || reg.Settings[0].Key != "demo.setting" {
+		t.Fatalf("settings 不符: %+v", reg.Settings)
+	}
+}
+
 // TestNewIDOrdered 验证 ULID 时间有序、非空。
 func TestNewIDOrdered(t *testing.T) {
 	a := NewID()

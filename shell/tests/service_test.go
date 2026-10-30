@@ -328,7 +328,16 @@ func startShell(t *testing.T, sc *stubCenter, cfg server.Config) *server.Server 
 	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(s.Shutdown)
+	// 先停服务，再等执行中的子进程退出，最后才轮到 t.TempDir 的清理。
+	// Windows 上子进程还占着工作目录时，TempDir RemoveAll 会报
+	// "The process cannot access the file because it is being used by another process"。
+	t.Cleanup(func() {
+		s.Shutdown()
+		deadline := time.Now().Add(15 * time.Second)
+		for s.RunningCount() > 0 && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
 	return s
 }
 

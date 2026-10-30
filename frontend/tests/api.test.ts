@@ -436,6 +436,146 @@ test('门户：GET /api/history 目标不在名册里 → 明确的错误而不�
   const body = (await res.json()) as { error?: string };
   assert.match(body.error ?? '', /memory/);
 });
+test('门户：GET /api/tasks 直连 memory 列出任务', async (t) => {
+  const memory = await startStubService({
+    ok: true,
+    data: { tasks: [{ id: 't1', name: '写测试', status: 'active' }] },
+  });
+  const stub = new StubCenter();
+  const centerURL = await stub.start();
+  stub.roster = {
+    services: [
+      { name: 'frontend', addr: 'ws://127.0.0.1:9/ws' },
+      { name: 'memory', addr: memory.url },
+    ],
+    revision: 1,
+  };
+  const handle = await startWithCenter(centerURL);
+  t.after(async () => {
+    await handle.close();
+    await stub.stop();
+    await memory.stop();
+  });
+  await waitFor(() => handle.link.connected, 3000, '前端接入中心');
+
+  const res = await fetch(`http://${handle.addr}/api/tasks`);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { conversationId?: string; tasks?: { id?: string; name?: string }[] };
+  assert.equal(body.conversationId, 'web:private:owner');
+  assert.equal(body.tasks?.length, 1);
+  assert.equal(body.tasks?.[0]?.id, 't1');
+
+  assert.equal(memory.jumps.length, 1, '应恰好跳一次');
+  assert.equal(memory.jumps[0]?.action, 'task_list');
+  assert.deepEqual(memory.jumps[0]?.input, { conversation_id: 'web:private:owner' });
+});
+
+test('门户：POST /api/tasks/resume 恢复任务并带回记录', async (t) => {
+  const memory = await startStubService({
+    ok: true,
+    data: {
+      task: { id: 't1', name: '写测试', status: 'active' },
+      messages: [{ role: 'user', content: '之前的消息' }],
+    },
+  });
+  const stub = new StubCenter();
+  const centerURL = await stub.start();
+  stub.roster = {
+    services: [
+      { name: 'frontend', addr: 'ws://127.0.0.1:9/ws' },
+      { name: 'memory', addr: memory.url },
+    ],
+    revision: 1,
+  };
+  const handle = await startWithCenter(centerURL);
+  t.after(async () => {
+    await handle.close();
+    await stub.stop();
+    await memory.stop();
+  });
+  await waitFor(() => handle.link.connected, 3000, '前端接入中心');
+
+  const res = await postJSON(`http://${handle.addr}/api/tasks/resume`, { task_id: 't1' });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as {
+    task?: { id?: string; status?: string };
+    messages?: { content?: string }[];
+  };
+  assert.equal(body.task?.id, 't1');
+  assert.equal(body.task?.status, 'active');
+  assert.equal(body.messages?.[0]?.content, '之前的消息');
+  assert.equal(memory.jumps[0]?.action, 'task_resume');
+  assert.deepEqual(memory.jumps[0]?.input, { task_id: 't1' });
+
+  // 缺 task_id：门户自己拦下（400），不打扰 memory。
+  const before = memory.jumps.length;
+  const bad = await postJSON(`http://${handle.addr}/api/tasks/resume`, {});
+  assert.equal(bad.status, 400);
+  const badBody = (await bad.json()) as { error?: string };
+  assert.match(badBody.error ?? '', /task_id/);
+  assert.equal(memory.jumps.length, before, '参数不合法时不应跳转');
+});
+
+test('语言包：列目录 / 按语言读取 / 非法标识 400', async (t) => {
+  const locales = await mkdtemp(join(tmpdir(), 'sump-locales-'));
+  await writeFile(
+    join(locales, 'zh-CN.json'),
+    JSON.stringify({ locale: 'zh-CN', name: '中文', messages: { hello: '你好' } }),
+    'utf8',
+  );
+  await writeFile(
+    join(locales, 'xx-XX.json'),
+    JSON.stringify({ locale: 'xx-XX', name: '全 x', messages: { hello: 'x' } }),
+    'utf8',
+  );
+  const stub = new StubCenter();
+  const centerURL = await stub.start();
+  const handle = await startFrontend(
+    {
+      name: 'frontend',
+      addr: '127.0.0.1:0',
+      centerURL,
+      webDir: await makeWebDir(),
+      heartbeatMS: 50,
+      reasoner: 'reasoner',
+      memory: 'memory',
+      approval: 'approval',
+      localesDir: locales,
+      lang: 'zh-CN',
+      trustedHosts: [],
+    },
+    silent,
+  );
+  t.after(async () => {
+    await handle.close();
+    await stub.stop();
+  });
+  await waitFor(() => handle.link.connected, 3000, '前端接入中心');
+
+  const listRes = await fetch(`http://${handle.addr}/api/i18n/locales`);
+  assert.equal(listRes.status, 200);
+  const list = (await listRes.json()) as { locales?: { locale?: string; name?: string }[] };
+  const localesSeen = (list.locales ?? []).map((l) => l.locale).sort();
+  assert.deepEqual(localesSeen, ['xx-XX', 'zh-CN']);
+  assert.equal(list.locales?.find((l) => l.locale === 'xx-XX')?.name, '全 x');
+
+  const packRes = await fetch(`http://${handle.addr}/api/i18n?lang=xx-XX`);
+  assert.equal(packRes.status, 200);
+  const pack = (await packRes.json()) as { locale?: string; messages?: Record<string, string> };
+  assert.equal(pack.locale, 'xx-XX');
+  assert.equal(pack.messages?.hello, 'x');
+
+  // 缺包不致命：返回空消息，让界面退回内置文案。
+  const missing = (await (await fetch(`http://${handle.addr}/api/i18n?lang=fr-FR`)).json()) as {
+    messages?: Record<string, string>;
+  };
+  assert.deepEqual(missing.messages, {});
+
+  // 语言标识只认 [A-Za-z0-9_-]，挡住目录穿越。
+  const bad = await fetch(`http://${handle.addr}/api/i18n?lang=${encodeURIComponent('../zh-CN')}`);
+  assert.equal(bad.status, 400);
+});
+
 test('门户：POST /api/message 跳 user_message 给 reasoner，只回受理回执', async (t) => {
   const reasoner = await startStubService({ ok: true, data: { item_id: 'h1', phase: 'queued' } });
   const stub = new StubCenter();

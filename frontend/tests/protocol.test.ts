@@ -1,7 +1,7 @@
 // 协议层测试：信封键名 / roundtrip，以及 Go 侧 protocol 包产出字节的解析（跨语言锚点）。
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { decode } from '@msgpack/msgpack';
+import { decode, encode } from '@msgpack/msgpack';
 import { decodeEnvelope, encodeEnvelope, newEnvelope, newID } from '../src/server/protocol.ts';
 
 test('newID：26 字符 ULID 形态且互不相同', () => {
@@ -37,6 +37,26 @@ test('信封 roundtrip：键名与 Go 对齐、空字段不出现', () => {
 
   const noPayload = encodeEnvelope(newEnvelope('heartbeat', 'a', 'b', 'T'));
   assert.equal('payload' in (decode(noPayload) as Record<string, unknown>), false);
+});
+
+test('未知字段被忽略：已知字段照常解析，payload 原样保留', () => {
+  const bytes = encode({
+    v: 1,
+    id: '01UNKNOWN0000000000000000',
+    trace: 'TRACE-FUTURE',
+    type: 'jump',
+    from: 'a',
+    to: 'b',
+    future_top: { x: 1 },
+    payload: { action: 'echo', future_flag: true },
+  });
+  const env = decodeEnvelope(bytes);
+  assert.equal(env.v, 1);
+  assert.equal(env.type, 'jump');
+  assert.equal(env.from, 'a');
+  assert.equal(env.to, 'b');
+  assert.equal(env.trace, 'TRACE-FUTURE');
+  assert.deepEqual(env.payload, { action: 'echo', future_flag: true });
 });
 
 // Go 侧 protocol 包生成的字节（由 protocol/tmpgen 生成后固化；ULID 形态 id 固定）。

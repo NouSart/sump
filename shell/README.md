@@ -43,7 +43,7 @@ shell 不参与这个决定，也不承诺顺序。
 | 护栏 | 行为 | 设置键 |
 | ---- | ---- | ---- |
 | 工作目录 | 必须在**根目录内**（越界、不存在、不可访问 → 同步拒绝；软链先解析再判边界） | `exec.root` |
-| 解释器 | 配置远程审批时自动探测 `pwsh` → `powershell`；显式设置优先。自定义 Approver 路径沿用原平台探测顺序 | `exec.shell` |
+| 解释器 | 留空时按平台候选顺序探测（Windows：Git Bash → `bash` → `pwsh` → `powershell` → `cmd`；Linux/macOS：`bash` → `sh`）；显式设置优先。自定义 Approver 路径沿用同一套顺序 | `exec.shell` |
 | 执行超时 | 超时终止**整棵进程树**（Windows：`taskkill /T /F`；Unix：杀进程组），补报 `timed_out` + 退出码 `-1`；**终止失败如实标注**（“进程可能仍在运行”+ 原因原文，不谎称已终止），并设 `WaitDelay=10s` 兜住管道被孙进程占住时的无限等待 | `exec.timeout_ms` |
 | 输出上限 | 单流保前 N 字节，附“共多少字节”，**命令照常跑完**（不因截断中断）；上限**每次执行只读一次**（截断与补报文案同一口径，中途改设置不影响本次结果） | `exec.max_output_kb` |
 | 并发 | 同时在跑的命令数上限；超了 → 立即拒绝（**不排队**） | `exec.max_running` |
@@ -63,7 +63,7 @@ shell 不参与这个决定，也不承诺顺序。
 
 命令超过 16 KiB、请求超过 64 KiB 或待审批任务达到 1024 条，会同步拒绝。审批通过后固定本次的解释器、目录、参数、环境、超时和输出上限，执行前复核；拿到裁决后迟迟未开始执行会因短期许可过期而拒绝。**许可期从拿到裁决的时刻起算**（30 秒）——第二层要等用户裁决，按发起时刻算会必然过期。完整范围见 [命令审批](../docs/concepts/approval.md)。
 
-**非 PowerShell 方言（`exec.shell` 配 bash / cmd）照样审批。** 审批侧没有对应的自动分析器，`profile` 记为 `unsupported`，engine 直接判 `review` → 挂起问用户。代价不是"丢审批"，而是"丢掉白名单直过"：每条命令都要在门户点一次。`capabilities` 返回的 `other_dialects: "review"` 就是这件事。
+**非 POSIX shell 方言（如 cmd / fish）照样审批。** 审批侧没有对应的自动分析器，engine 直接判 `review` → 挂起问用户。代价不是"丢审批"，而是"丢掉白名单直过"：每条命令都要在门户点一次。`capabilities` 返回的 `other_dialects: "review"` 就是这件事。
 
 **POSIX shell（bash / sh / dash / zsh / ksh）例外：有内置只读白名单。** 它走一个纯 Go 的保守词法器（[`analysis/bash.go`](../approval/analysis/bash.go)），不起外部进程、也不要求机器上装着 bash：把命令切成 token，只要出现管道、重定向、命令替换、变量、通配、`~`、多语句或未闭合引号，就整条转人工；全部是字面量时才查白名单。
 

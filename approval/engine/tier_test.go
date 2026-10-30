@@ -148,7 +148,7 @@ func TestTierLowCouplesCdWithPathBoundary(t *testing.T) {
 // TestTierLowRejectsDynamicSegments：低档不认变量、通配、命令替换——值不确定就不放行。
 func TestTierLowRejectsDynamicSegments(t *testing.T) {
 	e := tierEngine(t, "low")
-	for _, cmd := range []string{"ls *.go", `echo "$HOME"`, "cat $(whoami)", "ls | grep $PATTERN"} {
+	for _, cmd := range []string{"ls *.go", `echo "$HOME"`, "cat $(whoami)", "ls | grep $PATTERN", "cat 'oops"} {
 		got, err := e.Evaluate(context.Background(), bashRequest(cmd))
 		if err != nil {
 			t.Fatalf("%s: %v", cmd, err)

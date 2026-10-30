@@ -120,12 +120,13 @@ func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
 // ---------- stub NapCat（模拟正向 WS 服务端） ----------
 
 type stubNapCat struct {
-	ln      net.Listener
-	srv     *http.Server
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	conn    *websocket.Conn
-	sent    []map[string]any // 收到的 action 调用
+	ln       net.Listener
+	srv      *http.Server
+	writeMu  sync.Mutex
+	mu       sync.Mutex
+	conn     *websocket.Conn
+	sent     []map[string]any // 收到的 action 调用
+	failSend bool             // 测试用：send_msg 一律回失败
 }
 
 func startStubNapCat(t *testing.T) *stubNapCat {
@@ -168,6 +169,12 @@ func (n *stubNapCat) handleWS(w http.ResponseWriter, r *http.Request) {
 		n.mu.Unlock()
 		// 回动作响应（echo 配对）。
 		resp := map[string]any{"status": "ok", "retcode": 0}
+		n.mu.Lock()
+		failSend := n.failSend
+		n.mu.Unlock()
+		if action, _ := m["action"].(string); failSend && action == "send_msg" {
+			resp = map[string]any{"status": "failed", "retcode": 100, "message": "stub send failure"}
+		}
 		if echo, _ := m["echo"].(string); echo != "" {
 			resp["echo"] = echo
 		}
