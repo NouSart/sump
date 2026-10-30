@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -134,14 +135,33 @@ func repoRoot(t *testing.T) string {
 }
 
 // freePort 探测一个空闲端口（先占再放，供子进程使用）。
+// 端口分配：探测后立刻关掉监听器，操作系统可能在下一次探测时把同一个端口再发一次
+// （同一测试里连取 5 个端口时真的会撞上），于是两个服务抢一个端口、后起的那个
+// 绑定失败，waitWSReady 却连到了先起的那个——表现为"名册里永远等不到某个服务"。
+// 这里在进程内记住已发出的端口，保证同一个测试二进制不会重复发号。
+var (
+	portMu    sync.Mutex
+	portTaken = map[int]bool{}
+)
+
 func freePort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	portMu.Lock()
+	defer portMu.Unlock()
+	for attempt := 0; attempt < 100; attempt++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+		if !portTaken[port] {
+			portTaken[port] = true
+			return port
+		}
 	}
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port
+	t.Fatal("连续 100 次都拿到已发过的端口")
+	return 0
 }
 
 // startProc 启动子进程并在测试结束时清理（返回句柄，便于中途重启演练）。
