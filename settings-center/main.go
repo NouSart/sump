@@ -1,5 +1,5 @@
 // settings-center：SUMP v2 的设置中心服务（第一批）。
-// 职责：服务注册 · 全局信息分发 · 设置与调度（见 DESIGN.md §3）。
+// 职责：服务注册 · 全局信息分发 · 设置与调度（见 docs/concepts/architecture.md）。
 package main
 
 import (

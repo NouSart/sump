@@ -81,7 +81,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 
 ## 进度
 
-- [x] 重构设计（[DESIGN.md](./DESIGN.md)）
+- [x] 重构设计（过程归档：[docs/archive/v1-to-v2.md](./docs/archive/v1-to-v2.md)）
 - [x] 第一批骨架：reasoner + 设置中心（注册 / 名册 / 跨服务跳转 / 自我跳转）
 - [x] 单步推理链（M2）：LLM 决策 / 工具跳转 / 自跳 step / deliver 直达 boss——含假 LLM 端到端与真 DeepSeek 冒烟
 - [x] 记忆服务（M3）：会话历史 + 上下文组装；llm 经记忆激活的“完全启动”链（recall → resume）——含全链测试与真进程端到端
@@ -111,7 +111,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 
 | 文档 | 内容 |
 | ---- | ---- |
-| [DESIGN.md](./DESIGN.md) | 重构设计：背景 / 架构 / 目录约定 / 实施路线 / 待决问题 |
+| [docs/concepts/roadmap.md](./docs/concepts/roadmap.md) | 路线与失败条件：三步走、现在在哪、什么情况下该停 |
 | [frontend/README.md](./frontend/README.md) | 门户：HTTP API、SSE 事件、设计系统与主题、测试结构 |
 | [docs/concepts/protocol.md](./docs/concepts/protocol.md) | 协议契约：独立性硬约束 / 生命周期 / 帧与信封 / 动作词汇与工具暴露 / 异步补报 / 链机制 / 兼容规则 / 命名基线 |
 | [docs/guides/add-a-service.md](./docs/guides/add-a-service.md) | 写一个服务：名片字段、三类设置项与下发、服务自报、测试要求 |

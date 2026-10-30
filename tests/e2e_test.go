@@ -1,6 +1,6 @@
 package tests
 
-// 总测试：真实进程 + 真实 WS 的端到端验证（见 DESIGN.md §3 项目结构）。
+// 总测试：真实进程 + 真实 WS 的端到端验证（见 docs/concepts/architecture.md）。
 
 import (
 	"context"
