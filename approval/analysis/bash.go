@@ -104,7 +104,9 @@ func tokenizeBash(command string) ([]string, []string) {
 			case '\n', '\r':
 				note("multiple_statements")
 			default:
-				note("shell_metacharacter")
+				// 与 ParseCompound 共用一套原因词表，避免同一条命令在不同档位
+				// 给出 “variable” / “shell_metacharacter” 两种解释。
+				note(unsafeKind(c))
 			}
 			continue
 		}

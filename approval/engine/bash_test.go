@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -25,6 +26,43 @@ func bashRequest(command string) protocol.CommandApprovalRequest {
 		Version: 1, Command: command, WorkDir: os.TempDir(), ShellPath: shell, Args: []string{"-c"},
 		Dialect: "bash", Platform: runtime.GOOS, Profile: "unsupported", TimeoutMS: 5000, MaxOutputBytes: 4096,
 	}}
+}
+
+// TestBashDialectAliases：shell 传的是解释器名（sh/dash/zsh/ksh），审批必须把它们
+// 当作同一套 POSIX 词法器处理；否则 README 宣称的白名单对默认的 /bin/sh 不生效。
+func TestBashDialectAliases(t *testing.T) {
+	e, err := engine.New(analysis.PowerShell{Executable: "unused"}, policy.DefaultJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dialect := range []string{"sh", "dash", "zsh", "ksh"} {
+		t.Run(dialect, func(t *testing.T) {
+			req := bashRequest("pwd")
+			req.Plan.Dialect = dialect
+			req.Plan.ShellPath = filepath.Join(t.TempDir(), dialect)
+			if err := os.WriteFile(req.Plan.ShellPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			got, err := e.Evaluate(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Decision != protocol.DecisionAllow || got.ReasonCode != "RULE_ALLOW" {
+				t.Fatalf("%s 应走 bash 白名单: got %s/%s（%s）", dialect, got.Decision, got.ReasonCode, got.Feedback.Summary)
+			}
+		})
+	}
+
+	// 非 POSIX 方言仍明确转人工，而不是悄悄按 bash 处理。
+	req := bashRequest("pwd")
+	req.Plan.Dialect = "fish"
+	got, err := e.Evaluate(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Decision != protocol.DecisionReview || got.ReasonCode != "UNSUPPORTED_DIALECT" {
+		t.Fatalf("fish 应转人工: got %s/%s", got.Decision, got.ReasonCode)
+	}
 }
 
 // TestBashReadOnlyAllowlist：只读命令直过，其余一律转人工。

@@ -42,7 +42,9 @@ type Segment struct {
 // Compound 是整条命令的切分结果。
 //
 // Unknowns 记"整体切不开"的问题（heredoc 等）；每段每级自己的问题留在 Stage.Unknowns。
-// 切分只做结构识别，不改写命令：上层拿到的 token 与命令原文对应。
+// 切分只做结构识别，不重排命令；动态 token 的可见片段可能已去掉展开字符
+// （如 `$HOME` 只剩 `HOME`）——安全判断只看 Unknowns/Kind，不依赖该值。
+// 上层拿到的 token 顺序与命令原文一致。
 type Compound struct {
 	Segments []Segment `json:"segments"`
 	Unknowns []string  `json:"unknowns"`
@@ -154,10 +156,12 @@ func (s *compoundScanner) scan() {
 		}
 	}
 	s.flushToken()
-	s.flushStage()
 	if s.quote != 0 {
+		// 必须先记在**当前**级上再 flushStage：flushStage 会重置 stage，
+		// 放在它后面记的未知项会被下一级/段直接丢掉（未闭合引号曾因此静默通过）。
 		s.stageNote("unterminated_quote")
 	}
+	s.flushStage()
 }
 
 // unsafeKind 给每种"并非简单命令"的字符一个可读的原因，卡片上要写给人看。
@@ -167,7 +171,7 @@ func unsafeKind(c byte) string {
 		return "variable"
 	case '`':
 		return "command_substitution"
-	case '*', '?', '[':
+	case '*', '?', '[', ']':
 		return "glob"
 	case '~':
 		return "tilde_expansion"

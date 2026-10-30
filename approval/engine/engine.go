@@ -68,10 +68,10 @@ func (e *Engine) Evaluate(ctx context.Context, req protocol.CommandApprovalReque
 	if len(p.Command) > analysis.MaxCommandBytes {
 		return finish(protocol.DecisionReview, "LIMIT_EXCEEDED", "命令超过 16 KiB，本次未执行")
 	}
-	if p.Dialect != "powershell" && p.Dialect != "bash" || p.Platform != runtime.GOOS {
+	if p.Platform != runtime.GOOS || (p.Dialect != "powershell" && !bashShapes[strings.ToLower(p.Dialect)]) {
 		return finish(protocol.DecisionReview, "UNSUPPORTED_DIALECT", "只支持本机 PowerShell 与 POSIX shell 方言；本次未执行")
 	}
-	if p.Dialect == "bash" {
+	if p.Dialect != "powershell" {
 		return e.evaluateBash(ctx, p, snapshot, finish)
 	}
 	base := strings.ToLower(strings.TrimSuffix(filepath.Base(p.ShellPath), ".exe"))
