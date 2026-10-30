@@ -16,6 +16,9 @@ interface Props {
 export function ApprovalStrip({ items, onDecide, t }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   if (items.length === 0) return null;
+  // expiresMs 是 epoch 毫秒（approval 侧按 TTL 算好）；只到分钟，足够提示"还有多久"。
+  const expiryText = (ms: number): string =>
+    new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   const decide = async (itemId: string, decision: 'allow' | 'deny'): Promise<void> => {
     setBusy(itemId);
     try {
@@ -41,6 +44,11 @@ export function ApprovalStrip({ items, onDecide, t }: Props) {
             {it.workDir !== '' && <span>{t('ui.approval.workDir', '目录')} {it.workDir} · </span>}
             {it.requestedBy !== '' && <span>{t('ui.approval.from', '来自')} {it.requestedBy}</span>}
           </p>
+          {Number.isFinite(it.expiresMs) && it.expiresMs > 0 && (
+            <p className="approval-meta">
+              {t('ui.approval.expires', '有效至')} {expiryText(it.expiresMs)}
+            </p>
+          )}
           <div className="approval-actions">
             <button
               type="button"

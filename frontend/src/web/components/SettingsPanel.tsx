@@ -244,13 +244,26 @@ function SettingRow({ service, item, peers, status, connected, onSave, onReset, 
             {t('ui.settings.state.drift', '服务侧已变')}
           </span>
         )}
-        {!editing && item.overridden && !isSecret && (
+        {/* 秘密项没有"默认值"可回退：有值时才给清空（同样是两步确认）。 */}
+        {!editing && (isSecret ? item.set === true : item.overridden) && (
           <button
             type="button"
             className="field-reset"
             data-armed={confirming ? 'true' : undefined}
-            aria-label={confirming ? t('ui.settings.action.confirmReset', '再点一次确认恢复默认') : clearLabel}
-            title={confirming ? t('ui.settings.action.confirmReset', '再点一次确认恢复默认') : clearLabel}
+            aria-label={
+              confirming
+                ? isSecret
+                  ? t('ui.settings.action.confirmClear', '再点一次确认清空')
+                  : t('ui.settings.action.confirmReset', '再点一次确认恢复默认')
+                : clearLabel
+            }
+            title={
+              confirming
+                ? isSecret
+                  ? t('ui.settings.action.confirmClear', '再点一次确认清空')
+                  : t('ui.settings.action.confirmReset', '再点一次确认恢复默认')
+                : clearLabel
+            }
             onClick={() => void reset()}
             disabled={disabled}
           >
@@ -421,7 +434,11 @@ function SettingRow({ service, item, peers, status, connected, onSave, onReset, 
                 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') void commit(draft, true);
-                  if (e.key === 'Escape') setEditing(false);
+                  if (e.key === 'Escape') {
+                    // 同上：只退出本行编辑，不关闭设置页。
+                    e.stopPropagation();
+                    setEditing(false);
+                  }
                 }}
               />
               {unit !== '' && <span className="field-unit">{unitText(unit, t)}</span>}
@@ -481,7 +498,11 @@ function SettingRow({ service, item, peers, status, connected, onSave, onReset, 
                 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') void commit(draft, true);
-                  if (e.key === 'Escape') setEditing(false);
+                  if (e.key === 'Escape') {
+                    // 只退出本行编辑：别让同一次按键冒到 window，把整个设置页也关掉。
+                    e.stopPropagation();
+                    setEditing(false);
+                  }
                 }}
                 autoFocus
               />

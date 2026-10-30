@@ -18,12 +18,25 @@ const LocaleKey = 'sump.portal.locale';
 export const DefaultLocale = 'zh-CN';
 
 export function initialLocale(): string {
-  const saved = window.localStorage.getItem(LocaleKey);
+  const saved = readStored(LocaleKey);
   return saved !== null && saved !== '' ? saved : DefaultLocale;
 }
 
 export function rememberLocale(locale: string): void {
-  window.localStorage.setItem(LocaleKey, locale);
+  try {
+    window.localStorage.setItem(LocaleKey, locale);
+  } catch {
+    // 存储被禁用时语言只在本次会话生效，不影响使用。
+  }
+}
+
+// readStored 读 localStorage 并吞掉异常（禁用存储 / 隐私模式下访问本身可能抛错）。
+function readStored(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
 }
 
 async function getJSON<T>(path: string): Promise<T> {
