@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { decideApproval, fetchHistory, fetchOverview, fetchTasks, parseMeta, resetSetting, resumeTask, sendMessage, setSetting } from './api';
 import { PortalView } from './components/PortalView';
+import { MessageCards } from './components/MessageCards';
+import { buildFeed } from './messageFeed';
+import { devTimers } from './devMock';
 import { IconChevronUp } from './components/icons';
 import { ServiceList } from './components/ServiceList';
 import { TaskList } from './components/TaskList';
@@ -9,6 +12,7 @@ import { useLocalePack } from './i18n';
 import { Toasts, type Toast } from './components/Toasts';
 import { useTimeTheme } from './timeTheme';
 import { useWorkflowExpand } from './workflowExpand';
+import { useBubblePrefs } from './bubblePrefs';
 import type {
   Overview,
   PendingApprovalView,
@@ -68,6 +72,8 @@ export function App() {
   const timeTheme = useTimeTheme();
   // 工作流展开：过程条目（思考 / 输出）什么时候自己摊开——本地偏好，与外观同一路数。
   const workflowExpand = useWorkflowExpand();
+  // 消息气泡：新消息只滑气泡的秒数——同样是门户自己的本地偏好。
+  const bubble = useBubblePrefs();
   const [rowStates, setRowStates] = useState<Record<string, RowStatus>>({});
   // 视图：对话是主体；设置是右侧抽屉（从输入框的「设置」进入）。
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -359,6 +365,13 @@ export function App() {
     return true;
   }, []);
 
+  // 消息卡片：只收终端消息与计时消息，浮在对话右侧；挂在 .app 下是为了与左栏气泡同一套坐标。
+  // 开发模式下若真实计时为空，会补两条示例计时（生产构建不注入）。
+  const feed = useMemo(
+    () => buildFeed({ messages, timers: devTimers(timers), tasks }),
+    [messages, timers, tasks],
+  );
+
   // onJumpTask：侧栏点任务。已经在会话里就跳过去；不在就先把它这一段取回来——
   // 进行中的任务走 task_resume（记忆服务会把它顶成当前任务），已完结的直接按 task_id 读历史。
   const onJumpTask = useCallback(
@@ -481,7 +494,7 @@ export function App() {
       {collapsed ? (
         <button
           type="button"
-          className="sidebar sidebar-bar"
+          className="sidebar sidebar-bar bubble"
           aria-expanded={false}
           aria-label={t('ui.app.expand', '展开侧栏')}
           title={t('ui.app.expand', '展开侧栏')}
@@ -507,8 +520,7 @@ export function App() {
               />
             </nav>
           ) : (
-            <TaskList tasks={tasks} jumps={taskIdsWithRecords} current={currentTask?.id ?? ''} onJump={onJumpTask} t={t} />
-          )}
+            <TaskList tasks={tasks} jumps={taskIdsWithRecords} current={currentTask?.id ?? ''} onJump={onJumpTask} t={t} />          )}
           <div className="me">
             <span className="avatar" aria-hidden="true">{t('ui.me.avatar', '我')}</span>
             <span className="me-name">{t('ui.me.name', '本机用户')}</span>
@@ -538,6 +550,7 @@ export function App() {
           <SettingsView
             timeTheme={timeTheme}
             workflowExpand={workflowExpand}
+            bubble={bubble}
             portalName={portalName}
             onClose={() => {
               setSettingsOpen(false);
@@ -575,6 +588,10 @@ export function App() {
           />
         )}
       </main>
+
+      {/* 消息卡片与左栏气泡对称：同一个容器、同一组窗口坐标（right 13.5 / top 19）。
+          打开设置页时整块向右滑出，退出设置再滑入。 */}
+      <MessageCards cards={feed} peekSeconds={bubble.seconds} hidden={settingsOpen} t={t} />
 
       <Toasts items={toasts} />
     </div>

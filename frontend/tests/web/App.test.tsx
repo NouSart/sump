@@ -5,7 +5,7 @@
 // 说明：SSE 与 fetch 都在边界处替换（假 EventSource / fetch 路由桩），App 代码零改动。
 import assert from 'node:assert/strict';
 import { describe, it, expect, vi } from 'vitest';
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { App } from '../../src/web/App';
 import { remainingText } from '../../src/web/components/PortalView';
 import type { RosterView } from '../../src/web/types';
@@ -517,11 +517,12 @@ describe('App', () => {
     );
 
     // 完结的任务不再是"只读视图"：这是会话，不是历史快照
-    assert.equal((screen.getByLabelText('消息') as HTMLTextAreaElement).disabled, false);
-    assert.equal(
-      screen.getByLabelText('消息').getAttribute('placeholder'),
-      '说点什么…（Enter 发送，Shift+Enter 换行）',
-    );
+    const box = screen.getByLabelText('消息') as HTMLTextAreaElement;
+    assert.equal(box.disabled, false);
+    // 未聚焦不显示提示：聚焦后才出现「说点什么…」
+    assert.equal(box.getAttribute('placeholder'), '');
+    fireEvent.focus(box);
+    assert.equal(box.getAttribute('placeholder'), '说点什么…（Enter 发送，Shift+Enter 换行）');
 
     // 侧栏点任务 = 跳回那一段（jsdom 里没有布局，只验"落点标记"）
     fireEvent.click(screen.getByRole('button', { name: /上一次的活/ }));
@@ -556,8 +557,10 @@ describe('App', () => {
     // 思考与输出默认折叠：摘要在外面，正文在 details 里（折叠时 open=false）
     assert.ok(await screen.findByText('深度思考'));
     assert.equal(document.querySelector('.trace-text')?.textContent, '先看看现在几点，再决定要不要定闹钟。');
-    assert.ok(screen.getByText('Get-Date'));
-    assert.equal(screen.getAllByText('shell__run').length, 2, '命令与输出各带一次工具名');
+    // 命令同时出现在对话轨迹与右侧消息卡片里：断言只针对会话正文。
+    const conv = within(document.querySelector('.portal-list') as HTMLElement);
+    assert.ok(conv.getByText('Get-Date'));
+    assert.equal(conv.getAllByText('shell__run').length, 2, '命令与输出各带一次工具名');
     const output = document.querySelector('.step-result details') as HTMLDetailsElement;
     assert.equal(output.open, false, '输出默认折叠');
     assert.equal(output.querySelector('.trace-pre')?.textContent, '2026-10-17 10:00:02\n第二行');
@@ -565,7 +568,7 @@ describe('App', () => {
     // 每一步都有自己的图标（时间线靠它定位，图标之间由 CSS 连线）
     assert.equal(document.querySelectorAll('.step-mark svg').length, 3);
 
-    // 同一 seq 再推一遍（重连/补发）→ 不画第二遍
+    // 同一 seq 再推一遍（重连/补发）→ 不画第二遍（只数会话正文，右侧卡片另有一份）
     await emitSSE('progress', {
       conversationId: 'web:private:owner',
       seq: 3,
@@ -574,7 +577,7 @@ describe('App', () => {
       meta: '{"tool":"shell__run","call_id":"c1"}',
       at: '2026-10-17T10:00:02Z',
     });
-    assert.equal(screen.getAllByText('Get-Date').length, 1);
+    assert.equal(within(document.querySelector('.portal-list') as HTMLElement).getAllByText('Get-Date').length, 1);
   });
   it('对话：发送 → POST /api/message + 本地回显', async () => {
     const { calls } = await boot({ openSettings: false });
@@ -718,18 +721,21 @@ describe('App', () => {
 
     const soon = new Date(Date.now() + 90_000).toISOString();
     await emitSSE('timers', [{ itemId: 'job-1', caller: 'reasoner', ms: 90000, fireAt: soon, note: '等构建' }]);
-    await screen.findByText(/\d{2}:\d{2} 后唤醒/);
-    assert.ok(screen.getByText('等构建'), '备注要显示出来');
+    // 倒计时同时出现在输入框上方的计时条与右侧消息卡片：断言只针对计时条。
+    const strip = within(document.querySelector('.timer-strip') as HTMLElement);
+    await strip.findByText(/\d{2}:\d{2} 后唤醒/);
+    assert.ok(strip.getByText('等构建'), '备注要显示出来');
 
     // 到点（fire_at 已过去）但快照还没更新 → 显示「到点…」，不假装没有计时。
+    // 计时条与消息卡片都会显示「到点…」，这里只要求至少出现一处。
     await emitSSE('timers', [
       { itemId: 'job-1', caller: 'reasoner', ms: 1000, fireAt: new Date(Date.now() - 1000).toISOString(), note: '' },
     ]);
-    await screen.findByText('到点…');
+    await waitFor(() => assert.ok(screen.queryAllByText('到点…').length >= 1));
 
-    // timer 推来不含它的快照 → 倒计时消失。
+    // timer 推来不含它的快照 → 倒计时消失（卡片随快照一起移除）。
     await emitSSE('timers', []);
-    await waitFor(() => assert.equal(screen.queryByText('到点…'), null));
+    await waitFor(() => assert.equal(screen.queryAllByText('到点…').length, 0));
   });
 
   it('倒计时读数格式：不到一小时 mm:ss，超过带小时，已过归零', () => {

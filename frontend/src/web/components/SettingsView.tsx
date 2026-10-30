@@ -6,8 +6,10 @@ import { IconClose } from './icons';
 import { SettingsPanel } from './SettingsPanel';
 import { TimeThemePanel } from './TimeThemePanel';
 import { WorkflowExpandPanel } from './WorkflowExpandPanel';
+import { BubblePanel } from './BubblePanel';
 import type { TimeThemeControls } from '../timeTheme';
 import type { WorkflowExpandControls } from '../workflowExpand';
+import type { BubbleControls } from '../bubblePrefs';
 import type { Translate } from '../i18n';
 import type { LocaleInfo } from '../i18n';
 import type { RowStatus, SettingViewData, ServiceCardView } from '../types';
@@ -15,6 +17,7 @@ import type { RowStatus, SettingViewData, ServiceCardView } from '../types';
 interface Props {
   timeTheme: TimeThemeControls;
   workflowExpand: WorkflowExpandControls;
+  bubble: BubbleControls;
   portalName: string | null;
   onClose: () => void;
   service: ServiceCardView | null;
@@ -34,6 +37,7 @@ interface Props {
 export function SettingsView({
   timeTheme,
   workflowExpand,
+  bubble,
   portalName,
   onClose,
   service,
@@ -103,6 +107,7 @@ export function SettingsView({
             portalName !== null && service?.name === portalName ? (
               <>
                 <WorkflowExpandPanel workflowExpand={workflowExpand} t={t} />
+                <BubblePanel bubble={bubble} t={t} />
                 <TimeThemePanel timeTheme={timeTheme} t={t} />
               </>
             ) : undefined
