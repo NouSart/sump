@@ -82,6 +82,13 @@ function sendJSON(res: ServerResponse, status: number, body: unknown): void {
 }
 
 async function readJSON(req: IncomingMessage, limit = 64 * 1024): Promise<unknown> {
+  // 只收 application/json：跨站表单 / text/plain 简单请求不带预检，
+  // 浏览器会直接把请求打进来——限定 Content-Type 后跨站必须先过预检，
+  // 与信任栅栏形成两道独立的闸。
+  const contentType = String(req.headers['content-type'] ?? '').toLowerCase();
+  if (!contentType.startsWith('application/json')) {
+    throw new HttpError(415, '请求体必须是 application/json');
+  }
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -126,6 +133,13 @@ export function createRequestHandler(
   cfg: ApiConfig,
   log: (m: string) => void,
 ): (req: IncomingMessage, res: ServerResponse) => void {
+  // 事件流上限：每个标签页占一条长连接、四组订阅；不设上限时一处恶意页面
+  //（或失控的客户端）就能把进程的句柄与内存吃光。慢消费者超过缓冲上限直接断开，
+  // 让它重连后拿全量快照，而不是把内存当队列。
+  const maxEventStreams = 32;
+  const maxEventStreamBuffer = 8 << 20;
+  let eventStreams = 0;
+
   const overview = async (): Promise<unknown> => {
     let settings: SettingsResult | null = null;
     let error: string | undefined;
@@ -238,7 +252,8 @@ export function createRequestHandler(
     sendJSON(res, 200, { conversationId: PORTAL_CONVERSATION_ID, messages });
   };
 
-  // decideApproval 把用户的裁决送回 approval。裁决权在用户手里，门户只是搬运工：  // 这里不判断该不该批准，也不缓存结果——approval 认不认（待审项还在不在）由它自己决定。
+  // decideApproval 把用户的裁决送回 approval。裁决权在用户手里，门户只是搬运工：
+  // 这里不判断该不该批准，也不缓存结果——approval 认不认（待审项还在不在）由它自己决定。
   const decideApproval = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const body = asObject(await readJSON(req)) ?? {};
     const itemId = requiredString(body, 'item_id');
@@ -255,6 +270,16 @@ export function createRequestHandler(
   };
 
   const events = (req: IncomingMessage, res: ServerResponse): void => {
+    if (eventStreams >= maxEventStreams) {
+      throw new HttpError(503, '事件流连接数已满，请稍后再试');
+    }
+    eventStreams++;
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      eventStreams--;
+    };
     setSecurityHeaders(res);
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
@@ -262,6 +287,12 @@ export function createRequestHandler(
       connection: 'keep-alive',
     });
     const send = (event: string, data: unknown): void => {
+      if (res.writableEnded) return;
+      if (res.writableLength > maxEventStreamBuffer) {
+        release();
+        res.destroy();
+        return;
+      }
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     };
     send('status', { connected: center.connected, center: cfg.centerURL });
@@ -292,6 +323,7 @@ export function createRequestHandler(
     }, 20_000);
     req.on('close', () => {
       clearInterval(keepalive);
+      release();
       unsubscribe();
       unsubscribeDeliver();
       unsubscribeProgress();

@@ -5,7 +5,7 @@
 // 说明：SSE 与 fetch 都在边界处替换（假 EventSource / fetch 路由桩），App 代码零改动。
 import assert from 'node:assert/strict';
 import { describe, it, expect, vi } from 'vitest';
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { App } from '../../src/web/App';
 import { remainingText } from '../../src/web/components/PortalView';
 import type { RosterView } from '../../src/web/types';
@@ -43,7 +43,7 @@ async function boot(
   const taskList =
     over.tasks ??
     [{ id: 'task-1', name: '看看现在几点', status: 'active' as const, updated_at: '2026-10-17T10:00:00Z' }];
-  const calls = stubFetch((url) => {
+  const calls = stubFetch((url, init) => {
     if (url === '/api/overview') return jsonResponse(okOverview(currentRoster));
     if (url === '/api/tasks') {
       return jsonResponse({
@@ -57,6 +57,16 @@ async function boot(
     if (url === '/api/message') {
       if (over.messageResponse) return over.messageResponse();
       return jsonResponse({ ok: true, conversationId: 'web:private:owner' });
+    }
+    if (url === '/api/tasks/resume') {
+      const id = JSON.parse(String(init?.body ?? '{}')).task_id as string;
+      return jsonResponse({
+        task: { id, status: 'active' },
+        messages: [
+          { role: 'user', content: '恢复前的提问', at: '2026-10-17T11:00:30Z', seq: 6, task_id: id },
+          { role: 'assistant', content: '恢复出来的记录', at: '2026-10-17T11:01:00Z', seq: 7, task_id: id },
+        ],
+      });
     }
     if (url === '/api/settings/set') {
       if (over.setResponse) return over.setResponse();
@@ -397,6 +407,17 @@ describe('App', () => {
     await waitFor(() => assert.equal(screen.queryByRole('region', { name: '设置' }), null));
   });
 
+  it('设置：编辑态按 Esc 只退出编辑，不关闭设置页', async () => {
+    await boot();
+    fireEvent.click(screen.getAllByRole('button', { name: '修改' })[0]!);
+    const input = screen.getByLabelText('max_mb 修改');
+
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    await waitFor(() => assert.equal(screen.queryByLabelText('max_mb 修改'), null));
+    assert.ok(screen.getByRole('heading', { name: '设置' }), '设置页应仍然打开');
+  });
+
   it('侧栏：收起是向上塌成只剩字标的一小块，点块即可展开', async () => {
     await boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
@@ -496,11 +517,12 @@ describe('App', () => {
     );
 
     // 完结的任务不再是"只读视图"：这是会话，不是历史快照
-    assert.equal((screen.getByLabelText('消息') as HTMLTextAreaElement).disabled, false);
-    assert.equal(
-      screen.getByLabelText('消息').getAttribute('placeholder'),
-      '说点什么…（Enter 发送，Shift+Enter 换行）',
-    );
+    const box = screen.getByLabelText('消息') as HTMLTextAreaElement;
+    assert.equal(box.disabled, false);
+    // 未聚焦不显示提示：聚焦后才出现「说点什么…」
+    assert.equal(box.getAttribute('placeholder'), '');
+    fireEvent.focus(box);
+    assert.equal(box.getAttribute('placeholder'), '说点什么…（Enter 发送，Shift+Enter 换行）');
 
     // 侧栏点任务 = 跳回那一段（jsdom 里没有布局，只验"落点标记"）
     fireEvent.click(screen.getByRole('button', { name: /上一次的活/ }));
@@ -535,8 +557,10 @@ describe('App', () => {
     // 思考与输出默认折叠：摘要在外面，正文在 details 里（折叠时 open=false）
     assert.ok(await screen.findByText('深度思考'));
     assert.equal(document.querySelector('.trace-text')?.textContent, '先看看现在几点，再决定要不要定闹钟。');
-    assert.ok(screen.getByText('Get-Date'));
-    assert.equal(screen.getAllByText('shell__run').length, 2, '命令与输出各带一次工具名');
+    // 命令同时出现在对话轨迹与右侧消息卡片里：断言只针对会话正文。
+    const conv = within(document.querySelector('.portal-list') as HTMLElement);
+    assert.ok(conv.getByText('Get-Date'));
+    assert.equal(conv.getAllByText('shell__run').length, 2, '命令与输出各带一次工具名');
     const output = document.querySelector('.step-result details') as HTMLDetailsElement;
     assert.equal(output.open, false, '输出默认折叠');
     assert.equal(output.querySelector('.trace-pre')?.textContent, '2026-10-17 10:00:02\n第二行');
@@ -544,7 +568,7 @@ describe('App', () => {
     // 每一步都有自己的图标（时间线靠它定位，图标之间由 CSS 连线）
     assert.equal(document.querySelectorAll('.step-mark svg').length, 3);
 
-    // 同一 seq 再推一遍（重连/补发）→ 不画第二遍
+    // 同一 seq 再推一遍（重连/补发）→ 不画第二遍（只数会话正文，右侧卡片另有一份）
     await emitSSE('progress', {
       conversationId: 'web:private:owner',
       seq: 3,
@@ -553,7 +577,7 @@ describe('App', () => {
       meta: '{"tool":"shell__run","call_id":"c1"}',
       at: '2026-10-17T10:00:02Z',
     });
-    assert.equal(screen.getAllByText('Get-Date').length, 1);
+    assert.equal(within(document.querySelector('.portal-list') as HTMLElement).getAllByText('Get-Date').length, 1);
   });
   it('对话：发送 → POST /api/message + 本地回显', async () => {
     const { calls } = await boot({ openSettings: false });
@@ -567,7 +591,43 @@ describe('App', () => {
     assert.equal(screen.queryByRole('alert'), null, '受理成功不应留下错误提示');
   });
 
-  it('对话：发送未被受理 → 明确提示未送达', async () => {
+  it('任务：进行中但当前窗口没记录的点一下就恢复，并把这一段记录载入会话', async () => {
+    const { calls } = await boot({
+      openSettings: false,
+      tasks: [{ id: 'task-live', name: '正在做的活', status: 'active', updated_at: '2026-10-17T11:00:00Z' }],
+      history: [],
+    });
+    await screen.findByRole('region', { name: '对话' });
+    await screen.findByRole('button', { name: /正在做的活/ });
+
+    fireEvent.click(screen.getByRole('button', { name: /正在做的活/ }));
+
+    await screen.findByText('恢复出来的记录');
+    assert.equal(countCalls(calls, '/api/tasks/resume'), 1, '应调用一次恢复');
+    assert.equal(document.querySelectorAll('.task-sep').length, 1);
+  });
+
+  it('当前任务是最近活跃的那个：多条进行中任务时按 updated_at 判，而不是最早创建的', async () => {
+    await boot({
+      openSettings: false,
+      tasks: [
+        { id: 'task-old', name: '老的活', status: 'active', updated_at: '2026-10-17T09:00:00Z' },
+        { id: 'task-new', name: '新的活', status: 'active', updated_at: '2026-10-17T12:00:00Z' },
+      ],
+      // 两条都已有记录，侧栏就是可跳状态，标题里才会带「当前任务」。
+      history: [
+        { role: 'user', content: '老的活的问题', at: '2026-10-17T09:00:00Z', task_id: 'task-old' },
+        { role: 'user', content: '新的活的问题', at: '2026-10-17T12:00:00Z', task_id: 'task-new' },
+      ],
+    });
+    await screen.findByRole('region', { name: '对话' });
+    await screen.findByText('新的活的问题');
+
+    assert.ok(screen.getByTitle('新的活 · 当前任务'), '最近活跃的进行中任务才是当前任务');
+    assert.equal(screen.queryByTitle('老的活 · 当前任务'), null);
+  });
+
+  it('对话：发送未被受理 → 明确提示未送达，草稿保留、回显撤掉', async () => {
     await boot({ openSettings: false, messageResponse: () => jsonResponse({ error: '未知目标服务: reasoner（不在名册里）' }, 503) });
     await screen.findByRole('region', { name: '对话' });
 
@@ -575,6 +635,44 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
     await screen.findByText(/未送达：未知目标服务: reasoner/);
+    const box = screen.getByLabelText('消息') as HTMLTextAreaElement;
+    assert.equal(box.value, '你好', '未受理时草稿要留给用户重试');
+    // 只看消息流：textarea 的受控值本身就是它的 textContent，不能拿全页 queryByText 判断。
+    const list = document.querySelector('.portal-list');
+    assert.ok(list !== null);
+    assert.equal(list.textContent?.includes('你好') ?? false, false, '未受理的消息不该留在对话里');
+  });
+
+  it('对话：首屏历史与实时投递竞态——加载期间到达的 deliver 不被历史覆盖', async () => {
+    let resolveHistory!: (r: Response) => void;
+    const historyResponse = new Promise<Response>((resolve) => {
+      resolveHistory = resolve;
+    });
+    stubFetch((url) => {
+      if (url === '/api/overview') return jsonResponse(okOverview(rosterOf(['images', 'qq'])));
+      if (url === '/api/tasks') return jsonResponse({ conversationId: 'web:private:owner', tasks: [] });
+      if (url.startsWith('/api/history')) return historyResponse;
+      return undefined;
+    });
+    installFakeEventSource();
+    render(<App />);
+    await screen.findByRole('region', { name: '对话' });
+
+    await emitSSE('deliver', { text: '先到的答复', taskId: 'task-9', at: '2026-10-17T10:00:01Z' });
+    await screen.findByText('先到的答复');
+
+    resolveHistory(
+      jsonResponse({
+        conversationId: 'web:private:owner',
+        messages: [
+          { role: 'user', content: '历史里的提问', at: '2026-10-17T09:59:00Z', seq: 1, task_id: 'task-8' },
+          { role: 'assistant', content: '历史里的答复', at: '2026-10-17T09:59:30Z', seq: 2, task_id: 'task-8' },
+        ],
+      }),
+    );
+
+    await screen.findByText('历史里的答复');
+    assert.ok(screen.getByText('先到的答复'), '实时消息不能被历史覆盖');
   });
 
   it('对话：输入区是浮层（消息流在它背后穿过），不是坐在流里的占位', async () => {
@@ -623,18 +721,21 @@ describe('App', () => {
 
     const soon = new Date(Date.now() + 90_000).toISOString();
     await emitSSE('timers', [{ itemId: 'job-1', caller: 'reasoner', ms: 90000, fireAt: soon, note: '等构建' }]);
-    await screen.findByText(/\d{2}:\d{2} 后唤醒/);
-    assert.ok(screen.getByText('等构建'), '备注要显示出来');
+    // 倒计时同时出现在输入框上方的计时条与右侧消息卡片：断言只针对计时条。
+    const strip = within(document.querySelector('.timer-strip') as HTMLElement);
+    await strip.findByText(/\d{2}:\d{2} 后唤醒/);
+    assert.ok(strip.getByText('等构建'), '备注要显示出来');
 
     // 到点（fire_at 已过去）但快照还没更新 → 显示「到点…」，不假装没有计时。
+    // 计时条与消息卡片都会显示「到点…」，这里只要求至少出现一处。
     await emitSSE('timers', [
       { itemId: 'job-1', caller: 'reasoner', ms: 1000, fireAt: new Date(Date.now() - 1000).toISOString(), note: '' },
     ]);
-    await screen.findByText('到点…');
+    await waitFor(() => assert.ok(screen.queryAllByText('到点…').length >= 1));
 
-    // timer 推来不含它的快照 → 倒计时消失。
+    // timer 推来不含它的快照 → 倒计时消失（卡片随快照一起移除）。
     await emitSSE('timers', []);
-    await waitFor(() => assert.equal(screen.queryByText('到点…'), null));
+    await waitFor(() => assert.equal(screen.queryAllByText('到点…').length, 0));
   });
 
   it('倒计时读数格式：不到一小时 mm:ss，超过带小时，已过归零', () => {

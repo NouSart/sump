@@ -1,9 +1,10 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import type { PendingApprovalView, PortalMessage, TaskView, TimerView } from '../types';
 import { ApprovalStrip } from './ApprovalStrip';
 import type { Translate } from '../i18n';
 import { IconAnswer, IconOutput, IconPaperclip, IconSend, IconSliders, IconSparkle, IconTerminal, IconUser } from './icons';
 import { Markdown } from './markdown';
+import { TerminalDock } from './TerminalDock';
 import { useTraceOpen, type WorkflowExpand } from '../workflowExpand';
 
 interface Props {
@@ -13,7 +14,8 @@ interface Props {
   approvals: PendingApprovalView[];
   onDecide: (itemId: string, decision: 'allow' | 'deny') => Promise<void>;
   error: string | null;
-  onSend: (text: string) => Promise<void>;
+  /** 发送消息；返回是否被受理（false 时输入框保草稿）。 */
+  onSend: (text: string) => Promise<boolean>;
   onOpenSettings: () => void;
   /** 任务清单：面板按任务分节，节头要用它的名字与状态。 */
   tasks: TaskView[];
@@ -37,16 +39,9 @@ function useTick(active: boolean): number {
   return now;
 }
 
-// remainingText 把剩余毫秒写成人读的读数：mm:ss，超过一小时才带小时。
-export function remainingText(leftMS: number): string {
-  const total = Math.max(0, Math.ceil(leftMS / 1000));
-  const two = (n: number): string => String(n).padStart(2, '0');
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  return h > 0 ? `${String(h)}:${two(m)}:${two(s)}` : `${two(m)}:${two(s)}`;
-}
-
+// remainingText 从共用模块取用并重导出：本组件与测试都从这里取同一个实现。
+import { remainingText } from '../timeText';
+export { remainingText };
 // Step 是对话里的一步：左边一个图标 + 竖线（把相邻图标连起来），右边是这一步的内容。
 // 图标按步骤类型分：我 / 深度思考 / 命令 / 输出 / 答复——一眼能看出这条链走到哪了。
 function Step({ m, t, workflowExpand }: { m: PortalMessage; t: Translate; workflowExpand: WorkflowExpand }) {
@@ -174,40 +169,57 @@ function TraceDetails({ mode, children }: { mode: WorkflowExpand; children: Reac
 export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend, onOpenSettings, tasks, workflowExpand, t }: Props) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  // 终端 = 放大的输入框：开关只影响这一页，退出即收起。
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  // 输入框未聚焦时不显示「说点什么…」：占位提示只在真正要打字时出现。
+  const [focused, setFocused] = useState(false);
   const listRef = useRef<HTMLOListElement>(null);
   const dockRef = useRef<HTMLDivElement>(null);
-  // 浮层高度会变（待审卡片、计时器都会长），量出来喂给消息列表的 padding-bottom，
-  // 保证最后一条消息能滚到输入框上方，而不是被浮层挡住。
-  const [dockSpace, setDockSpace] = useState(0);
+  // 浮层高度会变（待审卡片、计时器、终端都会长），量出来挂到 documentElement 上：
+  // 消息列表的底部留白与右侧消息卡片都要用它，而消息卡片已经不在 .portal 里了。
   const now = useTick(timers.length > 0);
 
   useEffect(() => {
     const el = dockRef.current;
     if (el === null || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => {
-      setDockSpace(el.offsetHeight);
+      // 挂在 documentElement 上：消息卡片挂在 .app 下，也要用同一个浮层高度。
+      document.documentElement.style.setProperty('--dock-space', `${String(el.offsetHeight)}px`);
     });
     ro.observe(el);
-    setDockSpace(el.offsetHeight);
+    document.documentElement.style.setProperty('--dock-space', `${String(el.offsetHeight)}px`);
     return () => {
       ro.disconnect();
+      document.documentElement.style.removeProperty('--dock-space');
     };
   }, []);
 
-  // 新消息落下后把视图带到底部（jsdom 没有 scrollTo，测试环境跳过）。
+  // 新消息落下后跟随到底部——但只在用户本来就在底部时跟随：
+  // 往上翻历史时被 progress 一次次拽回底部，比看不到新消息更糟。
+  // 离开底部后给一个「最新」按钮，想回来自觉点一下。
+  const [stick, setStick] = useState(true);
+  const nearBottom = (list: HTMLOListElement): boolean =>
+    list.scrollHeight - list.scrollTop - list.clientHeight <= 80;
+  const jumpToLatest = (): void => {
+    const list = listRef.current;
+    setStick(true);
+    if (list !== null && typeof list.scrollTo === 'function') list.scrollTo({ top: list.scrollHeight });
+  };
   useEffect(() => {
+    if (!stick) return;
     const list = listRef.current;
     if (list !== null && typeof list.scrollTo === 'function') list.scrollTo({ top: list.scrollHeight });
-  }, [messages.length]);
+  }, [messages.length, stick]);
 
   const submit = async (e: { preventDefault: () => void }): Promise<void> => {
     e.preventDefault();
     const value = text.trim();
     if (value === '' || busy) return;
     setBusy(true);
+    setStick(true);
     try {
-      await onSend(value);
-      setText('');
+      // 只有被受理才清空：没送出去的文字要留给用户重试。
+      if (await onSend(value)) setText('');
     } finally {
       setBusy(false);
     }
@@ -217,9 +229,15 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
     <section
       className="portal"
       aria-label={t('ui.portal.title', '对话')}
-      style={{ '--dock-space': `${String(dockSpace)}px` } as CSSProperties}
     >
-      <ol className="portal-list" ref={listRef}>
+      <ol
+        className="portal-list"
+        ref={listRef}
+        onScroll={(e) => {
+          const next = nearBottom(e.currentTarget);
+          setStick((prev) => (prev === next ? prev : next));
+        }}
+      >
         {messages.length === 0 ? (
           <li className="portal-empty">{t('ui.portal.empty', '发一条消息开始。回复会经 deliver 实时送回来。')}</li>
         ) : (
@@ -228,7 +246,7 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
             const newTask = m.taskId !== undefined && m.taskId !== '' && m.taskId !== prev?.taskId;
             const task = newTask ? tasks.find((x) => x.id === m.taskId) : undefined;
             return (
-              <Fragment key={`${String(m.seq ?? 0)}-${m.at}-${String(i)}`}>
+              <Fragment key={m.id ?? (m.seq !== undefined && m.seq > 0 ? `s${String(m.seq)}` : `i${String(i)}`)}>
                 {newTask && (
                   <li className="task-sep" id={`task-${m.taskId ?? ''}`}>
                     <span className="task-sep-name">{task?.name ?? t('ui.task.label', '任务')}</span>
@@ -245,6 +263,13 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
       </ol>
 
       <div className="dock" ref={dockRef}>
+        {!stick && messages.length > 0 && (
+          <div className="jump-row">
+            <button type="button" className="jump-latest" onClick={jumpToLatest}>
+              {t('ui.portal.latest', '↓ 回到最新')}
+            </button>
+          </div>
+        )}
         {error !== null && (
           <p className="inline-error" role="alert">
             {error}
@@ -273,54 +298,79 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
         )}
 
         <form
-        className="composer"
-        onSubmit={(e) => {
-          void submit(e);
-        }}
-      >
-        <textarea
-          className="composer-input"
-          aria-label={t('ui.portal.input', '消息')}
-          rows={2}
-          value={text}
-          placeholder={
-            connected
-              ? t('ui.portal.placeholder', '说点什么…（Enter 发送，Shift+Enter 换行）')
-              : t('ui.portal.offline', '未连接设置中心')
-          }
-          disabled={!connected}
-          onChange={(e) => {
-            setText(e.target.value);
+          className={terminalOpen ? 'composer composer-terminal' : 'composer'}
+          onSubmit={(e) => {
+            void submit(e);
           }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              void submit(e);
+        >
+          {/* 终端就长在输入框里：展开后上半部是终端，底部仍是给 agent 的消息框。 */}
+          <TerminalDock
+            open={terminalOpen}
+            onClose={() => {
+              setTerminalOpen(false);
+            }}
+            t={t}
+          />
+          <textarea
+            className={terminalOpen ? 'composer-input is-compact' : 'composer-input'}
+            aria-label={t('ui.portal.input', '消息')}
+            rows={terminalOpen ? 1 : 2}
+            value={text}
+            placeholder={
+              !connected
+                ? t('ui.portal.offline', '未连接设置中心')
+                : focused
+                  ? t('ui.portal.placeholder', '说点什么…（Enter 发送，Shift+Enter 换行）')
+                  : ''
             }
-          }}
-        />
-        <div className="composer-row">
-          <button type="button" className="chip" onClick={onOpenSettings} aria-label={t('ui.settings.title', '设置')} title={t('ui.settings.title', '设置')}>
-            <IconSliders />
-          </button>
-          <button type="button" className="chip" disabled aria-label={t('ui.portal.attach', '添加附件')} title={t('ui.portal.attachSoon', '附件上传（下一步）')}>
-            <IconPaperclip />
-          </button>
-          <button type="button" className="chip" disabled aria-label={t('ui.portal.terminal', '终端')} title={t('ui.portal.terminalSoon', '终端面板（下一步）')}>
-            <IconTerminal />
-          </button>
-          <span className="grow" />
-          <button
-            type="submit"
-            className="chip primary"
-            aria-label={t('ui.portal.send', '发送')}
-            aria-busy={busy}
-            title={t('ui.portal.sendHint', '发送（Enter）')}
-            disabled={!connected || busy || text.trim() === ''}
-          >
-            <IconSend />
-          </button>
-        </div>
+            disabled={!connected}
+            onFocus={() => {
+              setFocused(true);
+            }}
+            onBlur={() => {
+              setFocused(false);
+            }}
+            onChange={(e) => {
+              setText(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                void submit(e);
+              }
+            }}
+          />
+          <div className="composer-row">
+            <button type="button" className="chip" onClick={onOpenSettings} aria-label={t('ui.settings.title', '设置')} title={t('ui.settings.title', '设置')}>
+              <IconSliders />
+            </button>
+            <button type="button" className="chip" disabled aria-label={t('ui.portal.attach', '添加附件')} title={t('ui.portal.attachSoon', '附件上传（下一步）')}>
+              <IconPaperclip />
+            </button>
+            <button
+              type="button"
+              className={terminalOpen ? 'chip is-on' : 'chip'}
+              aria-pressed={terminalOpen}
+              onClick={() => {
+                setTerminalOpen((value) => !value);
+              }}
+              aria-label={t('ui.portal.terminal', '终端')}
+              title={t('ui.portal.terminal', '终端')}
+            >
+              <IconTerminal />
+            </button>
+            <span className="grow" />
+            <button
+              type="submit"
+              className="chip primary"
+              aria-label={t('ui.portal.send', '发送')}
+              aria-busy={busy}
+              title={t('ui.portal.sendHint', '发送（Enter）')}
+              disabled={!connected || busy || text.trim() === ''}
+            >
+              <IconSend />
+            </button>
+          </div>
         </form>
       </div>
     </section>

@@ -303,11 +303,16 @@ export function checkRequestTrust(
   if (!isTrustedHost(host, { hostname: bound.hostname.toLowerCase(), port: bound.port }, cfg.trustedHosts.map((h) => h.trim().toLowerCase()))) {
     return `Host 不在受信范围: ${host}（如确需从其他地址访问，用 -trusted-hosts 显式放行）`;
   }
-  // 'null' 是沙箱 / file:// 页面的 Origin，同样不接受。
-  if (originHeader !== undefined && originHeader !== 'null') {
+  // 'null' 是沙箱 iframe / file:// 页面序列化出来的 Origin：它不是"没有 Origin"，
+  // 而是"来源不可核实的页面"，与跨站同等拒绝。
+  if (originHeader !== undefined) {
+    const origin = originHeader.trim();
+    if (origin.toLowerCase() === 'null') {
+      return `Origin 不受信: ${originHeader}（沙箱 / file:// 页面一律拒绝）`;
+    }
     let originHost: string;
     try {
-      originHost = new URL(originHeader).host.toLowerCase();
+      originHost = new URL(origin).host.toLowerCase();
     } catch {
       return `非法 Origin: ${originHeader}`;
     }

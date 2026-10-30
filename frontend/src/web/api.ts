@@ -118,6 +118,34 @@ export function sendMessage(text: string): Promise<{ conversationId: string }> {
   });
 }
 
+// resumeTask 恢复一个未完结任务：记忆服务把它顶成当前任务，并把这一段记录带回来。
+// 已完结的任务由记忆服务明确拒绝——门户不自己判断能不能继续。
+export async function resumeTask(taskId: string): Promise<PortalMessage[]> {
+  const r = await request<{
+    task?: unknown;
+    messages?: {
+      id?: number;
+      seq?: number;
+      role?: string;
+      kind?: string;
+      content?: string;
+      meta?: string;
+      at?: string;
+      task_id?: string;
+    }[];
+  }>('/api/tasks/resume', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ task_id: taskId }),
+  });
+  const out: PortalMessage[] = [];
+  for (const m of r.messages ?? []) {
+    const message = historyToMessage(m);
+    if (message !== null) out.push(message);
+  }
+  return out;
+}
+
 // decideApproval 把用户的裁决送回 approval（allow = 批准执行，deny = 拒绝）。
 export function decideApproval(itemId: string, decision: 'allow' | 'deny', note = ''): Promise<{ itemId: string }> {
   return request<{ itemId: string }>('/api/approvals', {

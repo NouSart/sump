@@ -151,3 +151,38 @@ export function IconPlus(): ReactElement {
     </svg>
   );
 }
+
+// ---------- 消息卡片用的图标 ----------
+
+export function IconClock(): ReactElement {
+  return (
+    <svg {...box}>
+      <circle cx="8" cy="8" r="5.2" />
+      <path d="M8 5.2V8l2 1.2" />
+    </svg>
+  );
+}
+
+export function IconPause(): ReactElement {
+  return (
+    <svg {...box}>
+      <path d="M6.2 4.4v7.2M9.8 4.4v7.2" />
+    </svg>
+  );
+}
+
+export function IconPlay(): ReactElement {
+  return (
+    <svg {...box}>
+      <path d="M5.8 4.2 11.6 8l-5.8 3.8Z" />
+    </svg>
+  );
+}
+
+export function IconStop(): ReactElement {
+  return (
+    <svg {...box}>
+      <rect x="4.6" y="4.6" width="6.8" height="6.8" rx="1.2" />
+    </svg>
+  );
+}

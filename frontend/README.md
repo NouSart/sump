@@ -16,7 +16,7 @@ TS 服务节点 + 浏览器界面：既做**用户与智能体之间的门户**�
 | **出站**（智能体 → 用户） | 对外**提供 `deliver`**（`{text, conversation_id}`）→ 回执"已送达面板" → 经 SSE `deliver` 事件推给浏览器。回执**不表示用户看过**（同 shell 的"受理即回执"） |
 | **入站**（用户 → 智能体） | `POST /api/message {text}` → 直连跳转到 `-reasoner` 的 `user_message`（信封 **boss = 门户自己**，否则回答回不来）→ 只回**受理回执**；最终回答经 `deliver` 送回来；reasoner 交付失败时会补一条 `[交付失败] …` 走同一条 `deliver` 通路 |
 | **身份** | 单用户：固定会话 id `web:private:owner`（多用户留待以后）；形状与 qq 的 `qq:private:<uid>` 一致 |
-| **访问控制** | 浏览器信任栅栏（`src/server/portal.ts`）：Host 必须是回环 / 绑定地址 / `-trusted-hosts`（挡 DNS rebinding），带 Origin 时必须受信（挡跨站）。**HTTP 与 WS 端点都过这道栅栏**——服务之间的 WS 连接不带 Origin（放行），浏览器发起的握手必带（拦截），否则恶意页面能直连 `/ws` 往门户里塞假投递。栅栏只证明"请求来自受信地址"，**不建立身份** |
+| **访问控制** | 浏览器信任栅栏（`src/server/portal.ts`）：Host 必须是回环 / 绑定地址 / `-trusted-hosts`（挡 DNS rebinding），带 Origin 时必须受信（挡跨站），**`Origin: null`（沙箱 iframe / `file://` 页面）一律拒绝**。**HTTP 与 WS 端点都过这道栅栏**——服务之间的 WS 连接不带 Origin（放行），浏览器发起的握手必带（拦截），否则恶意页面能直连 `/ws` 往门户里塞假投递。JSON 接口只收 `application/json`：跨站简单请求（表单 / `text/plain`）不带预检，必须由 Content-Type 挡下。栅栏只证明"请求来自受信地址"，**不建立身份** |
 
 栅栏不是可选项：门户能驱动智能体，而智能体手里有 `shell`——门户就是一个"能执行命令的入口"。
 只绑回环不够：恶意页面可把域名解析到 127.0.0.1（DNS rebinding），浏览器看它是**同源**因而不发预检，
@@ -36,7 +36,7 @@ npm run test:web     # 面板组件测试（vitest + jsdom + Testing Library，�
 npm start            # 启动（需先 build）：node dist/server/index.js -addr 127.0.0.1:9501 -center ws://127.0.0.1:9000/ws
 ```
 
-常用参数：`-addr`（HTTP/WS 监听）、`-center`（设置中心地址）、`-name`（服务名，默认 frontend）、`-web`（静态目录，默认 `dist/web`）、`-heartbeat-ms`、`-reasoner`（用户消息的跳转目标，默认 reasoner）、`-trusted-hosts`（额外放行的 Host，逗号分隔；留给反向代理 / 局域网域名）。
+常用参数：`-addr`（HTTP/WS 监听，支持 `[::1]:9501`；**不接受 `0.0.0.0` / `::` 通配**——注册进名册的 ws 地址必须能回连，局域网请绑定具体地址）、`-center`（设置中心地址）、`-name`（服务名，默认 frontend）、`-web`（静态目录，默认 `dist/web`）、`-heartbeat-ms`、`-reasoner`（用户消息的跳转目标，默认 reasoner）、`-trusted-hosts`（额外放行的 Host，逗号分隔；留给反向代理 / 局域网域名）。
 
 ## 结构
 
@@ -44,8 +44,8 @@ npm start            # 启动（需先 build）：node dist/server/index.js -add
 - `src/server/center.ts`：中心连接（注册 / 心跳 / 断线自愈 / 名册广播 / 调用的 `RemoteError` 区分）；
 - `src/server/portal.ts`：门户的会话身份、投递分发（WS → SSE）与浏览器信任栅栏；
 - `src/server/service.ts`：自己的 WS 端点（对外提供 `deliver`；其余动作一律 `unknown action` 回执——注册的地址必须真实可达）；
-- `src/server/api.ts`：HTTP 层（`/api/overview`、`/api/message`、`/api/tasks`、`/api/tasks/resume`、`/api/history`、`/api/settings/set|reset`、`/api/events` SSE——事件：`status` / `roster` / `settings` / `deliver` / `progress` / `approvals` / `timer`、静态托管；每个请求先过信任栅栏）；
-- `src/web/`：React 界面（版式：悬浮胶囊边栏；**主体是门户对话**——整段会话按**任务分节**连续展示，侧栏是"会话 → 任务"的目录，点任务跳到那一段、不切换视图；设置从侧栏底部一行进入、另起一页并自带服务导航 + 设置字段列表（纵排：键 + 状态标签 + 生效值 + 修改/重置，秘密项与只读项各有各的控件）；**视觉取自 DSH 设计系统**——见下；Fira Code 本地打包）。
+- `src/server/api.ts`：HTTP 层（`/api/overview`、`/api/message`、`/api/tasks`、`/api/tasks/resume`、`/api/history`、`/api/settings/set|reset`、`/api/events` SSE——事件：`status` / `roster` / `settings` / `deliver` / `progress` / `approvals` / `timer`、静态托管；每个请求先过信任栅栏；POST 只收 `application/json`；事件流并发上限 32 条、慢消费者超缓冲即断开；WS 单帧上限 1 MiB）；
+- `src/web/`：React 界面（版式：悬浮胶囊边栏；**主体是门户对话**——整段会话按**任务分节**连续展示，侧栏是"会话 → 任务"的目录，点任务跳到那一段、不切换视图；任务记录不在当前窗口时点一下就取回来（进行中的先 `task_resume`，已完结的按 `task_id` 读历史）。对话只在用户本来就贴着底部时自动跟随新消息，往上翻时给「回到最新」按钮；消息没被受理就保留草稿、撤掉本地回显。**消息卡片**浮在对话右侧空白处（不占布局）：只收**终端消息（命令）**与**计时消息**，旧的在上、新的从下面长出来，多条同时到达按 200ms 逐张放出；悬停时未省略先略加宽、被省略加宽到完整，到左边界仍不够或原文含换行则上下伸开，终端消息悬停变成固定大小的消息模式终端窗口；计时与终端卡片悬停给「暂停 / 停止」，暂停转圈后变「继续」（本轮纯 UI 模拟）。卡片可收纳成与左栏同高的云母气泡，气泡显示分类计数，新消息只滑气泡 N 秒（门户设置项，默认 4 秒），手动收起后不被强行撑开。**终端 = 放大的输入框**（向上、向左右伸长），终端模式下底部消息框照常可用；本轮只有 UI，命令不执行。输入框未聚焦时不显示「说点什么…」。设置从侧栏底部一行进入、另起一页并自带服务导航 + 设置字段列表（纵排：键 + 状态标签 + 生效值 + 修改/重置，秘密项与只读项各有各的控件；秘密项可两步确认清空）；**视觉取自 DSH 设计系统**——见下；Fira Code 本地打包）。
 - `tests/`：`*.test.ts` = 服务端（node --test）；`tests/web/` = 面板组件测试（vitest + jsdom，
   `harness.ts` 提供假 EventSource 与 fetch 路由桩——SSE/fetch 在边界处替换，App 代码零改动；`tsconfig.test.json` 让测试进类型检查）。
 - `design/`：版式样张（specimen.html + specimen.css，纯静态、供版式评审；经 `:19531` 查看需先拷到 `dist/web/`）。

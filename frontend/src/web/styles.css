@@ -98,7 +98,7 @@
   --noise-opacity: 0.025;
   --glass: rgba(255, 255, 255, 0.55);
   --glass-focus: rgba(255, 255, 255, 0.88);
-  /* 背景光斑兜底色（与当前浅色观感一致）；实际值由 timeBackground.ts 按本地时间覆盖 */
+  /* 背景光斑兜底色（与当前浅色观感一致）；实际值由 timeTheme.ts 按本地时间覆盖 */
   --aurora-1: #b9c6ff;
   --aurora-2: #a9e2e6;
   --aurora-3: #d6c4f5;
@@ -106,6 +106,10 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
+
+/* 滚动条一律不显示：滚轮 / 触控板 / 键盘照常滚动，只是界面里不出现翻页条。 */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { width: 0; height: 0; display: none; }
 
 body {
   margin: 0;
@@ -225,8 +229,10 @@ button { font: inherit; }
 }
 .thread.task .t-title { font-size: var(--fs-meta); }
 .thread.task.is-done .t-title { color: var(--text-3); }
-.thread.task.is-empty { opacity: 0.5; cursor: default; }
-.thread.task.is-empty:hover { background: transparent; }
+/* 记录还没载入（不在当前窗口）：淡一档提示"点了会去取"，但依然可点。 */
+.thread.task.is-unloaded { opacity: 0.7; }
+.thread.task.is-unloaded .t-time { color: var(--accent); }
+.thread.task.is-current .t-title { font-weight: 600; }
 .task-dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
@@ -251,6 +257,22 @@ button { font: inherit; }
 
 /* 收起态：只剩字标的一小块，*浮在*对话面板上——面板不避让，直接顶到顶。
    字标坐标不变（见 .brand），底板留白：左右 17.5px、上下 10px。 */
+/* 云母气泡：收起态左栏与右侧消息气泡共用同一套材质、高度、圆角、边框与阴影。
+   宽度各自决定——左边包住字标，右边包住分类计数。 */
+.bubble {
+  height: 51px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  background: var(--surface);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(22px) saturate(150%);
+  box-shadow: var(--shadow-1);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.bubble:hover { background: var(--surface-hover); color: var(--text); }
+
 .sidebar-bar {
   position: absolute; left: 13.5px; top: 19px; z-index: 2;
   /* 字标四周留白：左右 17.5px、上下 10px。
@@ -468,6 +490,17 @@ button { font: inherit; }
   pointer-events: none;
 }
 .dock > * { pointer-events: auto; }
+/* 用户翻到上面看历史时，新消息不会把他拽回底部；这个按钮让他自己决定什么时候回最新。 */
+.dock .jump-row { display: flex; justify-content: center; }
+.jump-latest {
+  padding: 6px 14px; border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--glass); color: var(--text-2);
+  -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-1);
+  font-size: var(--fs-meta); cursor: pointer;
+}
+.jump-latest:hover { color: var(--text); border-color: var(--accent-line); }
 .dock .composer,
 .dock .approvals,
 .dock .timer-strip,
@@ -725,3 +758,243 @@ button { font: inherit; }
 .seg-item:disabled { opacity: 0.45; cursor: not-allowed; }
 .field-unit { flex: none; font-size: var(--fs-micro); color: var(--text-3); }
 .field-readout { flex: none; font-size: var(--fs-micro); color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* ==========================================================================
+   消息卡片与气泡 —— 浮在对话右侧空白处的一叠云母片
+   材质与「未聚焦输入框」同款：--glass + blur(20px) saturate(150%) + border + r-xl + shadow-1。
+   新的从下面长出来、向上排；一屏放不下时可滚，贴底时自动跟随最新。
+   ========================================================================== */
+/* 与左栏收起气泡同一坐标系（都挂在 .app 上），并遵守同一条规则：
+   气泡在正文栏内部，距正文栏边框 7px；上边距 = 右边距 = 左边距（左栏收起时 13.5 - 6.5 = 7）。
+   收起与展开共用这一处右缘。 */
+.mcards {
+  --panel-inset: 7px;
+  position: absolute;
+  right: calc(var(--gap-3) + var(--panel-inset));
+  top: calc(var(--gap-3) + var(--panel-inset));
+  bottom: calc(var(--dock-space, 0px) + var(--gap-2));
+  z-index: 2;
+  display: flex; flex-direction: column; align-items: flex-end; gap: var(--gap-2);
+  pointer-events: none;
+  transition: transform 240ms var(--ease), opacity 240ms var(--ease);
+}
+.mcards > * { pointer-events: auto; }
+/* 打开设置页：整块向右滑出并淡出；退出设置再滑回来。 */
+.mcards.is-hidden {
+  transform: translateX(calc(100% + 40px));
+  opacity: 0;
+}
+.mcards.is-hidden > * { pointer-events: none; }
+/* 收起态：与左栏气泡等高（51）、上边距相同、右边距 = 左栏收起时的左边距。 */
+.mcards.is-collapsed { bottom: auto; }
+
+/* 收起按钮：抬头已去掉，收纳入口放在卡片列右下角（Esc / 双击卡片区同样可收起）。 */
+.mcards-collapse-bottom {
+  align-self: flex-end; display: inline-grid; place-items: center;
+  width: 28px; height: 28px; padding: 0;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--text-3); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.mcards-collapse-bottom:hover { background: var(--surface-hover); color: var(--text); border-color: var(--border-strong); }
+.mcards-collapse-bottom svg { width: 16px; height: 16px; }
+
+.mcards-list {
+  flex: 1; min-height: 0; width: 100%;
+  margin: 0; padding: 0; list-style: none;
+  overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: var(--gap-2);
+  /* 上下边界渐隐：上边 100px、下边 50px；上下留出对应的内边距，
+     保证首尾卡片也能完整落在渐隐区内。 */
+  padding-block: 100px 50px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 100px, #000 calc(100% - 50px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 100px, #000 calc(100% - 50px), transparent 100%);
+}
+/* 卡片贴底：内容不满一屏时由顶部空位把它们压到下面；
+   内容超出时这条空位塌成 0，滚动不会被 flex-end 压掉顶部。 */
+.mcards-list::before { content: ''; flex: 1 0 auto; }
+.mcard-item { display: flex; justify-content: flex-end; }
+
+/* 卡片越靠近上下边界越小（缩放值由组件按滚动位置写进 style）；
+   锚点右下角，右缘与底边不动，只往上收。 */
+.mcard-item { transform-origin: bottom right; transition: transform 120ms linear; will-change: transform; }
+
+/* 卡片：等高、等宽（宽度由组件按悬停规则算好写进 style），右对齐 */
+.mcard {
+  position: relative; flex: none;
+  height: 84px; padding: 10px 14px;
+  display: flex; flex-direction: column; gap: 2px;
+  overflow: hidden;
+  border: 1px solid var(--border); border-radius: var(--r-xl);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  animation: mcard-in 180ms var(--ease);
+  transition: width 180ms var(--ease), height 180ms var(--ease),
+              border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.mcard:hover, .mcard:focus-visible { border-color: var(--border-strong); }
+.mcard.is-tall, .mcard.is-terminal { background: var(--surface-hover); }
+/* 悬停展开向上长：卡片贴住底边，高度与宽度变化都从下沿固定、上沿延伸。 */
+.mcard-item { align-items: flex-end; }
+.mcard.is-tall { height: auto; min-height: 84px; }
+.mcard.is-terminal { height: 300px; }
+.mcard.is-paused { border-color: var(--accent-line); }
+.mcard.is-stopped { opacity: 0.55; }
+
+.mcard-head { display: flex; align-items: center; gap: var(--gap-2); min-height: 20px; }
+.mcard-glyph {
+  display: inline-grid; place-items: center; flex: none; width: 20px; height: 20px;
+  border-radius: 6px; background: var(--accent-soft); color: var(--accent);
+}
+.mcard-glyph svg { width: 14px; height: 14px; }
+.mcard-title {
+  flex: 1; min-width: 0; font-size: var(--fs-meta); font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mcard-time { flex: none; font-family: var(--font-mono); font-size: var(--fs-micro); color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* 开发模式示例数据的标记：不抢眼，但一眼能看出不是真数据。 */
+.mcard-mock {
+  flex: none; padding: 0 5px; border-radius: 4px;
+  font-size: 10px; line-height: 14px; letter-spacing: 0.04em;
+  color: var(--text-3); border: 1px solid var(--border);
+}
+.mcard-body {
+  margin: 2px 0 0; font-size: var(--fs-micro); line-height: 1.5; color: var(--text-2);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.mcard.is-tall .mcard-body {
+  display: block; -webkit-line-clamp: unset; white-space: pre-wrap;
+  max-height: 40vh; overflow-y: auto;
+}
+/* 计时进度：已过时间占比，暂停时冻结；到点后满格并淡出整张卡片。 */
+.mcard-progress {
+  margin-top: 6px; height: 3px; border-radius: 999px;
+  background: var(--surface-weak); border: 1px solid var(--border); overflow: hidden;
+}
+.mcard-progress > span {
+  display: block; height: 100%; background: var(--accent);
+  transition: width 900ms linear;
+}
+.mcard.is-expired { animation: mcard-expire 4s linear forwards; }
+.mcard.is-expired .mcard-progress > span { transition: none; }
+
+/* 悬停才出现的控制：暂停 / 停止；键盘聚焦同样可见 */
+.mcard-actions {
+  position: absolute; right: 8px; bottom: 8px; display: flex; gap: 4px;
+  opacity: 0; transition: opacity var(--dur) var(--ease);
+}
+.mcard:hover .mcard-actions, .mcard:focus-within .mcard-actions { opacity: 1; }
+.mcard-action {
+  display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface-weak); color: var(--text-2); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.mcard-action:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); border-color: var(--border-strong); }
+.mcard-action:disabled { cursor: default; }
+.mcard-action svg { width: 14px; height: 14px; }
+.mcard-spinner {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid var(--border-strong); border-top-color: var(--accent);
+  animation: mcard-spin 700ms linear infinite;
+}
+.mcard-stopped { font-size: var(--fs-micro); color: var(--text-3); }
+
+/* 终端消息悬停 = 固定大小的「消息模式终端窗口」 */
+.mterm {
+  margin-top: 6px; padding: 8px 10px; overflow: auto;
+  border-radius: var(--r-md); background: var(--surface-weak);
+  font-family: var(--font-mono); font-size: var(--fs-micro); color: var(--text);
+}
+.mterm-line { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mterm-prompt { color: var(--accent); }
+.mterm-hint { margin: 8px 0 0; color: var(--text-3); }
+
+/* 量文字自然宽度用的隐藏标尺（不算布局） */
+.mcard-measure {
+  position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none;
+  white-space: pre; font-size: var(--fs-micro);
+}
+
+/* 收纳气泡：分类计数；材质、高度、圆角、边框、阴影与左栏收起气泡共用 .bubble。
+   字号 11px、图标 22px、内边距 19px（在 10px 版基础上整体放大 10%）；新消息来时只滑它。 */
+.mbubble {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 0 19px; max-width: 320px;
+  font: inherit; font-size: 14px;
+}
+.mbubble.is-peek { animation: bubble-peek 240ms var(--ease); border-color: var(--accent-line); }
+.mbubble-kind { display: inline-flex; align-items: center; gap: 7px; }
+.mbubble-kind + .mbubble-kind { padding-left: 11px; border-left: 1px solid var(--border); }
+.mbubble-glyph { display: inline-grid; place-items: center; width: 22px; height: 22px; color: var(--accent); }
+.mbubble-glyph svg { width: 22px; height: 22px; }
+.mbubble-count { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mbubble-peek {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding-left: 6px; border-left: 1px solid var(--border); color: var(--text);
+}
+
+@keyframes mcard-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes mcard-expire { from { opacity: 1; } to { opacity: 0; } }
+@keyframes bubble-peek { from { opacity: 0.4; transform: translateX(10px); } to { opacity: 1; transform: none; } }
+@keyframes mcard-spin { to { transform: rotate(360deg); } }
+
+/* ==========================================================================
+   终端 = 展开的输入框：还是同一个 .composer 云母容器，
+   上半部是终端，底部仍是给 agent 的消息框（.composer-input.is-compact）。
+   ========================================================================== */
+.composer.composer-terminal {
+  height: 45vh; max-height: 480px;
+  padding: 10px 12px 10px;
+  animation: terminal-in 180ms var(--ease);
+}
+.terminal-pane {
+  display: flex; flex-direction: column; gap: 6px;
+  flex: 1; min-height: 0;
+}
+.terminal-head {
+  display: flex; align-items: center; gap: var(--gap-2);
+  padding-bottom: 6px; border-bottom: 1px solid var(--border);
+}
+.terminal-glyph { display: inline-grid; place-items: center; width: 20px; height: 20px; color: var(--accent); }
+.terminal-glyph svg { width: 16px; height: 16px; }
+.terminal-title { font-size: var(--fs-meta); font-weight: 600; color: var(--text); }
+.terminal-hint { font-size: var(--fs-micro); color: var(--text-3); }
+.terminal-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px;
+  font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text);
+}
+.terminal-empty { margin: 0; color: var(--text-3); font-family: var(--font-ui); font-size: var(--fs-meta); }
+.terminal-line { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.terminal-line.is-note { color: var(--text-3); }
+.terminal-prompt { color: var(--accent); }
+.terminal-form {
+  display: flex; align-items: center; gap: 6px;
+  padding-top: 6px; border-top: 1px solid var(--border);
+}
+.terminal-input {
+  flex: 1; min-width: 0; border: 0; outline: 0; background: transparent;
+  color: var(--text); font-family: var(--font-mono); font-size: var(--fs-meta);
+}
+.terminal-input::placeholder { color: var(--text-3); }
+/* 终端展开时，给 agent 的消息框缩成底部一行，和终端之间用一条细线分隔。 */
+.composer-input.is-compact {
+  min-height: 34px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.chip.is-on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--text); }
+
+@keyframes terminal-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .mcard, .mbubble.is-peek, .composer.composer-terminal { animation: none; }
+  .mcard-progress > span { transition: none; }
+  .mcard.is-expired { animation: none; opacity: 0.4; }
+  .mcard-spinner { animation: none; border-top-color: var(--accent); }
+  .mcards { transition: none; }
+}

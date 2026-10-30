@@ -111,6 +111,21 @@ describe('SettingsPanel', () => {
     assert.ok(screen.getByText('还没设置'));
   });
 
+  it('秘密项已设置：清空要两步确认，确认后走 onReset', async () => {
+    const onReset = vi.fn(async () => {});
+    renderPanel({ settings: [secretRow], onReset });
+
+    fireEvent.click(screen.getByRole('button', { name: '清空' }));
+    expect(onReset).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '再点一次确认清空' }));
+    await waitFor(() => expect(onReset).toHaveBeenCalledWith('images', 'llm.key'));
+  });
+
+  it('秘密项未设置：没有清空入口', () => {
+    renderPanel({ settings: [secretUnsetRow] });
+    assert.equal(screen.queryByRole('button', { name: '清空' }), null);
+  });
+
   it('编辑保存：调用 onSave(service,key,新值)，成功后退出编辑态', async () => {
     const onSave = vi.fn(async () => {});
     renderPanel({ onSave });

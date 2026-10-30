@@ -240,6 +240,14 @@ test('参数校验与未知接口', async (t) => {
   });
   assert.equal(badJSON.status, 400);
 
+  // 跨站简单请求（text/plain）不带预检，必须被 Content-Type 闸挡下。
+  const plainText = await fetch(`http://${handle.addr}/api/message`, {
+    method: 'POST',
+    headers: { 'content-type': 'text/plain' },
+    body: JSON.stringify({ text: '你好' }),
+  });
+  assert.equal(plainText.status, 415);
+
   const wrongMethod = await fetch(`http://${handle.addr}/api/settings/set`);
   assert.equal(wrongMethod.status, 405);
 
@@ -1023,6 +1031,14 @@ test('信任栅栏：WS 端点同样拦截带外站 Origin 的握手', async (t)
     good.once('error', () => resolve('rejected'));
   });
   assert.equal(goodOutcome, 'opened', '无 Origin 的服务间连接应放行');
+
+  // 沙箱 iframe / file:// 页面的握手带 Origin: null——那不是"没有 Origin"。
+  const sandboxed = new WebSocket(`ws://${handle.addr}/ws`, { origin: 'null' });
+  const sandboxedOutcome = await new Promise<string>((resolve) => {
+    sandboxed.once('open', () => resolve('opened'));
+    sandboxed.once('error', () => resolve('rejected'));
+  });
+  assert.equal(sandboxedOutcome, 'rejected', 'Origin: null 的 WS 握手应被拒');
 });
 
 test('信任栅栏：伪造 Host / 跨站 Origin 一律 403，正常回环放行', async (t) => {
@@ -1047,6 +1063,11 @@ test('信任栅栏：伪造 Host / 跨站 Origin 一律 403，正常回环放行
   const crossSite = await rawGet(handle.addr, '/api/overview', { host: handle.addr, origin: 'https://evil.example' });
   assert.equal(crossSite.status, 403);
   assert.match(crossSite.body, /Origin 不在受信范围/);
+
+  // 沙箱 iframe / file:// 页面：Origin 序列化成字符串 'null'，同样必须拒绝。
+  const nullOrigin = await rawGet(handle.addr, '/api/overview', { host: handle.addr, origin: 'null' });
+  assert.equal(nullOrigin.status, 403);
+  assert.match(nullOrigin.body, /Origin 不受信/);
 
   // 端口不符：不同端口是另一个服务，没理由放行。
   assert.equal((await rawGet(handle.addr, '/api/overview', { host: `127.0.0.1:${port + 1}` })).status, 403);

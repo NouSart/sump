@@ -53,6 +53,10 @@ export function parseTimerItems(raw: unknown, log: (m: string) => void): TimerIt
   return out;
 }
 
+// 与 Go 侧服务默认的 -max-message-bytes（1 MiB）对齐：门户只收 deliver / 计时快照 /
+// 待审项 / 任务实况这类小消息。不设上限时 ws 默认允许 100 MiB 单帧。
+const maxInboundMessageBytes = 1 << 20;
+
 export function attachJumpEndpoint(
   server: HttpServer,
   path: string,
@@ -64,9 +68,13 @@ export function attachJumpEndpoint(
   onProgress: (p: ProgressUpdate) => boolean,
   trust: TrustConfig,
 ): WebSocketServer {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: maxInboundMessageBytes });
 
   const handleConn = (ws: WebSocket): void => {
+    // 超限帧会让 ws 发 'error' 并关闭连接；没有监听器时 EventEmitter 会把整个进程带崩。
+    ws.on('error', (err: Error) => {
+      log(`WS 连接出错（即将关闭）: ${err.message}`);
+    });
     ws.on('message', (data: RawData) => {
       let env;
       try {

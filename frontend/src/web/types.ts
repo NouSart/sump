@@ -126,15 +126,19 @@ export interface PortalMessage {
   meta?: TraceMeta;
   /** 这条消息属于哪个任务（面板按任务分节展示）。 */
   taskId?: string;
+  /** 客户端本地标识：无 seq 的消息（本地回显 / deliver）用它当 React key，避免按下标做 key。 */
+  id?: string;
 }
 
-// TimerView 是一条在计时器（timer 经 timer_state 快照推来）：门户据此画倒计时。
+// DashboardView 是一条在计时器（timer 经 timer_state 快照推来）：门户据此画倒计时。
 export interface TimerView {
   itemId: string;
   caller: string;
   ms: number;
   fireAt: string; // RFC3339：门户拿它与本地时间算剩余
   note: string;
+  /** 开发模式注入的示例数据；真实快照不会带这个字段。 */
+  mock?: boolean;
 }
 
 // PendingApprovalView 是一条等用户裁决的命令（approval 经 approval_pending 推来）。

@@ -12,6 +12,7 @@
     "stamp": "node scripts/build-stamp.mjs write",
     "stamp:check": "node scripts/build-stamp.mjs check -v",
     "start": "node dist/server/index.js",
+    "dev": "vite",
     "test": "npm run test:node && npm run test:web",
     "test:node": "node --test \"tests/*.test.ts\"",
     "test:web": "vitest run"

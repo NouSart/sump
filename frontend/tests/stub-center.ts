@@ -27,6 +27,8 @@ export class StubCenter {
   roster: { services: unknown[]; revision: number } = { services: [], revision: 1 };
   settingsReply: { services: unknown[] } = { services: [] };
   setError = '';
+  /** 设成非空时 register 一律回错误：用来验证"连不上会长退避"而不是死循环刷屏。 */
+  registerError = '';
 
   private wss: WebSocketServer | null = null;
   private readonly conns = new Set<WebSocket>();
@@ -96,6 +98,10 @@ export class StubCenter {
       case 'register': {
         const reg = (env.payload as Record<string, unknown> | undefined) ?? {};
         this.registrations.push(reg);
+        if (this.registerError !== '') {
+          this.reply(ws, env, { ok: false, error: this.registerError });
+          return;
+        }
         this.reply(ws, env, { ok: true, data: this.roster });
         return;
       }
