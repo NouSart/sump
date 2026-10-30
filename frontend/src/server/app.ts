@@ -34,14 +34,37 @@ export interface FrontendHandle {
   close: () => Promise<void>;
 }
 
+// splitAddr 解析 host:port，支持 [::1]:9501 这类 IPv6 字面量。
+// 不接受通配地址：注册进名册的 selfURL 必须是别的服务真能回连的地址，
+// 而 0.0.0.0 / :: 不是一个可回连的目标。局域网请绑定具体地址。
 function splitAddr(addr: string): { host: string; port: number } {
-  const idx = addr.lastIndexOf(':');
-  const host = (idx >= 0 ? addr.slice(0, idx) : addr) || '127.0.0.1';
-  const port = idx >= 0 ? Number(addr.slice(idx + 1)) : Number.NaN;
-  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+  let host: string;
+  let portText: string;
+  if (addr.startsWith('[')) {
+    const end = addr.indexOf(']');
+    if (end < 0 || !addr.slice(end + 1).startsWith(':')) {
+      throw new Error(`非法监听地址: ${addr}（IPv6 应写成 [::1]:9501）`);
+    }
+    host = addr.slice(1, end);
+    portText = addr.slice(end + 2);
+  } else {
+    const idx = addr.lastIndexOf(':');
+    host = (idx >= 0 ? addr.slice(0, idx) : addr) || '127.0.0.1';
+    portText = idx >= 0 ? addr.slice(idx + 1) : '';
+  }
+  const port = Number(portText);
+  if (!Number.isInteger(port) || port < 0 || port > 65535 || portText === '') {
     throw new Error(`非法监听地址: ${addr}（应为 host:port）`);
   }
+  if (host === '0.0.0.0' || host === '::') {
+    throw new Error(`不支持通配监听地址: ${addr}（注册的 ws 地址必须可回连，请绑定具体地址）`);
+  }
   return { host, port };
+}
+
+// urlHost 给 IPv6 字面量补方括号，http:// 与 ws:// 的 authority 都需要它。
+function urlHost(host: string): string {
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
 }
 
 export async function startFrontend(cfg: FrontendConfig, log: (m: string) => void): Promise<FrontendHandle> {
@@ -52,7 +75,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
     server.listen(port, host, () => resolveListen());
   });
   const actual = server.address() as AddressInfo;
-  const addr = `${actual.address}:${actual.port}`;
+  const addr = `${urlHost(actual.address)}:${actual.port}`;
   const selfURL = `ws://${addr}/ws`;
 
   const hub = createDeliverHub();
@@ -87,7 +110,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
         localesDir: cfg.localesDir,
         lang: cfg.lang,
         portal: { on: hub.on },
-    progress: { on: progress.on },
+        progress: { on: progress.on },
         timers: { current: timers.current, on: timers.on },
         approvals: { current: approvals.list, on: approvals.on, remove: approvals.remove },
         approval: cfg.approval,

@@ -43,6 +43,9 @@ interface Pending {
 const callTimeoutDefault = 10_000;
 const registerTimeout = 10_000;
 const maxBackoff = 30_000;
+// 名册包含所有服务的声明（可能远大于单条业务消息），给中心/直连响应 8 MiB 上限；
+// 仍然是有界值，避免一个坏对端让进程无限吃内存。
+const maxCenterMessageBytes = 8 << 20;
 
 // RemoteError 表示“中心明确回执的拒绝”（ok=false，带原因）——
 // 与传输类失败（断开 / 超时）区分，API 层据此映射 400 与 502。
@@ -59,7 +62,7 @@ export class RemoteError extends Error {}
  */
 function dialOnce(addr: string, env: Envelope, timeoutMS: number): Promise<unknown> {
   return new Promise<unknown>((resolve, reject) => {
-    const ws = new WebSocket(addr);
+    const ws = new WebSocket(addr, { maxPayload: maxCenterMessageBytes });
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
     const finish = (fn: () => void): void => {
@@ -112,6 +115,8 @@ export class CenterLink {
   private closed = false;
   private connectedFlag = false;
   private rosterValue: RosterPayload | null = null;
+  /** 最近一次成功注册的连接：它断开说明对端是健康的，重连用基础间隔而不是继续退避。 */
+  private registeredWS: WebSocket | null = null;
 
   constructor(opts: CenterOptions) {
     this.opts = opts;
@@ -183,7 +188,7 @@ export class CenterLink {
 
   private connect(): void {
     if (this.closed) return;
-    const ws = new WebSocket(this.opts.centerURL);
+    const ws = new WebSocket(this.opts.centerURL, { maxPayload: maxCenterMessageBytes });
     this.ws = ws;
     ws.on('open', () => {
       void this.register(ws);
@@ -220,12 +225,13 @@ export class CenterLink {
       const roster = (data ?? { services: [], revision: 0 }) as RosterPayload;
       this.setRoster(roster);
       this.backoff = 1_000;
+      this.registeredWS = ws;
       this.setConnected(true);
       this.startHeartbeat(ws);
       this.opts.log(`已接入设置中心（名册 ${roster.services?.length ?? 0} 个服务, rev ${roster.revision ?? 0}）`);
     } catch (err) {
       this.opts.log(`注册设置中心失败: ${(err as Error).message}`);
-      this.backoff = Math.min(this.backoff * 2, maxBackoff);
+      // 退避统一由 onClose 增长（terminate/对端关闭都会走到那里），这里不再重复翻倍。
       try {
         ws.terminate();
       } catch {
@@ -294,7 +300,12 @@ export class CenterLink {
     this.setConnected(false);
     this.rejectAll(new Error('与设置中心连接断开'));
     if (this.closed) return;
+    const registered = this.registeredWS === ws;
+    this.registeredWS = null;
     const delay = this.backoff;
+    // 只有"一直连不上/注册不上"才继续翻倍退避；注册成功过的连接断开说明对端是健康的，
+    // 用基础间隔立刻重连（否则中心重启一次就要等好几秒）。
+    this.backoff = registered ? 1_000 : Math.min(this.backoff * 2, maxBackoff);
     this.opts.log(`与设置中心连接断开，${delay}ms 后重连`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;

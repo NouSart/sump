@@ -104,6 +104,24 @@ test('断开后自动重连并重注册', async (t) => {
   assert.equal(link.connected, true);
 });
 
+test('注册一直失败：重连间隔逐步翻倍，不会每秒刷屏', async (t) => {
+  const stub = new StubCenter();
+  stub.registerError = '中心还没准备好';
+  const url = await stub.start();
+  const link = makeLink(url);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => stub.registrations.length === 1, 3000, '首次注册尝试');
+  await waitFor(() => stub.registrations.length === 2, 4000, '第一次重试');
+  const firstGap = Date.now();
+  await waitFor(() => stub.registrations.length === 3, 6000, '第二次重试');
+  // 间隔按 1s → 2s 增长：第二次重试前的等待应明显长于 1s。
+  assert.ok(Date.now() - firstGap >= 1600, `第二次重试间隔应已退避到 2s，实际 ${String(Date.now() - firstGap)}ms`);
+});
+
 test('中心明确回错误：调用抛 Error（消息为远端错误）', async (t) => {
   const stub = new StubCenter();
   const url = await stub.start();
