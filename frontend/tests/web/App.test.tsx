@@ -43,7 +43,7 @@ async function boot(
   const taskList =
     over.tasks ??
     [{ id: 'task-1', name: '看看现在几点', status: 'active' as const, updated_at: '2026-10-17T10:00:00Z' }];
-  const calls = stubFetch((url) => {
+  const calls = stubFetch((url, init) => {
     if (url === '/api/overview') return jsonResponse(okOverview(currentRoster));
     if (url === '/api/tasks') {
       return jsonResponse({
@@ -57,6 +57,16 @@ async function boot(
     if (url === '/api/message') {
       if (over.messageResponse) return over.messageResponse();
       return jsonResponse({ ok: true, conversationId: 'web:private:owner' });
+    }
+    if (url === '/api/tasks/resume') {
+      const id = JSON.parse(String(init?.body ?? '{}')).task_id as string;
+      return jsonResponse({
+        task: { id, status: 'active' },
+        messages: [
+          { role: 'user', content: '恢复前的提问', at: '2026-10-17T11:00:30Z', seq: 6, task_id: id },
+          { role: 'assistant', content: '恢复出来的记录', at: '2026-10-17T11:01:00Z', seq: 7, task_id: id },
+        ],
+      });
     }
     if (url === '/api/settings/set') {
       if (over.setResponse) return over.setResponse();
@@ -397,6 +407,17 @@ describe('App', () => {
     await waitFor(() => assert.equal(screen.queryByRole('region', { name: '设置' }), null));
   });
 
+  it('设置：编辑态按 Esc 只退出编辑，不关闭设置页', async () => {
+    await boot();
+    fireEvent.click(screen.getAllByRole('button', { name: '修改' })[0]!);
+    const input = screen.getByLabelText('max_mb 修改');
+
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    await waitFor(() => assert.equal(screen.queryByLabelText('max_mb 修改'), null));
+    assert.ok(screen.getByRole('heading', { name: '设置' }), '设置页应仍然打开');
+  });
+
   it('侧栏：收起是向上塌成只剩字标的一小块，点块即可展开', async () => {
     await boot({ openSettings: false });
     await screen.findByRole('region', { name: '对话' });
@@ -567,7 +588,43 @@ describe('App', () => {
     assert.equal(screen.queryByRole('alert'), null, '受理成功不应留下错误提示');
   });
 
-  it('对话：发送未被受理 → 明确提示未送达', async () => {
+  it('任务：进行中但当前窗口没记录的点一下就恢复，并把这一段记录载入会话', async () => {
+    const { calls } = await boot({
+      openSettings: false,
+      tasks: [{ id: 'task-live', name: '正在做的活', status: 'active', updated_at: '2026-10-17T11:00:00Z' }],
+      history: [],
+    });
+    await screen.findByRole('region', { name: '对话' });
+    await screen.findByRole('button', { name: /正在做的活/ });
+
+    fireEvent.click(screen.getByRole('button', { name: /正在做的活/ }));
+
+    await screen.findByText('恢复出来的记录');
+    assert.equal(countCalls(calls, '/api/tasks/resume'), 1, '应调用一次恢复');
+    assert.equal(document.querySelectorAll('.task-sep').length, 1);
+  });
+
+  it('当前任务是最近活跃的那个：多条进行中任务时按 updated_at 判，而不是最早创建的', async () => {
+    await boot({
+      openSettings: false,
+      tasks: [
+        { id: 'task-old', name: '老的活', status: 'active', updated_at: '2026-10-17T09:00:00Z' },
+        { id: 'task-new', name: '新的活', status: 'active', updated_at: '2026-10-17T12:00:00Z' },
+      ],
+      // 两条都已有记录，侧栏就是可跳状态，标题里才会带「当前任务」。
+      history: [
+        { role: 'user', content: '老的活的问题', at: '2026-10-17T09:00:00Z', task_id: 'task-old' },
+        { role: 'user', content: '新的活的问题', at: '2026-10-17T12:00:00Z', task_id: 'task-new' },
+      ],
+    });
+    await screen.findByRole('region', { name: '对话' });
+    await screen.findByText('新的活的问题');
+
+    assert.ok(screen.getByTitle('新的活 · 当前任务'), '最近活跃的进行中任务才是当前任务');
+    assert.equal(screen.queryByTitle('老的活 · 当前任务'), null);
+  });
+
+  it('对话：发送未被受理 → 明确提示未送达，草稿保留、回显撤掉', async () => {
     await boot({ openSettings: false, messageResponse: () => jsonResponse({ error: '未知目标服务: reasoner（不在名册里）' }, 503) });
     await screen.findByRole('region', { name: '对话' });
 
@@ -575,6 +632,44 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
     await screen.findByText(/未送达：未知目标服务: reasoner/);
+    const box = screen.getByLabelText('消息') as HTMLTextAreaElement;
+    assert.equal(box.value, '你好', '未受理时草稿要留给用户重试');
+    // 只看消息流：textarea 的受控值本身就是它的 textContent，不能拿全页 queryByText 判断。
+    const list = document.querySelector('.portal-list');
+    assert.ok(list !== null);
+    assert.equal(list.textContent?.includes('你好') ?? false, false, '未受理的消息不该留在对话里');
+  });
+
+  it('对话：首屏历史与实时投递竞态——加载期间到达的 deliver 不被历史覆盖', async () => {
+    let resolveHistory!: (r: Response) => void;
+    const historyResponse = new Promise<Response>((resolve) => {
+      resolveHistory = resolve;
+    });
+    stubFetch((url) => {
+      if (url === '/api/overview') return jsonResponse(okOverview(rosterOf(['images', 'qq'])));
+      if (url === '/api/tasks') return jsonResponse({ conversationId: 'web:private:owner', tasks: [] });
+      if (url.startsWith('/api/history')) return historyResponse;
+      return undefined;
+    });
+    installFakeEventSource();
+    render(<App />);
+    await screen.findByRole('region', { name: '对话' });
+
+    await emitSSE('deliver', { text: '先到的答复', taskId: 'task-9', at: '2026-10-17T10:00:01Z' });
+    await screen.findByText('先到的答复');
+
+    resolveHistory(
+      jsonResponse({
+        conversationId: 'web:private:owner',
+        messages: [
+          { role: 'user', content: '历史里的提问', at: '2026-10-17T09:59:00Z', seq: 1, task_id: 'task-8' },
+          { role: 'assistant', content: '历史里的答复', at: '2026-10-17T09:59:30Z', seq: 2, task_id: 'task-8' },
+        ],
+      }),
+    );
+
+    await screen.findByText('历史里的答复');
+    assert.ok(screen.getByText('先到的答复'), '实时消息不能被历史覆盖');
   });
 
   it('对话：输入区是浮层（消息流在它背后穿过），不是坐在流里的占位', async () => {

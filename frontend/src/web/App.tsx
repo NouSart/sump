@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { decideApproval, fetchHistory, fetchOverview, fetchTasks, parseMeta, resetSetting, sendMessage, setSetting } from './api';
+import { decideApproval, fetchHistory, fetchOverview, fetchTasks, parseMeta, resetSetting, resumeTask, sendMessage, setSetting } from './api';
 import { PortalView } from './components/PortalView';
 import { IconChevronUp } from './components/icons';
 import { ServiceList } from './components/ServiceList';
@@ -23,6 +23,13 @@ import type {
 } from './types';
 
 let toastSeq = 0;
+// 本地消息 id：没有 seq 的消息（本地回显 / deliver）用它做 React key。
+// 用数组下标当 key 会在乱序插入时让后面的步骤重挂载、丢掉已展开的折叠状态。
+let localMessageSeq = 0;
+function nextLocalMessageID(): string {
+  localMessageSeq++;
+  return `local-${String(localMessageSeq)}`;
+}
 
 // appendMessage 追加一条消息：
 //  - 有 seq（落库过的记录）就按 seq 去重与插入——实时推送与历史回填可能同时到，seq 是同一把尺子；
@@ -48,7 +55,8 @@ function mergeMessages(history: PortalMessage[], live: PortalMessage[]): PortalM
   return out;
 }
 
-export function App() {  const [overview, setOverview] = useState<Overview | null>(null);
+export function App() {
+  const [overview, setOverview] = useState<Overview | null>(null);
   const [roster, setRoster] = useState<RosterView | null>(null);
   const [connected, setConnected] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
@@ -172,7 +180,14 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     es.addEventListener('deliver', (ev) => {
       const d = JSON.parse((ev as MessageEvent).data) as { text: string; taskId?: string; at: string };
       setMessages((prev) =>
-        appendMessage(prev, { author: 'agent', kind: 'assistant', text: d.text, at: d.at, taskId: d.taskId ?? '' }),
+        appendMessage(prev, {
+          author: 'agent',
+          kind: 'assistant',
+          text: d.text,
+          at: d.at,
+          taskId: d.taskId ?? '',
+          id: nextLocalMessageID(),
+        }),
       );
       // 答复到了：任务名/状态可能刚被判定改过，顺手对齐一次（失败不影响对话）。
       void fetchTasks()
@@ -313,12 +328,23 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
   // 侧栏的树是"会话 → 任务"，点任务 = 跳到那一段（不切换视图、不过滤）。
   const taskIdsWithRecords = useMemo(() => new Set(messages.map((m) => m.taskId ?? '')), [messages]);
 
+  // 当前任务 = 最近活跃（updated_at 最大）的进行中任务，与 memory 的 CurrentTask 同判据。
+  // 用"最早创建的 active"会在恢复了旧任务时续错任务。
+  const currentTask = useMemo(() => {
+    let best: TaskView | null = null;
+    for (const task of tasks) {
+      if (task.status !== 'active') continue;
+      if (best === null || task.updated_at > best.updated_at) best = task;
+    }
+    return best;
+  }, [tasks]);
+
   // 用"临时关掉平滑滚动 + 直接写 scrollTop"落位而不是 scrollIntoView：容器是 scroll-behavior:smooth，
   // 跨几千像素的平滑滚动又慢又容易被打断；跳转要的是"立刻到那"，再用一下高亮说明落在哪一段。
   const jumpToTask = useCallback((taskId: string) => {
     const el = document.getElementById(`task-${taskId}`);
     const list = el?.closest('.portal-list');
-    if (el === null || !(list instanceof HTMLElement)) return;
+    if (el === null || !(list instanceof HTMLElement)) return false;
     const behavior = list.style.scrollBehavior;
     list.style.scrollBehavior = 'auto';
     list.scrollTop += el.getBoundingClientRect().top - list.getBoundingClientRect().top - 12;
@@ -330,30 +356,72 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     window.setTimeout(() => {
       el.classList.remove('is-jump');
     }, 1400);
+    return true;
   }, []);
 
+  // onJumpTask：侧栏点任务。已经在会话里就跳过去；不在就先把它这一段取回来——
+  // 进行中的任务走 task_resume（记忆服务会把它顶成当前任务），已完结的直接按 task_id 读历史。
+  const onJumpTask = useCallback(
+    (taskId: string) => {
+      if (jumpToTask(taskId)) return;
+      const task = tasks.find((x) => x.id === taskId);
+      if (task === undefined) return;
+      setPortalError(null);
+      const load = task.status === 'active' ? resumeTask(taskId) : fetchHistory(200, 0, taskId);
+      void load
+        .then((history) => {
+          if (history.length === 0) {
+            pushToast('error', `${task.name} · ${t('ui.task.noRecords', '没有记录可跳')}`);
+            return;
+          }
+          setMessages((prev) => mergeMessages(history, prev));
+          // 记录落进列表后才有分节头：等一帧再滚，否则拿不到刚渲染的元素。
+          window.setTimeout(() => {
+            jumpToTask(taskId);
+          }, 0);
+          if (task.status === 'active') {
+            void fetchTasks()
+              .then(setTasks)
+              .catch(() => undefined);
+          }
+        })
+        .catch((err: unknown) => {
+          setPortalError(`${t('ui.app.resumeFailed', '载入任务记录失败：')}${(err as Error).message}`);
+        });
+    },
+    [jumpToTask, tasks, t, pushToast],
+  );
+
   // onSend：消息永远发进"当前任务"——进行中就直接续，没有进行中的就由记忆服务新开一个。
+  // 返回值 = 是否被受理：未被受理时撤掉本地回显（界面不该显示一条其实没送出的消息），
+  // 并把草稿留在输入框里让用户重试。
   const onSend = useCallback(
-    async (text: string) => {
+    async (text: string): Promise<boolean> => {
       setPortalError(null);
       // 本地先回显（受理回执只说明消息已交给 reasoner，不代表已有回复）。
       const at = new Date().toISOString();
-      const active = tasks.find((x) => x.status === 'active') ?? null;
-      setMessages((prev) =>
-        appendMessage(prev, { author: 'user', text, at, taskId: active?.id ?? '', seq: undefined }),
-      );
+      const echo: PortalMessage = {
+        author: 'user',
+        text,
+        at,
+        taskId: currentTask?.id ?? '',
+        id: nextLocalMessageID(),
+      };
+      setMessages((prev) => appendMessage(prev, echo));
       try {
         await sendMessage(text);
       } catch (err) {
+        setMessages((prev) => prev.filter((m) => m !== echo));
         setPortalError(`${t('ui.app.undelivered', '未送达：')}${(err as Error).message}`);
-        return;
+        return false;
       }
       // 新任务可能刚被创建：刷新一次任务列表（记录由 reasoner 落库，稍后才到）。
       void fetchTasks()
         .then(setTasks)
         .catch(() => undefined);
+      return true;
     },
-    [tasks, t],
+    [currentTask, t],
   );
   // 首屏：一次拉全"任务清单 + 整段会话"——面板按会话展示，任务只是里面的分节。
   useEffect(() => {
@@ -363,7 +431,8 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
         const [list, history] = await Promise.all([fetchTasks(), fetchHistory(300, 0, '', true)]);
         if (cancelled) return;
         setTasks(list);
-        if (history.length > 0) setMessages(mergeMessages(history, []));
+        // 与"加载期间已经到达的实时消息"合并，而不是覆盖——deliver / progress 可能先到。
+        setMessages((prev) => mergeMessages(history, prev));
       } catch (err) {
         if (!cancelled) setPortalError(`${t('ui.app.historyFailed', '历史未取回：')}${(err as Error).message}`);
       }
@@ -371,7 +440,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
     return () => {
       cancelled = true;
     };
-    // ?????t ?????????????????????????????
+    // 只跑一次：首屏把任务清单与整段会话拉下来，之后全靠 SSE 增量。
   }, []);
 
   // onDecide：把用户的裁决送回 approval。成功后由 SSE 的 approvals 事件把卡片删掉
@@ -438,7 +507,7 @@ export function App() {  const [overview, setOverview] = useState<Overview | nul
               />
             </nav>
           ) : (
-            <TaskList tasks={tasks} jumps={taskIdsWithRecords} onJump={jumpToTask} t={t} />
+            <TaskList tasks={tasks} jumps={taskIdsWithRecords} current={currentTask?.id ?? ''} onJump={onJumpTask} t={t} />
           )}
           <div className="me">
             <span className="avatar" aria-hidden="true">{t('ui.me.avatar', '我')}</span>

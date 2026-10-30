@@ -98,7 +98,7 @@
   --noise-opacity: 0.025;
   --glass: rgba(255, 255, 255, 0.55);
   --glass-focus: rgba(255, 255, 255, 0.88);
-  /* 背景光斑兜底色（与当前浅色观感一致）；实际值由 timeBackground.ts 按本地时间覆盖 */
+  /* 背景光斑兜底色（与当前浅色观感一致）；实际值由 timeTheme.ts 按本地时间覆盖 */
   --aurora-1: #b9c6ff;
   --aurora-2: #a9e2e6;
   --aurora-3: #d6c4f5;
@@ -225,8 +225,10 @@ button { font: inherit; }
 }
 .thread.task .t-title { font-size: var(--fs-meta); }
 .thread.task.is-done .t-title { color: var(--text-3); }
-.thread.task.is-empty { opacity: 0.5; cursor: default; }
-.thread.task.is-empty:hover { background: transparent; }
+/* 记录还没载入（不在当前窗口）：淡一档提示"点了会去取"，但依然可点。 */
+.thread.task.is-unloaded { opacity: 0.7; }
+.thread.task.is-unloaded .t-time { color: var(--accent); }
+.thread.task.is-current .t-title { font-weight: 600; }
 .task-dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
@@ -468,6 +470,17 @@ button { font: inherit; }
   pointer-events: none;
 }
 .dock > * { pointer-events: auto; }
+/* 用户翻到上面看历史时，新消息不会把他拽回底部；这个按钮让他自己决定什么时候回最新。 */
+.dock .jump-row { display: flex; justify-content: center; }
+.jump-latest {
+  padding: 6px 14px; border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--glass); color: var(--text-2);
+  -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-1);
+  font-size: var(--fs-meta); cursor: pointer;
+}
+.jump-latest:hover { color: var(--text); border-color: var(--accent-line); }
 .dock .composer,
 .dock .approvals,
 .dock .timer-strip,

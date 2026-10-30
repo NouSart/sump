@@ -126,6 +126,8 @@ export interface PortalMessage {
   meta?: TraceMeta;
   /** 这条消息属于哪个任务（面板按任务分节展示）。 */
   taskId?: string;
+  /** 客户端本地标识：无 seq 的消息（本地回显 / deliver）用它当 React key，避免按下标做 key。 */
+  id?: string;
 }
 
 // TimerView 是一条在计时器（timer 经 timer_state 快照推来）：门户据此画倒计时。

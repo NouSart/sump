@@ -45,7 +45,7 @@ npm start            # 启动（需先 build）：node dist/server/index.js -add
 - `src/server/portal.ts`：门户的会话身份、投递分发（WS → SSE）与浏览器信任栅栏；
 - `src/server/service.ts`：自己的 WS 端点（对外提供 `deliver`；其余动作一律 `unknown action` 回执——注册的地址必须真实可达）；
 - `src/server/api.ts`：HTTP 层（`/api/overview`、`/api/message`、`/api/tasks`、`/api/tasks/resume`、`/api/history`、`/api/settings/set|reset`、`/api/events` SSE——事件：`status` / `roster` / `settings` / `deliver` / `progress` / `approvals` / `timer`、静态托管；每个请求先过信任栅栏；POST 只收 `application/json`；事件流并发上限 32 条、慢消费者超缓冲即断开；WS 单帧上限 1 MiB）；
-- `src/web/`：React 界面（版式：悬浮胶囊边栏；**主体是门户对话**——整段会话按**任务分节**连续展示，侧栏是"会话 → 任务"的目录，点任务跳到那一段、不切换视图；设置从侧栏底部一行进入、另起一页并自带服务导航 + 设置字段列表（纵排：键 + 状态标签 + 生效值 + 修改/重置，秘密项与只读项各有各的控件）；**视觉取自 DSH 设计系统**——见下；Fira Code 本地打包）。
+- `src/web/`：React 界面（版式：悬浮胶囊边栏；**主体是门户对话**——整段会话按**任务分节**连续展示，侧栏是"会话 → 任务"的目录，点任务跳到那一段、不切换视图；任务记录不在当前窗口时点一下就取回来（进行中的先 `task_resume`，已完结的按 `task_id` 读历史）。对话只在用户本来就贴着底部时自动跟随新消息，往上翻时给「回到最新」按钮；消息没被受理就保留草稿、撤掉本地回显。设置从侧栏底部一行进入、另起一页并自带服务导航 + 设置字段列表（纵排：键 + 状态标签 + 生效值 + 修改/重置，秘密项与只读项各有各的控件；秘密项可两步确认清空）；**视觉取自 DSH 设计系统**——见下；Fira Code 本地打包）。
 - `tests/`：`*.test.ts` = 服务端（node --test）；`tests/web/` = 面板组件测试（vitest + jsdom，
   `harness.ts` 提供假 EventSource 与 fetch 路由桩——SSE/fetch 在边界处替换，App 代码零改动；`tsconfig.test.json` 让测试进类型检查）。
 - `design/`：版式样张（specimen.html + specimen.css，纯静态、供版式评审；经 `:19531` 查看需先拷到 `dist/web/`）。

@@ -11,13 +11,16 @@ interface Props {
   tasks: TaskView[];
   /** 面板里确实有记录的任务（没记录的任务行不点：点了也没地方落）。 */
   jumps: ReadonlySet<string>;
+  /** 当前任务 id（= 最近活跃的进行中任务，下一条消息会续在它后面）。 */
+  current: string;
   onJump: (taskId: string) => void;
   t: Translate;
 }
 
-export function TaskList({ tasks, jumps, onJump, t }: Props): React.ReactElement {
+export function TaskList({ tasks, jumps, current, onJump, t }: Props): React.ReactElement {
   const [open, setOpen] = useState(true);
-  const active = tasks.find((x) => x.status === 'active') ?? null;
+  // 状态用"当前任务"来标：只有它会被下一条消息续上。
+  const currentID = current;
 
   return (
     <nav className="threads" aria-label={t('ui.task.nav', '会话与任务')}>
@@ -36,7 +39,7 @@ export function TaskList({ tasks, jumps, onJump, t }: Props): React.ReactElement
       >
         {open ? <IconChevronDown /> : <IconChevronRight />}
         <span className="t-title">{t('ui.app.currentThread', '当前会话')}</span>
-        <span className="t-time">{active === null ? '' : t('ui.task.active', '进行中')}</span>
+        <span className="t-time">{currentID === '' ? '' : t('ui.task.active', '进行中')}</span>
       </button>
 
       {open &&
@@ -46,19 +49,18 @@ export function TaskList({ tasks, jumps, onJump, t }: Props): React.ReactElement
           tasks.map((task) => {
             const done = task.status === 'done';
             const hasRecords = jumps.has(task.id);
+            // 每条任务都能点：有记录就跳过去，没有就把它这一段取回来（进行中的先恢复）。
+            const title = hasRecords
+              ? done
+                ? `${task.name} · ${t('ui.task.done', '已完成')}`
+                : `${task.name}${task.id === currentID ? ` · ${t('ui.task.current', '当前任务')}` : ''}`
+              : `${task.name} · ${done ? t('ui.task.load', '载入记录') : t('ui.task.resume', '恢复这个任务并载入记录')}`;
             return (
               <button
                 key={task.id}
                 type="button"
-                className={`thread task${done ? ' is-done' : ''}${hasRecords ? '' : ' is-empty'}`}
-                disabled={!hasRecords}
-                title={
-                  hasRecords
-                    ? done
-                      ? `${task.name} · ${t('ui.task.done', '已完成')}`
-                      : task.name
-                    : `${task.name} · ${t('ui.task.noRecords', '没有记录可跳')}`
-                }
+                className={`thread task${done ? ' is-done' : ''}${hasRecords ? '' : ' is-unloaded'}${task.id === currentID ? ' is-current' : ''}`}
+                title={title}
                 onClick={() => {
                   onJump(task.id);
                 }}

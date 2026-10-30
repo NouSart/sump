@@ -13,7 +13,8 @@ interface Props {
   approvals: PendingApprovalView[];
   onDecide: (itemId: string, decision: 'allow' | 'deny') => Promise<void>;
   error: string | null;
-  onSend: (text: string) => Promise<void>;
+  /** 发送消息；返回是否被受理（false 时输入框保草稿）。 */
+  onSend: (text: string) => Promise<boolean>;
   onOpenSettings: () => void;
   /** 任务清单：面板按任务分节，节头要用它的名字与状态。 */
   tasks: TaskView[];
@@ -194,20 +195,32 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
     };
   }, []);
 
-  // 新消息落下后把视图带到底部（jsdom 没有 scrollTo，测试环境跳过）。
+  // 新消息落下后跟随到底部——但只在用户本来就在底部时跟随：
+  // 往上翻历史时被 progress 一次次拽回底部，比看不到新消息更糟。
+  // 离开底部后给一个「最新」按钮，想回来自觉点一下。
+  const [stick, setStick] = useState(true);
+  const nearBottom = (list: HTMLOListElement): boolean =>
+    list.scrollHeight - list.scrollTop - list.clientHeight <= 80;
+  const jumpToLatest = (): void => {
+    const list = listRef.current;
+    setStick(true);
+    if (list !== null && typeof list.scrollTo === 'function') list.scrollTo({ top: list.scrollHeight });
+  };
   useEffect(() => {
+    if (!stick) return;
     const list = listRef.current;
     if (list !== null && typeof list.scrollTo === 'function') list.scrollTo({ top: list.scrollHeight });
-  }, [messages.length]);
+  }, [messages.length, stick]);
 
   const submit = async (e: { preventDefault: () => void }): Promise<void> => {
     e.preventDefault();
     const value = text.trim();
     if (value === '' || busy) return;
     setBusy(true);
+    setStick(true);
     try {
-      await onSend(value);
-      setText('');
+      // 只有被受理才清空：没送出去的文字要留给用户重试。
+      if (await onSend(value)) setText('');
     } finally {
       setBusy(false);
     }
@@ -219,7 +232,14 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
       aria-label={t('ui.portal.title', '对话')}
       style={{ '--dock-space': `${String(dockSpace)}px` } as CSSProperties}
     >
-      <ol className="portal-list" ref={listRef}>
+      <ol
+        className="portal-list"
+        ref={listRef}
+        onScroll={(e) => {
+          const next = nearBottom(e.currentTarget);
+          setStick((prev) => (prev === next ? prev : next));
+        }}
+      >
         {messages.length === 0 ? (
           <li className="portal-empty">{t('ui.portal.empty', '发一条消息开始。回复会经 deliver 实时送回来。')}</li>
         ) : (
@@ -228,7 +248,7 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
             const newTask = m.taskId !== undefined && m.taskId !== '' && m.taskId !== prev?.taskId;
             const task = newTask ? tasks.find((x) => x.id === m.taskId) : undefined;
             return (
-              <Fragment key={`${String(m.seq ?? 0)}-${m.at}-${String(i)}`}>
+              <Fragment key={m.id ?? (m.seq !== undefined && m.seq > 0 ? `s${String(m.seq)}` : `i${String(i)}`)}>
                 {newTask && (
                   <li className="task-sep" id={`task-${m.taskId ?? ''}`}>
                     <span className="task-sep-name">{task?.name ?? t('ui.task.label', '任务')}</span>
@@ -245,6 +265,13 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
       </ol>
 
       <div className="dock" ref={dockRef}>
+        {!stick && messages.length > 0 && (
+          <div className="jump-row">
+            <button type="button" className="jump-latest" onClick={jumpToLatest}>
+              {t('ui.portal.latest', '↓ 回到最新')}
+            </button>
+          </div>
+        )}
         {error !== null && (
           <p className="inline-error" role="alert">
             {error}
@@ -273,54 +300,54 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
         )}
 
         <form
-        className="composer"
-        onSubmit={(e) => {
-          void submit(e);
-        }}
-      >
-        <textarea
-          className="composer-input"
-          aria-label={t('ui.portal.input', '消息')}
-          rows={2}
-          value={text}
-          placeholder={
-            connected
-              ? t('ui.portal.placeholder', '说点什么…（Enter 发送，Shift+Enter 换行）')
-              : t('ui.portal.offline', '未连接设置中心')
-          }
-          disabled={!connected}
-          onChange={(e) => {
-            setText(e.target.value);
+          className="composer"
+          onSubmit={(e) => {
+            void submit(e);
           }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              void submit(e);
+        >
+          <textarea
+            className="composer-input"
+            aria-label={t('ui.portal.input', '消息')}
+            rows={2}
+            value={text}
+            placeholder={
+              connected
+                ? t('ui.portal.placeholder', '说点什么…（Enter 发送，Shift+Enter 换行）')
+                : t('ui.portal.offline', '未连接设置中心')
             }
-          }}
-        />
-        <div className="composer-row">
-          <button type="button" className="chip" onClick={onOpenSettings} aria-label={t('ui.settings.title', '设置')} title={t('ui.settings.title', '设置')}>
-            <IconSliders />
-          </button>
-          <button type="button" className="chip" disabled aria-label={t('ui.portal.attach', '添加附件')} title={t('ui.portal.attachSoon', '附件上传（下一步）')}>
-            <IconPaperclip />
-          </button>
-          <button type="button" className="chip" disabled aria-label={t('ui.portal.terminal', '终端')} title={t('ui.portal.terminalSoon', '终端面板（下一步）')}>
-            <IconTerminal />
-          </button>
-          <span className="grow" />
-          <button
-            type="submit"
-            className="chip primary"
-            aria-label={t('ui.portal.send', '发送')}
-            aria-busy={busy}
-            title={t('ui.portal.sendHint', '发送（Enter）')}
-            disabled={!connected || busy || text.trim() === ''}
-          >
-            <IconSend />
-          </button>
-        </div>
+            disabled={!connected}
+            onChange={(e) => {
+              setText(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                void submit(e);
+              }
+            }}
+          />
+          <div className="composer-row">
+            <button type="button" className="chip" onClick={onOpenSettings} aria-label={t('ui.settings.title', '设置')} title={t('ui.settings.title', '设置')}>
+              <IconSliders />
+            </button>
+            <button type="button" className="chip" disabled aria-label={t('ui.portal.attach', '添加附件')} title={t('ui.portal.attachSoon', '附件上传（下一步）')}>
+              <IconPaperclip />
+            </button>
+            <button type="button" className="chip" disabled aria-label={t('ui.portal.terminal', '终端')} title={t('ui.portal.terminalSoon', '终端面板（下一步）')}>
+              <IconTerminal />
+            </button>
+            <span className="grow" />
+            <button
+              type="submit"
+              className="chip primary"
+              aria-label={t('ui.portal.send', '发送')}
+              aria-busy={busy}
+              title={t('ui.portal.sendHint', '发送（Enter）')}
+              disabled={!connected || busy || text.trim() === ''}
+            >
+              <IconSend />
+            </button>
+          </div>
         </form>
       </div>
     </section>
