@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/images/server"
-	"github.com/QAQ-awa-QAQ/sump/images/store"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/images/server"
+	"github.com/NouSart/sump/images/store"
+	"github.com/NouSart/sump/protocol"
 )
 
 // pushConfigure 以设置中心身份向服务地址推送一条 configure（单键）并取回执。

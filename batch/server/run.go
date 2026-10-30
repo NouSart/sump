@@ -12,8 +12,8 @@ import (
 
 	"github.com/vmihailenco/msgpack/v5"
 
-	"github.com/QAQ-awa-QAQ/sump/batch/store"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/batch/store"
+	"github.com/NouSart/sump/protocol"
 )
 
 // queued 是一项待开始的工作（还没被 worker 领走）。

@@ -5,7 +5,7 @@ package compose
 import (
 	"strings"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // MemoryPrefix 是记忆消息的内容前缀（用于识别并替换自己的旧注入）。

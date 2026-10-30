@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/mcp/server"
+	"github.com/NouSart/sump/mcp/server"
 )
 
 func main() {

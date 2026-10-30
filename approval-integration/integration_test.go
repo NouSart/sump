@@ -14,16 +14,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/approval/analysis"
-	"github.com/QAQ-awa-QAQ/sump/approval/engine"
-	"github.com/QAQ-awa-QAQ/sump/approval/policy"
-	approval "github.com/QAQ-awa-QAQ/sump/approval/server"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
-	reasoner "github.com/QAQ-awa-QAQ/sump/reasoner/server"
-	"github.com/QAQ-awa-QAQ/sump/service"
-	center "github.com/QAQ-awa-QAQ/sump/settings-center/server"
-	shell "github.com/QAQ-awa-QAQ/sump/shell/server"
+	"github.com/NouSart/sump/approval/analysis"
+	"github.com/NouSart/sump/approval/engine"
+	"github.com/NouSart/sump/approval/policy"
+	approval "github.com/NouSart/sump/approval/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/reasoner/llm"
+	reasoner "github.com/NouSart/sump/reasoner/server"
+	"github.com/NouSart/sump/service"
+	center "github.com/NouSart/sump/settings-center/server"
+	shell "github.com/NouSart/sump/shell/server"
 )
 
 type report struct {

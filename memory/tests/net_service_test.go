@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/memory/memnet"
-	"github.com/QAQ-awa-QAQ/sump/memory/server"
-	"github.com/QAQ-awa-QAQ/sump/memory/store"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/memory/memnet"
+	"github.com/NouSart/sump/memory/server"
+	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/protocol"
 )
 
 // startMemoryWithNet 起一个带经验网的记忆服务（关掉中心化，让假向量的余弦直白可算）。

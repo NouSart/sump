@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/settings-center/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/settings-center/server"
 )
 
 // TestReportSetting 覆盖：值分两列、覆盖值不被回传改写、下发成功即视为一致、

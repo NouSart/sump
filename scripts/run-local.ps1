@@ -78,29 +78,29 @@ foreach ($a in @($CenterAddr, $MemoryAddr, $EmbeddingAddr, $ImageAddr, $FilesAdd
 Write-Host '[1/9] 构建 settings-center / memory / images / files / qq / shell / approval / batch / timer / mcp / reasoner ...' -ForegroundColor Cyan
 Push-Location $root
 try {
-    go build -o (Join-Path $binDir 'settings-center.exe') 'github.com/QAQ-awa-QAQ/sump/settings-center'
+    go build -o (Join-Path $binDir 'settings-center.exe') 'github.com/NouSart/sump/settings-center'
     if ($LASTEXITCODE -ne 0) { throw 'settings-center 构建失败' }
-    go build -o (Join-Path $binDir 'memory.exe') 'github.com/QAQ-awa-QAQ/sump/memory'
+    go build -o (Join-Path $binDir 'memory.exe') 'github.com/NouSart/sump/memory'
     if ($LASTEXITCODE -ne 0) { throw 'memory 构建失败' }
     # 注：images 输出为 sump-images.exe——本机 McAfee 会把 "images.exe" 这个名字当作可疑样本拦截
-    go build -o (Join-Path $binDir 'sump-images.exe') 'github.com/QAQ-awa-QAQ/sump/images'
+    go build -o (Join-Path $binDir 'sump-images.exe') 'github.com/NouSart/sump/images'
     if ($LASTEXITCODE -ne 0) { throw 'images 构建失败' }
     # 同理输出为 sump-files.exe——避免杀软对通用文件名的误报
-    go build -o (Join-Path $binDir 'sump-files.exe') 'github.com/QAQ-awa-QAQ/sump/files'
+    go build -o (Join-Path $binDir 'sump-files.exe') 'github.com/NouSart/sump/files'
     if ($LASTEXITCODE -ne 0) { throw 'files 构建失败' }
-    go build -o (Join-Path $binDir 'qq.exe') 'github.com/QAQ-awa-QAQ/sump/qq'
+    go build -o (Join-Path $binDir 'qq.exe') 'github.com/NouSart/sump/qq'
     if ($LASTEXITCODE -ne 0) { throw 'qq 构建失败' }
-    go build -o (Join-Path $binDir 'shell.exe') 'github.com/QAQ-awa-QAQ/sump/shell'
+    go build -o (Join-Path $binDir 'shell.exe') 'github.com/NouSart/sump/shell'
     if ($LASTEXITCODE -ne 0) { throw 'shell 构建失败' }
-    go build -o (Join-Path $binDir 'sump-approval.exe') 'github.com/QAQ-awa-QAQ/sump/approval'
+    go build -o (Join-Path $binDir 'sump-approval.exe') 'github.com/NouSart/sump/approval'
     if ($LASTEXITCODE -ne 0) { throw 'approval 构建失败' }
-    go build -o (Join-Path $binDir 'batch.exe') 'github.com/QAQ-awa-QAQ/sump/batch'
+    go build -o (Join-Path $binDir 'batch.exe') 'github.com/NouSart/sump/batch'
     if ($LASTEXITCODE -ne 0) { throw 'batch 构建失败' }
-    go build -o (Join-Path $binDir 'timer.exe') 'github.com/QAQ-awa-QAQ/sump/timer'
+    go build -o (Join-Path $binDir 'timer.exe') 'github.com/NouSart/sump/timer'
     if ($LASTEXITCODE -ne 0) { throw 'timer 构建失败' }
-    go build -o (Join-Path $binDir 'sump-mcp.exe') 'github.com/QAQ-awa-QAQ/sump/mcp'
+    go build -o (Join-Path $binDir 'sump-mcp.exe') 'github.com/NouSart/sump/mcp'
     if ($LASTEXITCODE -ne 0) { throw 'mcp 构建失败' }
-    go build -o (Join-Path $binDir 'reasoner.exe') 'github.com/QAQ-awa-QAQ/sump/reasoner'
+    go build -o (Join-Path $binDir 'reasoner.exe') 'github.com/NouSart/sump/reasoner'
     if ($LASTEXITCODE -ne 0) { throw 'reasoner 构建失败' }
 } finally {
     Pop-Location

@@ -21,7 +21,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // ---------- stub NapCat（模拟正向 WS 服务端） ----------
@@ -154,11 +154,11 @@ func qqPrivateEvent(uid int64, text, imageURL string) map[string]any {
 
 // TestQQFullChainE2E 主人私聊（图+文）→ 记忆/取图/推理 → deliver → send_msg 回发。
 func TestQQFullChainE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	memBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/memory")
-	imgBin := buildServiceNamed(t, "github.com/QAQ-awa-QAQ/sump/images", "sump-images")
-	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/reasoner")
-	qqBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/qq")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	memBin := buildService(t, "github.com/NouSart/sump/memory")
+	imgBin := buildServiceNamed(t, "github.com/NouSart/sump/images", "sump-images")
+	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
+	qqBin := buildService(t, "github.com/NouSart/sump/qq")
 
 	fakeLLM := startFakeDeepSeek(t, false) // 纯文本模式：一次调用即回复
 	nc := startNapCatStub(t)

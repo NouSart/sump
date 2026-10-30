@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/memory/store"
+	"github.com/NouSart/sump/memory/store"
 )
 
 func openStore(t *testing.T) *store.Store {

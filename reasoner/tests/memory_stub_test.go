@@ -13,7 +13,7 @@ import (
 
 	"github.com/vmihailenco/msgpack/v5"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 type stubMemory struct {

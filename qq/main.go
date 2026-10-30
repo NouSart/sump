@@ -9,7 +9,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/QAQ-awa-QAQ/sump/qq/server"
+	"github.com/NouSart/sump/qq/server"
 )
 
 func main() {

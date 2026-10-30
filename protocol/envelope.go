@@ -2,7 +2,7 @@ package protocol
 
 import "github.com/vmihailenco/msgpack/v5"
 
-// Envelope 是所有控制消息的共同外壳（见 DESIGN.md §3 协议格式）。
+// Envelope 是所有控制消息的共同外壳（见 docs/concepts/protocol.md 的「传输、帧与信封」）。
 type Envelope struct {
 	V       int                `msgpack:"v"`                 // 协议版本
 	ID      string             `msgpack:"id"`                // 消息 id（请求 → 响应配对）

@@ -1,9 +1,9 @@
-module github.com/QAQ-awa-QAQ/sump/tests
+module github.com/NouSart/sump/tests
 
 go 1.26
 
 require (
-	github.com/QAQ-awa-QAQ/sump/protocol v0.0.0
+	github.com/NouSart/sump/protocol v0.0.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
@@ -22,4 +22,4 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 )
 
-replace github.com/QAQ-awa-QAQ/sump/protocol => ../protocol
+replace github.com/NouSart/sump/protocol => ../protocol

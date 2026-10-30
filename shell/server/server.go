@@ -29,8 +29,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/service"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/service"
 )
 
 // 默认值（引导值；可被设置中心的覆盖值改写）。

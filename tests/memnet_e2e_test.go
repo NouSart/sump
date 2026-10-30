@@ -17,12 +17,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 func TestMemnetDataFlowE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	memBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/memory")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	memBin := buildService(t, "github.com/NouSart/sump/memory")
 
 	scPort := freePort(t)
 	memPort := freePort(t)

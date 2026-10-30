@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/memory/memnet"
+	"github.com/NouSart/sump/memory/memnet"
 	_ "modernc.org/sqlite"
 )
 

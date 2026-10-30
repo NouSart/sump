@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // makePptx 在内存中构造一个最小 .pptx，包含若干幻灯片，每页若干段落。

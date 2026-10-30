@@ -11,7 +11,7 @@ import (
 
 	"github.com/xuri/excelize/v2"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // tinyDocx 造一个最小可用的 .docx（正文两段）。

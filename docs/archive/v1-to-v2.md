@@ -1,0 +1,96 @@
+# 档案：v1 → v2 的重构设计（2026-10）
+
+> **这是一份历史文稿**，保留当时的目标、候选服务清单与路线，用来说明「为什么长成现在这样」。
+> **现状请读** [../concepts/architecture.md](../concepts/architecture.md)｜**最后校验**：2026-10-30（归档时未改原文语义）
+
+## 1. 背景：v1 走了哪些弯路
+
+- **根本架构问题**：v1 从根本架构上就有问题，导致严重竞态（当时写的「具体场景待补充」，一直没补）。
+- **v2 对策**：服务之间彻底隔离——独立进程、独立运行、独立数据库，用网络通信取代进程内共享状态。
+
+## 2. 当时的设计目标
+
+**核心理念：模仿互联网。** v2 是一个「服务的互联网」——服务之间不共享任何进程内状态，只在网络上互相访问。
+
+- 服务互相独立、互相访问：每个服务是独立进程，有地址，可被按地址访问。
+- WebSocket 通信：服务之间一切往来都走 WS 消息。
+- 语言不统一：各服务自由选择语言（当时分配：Go 扛全部逻辑，embedding 用 Python，前端 TS）。
+- 独立数据库、独立运行：可单独部署、单独重启。
+- 智能体循环可自由组装：循环不驻留任何服务内部，轮次之间以 LLM 服务的自我跳转衔接；任务窗口内的上下文与在跑工具由内存黑板持有。
+
+> 原文的「非目标」一栏当时没写（`（待补充）`），归档时保持原样。
+
+## 3. 当时的服务清单草案（含未采纳项）
+
+这是从 v1 模块映射出的候选服务表。**只有「现状」一列是后补的**：
+
+| 候选服务 | 语言 | 当时的职责描述 | 现状 |
+| --- | --- | --- | --- |
+| reasoner | Go | LLM 单步推理与跳转决策（轮次 = 事件驱动 + 自跳衔接；任务窗口黑板） | 已实现 |
+| settings-center | Go | 服务注册 · 全局信息 · 设置 · 调度 / 工作流 | 已实现 |
+| sessions | Go | 会话历史与上下文持久化 | 并入 memory |
+| memory | Go | 会话历史 + 上下文组装（recall / resume / store，完全启动链） | 已实现 |
+| embedding | Python | 文本 → 向量（onnxruntime + tokenizers） | 已实现 |
+| security | Go | 规则 + LLM 分析 + 裁决；挂起 / 超时 | 落到 approval（第一层规则已实现，LLM 分析未做） |
+| tools | Go | 工具注册与执行 | 拆进 shell / approval，不再单设 |
+| qq | Go | NapCat / OneBot 11 正向 WS；私聊 → 任务链 | 已实现（仅私聊） |
+| images | Go | 图片保存 + 按需转 base64 | 已实现 |
+| files | Go | 文件保存 / 取回 / 读文本 / 单元格级 Excel 编辑 | 已实现（另加 Word / PPT 编辑） |
+| shell | Go | 受理即回执的命令执行（远程审批 + 并行 / 队列 / 超时终止 / 输出截断） | 已实现（最终做成无队列 + 防爆熔断） |
+| approval | Go | PowerShell AST + 不可变规则快照 + 执行摘要绑定 + fail-closed | 已实现（第一层） |
+| web | Go | 浏览器 REST / SSE 接入（不带前端） | 由 frontend 一个服务承担 |
+| frontend | TS | 设置中心可视化面板 → 后来扩展为「用户交互门户」 | 已实现 v2 |
+| assets | Go | 文件资产库、索引、检索 | 未采纳（files 够用） |
+| skills | — | 技能创建 / 加载 | 并入 reasoner |
+| smart-home | Go | 家居控制后端 | 未采纳（在 [TODO](../../TODO.md) 的方向里） |
+| search | 无服务 | 搜索接入（searxng 独立容器） | 未采纳（进 TODO） |
+
+**来自 v1 的模块映射（原文，供考古）**：
+
+- reasoner ← `agent.py`、`core/`（planner / executor）、`core/models/`、`evaluation/`
+- settings-center ← `settings.py`、`config.py`
+- sessions ← `api/session_manager.py`、`core/context.py`
+- memory ← `memory/`（除 embedder）、记忆巩固工具、`core/sleep.py`
+- embedding ← `memory/embedder.py`（v1，fastembed）
+- security ← `security/`
+- tools ← `tools/registry.py`、`tools/builtin/`
+- qq ← `plugins/builtin/napcat_plugin.py`
+- images ← （v1 图片直通部分）
+- files ← `assets.py`（存取部分）
+- shell ← `tools/builtin/`（shell 部分）
+- approval ← 新服务
+- web ← `api/`
+- frontend ← `frontend/`
+- assets ← `assets.py`
+- skills ← `skills/`
+- smart-home ← `smart_home/`
+- search ← `tools/mcp/` + searxng
+
+> 当时的决策注记：全 Go 的理由是并发模型 / 内存 / 长连接吞吐全面占优；embedding 保留 Python 因 ONNX 生态。
+
+## 4. 当时的实施路线与结果
+
+| 批次 | 原计划 | 结果 |
+| --- | --- | --- |
+| 第一批 | reasoner + 设置中心（纯后端，不带前端） | 已完成 |
+| 第二批 | memory：recall / resume / store 与完全启动链 | 已完成 |
+| 第三批 | qq + images（第一个真实入口） | 已完成 |
+
+实际后续又走了 approval / shell / timer / batch / mcp / frontend v2 等批次——这些不在当时的计划里，属于边做边冒出来的真实需求。
+
+## 5. 当时的「从 1 的取舍清单」是空的
+
+原 §5 只有表头（模块 / 保留 / 重写 / 丢弃 / 理由），从未填写。归档时**没有补写**：那是需要逐模块考古的活，写了也是事后编造。想知道现在保留了 v1 的什么，看代码和测试。
+
+## 6. 当时的待决问题（与现状）
+
+| 当时的待决 | 现在 |
+| --- | --- |
+| 跳转的超时与失败、连接保活的自适应阈值与公式 | 失败策略已定（拨号失败重试、送达后不重试）；保活阈值仍未定 |
+| 记忆缺席 / 失败：硬门，无重试 | 仍是硬门（链停在原地、日志可见） |
+| qq 群聊（@ 必回 / 自主插话）、审批推送与数字裁决 | 未做，在 [TODO](../../TODO.md) |
+| 图片清理策略 / 去重 / 主动发表情包 | 未做 |
+| 文件 PDF 抽取、清理策略、主动发文件 | 未做（Excel / Word 已实现） |
+| 设置键命名统一（`read_max_chars` 等裸键） | 未改；改名属破坏性变更，需按命名基线登记 |
+| 设置 / 管理类动作是否暴露给 LLM | 已定：`provides` 显式 `tool: true` 才暴露 |
+| 链级失败策略（幂等键、失败上报 boss） | 仍未做 |

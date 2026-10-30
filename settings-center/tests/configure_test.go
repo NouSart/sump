@@ -16,8 +16,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/settings-center/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/settings-center/server"
 )
 
 // stubService 是接收 configure 的最小服务替身：一个 WS 服务端。

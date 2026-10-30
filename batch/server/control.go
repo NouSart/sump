@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // actionControl 暂停 / 恢复 / 停止。
 //
-// 语义（见 batch/DESIGN.md §3.5）：
+// 语义（见 batch/README.md 的「暂停 ≠ 停止」）：
 //   - pause  可恢复：未开始的项保持 pending，在飞的项跑完；
 //   - resume 从断点继续，已完成的项不重跑；
 //   - cancel 终态：未开始的项转 skipped，在飞的项跑完。

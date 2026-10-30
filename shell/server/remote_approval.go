@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // approveJob 保留原注入接缝；生产网络裁决使用公共协议，不导入 approval 服务实现。

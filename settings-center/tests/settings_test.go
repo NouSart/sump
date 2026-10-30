@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/settings-center/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/settings-center/server"
 )
 
 // registerWithSettings 注册一个声明了设置项的服务。

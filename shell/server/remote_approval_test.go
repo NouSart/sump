@@ -1,7 +1,7 @@
 package server
 
 import (
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 	"testing"
 	"time"
 )

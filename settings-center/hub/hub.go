@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // Conn 是 hub 对一条已连接服务的抽象。

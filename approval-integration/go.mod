@@ -1,14 +1,14 @@
-module github.com/QAQ-awa-QAQ/sump/approval-integration
+module github.com/NouSart/sump/approval-integration
 
 go 1.26.0
 
 require (
-	github.com/QAQ-awa-QAQ/sump/approval v0.0.0
-	github.com/QAQ-awa-QAQ/sump/protocol v0.0.0
-	github.com/QAQ-awa-QAQ/sump/reasoner v0.0.0
-	github.com/QAQ-awa-QAQ/sump/service v0.0.0
-	github.com/QAQ-awa-QAQ/sump/settings-center v0.0.0
-	github.com/QAQ-awa-QAQ/sump/shell v0.0.0
+	github.com/NouSart/sump/approval v0.0.0
+	github.com/NouSart/sump/protocol v0.0.0
+	github.com/NouSart/sump/reasoner v0.0.0
+	github.com/NouSart/sump/service v0.0.0
+	github.com/NouSart/sump/settings-center v0.0.0
+	github.com/NouSart/sump/shell v0.0.0
 )
 
 require (
@@ -19,14 +19,14 @@ require (
 	golang.org/x/text v0.43.0 // indirect
 )
 
-replace github.com/QAQ-awa-QAQ/sump/approval => ../approval
+replace github.com/NouSart/sump/approval => ../approval
 
-replace github.com/QAQ-awa-QAQ/sump/protocol => ../protocol
+replace github.com/NouSart/sump/protocol => ../protocol
 
-replace github.com/QAQ-awa-QAQ/sump/service => ../service
+replace github.com/NouSart/sump/service => ../service
 
-replace github.com/QAQ-awa-QAQ/sump/settings-center => ../settings-center
+replace github.com/NouSart/sump/settings-center => ../settings-center
 
-replace github.com/QAQ-awa-QAQ/sump/shell => ../shell
+replace github.com/NouSart/sump/shell => ../shell
 
-replace github.com/QAQ-awa-QAQ/sump/reasoner => ../reasoner
+replace github.com/NouSart/sump/reasoner => ../reasoner

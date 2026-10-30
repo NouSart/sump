@@ -14,12 +14,12 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/approval/analysis"
-	"github.com/QAQ-awa-QAQ/sump/approval/engine"
-	"github.com/QAQ-awa-QAQ/sump/approval/policy"
-	"github.com/QAQ-awa-QAQ/sump/approval/server"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/service"
+	"github.com/NouSart/sump/approval/analysis"
+	"github.com/NouSart/sump/approval/engine"
+	"github.com/NouSart/sump/approval/policy"
+	"github.com/NouSart/sump/approval/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/service"
 )
 
 func main() {

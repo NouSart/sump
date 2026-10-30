@@ -2,7 +2,7 @@ package server
 
 // 用户停手（user_hold）：入口服务把"用户在界面上暂停/停止了任务"这件事立刻告诉推理侧。
 //
-// 三档语义（见 batch/DESIGN.md §3.10）：
+// 三档语义（见 batch/README.md 的「停手三级」）：
 //   - primary  ：全部操作且碰到非常驻任务 → 停手，只等用户下一条消息；
 //   - secondary：单个/部分操作且碰到非常驻任务 → 停手，用户不说话时等其他非常驻任务
 //     全部结束后兜底唤醒；
@@ -15,8 +15,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/reasoner/llm"
 )
 
 // maxPendingNotes 是随消息一起送出的附注上限（超出保留最新的）。

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // actionStatus 查单个任务的进度（内存优先：内存里有在飞的实时数）。

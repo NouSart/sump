@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 func TestNewIDConcurrentUnique(t *testing.T) {

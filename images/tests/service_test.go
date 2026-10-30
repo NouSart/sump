@@ -18,9 +18,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/QAQ-awa-QAQ/sump/images/server"
-	"github.com/QAQ-awa-QAQ/sump/images/store"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/images/server"
+	"github.com/NouSart/sump/images/store"
+	"github.com/NouSart/sump/protocol"
 )
 
 // ---------- 设置中心替身（精简） ----------

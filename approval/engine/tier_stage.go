@@ -3,7 +3,7 @@ package engine
 import (
 	"strings"
 
-	"github.com/QAQ-awa-QAQ/sump/approval/analysis"
+	"github.com/NouSart/sump/approval/analysis"
 )
 
 // checkMediumStage 判"中"档的一段一级：不碰明确危险动作就放行。

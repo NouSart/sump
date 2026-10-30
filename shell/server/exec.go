@@ -17,7 +17,7 @@ import (
 
 	"golang.org/x/text/encoding/simplifiedchinese"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // waitDelay 是一次命令被终止后，Wait 等待其 I/O 收尾的最长时间。

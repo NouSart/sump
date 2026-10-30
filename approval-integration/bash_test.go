@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/approval/analysis"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	shell "github.com/QAQ-awa-QAQ/sump/shell/server"
+	"github.com/NouSart/sump/approval/analysis"
+	"github.com/NouSart/sump/protocol"
+	shell "github.com/NouSart/sump/shell/server"
 )
 
 // findPOSIXShell 找一个可用的 POSIX shell；没有就跳过。

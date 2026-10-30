@@ -1,5 +1,9 @@
 # MCP 服务
 
+> **读者**：要把 SUMP 的能力暴露给外部 MCP 应用、或把外部 MCP 工具接进 SUMP 的人 ｜ **读完能做**：配好能力映射、跑通双向调用与异步补报 ｜ **最后校验**：2026-10-30
+>
+> 远程入口 / 证书 / 接入检查见 [docs/guides/mcp-connect.md](../docs/guides/mcp-connect.md)；验收范围见 [docs/archive/mcp-acceptance-2026-10.md](../docs/archive/mcp-acceptance-2026-10.md)。
+
 MCP 是一个独立的 SUMP 服务，提供双向协议翻译。设置中心只发现 `mcp` 本身；外部工具通过显式绑定导入，导入和对外发布相互独立。
 
 支持同步与异步双向调用、HTTPS 远程接入和只读契约检查。协议基线是 MCP `2026-07-28` Stateless HTTP，使用官方 Go SDK `v1.8.0`。异步导入使用原生受理回执与补报；异步导出使用主体私有的临时观察资源。目前不提供 MCP Tasks、stdio、OAuth 或远程 shell。
@@ -199,39 +203,9 @@ final = true
 - 工具拒绝、目标离线和业务错误反馈给调用方；配置损坏、协议适配失败和本服务监听故障使用原生 `Report`。同一个配置错误不每秒重复上报。
 - 认证轮换不会强制回滚在途工作；HTTP 取消、服务退出也不等于远端执行已取消。不提供持久队列或 exactly-once 执行保证。
 
-## 远程连接准备
+## 远程入口、证书与接入检查
 
-### 入口 HTTPS
-
-证书使用 PEM 格式，证书的 SAN（允许使用的主机名/IP）必须包含客户端实际访问的地址。证书链与私钥成对提供；启动时读取，替换后重启。应用不安装系统证书、不生成防火墙规则。
-
-```powershell
-go run . -addr 127.0.0.1:9902 -center ws://127.0.0.1:9000/ws -http-addr 192.168.100.10:9903 -allow-remote -allowed-hosts 192.168.100.10:9903 -tls-cert ../private/server.pem -tls-key ../private/server-key.pem -config ../data/mcp.json -secret-file ../data/mcp-secret.json
-```
-
-上面的 IP 仅作示例，需换成实际受控网络地址。先通过本机已有设置面板为 MCP 设置 `http.token`，再以远程参数重启。内部 WebSocket 和设置中心仍绑定回环；跨设备流量只访问 MCP HTTPS 入口。私钥只保留在服务器上，勿提交或发送给客户端。
-
-### 外连证书信任
-
-每个 remote 可以增加 `"ca_file":"../private/remote-ca.pem"`。文件路径以进程工作目录为准，必须是 HTTPS。配置后该目标只使用文件中的信任根；未配置时使用系统默认根。私有 CA 不加入系统证书库，也不会被其他 remote 继承。连接仍检查有效期与主机名，不提供跳过验证开关。证书信任、remote 配置与 imports 均需重启生效。
-
-### 不执行工具的接入检查
-
-```powershell
-go run . -check-remotes -config ../data/mcp.json -secret-file ../data/mcp-secret.json -call-timeout 15s
-```
-
-此模式不启动原生服务、不注册中心、不监听端口；会向显式配置的远端发出发现/目录读取请求，核对认证、当前协议版本以及选定工具的输入输出 Schema，**不会发送 `tools/call`**。完整检查共用 `-call-timeout` 时间预算，最多四项同时检查，按 action 排序输出 JSON。
-
-退出码 0 表示所有绑定核对成功；1 表示至少一项失败或本地配置无法读取。没有 imports 会报错，而非误报通过。输出只含 remote/action/tool、状态和固定错误信息，不输出凭据。部分 TLS/网络失败统一归为连接失败，需结合证书和地址排查；不声称所有网络故障都能准确归因。
-
-检查通过只说明当时可连接且契约匹配，不能证明业务执行权限、业务结果或后续网络稳定。正常调用时仍重新核对权限和契约。不要在检查失败后自动重试有副作用的业务调用。
-
-## 运行模拟
-
-用户在另一个 MCP 应用中读取一个文件：应用以文件 ID 调用 `files__read`；MCP 核对导出和当前名册，直接请求 files；files 读取自身数据后回包；MCP 翻译成文本和结构化结果给原应用。设置中心不转发文件正文。
-
-SUMP 调用 `lookup`：MCP 按绑定找到 `catalog/lookup`，使用该目标凭据核对契约并调用。假设另一个独立调用先完成，它会先回给自己的请求，不等待较慢的调用完成。工具是否需要执行审批由执行端负责，MCP 不绕过其权限控制。
+非回环监听、TLS、私有 CA、`-check-remotes` 接入检查与两个运行场景见 [docs/guides/mcp-connect.md](../docs/guides/mcp-connect.md)。**未设 `http.token` 时拒绝所有外部请求。**
 
 ## 开发核验
 
@@ -243,6 +217,6 @@ cd ../tests
 go test . -run '^TestMCP(Bidirectional|RemoteTLSPreparation)$' -count=1 -timeout 180s
 ```
 
-单元测试包含独立 raw HTTP、官方 SDK 客户端、认证撤销、配置、读取限额、并发隔离、Schema 漂移、超时不重试、早到/迟到补报、私有资源、取消与退出。集成测试启动真实 settings-center/files/timer/mcp 进程，用独立进程的 HTTP 外部 fixture 验证同步和异步导入，并独立构造 JSON-RPC 验证文件导出、计时结果和取消。慢调用用屏障保持阻塞，先验证快调用完成，再放行慢调用；这不代表高负载性能基准。Reasoner 另有真实 WebSocket 工具在回执前补报的验证。HTTPS 集成测试在本机启动真实 TLS 服务进程并使用临时私有 CA，检查只读预检、双向调用和异步结果。CI 为 MCP 配置测试、静态检查和竞态检查，是否通过以当前提交的运行结果为准。完整范围与限制见 [验收契约](../MCP-ACCEPTANCE.md)。
+单元测试包含独立 raw HTTP、官方 SDK 客户端、认证撤销、配置、读取限额、并发隔离、Schema 漂移、超时不重试、早到/迟到补报、私有资源、取消与退出。集成测试启动真实 settings-center/files/timer/mcp 进程，用独立进程的 HTTP 外部 fixture 验证同步和异步导入，并独立构造 JSON-RPC 验证文件导出、计时结果和取消。慢调用用屏障保持阻塞，先验证快调用完成，再放行慢调用；这不代表高负载性能基准。Reasoner 另有真实 WebSocket 工具在回执前补报的验证。HTTPS 集成测试在本机启动真实 TLS 服务进程并使用临时私有 CA，检查只读预检、双向调用和异步结果。CI 为 MCP 配置测试、静态检查和竞态检查，是否通过以当前提交的运行结果为准。完整范围与限制见 [验收契约](../docs/archive/mcp-acceptance-2026-10.md)。
 
 参考：[MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28)、[官方 Go SDK v1.8.0](https://github.com/modelcontextprotocol/go-sdk/tree/v1.8.0)、[JSON Schema 库](https://github.com/google/jsonschema-go)。具体依赖锁定在 `go.mod` / `go.sum`；保留各依赖原许可证。

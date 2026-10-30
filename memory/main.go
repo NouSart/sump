@@ -11,10 +11,10 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/memory/longterm"
-	"github.com/QAQ-awa-QAQ/sump/memory/memnet"
-	"github.com/QAQ-awa-QAQ/sump/memory/server"
-	"github.com/QAQ-awa-QAQ/sump/memory/store"
+	"github.com/NouSart/sump/memory/longterm"
+	"github.com/NouSart/sump/memory/memnet"
+	"github.com/NouSart/sump/memory/server"
+	"github.com/NouSart/sump/memory/store"
 )
 
 func main() {

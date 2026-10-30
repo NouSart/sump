@@ -1,6 +1,6 @@
 # 参与开发
 
-感谢愿意一起做 SUMP！本文是操作版指南——**规范本身在 [SPEC.md](./SPEC.md)，动手前请先通读**（一页，不多）。
+感谢愿意一起做 SUMP！本文是操作版指南。**动手前先读两份**：[AGENTS.md](./AGENTS.md)（红线，一页）与 [docs/concepts/protocol.md](./docs/concepts/protocol.md)（协议契约）。写新服务看 [docs/guides/add-a-service.md](./docs/guides/add-a-service.md)，跑起来看 [docs/quickstart.md](./docs/quickstart.md)。
 
 ## 你会得到什么
 
@@ -17,30 +17,9 @@
 
 ## 快速开始
 
-```powershell
-git clone https://github.com/QAQ-awa-QAQ/sump.git
-cd sump
+克隆、起全栈、跑测试的完整步骤见 [docs/quickstart.md](./docs/quickstart.md)。
 
-# 跑某一个模块的测试（推荐先跑一遍确认环境正常）
-cd protocol; go test ./... -count=1; cd ..
-# 模块共 15 个（Go）：protocol / service / settings-center / reasoner / memory / images / files / qq / shell / timer / batch / tests / approval / approval-integration / mcp；另有 embedding（Python，见下）
-
-# 前端服务（TS，Node ≥ 22.18）：类型检查 + 构建 + 测试
-cd frontend; npm install; npm test; cd ..
-
-# embedding 服务（Python ≥ 3.12）：建环境 + 测试（CI 同款：python -m pytest tests -q）
-cd embedding
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[onnx,dev]"   # Linux/macOS: .venv/bin/python
-.\.venv\Scripts\python.exe -m pytest tests -q
-cd ..
-
-# 跨服务真进程端到端（约 20 秒）
-cd tests; go test ./... -count=1; cd ..
-
-# 本地启动全部服务（含设置面板 http://127.0.0.1:9501/）
-.\scripts\run-local.ps1
-```
+单模块测试的通用形式：`cd <模块>; go test ./... -count=1`。Go 模块 15 个：protocol / service / settings-center / reasoner / memory / images / files / qq / shell / timer / batch / tests / approval / approval-integration / mcp；另有 embedding（Python，`cd embedding; python -m pytest tests -q`）与 frontend（TS，`cd frontend; npm test`）。
 
 测试**不依赖外网**（LLM 用假客户端；真模型冒烟测试仅在显式开关下跑）。
 
@@ -60,9 +39,7 @@ CI（GitHub Actions）会替你跑全部内容；本地先过一遍能省一轮�
 
 ## 三条硬规则（架构红线）
 
-1. **扩展不需要修改任何其他服务**：新增服务、替换服务，都不允许要求改动别人。
-2. **唯一共享物是协议**：跨服务不共享进程内状态；不 import 其他服务的包；不直接读写其他服务的库或文件。
-3. **能力可替换**：只要服务名与动作语义一致，任何语言都能顶替。
+见 [AGENTS.md](./AGENTS.md)：① 扩展不需要修改任何其他服务；② 唯一共享物是协议；③ 能力可替换。
 
 > 判断一个改动是否合规的最快问法：**它需要别的服务配合修改吗？** 需要，就是设计走偏了。
 

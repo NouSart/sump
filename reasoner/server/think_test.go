@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/reasoner/llm"
 )
 
 // TestActionThink 验证单步推理动作：一次补全、原样回文本、上限生效、空提示词拒绝。

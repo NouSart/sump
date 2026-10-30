@@ -25,7 +25,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // pythonExe 选择运行 embedding 服务的解释器：仓库内 venv 优先（本地开发），
@@ -164,8 +164,8 @@ func writeWS(ws *websocket.Conn, env protocol.Envelope) {
 
 // TestSemanticRecallCrossLanguageE2E：Go ↔ Python 跨语言语义召回全链（含热注册与懒补齐）。
 func TestSemanticRecallCrossLanguageE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	memBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/memory")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	memBin := buildService(t, "github.com/NouSart/sump/memory")
 
 	dir := t.TempDir()
 	scPort := freePort(t)

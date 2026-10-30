@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // reportProbe 是调用方替身：注册进中心，收 shell 的补报（report_result）。
@@ -122,8 +122,8 @@ func (p *reportProbe) waitReport(t *testing.T, phase string, timeout time.Durati
 
 // TestShellHotPathE2E：跨进程走通“受理即回执 + 补报”。
 func TestShellHotPathE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	shBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/shell")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	shBin := buildService(t, "github.com/NouSart/sump/shell")
 
 	scPort := freePort(t)
 	shPort := freePort(t)

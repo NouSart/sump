@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // All keys and trust roots are test-local. Nothing is installed in Windows or

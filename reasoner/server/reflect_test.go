@@ -6,7 +6,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
+	"github.com/NouSart/sump/reasoner/llm"
 )
 
 // TestTranscriptSerializesRoles 验证流水把四种东西分开渲染：

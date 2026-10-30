@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/settings-center/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/settings-center/server"
 )
 
 // waitConfigure 等待某个键被下发为指定值（超时失败）。

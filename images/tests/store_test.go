@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/images/store"
+	"github.com/NouSart/sump/images/store"
 )
 
 // genPNG 程序化生成一张 2x2 PNG（测试素材，避免外部文件依赖）。

@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // startFrontendProc 用 startProc 启动 frontend 服务（node dist/server/index.js）：
@@ -121,9 +121,9 @@ func waitSSE(t *testing.T, ch <-chan sseEvent, timeout time.Duration, what strin
 
 // TestPortalChainE2E：门户全链路回程——POST 受理回执 + SSE 收到与假 LLM 固定答复一致的 deliver。
 func TestPortalChainE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/reasoner")
-	memBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/memory")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
+	memBin := buildService(t, "github.com/NouSart/sump/memory")
 	fakeLLM := startFakeDeepSeek(t, false) // 每轮直接回文本，不开工具轮
 
 	scPort := freePort(t)
@@ -236,9 +236,9 @@ func TestPortalChainE2E(t *testing.T) {
 // TestDeliveryFailureNoticeE2E：boss 认错（不在名册）时，补报必须能看见——
 // 入口方（信封 from）在自己的 WS 端点上收到一条以 `[交付失败]` 开头的 deliver。
 func TestDeliveryFailureNoticeE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/reasoner")
-	memBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/memory")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
+	memBin := buildService(t, "github.com/NouSart/sump/memory")
 	fakeLLM := startFakeDeepSeek(t, false)
 
 	scPort := freePort(t)

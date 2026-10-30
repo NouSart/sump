@@ -15,8 +15,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/reasoner/server"
 )
 
 // ---------- 设置中心的最小替身 ----------

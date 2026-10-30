@@ -15,8 +15,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/settings-center/hub"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/settings-center/hub"
 )
 
 // 设置中心自身的设置项（一切皆服务：中心也声明并应用自己的设置；本地应用，不经网络）。

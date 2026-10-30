@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/reasoner/llm"
+	"github.com/NouSart/sump/reasoner/server"
 )
 
 // stubImages 是图片服务替身：fetch 请求 → 返回预置 base64。

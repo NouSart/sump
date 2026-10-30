@@ -13,7 +13,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // Settings 保管各服务的可设置项与覆盖值。

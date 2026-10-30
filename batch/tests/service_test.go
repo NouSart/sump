@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/batch/server"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/batch/server"
+	"github.com/NouSart/sump/protocol"
 )
 
 // TestRunAcksImmediatelyWithItemID：受理即回执，句柄字段必须是 item_id（reasoner 只认它）。

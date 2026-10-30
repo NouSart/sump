@@ -19,11 +19,11 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/QAQ-awa-QAQ/sump/memory/compose"
-	"github.com/QAQ-awa-QAQ/sump/memory/longterm"
-	"github.com/QAQ-awa-QAQ/sump/memory/server"
-	"github.com/QAQ-awa-QAQ/sump/memory/store"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/memory/compose"
+	"github.com/NouSart/sump/memory/longterm"
+	"github.com/NouSart/sump/memory/server"
+	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/protocol"
 )
 
 // ---------- 设置中心替身 ----------
