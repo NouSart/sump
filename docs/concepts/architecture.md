@@ -123,7 +123,7 @@ sequenceDiagram
 
 ### 4.4 通信与性能约定
 
-- 服务间 WS **不做纯长连接**：默认短连接、空闲即断；访问频繁则连接保留时长上涨，冷下来回落——随实际访问频率自适应增减（阈值与公式待定）。
+- 服务间 WS **不做纯长连接**：默认短连接、空闲即断；访问频繁则连接保留时长上涨，冷下来回落——随实际访问频率自适应增减（阈值与公式待定）。每个服务也可自定义自己的默认连接时长，作为自己的设置项下发——**这部分尚未实现**。
 - **流式直通**：LLM token 流从 reasoner 一路透传到 QQ / 浏览器，中间不攒批。
 - **并行跳转**：一轮内多个跳转并行发出（goroutine），汇合后继续推理。
 
@@ -133,7 +133,7 @@ sequenceDiagram
 
 | 服务 | 落点 | 内容 |
 | --- | --- | --- |
-| memory | `data/memory.db` | `messages`（对话与轨迹）、`tasks`、`conversations`、经验网表 |
+| memory | `data/memory.db` | `messages`（对话与轨迹）、`memories`（长期记忆）、`tasks`、`conversations`、经验网表 |
 | images | `data/images.db` + `data/images/` | 元数据 + 图片文件 |
 | files | `data/files.db` + `data/files/` | 元数据（含 `filename`）+ 文件 |
 | settings-center | `data/settings.json` | 设置覆盖值（预设值由各服务声明，不落盘） |

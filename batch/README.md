@@ -33,15 +33,42 @@ batch 把扇出与收敛都收回服务侧：**一次调用扇出，一条汇总
 | `run` | 发起一批（受理即回执） |
 | `status` | 单个任务进度 |
 | `result` | 明细分页（只存摘要，完整结果要就再调一次目标动作） |
-| `list` | 任务队列（模型与前端共用） |
-| `control` | 暂停 / 恢复 / 停止（单个或全部） |
+| `list` | 任务队列（模型与前端共用同一条队列，但**拉取不唤醒模型**） |
+| `control` | 暂停 / 恢复 / 停止（`op`：`pause` / `resume` / `cancel`；`scope`：空 / `one`（默认，必带 `item_id`）/ `all`） |
+
+### 发起参数（`run` 的输入）
+
+| 字段 | 含义 |
+|---|---|
+| `service` / `action` | 目标服务与动作（必须显式声明 `Batchable`） |
+| `items` | `[{input, key?, tag?}]`；`key: true` 标记关键项 |
+| `concurrency` | 0 = 服务默认；上限 `max_concurrency` |
+| `on_error` | 空 / `continue`（默认）= 单项失败只记该项；`stop` = 首项失败后未开始的项转 `skipped` |
+| `timeout_ms` | 单项超时；0 = 默认 |
+| `kind` | 空 / `once`（默认）/ `resident`（常驻，见下） |
+| `wake` | `{mode: all\|key}`；`key` 要求至少一项标了 `key` |
+
+### 错误码
+
+| 码 | 何时 |
+|---|---|
+| `BATCH_ITEMS` | `items` 为空，或超过 `max_items` |
+| `BATCH_TARGET_UNKNOWN` | 目标服务 / 动作不在名册 |
+| `BATCH_NESTED` | 目标动作不允许再套 batch |
+| `BATCH_NOT_BATCHABLE` | 目标动作没声明 `Batchable` |
+| `BATCH_CONCURRENCY` | `concurrency` 不在 `1..max_concurrency` |
+| `BATCH_ONERROR` | `on_error` 不是 `continue` / `stop` |
+| `BATCH_WAKE` | `wake.mode` 非法，或 `mode=key` 但没有任何项标了 `key` |
+| `BATCH_OP` | `control` 的 `op` 非法 |
+| `BATCH_JOB_UNKNOWN` | `item_id` 不存在或已过 `job_ttl_ms` |
+| `BATCH_BUSY` | 全局在飞槽位不够——同步拒绝，不排队 |
 
 ## 三条唤醒触发（每次任务至多三条推送）
 
 | # | 触发 | 终态 |
 |---|---|---|
 | 1 | 关键项全部结束（`wake.mode=key`） | 否 |
-| 2 | 第一项失败（带计数快照，供模型决定继续还是取消） | 否 |
+| 2 | 第一项失败（带计数快照，供模型决定继续还是取消）——**只报第一次**，之后失败不再推（明细里都有，不能拿它当进度条） | 否 |
 | 3 | 全部项结束 | 是 |
 
 同一瞬间重合的合并成一条。
@@ -82,6 +109,7 @@ batch 把扇出与收敛都收回服务侧：**一次调用扇出，一条汇总
 - 未完成的任务 → `paused`（不替调用方决定"把 50 个任务同时放起来"）
 - 重启时正在跑的项 → `failed`（错误写明"重启中断，结果未知"）
 - `resume` 从断点继续：已完成的项不重跑
+- **执行策略随任务落库**（并发 / 单项超时 / `on_error` / 唤醒档位），恢复时照原样跑——否则恢复出来的任务和调用方当初声明的不是一回事
 
 ## 用户操作与模型操作
 

@@ -102,7 +102,7 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 
 ## 7. 规则与方言扩展
 
-默认规则在 `approval/policy/default.json`：规则包定义版本、禁止命令名、允许命令名与静态参数数量上限；**禁止规则优先**。别名只接受显式列入配置的名称。命令名不是自然语言敏感词，不翻译用户内容，也不按语言封禁字面参数。
+默认规则在 `approval/policy/default.json`：规则包定义版本、禁止命令名、允许命令名与静态参数数量上限；**禁止规则优先**。规则可以在 `approval/policy/default.json` 或启动 `-policy` 指定的文件里维护，运行时也可下发 `approval.policy.json`；**改内嵌默认文件后必须重新构建**，而中心已有的覆盖值不会自动被新默认替换。别名只接受显式列入配置的名称。命令名不是自然语言敏感词，不翻译用户内容，也不按语言封禁字面参数。
 
 首版只批准完整 AST 中的**单一静态命令**。对参数带路径、写文件、网络访问、外部程序等业务，应增加相应事实提取与专门参数规则，而不是简单扩大命令名前缀允许范围。
 
@@ -167,5 +167,6 @@ Context 携带原请求、裁决、trace、boss；Explanation 携带 item_id、�
 
 - 工作目录 `command-work/`，设置与日志在 `command-runtime/`；停止按 `Ctrl+C`。
 - 三个端口均可通过启动参数修改；改中心端口时提交要同步 `-Center ws://127.0.0.1:新端口/ws`。
+- `shell` 的 `approval.service` 必须指向 `approval`；中心地址/名字对不上时 shell 会报 `RUNTIME_MISMATCH`，此时统一这两处配置即可（既有中心覆盖值优先于启动默认值）。
 - 停止启动器会停止三个服务，但**已经启动的命令子进程不保证同时终止**——长时间操作的停止与恢复需另行处理。
 - 若执行策略阻止 `.ps1`：`powershell -NoProfile -ExecutionPolicy Bypass -File .\start-command-approval.ps1`（不修改系统策略）。

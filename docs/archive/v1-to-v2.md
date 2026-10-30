@@ -45,6 +45,27 @@
 | smart-home | Go | 家居控制后端 | 未采纳（在 [TODO](../../TODO.md) 的方向里） |
 | search | 无服务 | 搜索接入（searxng 独立容器） | 未采纳（进 TODO） |
 
+**来自 v1 的模块映射（原文，供考古）**：
+
+- reasoner ← `agent.py`、`core/`（planner / executor）、`core/models/`、`evaluation/`
+- settings-center ← `settings.py`、`config.py`
+- sessions ← `api/session_manager.py`、`core/context.py`
+- memory ← `memory/`（除 embedder）、记忆巩固工具、`core/sleep.py`
+- embedding ← `memory/embedder.py`（v1，fastembed）
+- security ← `security/`
+- tools ← `tools/registry.py`、`tools/builtin/`
+- qq ← `plugins/builtin/napcat_plugin.py`
+- images ← （v1 图片直通部分）
+- files ← `assets.py`（存取部分）
+- shell ← `tools/builtin/`（shell 部分）
+- approval ← 新服务
+- web ← `api/`
+- frontend ← `frontend/`
+- assets ← `assets.py`
+- skills ← `skills/`
+- smart-home ← `smart_home/`
+- search ← `tools/mcp/` + searxng
+
 > 当时的决策注记：全 Go 的理由是并发模型 / 内存 / 长连接吞吐全面占优；embedding 保留 Python 因 ONNX 生态。
 
 ## 4. 当时的实施路线与结果

@@ -35,6 +35,7 @@
 ## 3. 传输、帧与信封
 
 - **传输**：WebSocket；**编码**：MessagePack（二进制帧）。JSON 保留作未来调试开关。
+- 落地库（不是规范，只是各语言的现成实现）：Go `vmihailenco/msgpack`（或 `msgp`）、Python `msgspec`（同库支持 MessagePack + JSON）、TS `msgpackr`。
 - **访问模型**：默认短连接、用完即走；只有「工具调用那一跳」等响应（其余发出即完）。
 
 **信封**（所有控制消息一层壳）：
@@ -117,7 +118,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
   "data": { "exit_code": 0, "stdout": "…", "stderr": "", "duration_ms": 12 } }
 ```
 
-- `item_id`：受理回执里的句柄（调用方据此把补报配回自己的记账）；补报的 `phase` 与 `data` 内容由服务自定；受理回执里的 `phase` 与补报同一词汇（受理就是第一个阶段；shell 当前：`queued`）。
+- `item_id`：受理回执里的句柄（调用方据此把补报配回自己的记账）；补报的 `phase` 与 `data` 内容由服务自定；受理回执里的 `phase` 与补报同一词汇（受理就是第一个阶段；shell 当前：`queued`）。**字段名不能改**：reasoner 的 `trackAsync` 只认这个键。
 - `text` 是可直接阅读的正文（调用方据此注入上下文 / 呈现）；`final: true` = 该次受理的最后一条。
 - **零阻塞**：受理回执不等审批、不等执行；补报各自独立一跳；调用方离线 = 补报发不出去（服务只记日志，不排队补发）。
 - 调用方缺失句柄对应关系时的补报（重复 / 服务重启过）**忽略即可**，不是错误。
@@ -150,7 +151,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 | --- | --- | --- |
 | 消息类型（`type`） | 裸名词；请求 / 响应 / 事件方向固定（事件型只由中心广播） | `register` `response` `roster` `jump` `heartbeat`；事件：`roster` `settings` |
 | 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §5.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting` `report_setting` `embed` `run` `report_result` `approval_request` `approval_pending` `approval_decide` `approval_list` `capabilities`；骨架保留：`configure`；timer：`sleep` `cancel` `list`；memory：`remember` `forget`；files：`read` `write` `edit_word` `edit_ppt` |
-| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms`；设置项三类标记：`secret` `readonly` `set`；服务自报：`actual` `reported`；文件链：`filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated` `operations` `op` `old` `new` `replaced`；embedding：`texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms`；timer：`ms` `note` `fire_at` `seq` `timers` `caller` `status` |
+| 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms`；设置项三类标记：`secret` `readonly` `set`；服务自报：`actual` `reported`；用户消息：`image_ids` `file_ids` `notes`（附注不是用户说的话）；batch：`on_error`（`continue` 默认 / `stop`）`kind`（`once` / `resident`）`wake`；文件链：`filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated` `operations` `op` `old` `new` `replaced`；embedding：`texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms`；timer：`ms` `note` `fire_at` `seq` `timers` `caller` `status` |
 | 审批载荷字段 | snake_case；结构由 `protocol/approval.go` 定义 | `schema_version` `plan` `decision` `decision_id` `plan_digest` `policy_version` `reason_code` `valid_for_ms` `llm_feedback` `summary` `unknowns` `rule_ids`；补报新增 `approval`；第二层：`requested_by` `created_ms` `expires_ms` `note` |
 | exec 域执行描述字段 | 当前 `plan` 是命令域专用结构；每个字段只保留一个语义 | `version` `command` `work_dir` `shell_path` `args` `dialect` `platform` `profile` `timeout_ms` `max_output_bytes`；`dialect` 只表示 shell 方言，`profile` 只表示执行环境约定 |
 | 域判别字段（将来） | 新增第二个执行域时定义独立字段；当前协议尚未发送，不复用 `dialect` | 建议 `kind`，取值如 `exec` / `fs` / `http`；其他域各自声明执行字段组，裁决包、摘要绑定、有效期、fail-closed 共用 |
