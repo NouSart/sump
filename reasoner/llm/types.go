@@ -3,7 +3,7 @@ package llm
 // OpenAI 兼容的对话与工具调用类型（DeepSeek API 同构）。
 // 消息/工具调用的基础结构定义在 protocol 包（记忆服务也要托管同一结构），这里做别名。
 
-import "github.com/QAQ-awa-QAQ/sump/protocol"
+import "github.com/NouSart/sump/protocol"
 
 type (
 	// Message 是一条对话消息（= protocol.Message）。

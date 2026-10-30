@@ -1,4 +1,4 @@
-module github.com/QAQ-awa-QAQ/sump/protocol
+module github.com/NouSart/sump/protocol
 
 go 1.26
 

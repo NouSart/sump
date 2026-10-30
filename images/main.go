@@ -9,8 +9,8 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/QAQ-awa-QAQ/sump/images/server"
-	"github.com/QAQ-awa-QAQ/sump/images/store"
+	"github.com/NouSart/sump/images/server"
+	"github.com/NouSart/sump/images/store"
 )
 
 func main() {

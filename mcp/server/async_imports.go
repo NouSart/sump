@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // asyncImports owns only local in-flight translations, not Reasoner tasks or a

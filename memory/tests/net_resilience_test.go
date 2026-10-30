@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/memory/server"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/memory/server"
+	"github.com/NouSart/sump/protocol"
 )
 
 // callWithin 是 call 的可调超时版（上游挂住时要等超过默认 5s，才看得出服务端的收手）。

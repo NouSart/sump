@@ -25,9 +25,9 @@ import (
 
 	"github.com/xuri/excelize/v2"
 
-	"github.com/QAQ-awa-QAQ/sump/files/store"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/service"
+	"github.com/NouSart/sump/files/store"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/service"
 )
 
 // Config 是 files 服务的启动配置。

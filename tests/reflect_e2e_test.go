@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // reflectNote 是假 LLM 在复盘时写回的那条经验。
@@ -125,9 +125,9 @@ func (f *reflectFakeLLM) Prompts() []string {
 
 // TestReflectWritesExperienceE2E 验证复盘真的落进了经验网。
 func TestReflectWritesExperienceE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	rsBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/reasoner")
-	memBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/memory")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	rsBin := buildService(t, "github.com/NouSart/sump/reasoner")
+	memBin := buildService(t, "github.com/NouSart/sump/memory")
 
 	fakeLLM := startReflectFakeLLM(t)
 	boss := startE2EBoss(t)

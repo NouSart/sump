@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 //go:embed parse.ps1

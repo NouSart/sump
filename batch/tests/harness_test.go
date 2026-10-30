@@ -17,9 +17,9 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/vmihailenco/msgpack/v5"
 
-	"github.com/QAQ-awa-QAQ/sump/batch/server"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/service"
+	"github.com/NouSart/sump/batch/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/service"
 )
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}

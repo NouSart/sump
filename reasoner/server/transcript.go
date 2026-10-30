@@ -28,7 +28,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
+	"github.com/NouSart/sump/reasoner/llm"
 )
 
 const (

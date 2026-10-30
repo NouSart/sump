@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/shell/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/shell/server"
 )
 
 // TestSettingsValidation：逐键验证“校验权在服务”——非法值被拒且不生效。

@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/reasoner/llm"
 )
 
 // clampTitle 把任务名压成一行、截到 24 个字（历史列表的标题要能一眼看完）。

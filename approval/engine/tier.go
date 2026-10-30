@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/QAQ-awa-QAQ/sump/approval/analysis"
-	"github.com/QAQ-awa-QAQ/sump/approval/policy"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/approval/analysis"
+	"github.com/NouSart/sump/approval/policy"
+	"github.com/NouSart/sump/protocol"
 )
 
 // Tier 是自动批准档位：决定"哪些命令不用人点"的松紧。

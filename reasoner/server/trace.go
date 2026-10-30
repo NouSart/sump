@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/reasoner/llm"
 )
 
 // recordMaxChars 是单条轨迹记录的落库上限：终端输出上限是 256KB，

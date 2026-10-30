@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/memory/memnet"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/memory/memnet"
+	"github.com/NouSart/sump/protocol"
 )
 
 // ensureNetCentroids 给五个大类补定义向量（懒补齐，只做一次）。

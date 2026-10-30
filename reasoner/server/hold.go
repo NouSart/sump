@@ -15,8 +15,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/reasoner/llm"
 )
 
 // maxPendingNotes 是随消息一起送出的附注上限（超出保留最新的）。

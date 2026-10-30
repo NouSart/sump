@@ -17,7 +17,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 var timerUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -282,8 +282,8 @@ func (p *e2ePortal) waitTimers(t *testing.T, ok func(protocol.TimerStatePayload)
 }
 
 func TestTimerSleepWakeE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	timerBin := buildServiceNamed(t, "github.com/QAQ-awa-QAQ/sump/timer", "sump-timer")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	timerBin := buildServiceNamed(t, "github.com/NouSart/sump/timer", "sump-timer")
 
 	scPort := freePort(t)
 	timerPort := freePort(t)

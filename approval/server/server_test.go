@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/approval/analysis"
-	"github.com/QAQ-awa-QAQ/sump/approval/engine"
-	"github.com/QAQ-awa-QAQ/sump/approval/policy"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/approval/analysis"
+	"github.com/NouSart/sump/approval/engine"
+	"github.com/NouSart/sump/approval/policy"
+	"github.com/NouSart/sump/protocol"
 )
 
 type blockingParser struct {

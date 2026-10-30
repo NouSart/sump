@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // actionControl 暂停 / 恢复 / 停止。

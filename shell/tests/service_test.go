@@ -20,8 +20,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/shell/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/shell/server"
 )
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}

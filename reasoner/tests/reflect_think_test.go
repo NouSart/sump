@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/reasoner/llm"
+	"github.com/NouSart/sump/reasoner/server"
 )
 
 // scriptedLLM 按请求形状分派答复，并能对复盘返回错误：

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/service"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/service"
 )
 
 // waitAnnounce 等到至少 n 条设置回传。

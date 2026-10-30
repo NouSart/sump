@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/approval/analysis"
-	"github.com/QAQ-awa-QAQ/sump/approval/engine"
-	"github.com/QAQ-awa-QAQ/sump/approval/policy"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/approval/analysis"
+	"github.com/NouSart/sump/approval/engine"
+	"github.com/NouSart/sump/approval/policy"
+	"github.com/NouSart/sump/protocol"
 )
 
 // reviewParser 把任何命令解析成一条"没有命中规则"的静态命令 → engine 判 review。

@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/QAQ-awa-QAQ/sump/approval/analysis"
+	"github.com/NouSart/sump/approval/analysis"
 )
 
 // 「工作区」档的口径：工作区内的读、写、删除、移动、复制、建目录、构建、跑脚本、

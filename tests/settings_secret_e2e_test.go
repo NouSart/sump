@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // findServiceSetting 从 list_settings 结果里取某服务的某一项。
@@ -105,8 +105,8 @@ func waitEventCause(t *testing.T, rec *settingsRecorder, cause, service string, 
 
 // TestSettingsSecretE2E：秘密项的「谁消费谁持有」边界（中心手里不留值）。
 func TestSettingsSecretE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	rsBin := buildServiceNamed(t, "github.com/QAQ-awa-QAQ/sump/reasoner", "sump-reasoner")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	rsBin := buildServiceNamed(t, "github.com/NouSart/sump/reasoner", "sump-reasoner")
 
 	scPort := freePort(t)
 	rsPort := freePort(t)

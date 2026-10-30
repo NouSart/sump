@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // settingKind 是声明类别：普通项（值由设置中心保管）／秘密项（值由本服务保管）／只读项（不可改）。

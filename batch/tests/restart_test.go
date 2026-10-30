@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/batch/server"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/service"
+	"github.com/NouSart/sump/batch/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/service"
 )
 
 // TestRestartTurnsRunningIntoPaused：服务重启后，没跑完的任务转 paused，

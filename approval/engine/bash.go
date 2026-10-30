@@ -6,9 +6,9 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/QAQ-awa-QAQ/sump/approval/analysis"
-	"github.com/QAQ-awa-QAQ/sump/approval/policy"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/approval/analysis"
+	"github.com/NouSart/sump/approval/policy"
+	"github.com/NouSart/sump/protocol"
 )
 
 // bashFinisher 与 PowerShell 路径共用同一套裁决出口（含 30 秒许可期）。

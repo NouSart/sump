@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/files/store"
+	"github.com/NouSart/sump/files/store"
 )
 
 // TestStoreSaveLoadStat 验证落盘/元数据/Stat/读取与不存在场景。

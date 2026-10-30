@@ -11,7 +11,7 @@ import (
 
 	"github.com/xuri/excelize/v2"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // isExcelFile 判定 .xlsx：mime 为准；扩展名兜底（xlsx 是 zip，嗅探只得 application/zip）。

@@ -3,7 +3,7 @@ package review
 
 import (
 	"context"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 type Context struct {

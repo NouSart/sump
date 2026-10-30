@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/reasoner/llm"
+	"github.com/NouSart/sump/reasoner/server"
 )
 
 // stubSlow 是“慢工具”服务替身：每次 work 调用睡一段（默认 80ms），记录并发峰值。

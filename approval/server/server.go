@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/approval/engine"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/service"
+	"github.com/NouSart/sump/approval/engine"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/service"
 )
 
 // defaultTier 是「自动批准档位」的默认值：低（只读命令自动放行，写/装/删照旧等人工）。

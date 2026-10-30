@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/reasoner/llm"
+	"github.com/NouSart/sump/reasoner/server"
 )
 
 // startSlowReasoner 起一套最小环境（中心 / boss / 记忆 / 慢工具替身 + reasoner），

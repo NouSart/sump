@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/images/store"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/service"
+	"github.com/NouSart/sump/images/store"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/service"
 )
 
 // Config 是 images 服务的启动配置。

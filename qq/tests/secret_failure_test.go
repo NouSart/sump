@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/qq/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/qq/server"
 )
 
 // 失败提交不应断开已连接的网关，后续消息仍走原连接。

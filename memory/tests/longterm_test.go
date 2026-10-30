@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/memory/longterm"
-	"github.com/QAQ-awa-QAQ/sump/memory/store"
+	"github.com/NouSart/sump/memory/longterm"
+	"github.com/NouSart/sump/memory/store"
 )
 
 // openLT 打开一套临时库（会话库 + 共享句柄的长期库）。

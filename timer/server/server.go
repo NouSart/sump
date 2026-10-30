@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/service"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/service"
 )
 
 // Config 是 timer 的启动配置（引导只靠它：自己的名字/地址 + 设置中心地址 + 两条护栏 + 门户）。

@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // pendingEntry 是一条等待用户裁决的命令。

@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // ---------- 文件链专用假 LLM ----------
@@ -130,11 +130,11 @@ func qqPrivateFileEvent(uid int64, text, fileURL, fileName string) map[string]an
 // TestQQFileE2E 是 M7 的验收：主人私聊发文件 → files 真入库 → 假 LLM 凭占位 id
 // 调 files__read 自取文本（结果注入下一轮）→ 最终答复回发 QQ。
 func TestQQFileE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	memBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/memory")
-	filBin := buildServiceNamed(t, "github.com/QAQ-awa-QAQ/sump/files", "sump-files")
-	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/reasoner")
-	qqBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/qq")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	memBin := buildService(t, "github.com/NouSart/sump/memory")
+	filBin := buildServiceNamed(t, "github.com/NouSart/sump/files", "sump-files")
+	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
+	qqBin := buildService(t, "github.com/NouSart/sump/qq")
 	nc := startNapCatStub(t)
 	fakeLLM := startFileFakeLLM(t)
 

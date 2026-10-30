@@ -18,7 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/vmihailenco/msgpack/v5"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // Config 是服务启动配置（引导只靠它：自己的名字/地址 + 设置中心地址）。

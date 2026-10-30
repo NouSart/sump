@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/settings-center/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/settings-center/server"
 )
 
 // registerRaw 用原始客户端注册一个服务并保持连接（不跑心跳循环）。

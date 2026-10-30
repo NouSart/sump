@@ -13,12 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/memory/compose"
-	"github.com/QAQ-awa-QAQ/sump/memory/longterm"
-	"github.com/QAQ-awa-QAQ/sump/memory/memnet"
-	"github.com/QAQ-awa-QAQ/sump/memory/store"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/service"
+	"github.com/NouSart/sump/memory/compose"
+	"github.com/NouSart/sump/memory/longterm"
+	"github.com/NouSart/sump/memory/memnet"
+	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/service"
 )
 
 // Config 是 memory 服务的启动配置。

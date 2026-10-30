@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // TestHelloWeb 是 M1 的验收：两个真实进程（settings-center + reasoner）
 // 跑通最小闭环——注册 / 名册 / 跨服务跳转 / 自我跳转。
 func TestHelloWeb(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/reasoner")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
 
 	scPort := freePort(t)
 	alPort := freePort(t)

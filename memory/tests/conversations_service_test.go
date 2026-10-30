@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // TestConversationActions 验证会话表在服务层的接线（不只是 store 的算术）：

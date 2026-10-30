@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
-	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/reasoner/llm"
+	"github.com/NouSart/sump/reasoner/server"
 )
 
 // stubBoss 是“老板”的最小替身：实现约定的 deliver 动作，收到结果放进 channel。

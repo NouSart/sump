@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -106,7 +106,7 @@ func runMCPBidirectional(t *testing.T, useTLS bool) {
 	var bridgeBinary string
 	start := func(name string, args ...string) {
 		t.Helper()
-		bin := buildServiceNamed(t, "github.com/QAQ-awa-QAQ/sump/"+name, "sump-"+name)
+		bin := buildServiceNamed(t, "github.com/NouSart/sump/"+name, "sump-"+name)
 		if name == "mcp" {
 			bridgeBinary = bin
 			if useTLS {

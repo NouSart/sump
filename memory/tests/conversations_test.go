@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/memory/store"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/protocol"
 )
 
 // TestConversationTable 验证会话表：写入即建行、列表按活跃排序、改名、回填老库。

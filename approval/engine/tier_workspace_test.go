@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/approval/analysis"
-	"github.com/QAQ-awa-QAQ/sump/approval/engine"
-	"github.com/QAQ-awa-QAQ/sump/approval/policy"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/approval/analysis"
+	"github.com/NouSart/sump/approval/engine"
+	"github.com/NouSart/sump/approval/policy"
+	"github.com/NouSart/sump/protocol"
 )
 
 // workspaceEngine 造一个「工作区」档的引擎。

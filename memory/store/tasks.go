@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // 任务状态。

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // settingsRecorder 收集观察者连接上的 settings 事件。
@@ -88,8 +88,8 @@ func saveImage(t *testing.T, imagesURL string, data string) protocol.ResponsePay
 
 // TestSettingsHotPathE2E：images.max_mb 的设置热链。
 func TestSettingsHotPathE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	imgBin := buildServiceNamed(t, "github.com/QAQ-awa-QAQ/sump/images", "sump-images")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	imgBin := buildServiceNamed(t, "github.com/NouSart/sump/images", "sump-images")
 
 	scPort := freePort(t)
 	imgPort := freePort(t)
@@ -238,8 +238,8 @@ func waitSaveOK(t *testing.T, imagesURL, data string, timeout time.Duration) {
 // TestSettingsCenterRestartE2E：覆盖值落盘——中心重启后从 settings.json 恢复，
 // 服务断线自愈自动重连重注册并与之全量对齐，行为仍被覆盖值约束；reset 后回落预设。
 func TestSettingsCenterRestartE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	imgBin := buildServiceNamed(t, "github.com/QAQ-awa-QAQ/sump/images", "sump-images")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	imgBin := buildServiceNamed(t, "github.com/NouSart/sump/images", "sump-images")
 
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, "settings.json")

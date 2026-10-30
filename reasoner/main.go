@@ -11,7 +11,7 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
+	"github.com/NouSart/sump/reasoner/server"
 )
 
 func main() {

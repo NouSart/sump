@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // TestWorkspaceFieldScenarios 补的是交接清单里点名的实战形态：

@@ -10,7 +10,7 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/batch/server"
+	"github.com/NouSart/sump/batch/server"
 )
 
 func main() {

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/memory/compose"
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/memory/compose"
+	"github.com/NouSart/sump/protocol"
 )
 
 // TestConversationTail 验证任务上下文尾部对话消息的提取边界。

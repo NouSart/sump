@@ -19,7 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/NouSart/sump/protocol"
 )
 
 // fakeDeepSeek 是 OpenAI 兼容的假 LLM（异步工具版剧本）：
@@ -249,9 +249,9 @@ func (b *e2eBoss) register(t *testing.T, centerURL string) *protocol.Client {
 // → 工具派发（异步受理回执；echo 被闸门拒绝、memory__remember 成功）→ 自跳 → wait 等到结果 → 收尾轮 → deliver；
 // 以预置会话历史验证记忆注入，并以第二轮对话验证长期记忆召回（remember 写入的条目被注入）。
 func TestInferChainE2E(t *testing.T) {
-	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/reasoner")
-	memBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/memory")
+	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
+	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
+	memBin := buildService(t, "github.com/NouSart/sump/memory")
 
 	fakeLLM := startFakeDeepSeek(t, true)
 	boss := startE2EBoss(t)
