@@ -241,7 +241,7 @@ func TestGatewaySecretRotationAndErrorRedaction(t *testing.T) {
 	if !r.IsError || strings.Contains(string(raw), gatewayToken) || !strings.Contains(string(raw), "backend error") {
 		t.Fatalf("wrong error redaction: %s", raw)
 	}
-	if err := s.setToken("replacement-token-01234567890123456789"); err != nil {
+	if err := s.svc.ApplySetting("http.token", "replacement-token-01234567890123456789"); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)

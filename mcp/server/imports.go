@@ -75,6 +75,12 @@ type remoteTarget struct {
 	transport *http.Transport
 }
 
+// 值和版本必须来自同一次读取；版本用于区分成功轮换后重新使用相同令牌的情况。
+type remoteCredential struct {
+	value   string
+	version uint64
+}
+
 // Imports owns outgoing connections only. Each invocation has an independent
 // SDK session, while each destination has its own HTTP connection pool and TLS
 // trust roots. A timeout or teardown
@@ -82,7 +88,7 @@ type remoteTarget struct {
 type Imports struct {
 	tools    map[string]importedTool
 	remotes  map[string]remoteTarget
-	token    func(string) string
+	token    func(string) (string, uint64)
 	timeout  time.Duration
 	maxBytes int
 	lifetime context.Context
@@ -184,7 +190,9 @@ func importSchema(raw json.RawMessage) (*jsonschema.Resolved, error) {
 	return schema.Resolve(nil)
 }
 
-func NewImports(remotes []RemoteConfig, configs []ImportConfig, timeout time.Duration, maxBytes int, token func(string) string) (*Imports, error) {
+// token 必须原子读取已提交的值与版本，例如 service.SettingSnapshot。
+// 静态配置可固定返回版本 0；动态凭据每次成功改变值时必须推进版本。
+func NewImports(remotes []RemoteConfig, configs []ImportConfig, timeout time.Duration, maxBytes int, token func(string) (string, uint64)) (*Imports, error) {
 	targets, tools, err := compileImports(remotes, configs)
 	if err != nil {
 		return nil, err
@@ -193,7 +201,7 @@ func NewImports(remotes []RemoteConfig, configs []ImportConfig, timeout time.Dur
 		return nil, errors.New("invalid import timeout or output limit")
 	}
 	if token == nil {
-		token = func(string) string { return "" }
+		token = func(string) (string, uint64) { return "", 0 }
 	}
 	for id, target := range targets {
 		transport, err := newImportTransport(target.config)
@@ -210,6 +218,11 @@ func NewImports(remotes []RemoteConfig, configs []ImportConfig, timeout time.Dur
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
 	return &Imports{tools: tools, remotes: targets, timeout: timeout, maxBytes: maxBytes, token: token, lifetime: lifetime, cancel: cancel}, nil
+}
+
+func (i *Imports) credential(key string) remoteCredential {
+	value, version := i.token(key)
+	return remoteCredential{value: value, version: version}
 }
 
 // An explicit CA bundle replaces system roots for this destination only. It is
@@ -286,7 +299,7 @@ type preparedImport struct {
 	tool      importedTool
 	target    remoteTarget
 	encoded   json.RawMessage
-	token     string
+	token     remoteCredential
 	used      atomic.Bool
 	submitted atomic.Bool
 	closed    atomic.Bool
@@ -331,20 +344,20 @@ func (i *Imports) Prepare(in protocol.JumpPayload) (*preparedImport, error) {
 	return &preparedImport{imports: i, tool: tool, target: target, encoded: encoded, token: token}, nil
 }
 
-func (i *Imports) reserveTarget(tool importedTool) (remoteTarget, string, error) {
+func (i *Imports) reserveTarget(tool importedTool) (remoteTarget, remoteCredential, error) {
 	if i.closed.Load() {
-		return remoteTarget{}, "", errors.New("MCP_IMPORT_REJECTED: imports closed; remote tool not submitted")
+		return remoteTarget{}, remoteCredential{}, errors.New("MCP_IMPORT_REJECTED: imports closed; remote tool not submitted")
 	}
 	target := i.remotes[tool.config.Remote]
 	select {
 	case target.slots <- struct{}{}:
 	default:
-		return remoteTarget{}, "", errors.New("MCP_BUSY: remote concurrency limit reached; remote tool not submitted")
+		return remoteTarget{}, remoteCredential{}, errors.New("MCP_BUSY: remote concurrency limit reached; remote tool not submitted")
 	}
-	token := i.token(target.config.SecretKey())
-	if ValidateRemoteToken(token) != nil || (target.config.TokenRequired && token == "") {
+	token := i.credential(target.config.SecretKey())
+	if ValidateRemoteToken(token.value) != nil || (target.config.TokenRequired && token.value == "") {
 		<-target.slots
-		return remoteTarget{}, "", errors.New("MCP_AUTH_REQUIRED: remote credential unavailable; remote tool not submitted")
+		return remoteTarget{}, remoteCredential{}, errors.New("MCP_AUTH_REQUIRED: remote credential unavailable; remote tool not submitted")
 	}
 	return target, token, nil
 }
@@ -357,16 +370,16 @@ func (p *preparedImport) Run(ctx context.Context) (any, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(i.lifetime, cancel)
 	defer func() { stop(); cancel() }()
-	if ctx.Err() != nil || i.closed.Load() || token != i.token(target.config.SecretKey()) {
+	if ctx.Err() != nil || i.closed.Load() || token != i.credential(target.config.SecretKey()) {
 		return nil, errors.New("MCP_IMPORT_REJECTED: call cancelled or credential changed; remote tool not submitted")
 	}
-	session, err := i.connectChecked(ctx, target, tool, token)
+	session, err := i.connectChecked(ctx, target, tool, token.value)
 	if err != nil {
 		return nil, err
 	}
 	defer session.Close()
 	// Recheck immediately before dispatch, including successful secret rotation.
-	if ctx.Err() != nil || i.closed.Load() || token != i.token(target.config.SecretKey()) {
+	if ctx.Err() != nil || i.closed.Load() || token != i.credential(target.config.SecretKey()) {
 		return nil, errors.New("MCP_IMPORT_REJECTED: call cancelled or credential changed; remote tool not submitted")
 	}
 	p.submitted.Store(true)

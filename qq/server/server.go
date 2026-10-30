@@ -150,15 +150,12 @@ func New(cfg Config, logger *log.Logger) *Server {
 	})
 	// 秘密项：值不进中心，由本服务自己落盘 / 加载（Config.SecretFile）；启动参数给了也先应用一次
 	//（与 reasoner 的 llm.key 同路径；秘密文件里若有值，Start 加载时会覆盖）。
-	applyToken := func(v string) error {
-		s.setNapcatToken(v)
-		return nil
-	}
-	s.HandleSecret("napcat.token", applyToken,
+	// 只有保存成功才切换端点并释放旧连接，失败的候选值不触发重连。
+	s.HandleSecretWithCommit("napcat.token", nil, s.setNapcatToken,
 		service.Label("NapCat 访问令牌"),
 		service.Hint("网关开了鉴权才需要；值由本服务自己保存，中心不回显"))
 	if cfg.NapCatToken != "" {
-		_ = applyToken(cfg.NapCatToken)
+		s.setNapcatToken(cfg.NapCatToken)
 	}
 	// 只读项：启动参数带起来的，进面板可见但不可改（改它需要重启）。
 	s.HandleReadOnly("name", cfg.Name)

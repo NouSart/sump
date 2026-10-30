@@ -41,7 +41,7 @@ func importFixture(t *testing.T, tool *mcp.Tool, fn func(context.Context, *mcp.C
 	return s
 }
 
-func newTestImports(t *testing.T, endpoint string, timeout time.Duration, maxBytes int, token func(string) string) *Imports {
+func newTestImports(t *testing.T, endpoint string, timeout time.Duration, maxBytes int, token func(string) (string, uint64)) *Imports {
 	t.Helper()
 	i, err := NewImports([]RemoteConfig{{ID: "demo", URL: endpoint}}, []ImportConfig{lookupImport()}, timeout, maxBytes, token)
 	if err != nil {
@@ -295,7 +295,7 @@ func TestImportsCredentialsAndRedirects(t *testing.T) {
 		http.Redirect(w, r, unexpected.URL, http.StatusTemporaryRedirect)
 	}))
 	defer redirect.Close()
-	i := newTestImports(t, redirect.URL, time.Second, 16384, func(string) string { return "private-remote-token" })
+	i := newTestImports(t, redirect.URL, time.Second, 16384, func(string) (string, uint64) { return "private-remote-token", 0 })
 	if _, err := callImport(i, context.Background(), "x"); err == nil || strings.Contains(err.Error(), "private-remote-token") {
 		t.Fatalf("redirect error: %v", err)
 	}

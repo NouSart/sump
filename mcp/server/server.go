@@ -62,7 +62,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	s.startup = p
 	s.policy.Store(p)
-	s.imports, err = NewImports(p.Remotes, p.Imports, cfg.CallTimeout, cfg.MaxOutputBytes, func(key string) string { return s.svc.SettingValue(key) })
+	s.imports, err = NewImports(p.Remotes, p.Imports, cfg.CallTimeout, cfg.MaxOutputBytes, func(key string) (string, uint64) { return s.svc.SettingSnapshot(key) })
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func New(cfg Config) (*Server, error) {
 		ActionTimeout: cfg.CallTimeout,
 		Description:   "Translate explicitly enabled capabilities between SUMP and MCP.", Provides: s.imports.Provides(),
 	})
-	s.svc.HandleSecret("http.token", s.setToken)
+	s.svc.HandleSecretWithCommit("http.token", validateToken, s.commitToken)
 	for _, r := range p.Remotes {
 		s.svc.HandleSecret(r.SecretKey(), ValidateRemoteToken)
 	}
@@ -196,29 +196,33 @@ func (s *Server) maintain(ctx context.Context) {
 	}
 }
 
-func (s *Server) setToken(value string) error {
+func validateToken(value string) error {
 	if value != "" && (len(value) < 32 || len(value) > 4096 || strings.ContainsAny(value, " \t\r\n")) {
 		return errors.New("http.token must be 32–4096 bytes without whitespace")
 	}
+	return nil
+}
+
+// 秘密保存成功后才切换身份；失败轮换不会丢失既有任务的归属。
+// 成功改回曾经用过的值仍生成新身份，不能恢复旧任务的访问权。
+func (s *Server) commitToken(value string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old := s.token.Load()
 	if old != nil && old.value == value {
-		return nil
+		return
 	}
 	if value == "" {
 		s.token.Store(nil)
 	} else {
 		s.token.Store(&credential{value: value, hash: sha256.Sum256([]byte(value)), owner: "http:" + protocol.NewID()})
 	}
-	return nil
 }
 
 func (s *Server) verifyToken(_ context.Context, value string, _ *http.Request) (*auth.TokenInfo, error) {
 	c := s.token.Load()
 	hash := sha256.Sum256([]byte(value))
-	// HandleSecret validates before persistence. A failed save must not enable
-	// the candidate credential, even though its validator has already run.
+	// 发布期间仍核对骨架的已提交值，防止旧身份通过后续派发检查。
 	if c == nil || subtle.ConstantTimeCompare(hash[:], c.hash[:]) != 1 || s.svc.SettingValue("http.token") != c.value {
 		return nil, auth.ErrInvalidToken
 	}
