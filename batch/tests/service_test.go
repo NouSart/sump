@@ -250,6 +250,10 @@ func TestNotBatchableRejected(t *testing.T) {
 // TestItemsLimit：超过 max_items → 拒绝。
 func TestItemsLimit(t *testing.T) {
 	f := startFixture(t, func(c *server.Config) { c.MaxItems = 3 })
+	// 恰好等于上限必须受理（边界不是 > 变 >=）。
+	if _, err := f.callRun(t, protocol.BatchRunPayload{Service: "worker", Action: "ok", Items: items(3)}); err != nil {
+		t.Fatalf("恰好 3 项应被受理: %v", err)
+	}
 	_, err := f.callRun(t, protocol.BatchRunPayload{Service: "worker", Action: "ok", Items: items(4)})
 	if err == nil || !contains(err.Error(), "BATCH_ITEMS") {
 		t.Fatalf("应报 BATCH_ITEMS，实际 %v", err)
