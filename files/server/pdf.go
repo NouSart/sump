@@ -17,14 +17,25 @@ import (
 
 	"github.com/ledongthuc/pdf"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 
 	"github.com/NouSart/sump/protocol"
 )
 
 // pdfMaxPages 是 read 的页数上限：防「万页 PDF」把读取拖垮（与压缩炸弹防线同思路的预算控制）。
-// 是变量而非常量：测试会临时调小它来验这道防线，生产代码里只读。
-var pdfMaxPages = 2000
+const pdfMaxPages = 2000
+
+// errPdfEncrypted 是加密 PDF 的统一拒绝理由：库的原生报错（英文、且把加密与损坏混为一谈）
+// 不适合直接给模型和用户看。
+var errPdfEncrypted = errors.New("该 PDF 已加密，暂不支持读取或编辑；请先解密或另存为无密码版本")
+
+// isEncryptedPdf 用 pdfcpu 的哨兵错误判断是否加密，而不是匹配错误字符串。
+// 只在解析已经失败时调用，成功路径不付这次额外解析的代价。
+func isEncryptedPdf(data []byte) bool {
+	_, err := api.PageCount(context.Background(), bytes.NewReader(data), model.NewDefaultConfiguration())
+	return errors.Is(err, pdfcpu.ErrEncrypted) || errors.Is(err, pdfcpu.ErrWrongPassword)
+}
 
 // isPdfFile 判定 .pdf：mime 为准；扩展名兜底（pdf 嗅探通常即 application/pdf）。
 func isPdfFile(mime, filename string) bool {
@@ -41,7 +52,12 @@ func isPdfFile(mime, filename string) bool {
 func pdfToText(data []byte, maxChars, pageLimit int) (string, bool, error) {
 	r, err := pdf.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return "", false, fmt.Errorf("解析 PDF 失败（可能已加密或已损坏）: %w", err)
+		// 加密的 PDF 在读取库里报成「malformed PDF: … encryption key」，
+		// 与真正的损坏混在一起；这里分开说清楚，用户才知道下一步该做什么。
+		if isEncryptedPdf(data) {
+			return "", false, errPdfEncrypted
+		}
+		return "", false, fmt.Errorf("解析 PDF 失败（文件可能已损坏）: %w", err)
 	}
 	total := r.NumPage()
 	if total <= 0 {
@@ -121,6 +137,11 @@ func editPdf(data []byte, ops []protocol.PdfEditOperation) ([]byte, int, error) 
 		}
 		out, err := handler(cur, op, conf)
 		if err != nil {
+			// pdfcpu 对加密文件抛的是英文库错误（"please provide the correct password"），
+			// 直接转给模型只会得到一句看不懂的话。
+			if errors.Is(err, pdfcpu.ErrEncrypted) || errors.Is(err, pdfcpu.ErrWrongPassword) {
+				return nil, 0, errPdfEncrypted
+			}
 			return nil, 0, fmt.Errorf("第 %d 个操作 %s 失败: %w", i+1, op.Op, err)
 		}
 		cur = out
