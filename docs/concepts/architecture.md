@@ -109,7 +109,7 @@ sequenceDiagram
 ### 4.2 图片链路（qq → images → llm）
 
 - qq 收到图片：把 URL 交给 images 保存（`save` → `{id}`），`user_message` 携带图片 id。
-- LLM 在「完全启动」后、调 API 前：对**最近一条带图消息**的 id 逐个 `fetch`（base64），组装为 OpenAI 多模态内容内联；更早的图片转文本占位 `[图片]`。
+- LLM 在「完全启动」后、调 API 前：对**最近一条带图消息**的 id 逐个 `images.fetch_full`（原图 base64），组装为 OpenAI 多模态内容内联；更早的图片转文本占位 `[图片]`。模型自己查看图片时用的是 `images.fetch`（缩略图 / 矩形窗口），拿不到原图。
 - images 独立库（SQLite 元数据 + 文件目录），单图上限 32MiB（对齐 DeepSeek 图片限制）。
 
 ### 4.3 文件链路（qq → files → llm 凭 id 自取）

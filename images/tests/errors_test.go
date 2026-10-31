@@ -53,6 +53,12 @@ func TestSaveRejectsInvalidInput(t *testing.T) {
 	if rp := call(t, srv.WsURL(), "fetch", protocol.ImageFetchPayload{}); rp.OK || !strings.Contains(rp.Error, "id 必填") {
 		t.Fatalf("空 id 应被拒: ok=%v err=%q", rp.OK, rp.Error)
 	}
+	if rp := call(t, srv.WsURL(), "fetch_full", protocol.ImageFetchPayload{}); rp.OK || !strings.Contains(rp.Error, "id 必填") {
+		t.Fatalf("fetch_full 空 id 应被拒: ok=%v err=%q", rp.OK, rp.Error)
+	}
+	if rp := call(t, srv.WsURL(), "fetch_full", protocol.ImageFetchPayload{ID: "不存在"}); rp.OK {
+		t.Fatalf("fetch_full 不存在的 id 应报错: %+v", rp)
+	}
 }
 
 func TestSaveURLFailures(t *testing.T) {

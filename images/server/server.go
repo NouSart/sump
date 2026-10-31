@@ -66,7 +66,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Description:       "图片服务：保存图片（URL/base64），按需转 base64 发回调用方",
 		Provides: []protocol.Provide{
 			{Action: "save", Tool: true, Input: "{url} 或 {data(base64), mime}", Output: "{id, mime, size}"},
-			{Action: "fetch", Tool: true, Input: "{id}", Output: "{id, mime, data(base64), size}（图片索引转 base64；大图会很长）"},
+			{Action: "fetch", Tool: true, Input: "{id, x1?,y1?,x2?,y2?, max_side?}（不带坐标 = 缩略图，长边 ≤ max_side 默认 768；给矩形 = 该区域的原图，坐标是原图像素）", Output: "{id, mime, data(base64), size, original_width, original_height, width, height, x1,y1,x2,y2, downscaled, data_bytes}（原图尺寸与本次窗口都回传，方便平移）"},
+			{Action: "fetch_full", Input: "{id}", Output: "{id, mime, data(base64), size}（原图，不做任何处理；服务间调用专用，不给模型）"},
 		},
 		Logger: logger,
 	})
@@ -86,6 +87,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Unit("MB"))
 	s.Handle("save", s.actionSave)
 	s.Handle("fetch", s.actionFetch)
+	s.Handle("fetch_full", s.actionFetchFull)
 	// 只读项：启动参数带起来的（换它要重启服务）。db/dir 是存储身份——运行中换库/换目录
 	// 意味着一批在途读写换个落点，不做（宁可不给旋钮，也不给一个会撕开的旋钮）。
 	s.HandleReadOnly("db", cfg.DBPath)
@@ -147,7 +149,15 @@ func (s *Server) actionSave(_ context.Context, _ protocol.Envelope, in protocol.
 	return protocol.ImageSaveResult{ID: id, Mime: mime, Size: int64(len(data))}, nil
 }
 
-// actionFetch 把图片转成 base64 发回调用方。
+// actionFetch 取一张图，把图片转成 base64 发回调用方。**永远不给原图**——这是模型走的那条路。
+//
+// 两种取法（见 protocol.ImageFetchPayload）：
+//   - 给矩形（x1,y1,x2,y2）：该区域的原图，超上限等比缩小
+//   - 什么参数都不给：整图缩略图（长边 ≤ max_side，默认 768）
+//
+// 为什么要缩略图/窗口：整张 8MB 截图 base64 之后 ~11MB，一次就把模型上下文撑爆。
+// 缩略图先让模型看清「大概是什么」，要看细节再用矩形平移窗口取局部原图。
+// 要原图的是服务（reasoner 内联用户刚发的图），走 fetch_full——那个动作不进工具列表。
 func (s *Server) actionFetch(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p protocol.ImageFetchPayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
@@ -160,11 +170,72 @@ func (s *Server) actionFetch(_ context.Context, _ protocol.Envelope, in protocol
 	if err != nil {
 		return nil, err
 	}
+
+	img, format, err := decodeImage(data)
+	if err != nil {
+		return nil, fmt.Errorf("fetch: %w（要原图请用 fetch_full）", err)
+	}
+	b := img.Bounds()
+	maxSide := p.MaxSide
+	if maxSide <= 0 {
+		maxSide = defaultMaxSide
+	}
+	if maxSide < minMaxSide {
+		maxSide = minMaxSide
+	}
+	if maxSide > maxMaxSide {
+		maxSide = maxMaxSide
+	}
+
+	rect, cropped, err := cropRect(img, p.X1, p.Y1, p.X2, p.Y2)
+	if err != nil {
+		return nil, fmt.Errorf("fetch: %w", err)
+	}
+	out := img
+	if cropped && rect != b {
+		out = cropImage(img, rect)
+	}
+	before := out.Bounds()
+	out, scaled := scaleToFit(out, maxSide)
+	enc, w, h, shrunk, err := encodeFit(out, format == "jpeg")
+	if err != nil {
+		return nil, fmt.Errorf("fetch: %w", err)
+	}
+	if !scaled && !cropped && len(enc) >= len(data) {
+		// 原图本来就小（索引色 PNG 之类）：重编码成 JPEG 只会更大，原样发回。
+		return protocol.ImageFetchResult{
+			ID: p.ID, Mime: mime, Data: base64.StdEncoding.EncodeToString(data), Size: int64(len(data)),
+			OriginalWidth: b.Dx(), OriginalHeight: b.Dy(), Width: b.Dx(), Height: b.Dy(),
+			X1: rect.Min.X, Y1: rect.Min.Y, X2: rect.Max.X, Y2: rect.Max.Y, DataBytes: len(data),
+		}, nil
+	}
 	return protocol.ImageFetchResult{
-		ID:   p.ID,
-		Mime: mime,
-		Data: base64.StdEncoding.EncodeToString(data),
-		Size: int64(len(data)),
+		ID: p.ID, Mime: "image/jpeg", Data: base64.StdEncoding.EncodeToString(enc), Size: int64(len(data)),
+		OriginalWidth: b.Dx(), OriginalHeight: b.Dy(),
+		Width: w, Height: h,
+		X1: rect.Min.X, Y1: rect.Min.Y, X2: rect.Max.X, Y2: rect.Max.Y,
+		Downscaled: scaled || shrunk || before.Dx() != w || before.Dy() != h,
+		DataBytes:  len(enc),
+	}, nil
+}
+
+// actionFetchFull 原样发回整张图（服务间调用：reasoner 内联用户刚发的图）。
+// 不进工具列表（provides 里不带 tool:true）：模型拿不到这条逃逸通道，才不会一把撑爆上下文。
+func (s *Server) actionFetchFull(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.ImageFetchPayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	if p.ID == "" {
+		return nil, errors.New("fetch_full: id 必填")
+	}
+	data, mime, err := s.cfg.Store.Load(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	return protocol.ImageFetchResult{
+		ID: p.ID, Mime: mime, Data: base64.StdEncoding.EncodeToString(data), Size: int64(len(data)),
+		DataBytes: len(data),
 	}, nil
 }
 

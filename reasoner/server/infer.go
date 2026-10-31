@@ -82,32 +82,21 @@ var taskStatusTool = llm.Tool{
 // taskJudgeReminder 是"还没判定"时注入的提醒（最多催两次）。
 const taskJudgeReminder = "【系统】你还没有调用 task_status 判定这个任务是否完成。请先调用 task_status（status=done 或 continue，title 填任务标题），再输出最终答复。"
 
-// structuralActions 是即便声明 tool:true 也不作为工具暴露的动作：协议/链机制动作（模型不得绕过链路），
-// 以及本服务的调试/测试动作（echo / debug_jump——不给模型“万能遥控”）。
-// 两道闸共用这张表：rosterTools 生成列表时过滤（暴露面）；runToolCall 执行前同样校验并拒绝（执行面）——
-// 模型若仍指名调用未提供的动作（幻觉 / 注入），不会发生真实跳转。
-var structuralActions = map[string]bool{
-	"user_message":  true,
-	"step":          true,
-	"deliver":       true,
-	"recall":        true, // memory 服务：记忆请求
-	"store":         true, // memory 服务：对话落库
-	"resume":        true, // 本服务的“完全启动”入口（仅接受 from=memory）
-	"save":          true, // images 服务：保存图片（qq 侧调用）
-	"fetch":         true, // images 服务：取图（llm 侧按需调用）
-	"echo":          true, // 本服务：连通性测试（仅供直连调试）
-	"debug_jump":    true, // 本服务：调试代理跳转
-	"report_result": true, // 异步受理的补报（服务 → 调用方；协议级动作，不给模型当工具）
-	"configure":     true, // 骨架保留动作：设置下发（中心驱动，不进 provides）
-}
+// 工具暴露只有**一个**判据：服务自己在 provides 里声明 `tool: true`。
+//
+// 这里曾经有一张 `structuralActions` 黑名单，按**裸动作名**否决（save / fetch / echo …）。
+// 它有三个问题：① 与「协议是唯一共享物、扩展不改别人」冲突——第三方动作一度叫 save 就被
+// 悄悄关掉；② 与 README/各服务测试的声明互相矛盾（同一件事三处说法不同）；③ 无法表达
+// 「结果太大不适合进上下文」这种真正该由**提供方**说明的信息。
+// 现在把那件事交给提供方：结果会不会撑爆上下文，由动作自己用参数/输出说明（例如
+// images.fetch 默认返回缩略图、按矩形取局部原图），reasoner 不再认识任何具体动作名。
 
-// rosterTools 把名册里各服务**显式声明 tool:true** 的动作映射为 LLM 工具
-// （未声明的不暴露；保留 / 调试动作再由 structuralActions 拦下——暴露与执行两侧同一判据）。
+// rosterTools 把名册里各服务**显式声明 tool:true** 的动作映射为 LLM 工具。
 func (s *Server) rosterTools() []llm.Tool {
 	var out []llm.Tool
 	for _, card := range s.Roster() {
 		for _, p := range card.Provides {
-			if !p.Tool || structuralActions[p.Action] {
+			if !p.Tool {
 				continue
 			}
 			out = append(out, llm.Tool{
@@ -173,12 +162,9 @@ func rawToJSONText(raw msgpack.RawMessage) string {
 	return string(b)
 }
 
-// toolAdvertised 判断某服务动作当前是否为“对 LLM 提供”的工具（provides 声明 tool:true 且非保留动作）。
+// toolAdvertised 判断某服务动作当前是否为“对 LLM 提供”的工具：唯一判据是 provides 里的 tool:true。
 // 与 rosterTools 同一把尺子——执行侧复查，用于拒绝指名调用未提供的动作。
 func (s *Server) toolAdvertised(service, action string) bool {
-	if structuralActions[action] {
-		return false
-	}
 	p, ok := s.provideOf(service, action)
 	return ok && p.Tool
 }
@@ -292,7 +278,9 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			data, err := s.Call(ctx, images, "fetch", protocol.ImageFetchPayload{ID: id}, trace, "")
+			// fetch_full：用户刚发的图要原图内联（模型看到的就是用户看到的）。
+			// 走 fetch 会拿到缩略图——那是给模型「主动查看」用的；fetch_full 不在工具列表里。
+			data, err := s.Call(ctx, images, "fetch_full", protocol.ImageFetchPayload{ID: id}, trace, "")
 			if err != nil {
 				s.logger.Printf("取图 %s 失败: %v", id, err)
 				return

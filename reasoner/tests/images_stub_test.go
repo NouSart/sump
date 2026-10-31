@@ -17,7 +17,7 @@ import (
 	"github.com/NouSart/sump/reasoner/server"
 )
 
-// stubImages 是图片服务替身：fetch 请求 → 返回预置 base64。
+// stubImages 是图片服务替身：fetch / fetch_full 请求 → 返回预置 base64。
 type stubImages struct {
 	ln  net.Listener
 	srv *http.Server
@@ -52,7 +52,7 @@ func startStubImagesNamed(t *testing.T, center *stubCenter, name string) *stubIm
 		Name:        name,
 		Addr:        m.URL(),
 		Description: "图片测试替身",
-		Provides:    []protocol.Provide{{Action: "save"}, {Action: "fetch"}},
+		Provides:    []protocol.Provide{{Action: "save"}, {Action: "fetch"}, {Action: "fetch_full"}},
 	}
 	center.mu.Unlock()
 	return m
@@ -92,7 +92,7 @@ func (m *stubImages) handleWS(w http.ResponseWriter, r *http.Request) {
 		if err := env.DecodePayload(&jp); err != nil {
 			continue
 		}
-		if jp.Action != "fetch" {
+		if jp.Action != "fetch" && jp.Action != "fetch_full" {
 			continue
 		}
 		var p protocol.ImageFetchPayload
