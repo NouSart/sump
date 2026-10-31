@@ -3,7 +3,7 @@
 [![CI](https://github.com/NouSart/sump/actions/workflows/ci.yml/badge.svg)](https://github.com/NouSart/sump/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-> **v0.0.1-beta.1** · Apache-2.0 · *SUMP is a service-mesh style agent runtime: every capability is an independent process with its own database and address, and the agent loop lives only in the network.*
+> **v0.0.1-beta.2** · Apache-2.0 · *SUMP is a service-mesh style agent runtime: every capability is an independent process with its own database and address, and the agent loop lives only in the network.*
 
 SUMP 是「服务的互联网」式智能体系统：每个能力是**独立进程**（独立数据库、任意语言），按地址互相访问；智能体循环不存在于任何服务内部，而是 LLM 服务在网络上的自我跳转链。
 
