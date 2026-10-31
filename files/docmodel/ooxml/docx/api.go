@@ -43,8 +43,8 @@ func (d *Document) Digest() string {
 
 // Text 返回整篇可见文本（段落以单个换行分隔）。
 //
-// 注意：`read` 的正文提取用的是空行分段（`files/server/word.go`），两处格式不同 ——
-// 同一文档在 read 与 read_range/verify 里拿到的是两套换行，别按「同口径」去拼。
+// 与 `read` 的正文提取（`files/server/word.go`）用**同一个口径**：段落之间都是一个 `\n`。
+// 两套格式会让模型拿 read 的文本去 verify.contains 却匹配不上，patch 的 rune 偏移也会偏。
 func (d *Document) Text() string {
 	parts := make([]string, 0, len(d.order))
 	for _, id := range d.order {
