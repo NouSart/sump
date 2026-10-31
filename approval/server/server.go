@@ -26,7 +26,8 @@ type Config struct {
 
 	// Portal 是能裁决的门户服务名（默认 frontend）；空 = 第二层关闭（只做第一层，review 原样返回）。
 	Portal string
-	// ReviewTTL 是一条待审命令最多挂多久（默认 10 分钟，与 shell 的 approval.timeout_ms 对齐）。
+	// ReviewTTL 是一条待审命令最多挂多久（默认 60 秒，与 shell 的 approval.timeout_ms 默认值对齐）。
+	// 对齐是硬要求：shell 先放弃等待、approval 还挂着，用户点的「批准」就是一条不会执行的命令。
 	ReviewTTL time.Duration
 	// MaxPending 是同时挂起的上限（默认 32）；满了按 review 直接返回，不排队。
 	MaxPending int
@@ -66,7 +67,7 @@ func New(cfg Config) (*Server, error) {
 		cfg.Name = "approval"
 	}
 	if cfg.ReviewTTL <= 0 {
-		cfg.ReviewTTL = 10 * time.Minute
+		cfg.ReviewTTL = 60 * time.Second
 	}
 	if cfg.ReviewTTL > 30*time.Minute {
 		return nil, errors.New("待审时长不能超过 30 分钟")

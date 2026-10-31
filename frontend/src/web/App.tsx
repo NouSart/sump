@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { decideApproval, fetchHistory, fetchOverview, fetchTasks, parseMeta, resetSetting, resumeTask, sendMessage, setSetting } from './api';
+import { decideApproval, fetchHistory, fetchOverview, fetchTasks, parseMeta, resetSetting, retryRound, resumeTask, sendMessage, setSetting } from './api';
 import { PortalView } from './components/PortalView';
 import { MessageCards } from './components/MessageCards';
 import { buildFeed } from './messageFeed';
@@ -83,6 +83,8 @@ export function App() {
   // 语言包：界面文案全部走它，切语言即时生效（不重启服务）。
   const { locale, locales, setLocale, t } = useLocalePack();
   const [messages, setMessages] = useState<PortalMessage[]>([]);
+  // 上一轮推理失败、任务还开着 → 显示「重试」。由 deliver 的文案前缀置位，发新消息时收起。
+  const [retryable, setRetryable] = useState(false);
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [timers, setTimers] = useState<TimerView[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
@@ -195,6 +197,9 @@ export function App() {
           id: nextLocalMessageID(),
         }),
       );
+      // 失败说明（reasoner 在 LLM 失败时发的那条）出现 → 给用户一个「重试」入口；
+      // 正常答复到达 → 收起它。判定靠稳定的文案前缀，重试是否可行仍由 reasoner 回答。
+      setRetryable(d.text.startsWith('⚠️ 本轮推理失败'));
       // 答复到了：任务名/状态可能刚被判定改过，顺手对齐一次（失败不影响对话）。
       void fetchTasks()
         .then(setTasks)
@@ -584,6 +589,16 @@ export function App() {
             }}
             tasks={tasks}
             workflowExpand={workflowExpand.mode}
+            retryable={retryable}
+            onRetry={async () => {
+              try {
+                await retryRound();
+                setRetryable(false);
+              } catch (err) {
+                setRetryable(true);
+                setPortalError(`${t('ui.app.retryFailed', '重试失败：')}${(err as Error).message}`);
+              }
+            }}
             t={t}
           />
         )}

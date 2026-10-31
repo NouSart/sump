@@ -154,3 +154,13 @@ export function decideApproval(itemId: string, decision: 'allow' | 'deny', note 
     body: JSON.stringify({ item_id: itemId, decision, note }),
   });
 }
+
+// retryRound 让 reasoner 对「上一轮失败、任务还开着」的会话再跑一轮。
+// 能不能重试由 reasoner 判定（门户不猜）：被拒时会抛出带原因的错误。
+export function retryRound(): Promise<{ retried: boolean }> {
+  return request<{ retried: boolean }>('/api/retry', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+}

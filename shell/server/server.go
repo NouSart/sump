@@ -38,7 +38,7 @@ const (
 	defaultTimeout      = 5 * time.Minute
 	defaultMaxOutput    = 256 << 10        // 单流输出上限 256KiB
 	defaultMaxRunning   = 64               // 同时在跑的命令上限（熔断，不是调度策略）
-	defaultApprovalWait = 10 * time.Minute // 第二层要等用户裁决；与 approval 的 -review-ttl 对齐
+	defaultApprovalWait = 60 * time.Second // 第二层要等用户裁决；必须与 approval 的 -review-ttl 默认值一致
 	maxPendingApprovals = 1024
 )
 
