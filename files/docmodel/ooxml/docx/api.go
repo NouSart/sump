@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/QAQ-awa-QAQ/sump/files/docmodel"
+	"github.com/NouSart/sump/files/docmodel"
 )
 
 // 默认值：查找一次最多回 20 处（够定位，不至于把上下文塞满）；分页读默认 4000 字

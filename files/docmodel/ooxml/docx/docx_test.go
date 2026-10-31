@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QAQ-awa-QAQ/sump/files/docmodel"
-	"github.com/QAQ-awa-QAQ/sump/files/docmodel/ooxml"
+	"github.com/NouSart/sump/files/docmodel"
+	"github.com/NouSart/sump/files/docmodel/ooxml"
 )
 
 const testNS = `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"`
