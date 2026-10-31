@@ -85,6 +85,11 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "edit_word", Input: "{id, operations:[{op, old, new}]}", Output: "{id, replaced}（就地修改 .docx 正文；v0 仅 op='replace'）", Tool: true},
 			{Action: "edit_ppt", Input: "{id, operations:[{op, old, new}]}", Output: "{id, replaced}（就地修改 .pptx 幻灯片文本；v0 仅 op='replace'）", Tool: true},
 			{Action: "edit_pdf", Input: "{id, operations:[{op, pages?, degrees?, properties?}]}", Output: "{id, applied}（就地修改 .pdf；v0 支持 set_info/rotate/delete_pages/keep_pages）", Tool: true},
+			{Action: "outline", Input: "{id, depth?}", Output: "{id, doc_kind, digest, nodes:[{id, type, text, level, truncated, children}], node_count, chars, tables, parts, warnings}（先看结构再决定读哪段；digest 是整篇指纹）", Tool: true},
+			{Action: "read_range", Input: "{id, node?, offset?, limit?}", Output: "{id, doc_kind, digest, node, text, total, next}（按节点分页读；next 非 0 表示还有下一块）", Tool: true},
+			{Action: "find", Input: "{id, text, node?, regex?, limit?}", Output: "{id, digest, matches:[{node, run, start, end, context}]}（只找位置不改文档；同段多处各占一条）", Tool: true},
+			{Action: "patch", Input: "{id, anchor?, operations:[{op, node, range?, text?, anchor?}]}", Output: "{id, applied, digest, diff, warnings}（按节点地址就地改 .docx；op = replace_text / delete_node；整批原子）", Tool: true},
+			{Action: "verify", Input: "{id, digest?, contains?, not_contains?}", Output: "{id, ok, digest, failures}（改完自查：指纹与片段核对）", Tool: true},
 		},
 		Logger: logger,
 	})
@@ -122,6 +127,11 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("edit_word", s.actionEditWord)
 	s.Handle("edit_ppt", s.actionEditPpt)
 	s.Handle("edit_pdf", s.actionEditPdf)
+	s.Handle("outline", s.actionDocOutline)
+	s.Handle("read_range", s.actionDocReadRange)
+	s.Handle("find", s.actionDocFind)
+	s.Handle("patch", s.actionDocPatch)
+	s.Handle("verify", s.actionDocVerify)
 	// 只读项：启动参数带起来的（换它要重启）。db/dir 是存储身份——运行中换库/换目录
 	// 意味着一批在途读写换个落点，不做（与 images 同口径）。
 	s.HandleReadOnly("db", cfg.DBPath)
