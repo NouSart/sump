@@ -71,24 +71,29 @@ func makePptxWith(t *testing.T, opts pptxOpts, slides ...[]string) []byte {
 	writeZipEntry(t, w, "_rels/.rels", rels)
 
 	if !opts.NoPresPart {
-		var presRels strings.Builder
-		presRels.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+		// opts.Extra 里同名的条目优先，便于测试替换 presentation.xml / rels。
+		if _, ok := opts.Extra["ppt/_rels/presentation.xml.rels"]; !ok {
+			var presRels strings.Builder
+			presRels.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`)
-		for i := range slides {
-			presRels.WriteString(fmt.Sprintf(`<Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide%d.xml"/>`, i+1, i+1))
+			for i := range slides {
+				presRels.WriteString(fmt.Sprintf(`<Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide%d.xml"/>`, i+1, i+1))
+			}
+			presRels.WriteString(`</Relationships>`)
+			writeZipEntry(t, w, "ppt/_rels/presentation.xml.rels", presRels.String())
 		}
-		presRels.WriteString(`</Relationships>`)
-		writeZipEntry(t, w, "ppt/_rels/presentation.xml.rels", presRels.String())
 
-		presentation := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+		if _, ok := opts.Extra["ppt/presentation.xml"]; !ok {
+			presentation := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <p:sldIdLst>`
-		for i, num := range order {
-			presentation += fmt.Sprintf(`<p:sldId id="%d" r:id="rId%d"/>`, 256+i+1, num)
-		}
-		presentation += `</p:sldIdLst>
+			for i, num := range order {
+				presentation += fmt.Sprintf(`<p:sldId id="%d" r:id="rId%d"/>`, 256+i+1, num)
+			}
+			presentation += `</p:sldIdLst>
 </p:presentation>`
-		writeZipEntry(t, w, "ppt/presentation.xml", presentation)
+			writeZipEntry(t, w, "ppt/presentation.xml", presentation)
+		}
 	}
 
 	for i, paras := range slides {
@@ -380,5 +385,68 @@ func TestReadPptxFallsBackToFilenameOrder(t *testing.T) {
 	want := "# 幻灯片 1\n甲\n# 幻灯片 2\n乙"
 	if rr.Text != want {
 		t.Fatalf("降级顺序不符:\n%q\n想要:\n%q", rr.Text, want)
+	}
+}
+
+// TestReadPptxFollowsStrictNamespaceOrder 严格模式（purl.oclc.org 命名空间）的 deck 同样按 sldIdLst 排序。
+func TestReadPptxFollowsStrictNamespaceOrder(t *testing.T) {
+	sc := startStubCenter(t)
+	srv := startFiles(t, sc.URL(), 4000)
+	data := makePptxWith(t, pptxOpts{Extra: map[string]string{
+		"ppt/_rels/presentation.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://purl.oclc.org/ooxml/package/relationships">
+  <Relationship Id="rId1" Type="http://purl.oclc.org/ooxml/officeDocument/relationships/slide" Target="slides/slide1.xml"/>
+  <Relationship Id="rId2" Type="http://purl.oclc.org/ooxml/officeDocument/relationships/slide" Target="slides/slide2.xml"/>
+</Relationships>`,
+		"ppt/presentation.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="http://purl.oclc.org/ooxml/presentationml/main" xmlns:r="http://purl.oclc.org/ooxml/officeDocument/relationships">
+  <p:sldIdLst><p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId1"/></p:sldIdLst>
+</p:presentation>`,
+	}}, []string{"甲"}, []string{"乙"})
+	id := savePptx(t, srv.WsURL(), "严格模式.pptx", data)
+
+	rr := readFile(t, srv.WsURL(), id)
+	want := "# 幻灯片 1\n乙\n# 幻灯片 2\n甲"
+	if rr.Text != want {
+		t.Fatalf("严格命名空间未按 sldIdLst 排序:\n%q\n想要:\n%q", rr.Text, want)
+	}
+}
+
+// TestReadPptxSkipsDanglingSlideRef sldIdLst 指向不存在的关系时跳过该条，其余顺序照旧，且不报错。
+func TestReadPptxSkipsDanglingSlideRef(t *testing.T) {
+	sc := startStubCenter(t)
+	srv := startFiles(t, sc.URL(), 4000)
+	// 关系表只有 rId1/rId2；sldIdLst 先写一个不存在的 rId99，再写 rId2。
+	data := makePptxWith(t, pptxOpts{Extra: map[string]string{
+		"ppt/presentation.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="256" r:id="rId99"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst>
+</p:presentation>`,
+	}}, []string{"甲"}, []string{"乙"})
+	id := savePptx(t, srv.WsURL(), "悬空引用.pptx", data)
+
+	// rId99 被跳过；rId2 排在前，未被引用的 slide1 追加在后。
+	rr := readFile(t, srv.WsURL(), id)
+	want := "# 幻灯片 1\n乙\n# 幻灯片 2\n甲"
+	if rr.Text != want {
+		t.Fatalf("悬空引用处理不符:\n%q\n想要:\n%q", rr.Text, want)
+	}
+}
+
+// TestReadPptxToleratesBrokenPresentation presentation.xml 损坏时整体降级为文件名顺序，不报错。
+// 截断点特意放在第一张 <p:sldId> 完整、第二张残缺的位置：这样「必须先读出半截顺序」的实现
+// 会交出 [slide2]，得到 乙→甲 的错序；整体降级才能保证 甲→乙。
+func TestReadPptxToleratesBrokenPresentation(t *testing.T) {
+	sc := startStubCenter(t)
+	srv := startFiles(t, sc.URL(), 4000)
+	data := makePptxWith(t, pptxOpts{Extra: map[string]string{
+		"ppt/presentation.xml": `<p:presentation><p:sldIdLst><p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId1"`,
+	}}, []string{"甲"}, []string{"乙"})
+	id := savePptx(t, srv.WsURL(), "损坏清单.pptx", data)
+
+	rr := readFile(t, srv.WsURL(), id)
+	want := "# 幻灯片 1\n甲\n# 幻灯片 2\n乙"
+	if rr.Text != want {
+		t.Fatalf("损坏清单应降级为文件名顺序:\n%q\n想要:\n%q", rr.Text, want)
 	}
 }

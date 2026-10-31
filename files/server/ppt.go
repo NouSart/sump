@@ -172,8 +172,13 @@ func slideRelIDs(zr *zip.Reader) []string {
 	inList := false
 	for {
 		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
 		if err != nil {
-			break // EOF 或中途损坏：已读到的顺序仍然可用，剩下的走降级补齐
+			// presentation.xml 损坏时不要交出「半截顺序」：整份降级到文件名顺序，
+			// 免得出现前几页按 sldIdLst、后面按文件名的混合顺序。
+			return nil
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
