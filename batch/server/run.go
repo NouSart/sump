@@ -391,7 +391,9 @@ func (j *runningJob) claim() (queued, bool) {
 
 // runItem 执行一项：调目标动作，落终态，然后按需唤醒。
 func (s *Server) runItem(j *runningJob, q queued) {
-	_ = s.store.SetItemStatus(j.id, q.seq, protocol.BatchItemRunning)
+	if err := s.store.SetItemStatus(j.id, q.seq, protocol.BatchItemRunning); err != nil {
+		s.logger.Printf("任务 %s 第 %d 项置 running 落库失败: %v（重启后可能重跑）", j.id, q.seq, err)
+	}
 
 	base := s.lifeCtx
 	if base == nil {
@@ -477,10 +479,14 @@ func (s *Server) record(j *runningJob, q queued, it store.Item) {
 	// 每个关键项结束都落一次进度：否则任务结束后从账本读到的 KeyDone 会停在
 	// "上次推送时的值"，甚至一直是 0——那是许愿，不是记账。
 	if q.key {
-		_ = s.store.SetKeyDone(j.id, keyDone)
+		if err := s.store.SetKeyDone(j.id, keyDone); err != nil {
+			s.logger.Printf("任务 %s 的关键项进度落库失败: %v（账本会停在旧值）", j.id, err)
+		}
 	}
 	if keyWake {
-		_ = s.store.SetWoken(j.id, true)
+		if err := s.store.SetWoken(j.id, true); err != nil {
+			s.logger.Printf("任务 %s 的唤醒水位落库失败: %v（重启后可能重复唤醒）", j.id, err)
+		}
 		s.pushProgress(j, "key", keyWakeText(snapshot), now)
 	}
 	if failWake {
