@@ -37,6 +37,7 @@
 - **传输**：WebSocket；**编码**：MessagePack（二进制帧）。JSON 保留作未来调试开关。
 - 落地库（不是规范，只是各语言的现成实现）：Go `vmihailenco/msgpack`（或 `msgp`）、Python `msgspec`（同库支持 MessagePack + JSON）、TS `msgpackr`。
 - **访问模型**：默认短连接、用完即走；只有「工具调用那一跳」等响应（其余发出即完）。
+- **信任边界**：内部 WS **不做身份认证**——`from` 是发送方自称的字段，服务只在敏感动作上比对它（如 `approval` 只认门户裁决）。因此部署前提是「可信本机 / 内网」，**不要直接暴露公网**（见 [approval.md](approval.md) 第 9 节）。这条是部署假设，不是代码保证；要上公网得先补认证。
 
 **信封**（所有控制消息一层壳）：
 
@@ -118,7 +119,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
   "data": { "exit_code": 0, "stdout": "…", "stderr": "", "duration_ms": 12 } }
 ```
 
-- `item_id`：受理回执里的句柄（调用方据此把补报配回自己的记账）；补报的 `phase` 与 `data` 内容由服务自定；受理回执里的 `phase` 与补报同一词汇（受理就是第一个阶段；shell 当前：`queued`）。**字段名不能改**：reasoner 的 `trackAsync` 只认这个键。
+- `item_id`：受理回执里的句柄（调用方据此把补报配回自己的记账）；补报的 `phase` 与 `data` 内容由服务自定；受理回执里的 `phase` 与补报同一词汇（受理就是第一个阶段；shell 当前：`queued`）。**字段名不能改**：reasoner 的 `beginAsync`（`reasoner/server/async.go`）只认这个键。
 - `text` 是可直接阅读的正文（调用方据此注入上下文 / 呈现）；`final: true` = 该次受理的最后一条。
 - **零阻塞**：受理回执不等审批、不等执行；补报各自独立一跳；调用方离线 = 补报发不出去（服务只记日志，不排队补发）。
 - 调用方缺失句柄对应关系时的补报（重复 / 服务重启过）**忽略即可**，不是错误。
@@ -157,7 +158,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 | 域判别字段（将来） | 新增第二个执行域时定义独立字段；当前协议尚未发送，不复用 `dialect` | 建议 `kind`，取值如 `exec` / `fs` / `http`；其他域各自声明执行字段组，裁决包、摘要绑定、有效期、fail-closed 共用 |
 | 审批枚举 | 取值由 approval 服务定义，见 [approval.md](approval.md) | `decision`：`allow` / `deny` / `review`；`reason_code`：`RULE_ALLOW` `POLICY_DENY` `DYNAMIC_BEHAVIOR` `NO_MATCHING_RULE` `PARSE_ERROR` `UNSUPPORTED_DIALECT` `CONTEXT_UNKNOWN` `RUNTIME_MISMATCH` `LIMIT_EXCEEDED`，第二层用户裁决：`USER_APPROVED` `USER_DENIED` |
 | 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `files` `qq` `shell` `timer` `batch` `mcp` `frontend` `embedding` `approval` |
-| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `batch.concurrency` `batch.max_concurrency` `batch.max_inflight` `batch.max_items` `batch.item_timeout_ms` `batch.preview_bytes` `batch.job_ttl_ms` `batch.resume_on_start` `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `recall.embedding` `max_mb` `read_max_chars` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.max_running` `approval.service` `approval.timeout_ms` `policy.json` `max_ms` `max_pending` `portal` `llm.base` `llm.model` `llm.key` `memory` `images` `name` `addr` `center` `napcat.url` `napcat.token` `reasoner` `db` `dir` `settings` `web` |
+| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `concurrency` `max_concurrency` `max_inflight` `max_items` `item_timeout_ms` `preview_bytes` `job_ttl_ms` `resume_on_start`（batch 现状是裸键；按本行规则改名属于破坏性变更，见 TODO.md 的命名统一） `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `recall.embedding` `max_mb` `read_max_chars` `owner` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.max_running` `approval.service` `approval.timeout_ms` `policy.json` `max_ms` `max_pending` `portal` `llm.base` `llm.model` `llm.key` `memory` `images` `files` `auto_approve` `reflect.on` `name` `addr` `center` `napcat.url` `napcat.token` `reasoner` `db` `dir` `settings` `web` |
 | 名片字段（`provides[]`） | 小写下划线；跨语言一致 | `action` `input` `output` `tool` `async` `batchable` |
 
 审批设置键补充：`policy.json`（approval 声明的规则快照配置）。`approval_result` 没有注册为动作；审批结果作为 `approval_request` 的响应返回，并由 shell 的 `report_result` 承载后续反馈。

@@ -41,7 +41,10 @@ func (d *Document) Digest() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Text 返回整篇可见文本（段落以换行分隔，与 read 的正文提取同口径）。
+// Text 返回整篇可见文本（段落以单个换行分隔）。
+//
+// 注意：`read` 的正文提取用的是空行分段（`files/server/word.go`），两处格式不同 ——
+// 同一文档在 read 与 read_range/verify 里拿到的是两套换行，别按「同口径」去拼。
 func (d *Document) Text() string {
 	parts := make([]string, 0, len(d.order))
 	for _, id := range d.order {
