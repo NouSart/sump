@@ -333,16 +333,42 @@ type ImageSaveResult struct {
 }
 
 // ImageFetchPayload 是 images.fetch 的 payload。
+//
+// 三种取法（坐标一律是**原图像素**）：
+//   - 只给 id：返回原图（服务间调用用，例如 reasoner 把用户刚发的图内联给 LLM）
+//   - 给 max_side：返回缩略图（长边不超过 max_side）
+//   - 给 x1,y1,x2,y2：返回该矩形内的原图（超过上限会等比缩小，并由 downscaled 说明）
+//
+// 只给一半坐标（例如只有 x1,y1）时，右下角补成原图边界——方便模型只给左上角。
 type ImageFetchPayload struct {
 	ID string `msgpack:"id"`
+	// X1/Y1/X2/Y2 是查看窗口（原图坐标，左闭右开）。全 0 = 不裁剪。
+	X1 int `msgpack:"x1,omitempty"`
+	Y1 int `msgpack:"y1,omitempty"`
+	X2 int `msgpack:"x2,omitempty"`
+	Y2 int `msgpack:"y2,omitempty"`
+	// MaxSide 是返回图的长边上限（像素）；0 = 默认 768。
+	MaxSide int `msgpack:"max_side,omitempty"`
 }
 
-// ImageFetchResult 是 images.fetch 的结果（存入时二进制，取时转 base64）。
+// ImageFetchResult 是 images.fetch / images.fetch_full 的结果（存入时二进制，取时转 base64）。
 type ImageFetchResult struct {
 	ID   string `msgpack:"id"`
 	Mime string `msgpack:"mime"`
 	Data string `msgpack:"data"` // base64（不含 data: 前缀）
-	Size int64  `msgpack:"size"`
+	Size int64  `msgpack:"size"` // 原图字节数（存储里的那份）
+	// 下面这些让模型能「平移窗口」：原图多大、这次返回的是哪块、多大。
+	OriginalWidth  int  `msgpack:"original_width,omitempty"`
+	OriginalHeight int  `msgpack:"original_height,omitempty"`
+	Width          int  `msgpack:"width,omitempty"`
+	Height         int  `msgpack:"height,omitempty"`
+	X1             int  `msgpack:"x1,omitempty"`
+	Y1             int  `msgpack:"y1,omitempty"`
+	X2             int  `msgpack:"x2,omitempty"`
+	Y2             int  `msgpack:"y2,omitempty"`
+	Downscaled     bool `msgpack:"downscaled,omitempty"`
+	// DataBytes 是这次返回的二进制字节数（base64 之前的）。
+	DataBytes int `msgpack:"data_bytes,omitempty"`
 }
 
 // ---------- 文件链（files 服务） ----------
