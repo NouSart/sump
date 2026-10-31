@@ -19,7 +19,7 @@ const (
 	DecisionReview    = "review"
 )
 
-// 第二层（用户裁决）的动作名与裁决码。命名见 SPEC §13。
+// 第二层（用户裁决）的动作名与裁决码。命名见 docs/concepts/protocol.md 第 5 节「动作词汇与工具暴露」。
 const (
 	// ApprovalPendingAction 是 approval → 门户的推送：一条待审命令（不等待回执）。
 	ApprovalPendingAction = "approval_pending"
