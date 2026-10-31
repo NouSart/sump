@@ -70,7 +70,7 @@ func serve(ctx context.Context, args []string) error {
 	name := fs.String("name", "approval", "服务名")
 	path := fs.String("policy", "", "本地 JSON 规则包；中心 policy.json 可覆盖")
 	portal := fs.String("portal", "frontend", "能裁决的门户服务名（空 = 关闭第二层，非白名单直接按未通过返回）")
-	ttl := fs.Duration("review-ttl", 10*time.Minute, "一条待审命令最多挂多久（与 shell 的 approval.timeout_ms 对齐）")
+	ttl := fs.Duration("review-ttl", 60*time.Second, "一条待审命令最多挂多久（必须与 shell 的 approval.timeout_ms 对齐，否则用户批准的是已放弃等待的命令）")
 	maxPending := fs.Int("max-pending", 32, "同时挂起的待审上限（满了按未通过返回，不排队）")
 	if err := fs.Parse(args); err != nil {
 		return err

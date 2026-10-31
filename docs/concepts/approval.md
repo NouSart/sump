@@ -122,14 +122,14 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 
 - **只接受门户裁决**：`approval_decide` / `approval_list` 的 `from` 必须是 `-portal` 指定的服务名（默认 `frontend`），别的服务调一律拒。
 - **挂起的是这条命令，不是审批服务**：每条 jump 独立 goroutine；并发槽只在解析 / 裁决期间占用，等待用户时释放。
-- **TTL**（`-review-ttl`，默认 10 分钟）：到期按 `review` 原样返回（不执行），待审项消失。
-- **门户不在名册**：不挂起，立即按 `review` 返回（不浪费调用方 10 分钟等一个不会来的裁决）。
+- **TTL**（`-review-ttl`，默认 60 秒）：到期按 `review` 原样返回（不执行），待审项消失。**必须与 shell 的 `approval.timeout_ms` 一致** —— shell 先放弃、approval 还挂着的话，用户点的「批准」是一条不会执行的命令。
+- **门户不在名册**：不挂起，立即按 `review` 返回（不浪费调用方等一个不会来的裁决）。
 - **队列满**（`-max-pending`，默认 32）：按 `review` 返回，不排队。
 - 用户批准 → `decision=allow`、`reason_code=USER_APPROVED`、`valid_for_ms=30000`；拒绝 → `deny` + `USER_DENIED`。
 - **许可期从「拿到裁决」起算**（shell 侧）：`valid_for_ms` 仍是 30 秒，但计时起点是收到裁决的时刻——否则用户审 5 分钟、许可早过期，等于白审。
 - 门户重启后用 `approval_list` 恢复列表；approval 侧待审项只在内存里，重启即清空（挂起随之失效，调用方按未通过补报）。
 
-**与「零阻塞」的关系**：阻塞被限制在**调用方自己那条链**——shell 的这条 job 在等裁决（受 `approval.timeout_ms` 限制，默认 10 分钟），审批服务、其它服务、其它命令都不受影响。门户慢或挂掉也不阻塞（推送是 Fire，不等回执）。
+**与「零阻塞」的关系**：阻塞被限制在**调用方自己那条链**——shell 的这条 job 在等裁决（受 `approval.timeout_ms` 限制，默认 60 秒，与 `-review-ttl` 同值），审批服务、其它服务、其它命令都不受影响。门户慢或挂掉也不阻塞（推送是 Fire，不等回执）。
 
 ## 9. 边界（说清楚，不假装）
 
@@ -141,14 +141,11 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 
 ## 10. 未实现
 
-`approval/review/ports.go` 保留四个接口（解释与通知）：
+「命令解释与富通知」还没有实现，**也没有预留端口**：原先 `approval/review` 包里那四个接口
+（请求解释 / 初次通知 / 接收解释 / 回传界面）全仓无人 import，留着只是一个看起来像边界的空壳，
+已删除。需要时按当时的真实需求重新设计，而不是先摆一个占位接口。
 
-1. `ExplainPort.RequestExplanation`：请求模型解释命令。
-2. `UserNoticePort.NotifyPending`：初次通知用户服务。
-3. `ExplanationReceiver.ReceiveExplanation`：接收模型回传。
-4. `UserUpdatePort.UpdateExplanation`：转发解释并更新用户界面。
-
-Context 携带原请求、裁决、trace、boss；Explanation 携带 item_id、执行摘要、目的、影响、未知项。它们目前没有生产实现或网络路由。**解释结果不自动成为执行许可**，LLM 或用户超时也不能隐式放行。
+设计要求（撤销端口不等于撤销约束）：**解释结果不自动成为执行许可**，LLM 或用户超时也不能隐式放行。
 
 ## 11. 运行与测试
 
