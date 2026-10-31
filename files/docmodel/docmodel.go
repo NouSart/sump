@@ -24,7 +24,7 @@ import (
 	"sync"
 )
 
-// Kind 是文档类型（与存储层的 doc_kind 一致）。
+// Kind 是文档类型，与协议载荷的 doc_kind 同名。
 type Kind string
 
 const (

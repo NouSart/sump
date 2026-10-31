@@ -457,7 +457,7 @@ type DocNode struct {
 // digest 是整篇可见文本的指纹，后续 patch 可把它当 anchor 用（防止照着旧目录改）。
 type DocOutlineResult struct {
 	ID        string    `msgpack:"id"`
-	Kind      string    `msgpack:"kind"` // docx
+	DocKind   string    `msgpack:"doc_kind"` // docx（未来 pdf / xlsx / pptx）
 	Digest    string    `msgpack:"digest"`
 	Nodes     []DocNode `msgpack:"nodes"`
 	NodeCount int       `msgpack:"node_count"`
@@ -477,13 +477,13 @@ type DocReadPayload struct {
 
 // DocReadResult 是 files.read_range 的结果：next 非 0 表示还有下一块，续读带上它当 offset。
 type DocReadResult struct {
-	ID     string `msgpack:"id"`
-	Kind   string `msgpack:"kind"`
-	Digest string `msgpack:"digest"`
-	Node   string `msgpack:"node"`
-	Text   string `msgpack:"text"`
-	Total  int    `msgpack:"total"`
-	Next   int    `msgpack:"next,omitempty"`
+	ID      string `msgpack:"id"`
+	DocKind string `msgpack:"doc_kind"`
+	Digest  string `msgpack:"digest"`
+	Node    string `msgpack:"node"`
+	Text    string `msgpack:"text"`
+	Total   int    `msgpack:"total"`
+	Next    int    `msgpack:"next,omitempty"`
 }
 
 // DocFindPayload 是 files.find 的 payload：只找位置，不改文档。

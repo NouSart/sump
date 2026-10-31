@@ -89,7 +89,7 @@ func (s *Server) actionDocOutline(ctx context.Context, _ protocol.Envelope, in p
 	s.logger.Printf("已列出文档结构 %s（%s, %d 个顶层节点, %d 字）", p.ID, meta.Filename, len(nodes), outline.Stats.Chars)
 	return protocol.DocOutlineResult{
 		ID:        p.ID,
-		Kind:      outline.Kind.String(),
+		DocKind:   outline.Kind.String(),
 		Digest:    doc.Digest(),
 		Nodes:     nodes,
 		NodeCount: outline.Stats.Nodes,
@@ -119,13 +119,13 @@ func (s *Server) actionDocReadRange(ctx context.Context, _ protocol.Envelope, in
 		return nil, fmt.Errorf("read_range: 读取 %s 失败: %w", meta.Filename, err)
 	}
 	return protocol.DocReadResult{
-		ID:     p.ID,
-		Kind:   doc.Kind().String(),
-		Digest: doc.Digest(),
-		Node:   chunk.Node.String(),
-		Text:   chunk.Text,
-		Total:  chunk.Total,
-		Next:   chunk.Next,
+		ID:      p.ID,
+		DocKind: doc.Kind().String(),
+		Digest:  doc.Digest(),
+		Node:    chunk.Node.String(),
+		Text:    chunk.Text,
+		Total:   chunk.Total,
+		Next:    chunk.Next,
 	}, nil
 }
 

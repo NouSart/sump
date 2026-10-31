@@ -15,8 +15,8 @@ SUMP v2 的文件库：独立 SQLite 元数据 + 二进制目录，支持保存�
 | `edit_word` | `{id, operations:[{op, old, new}]}` | `{id, replaced}` | LLM 工具；仅编辑 `.docx` 正文；v0 仅 `op="replace"` |
 | `edit_ppt` | `{id, operations:[{op, old, new}]}` | `{id, replaced}` | LLM 工具；仅编辑 `.pptx` 幻灯片文本；v0 仅 `op="replace"` |
 | `edit_pdf` | `{id, operations:[{op, pages?, degrees?, properties?}]}` | `{id, applied}` | LLM 工具；仅编辑 `.pdf`；v0 支持 `set_info`/`rotate`/`delete_pages`/`keep_pages` |
-| `outline` | `{id, depth?}` | `{id, kind, digest, nodes, node_count, chars, tables, parts, warnings}` | LLM 工具；文档结构树（段落 / 表格逐层展开）+ 整篇指纹 `digest` |
-| `read_range` | `{id, node?, offset?, limit?}` | `{id, kind, digest, node, text, total, next}` | LLM 工具；按节点分页读，`node` 空 = 整篇，`next` 非 0 表示还有下一块 |
+| `outline` | `{id, depth?}` | `{id, doc_kind, digest, nodes, node_count, chars, tables, parts, warnings}` | LLM 工具；文档结构树（段落 / 表格逐层展开）+ 整篇指纹 `digest` |
+| `read_range` | `{id, node?, offset?, limit?}` | `{id, doc_kind, digest, node, text, total, next}` | LLM 工具；按节点分页读，`node` 空 = 整篇，`next` 非 0 表示还有下一块 |
 | `find` | `{id, text, node?, regex?, limit?}` | `{id, digest, matches:[{node, run, start, end, context}]}` | LLM 工具；只回命中位置（节点地址 + rune 区间 + 上下文），不改文档 |
 | `patch` | `{id, anchor?, operations:[{op, node, range?, text?, anchor?}]}` | `{id, applied, digest, diff, warnings}` | LLM 工具；按节点地址就地改 `.docx`；`op` = `replace_text`/`delete_node`，整批原子 |
 | `verify` | `{id, digest?, contains?, not_contains?}` | `{id, ok, digest, failures}` | LLM 工具；改完自查（指纹 + 片段核对），不通过也只是回事实不报错 |

@@ -62,7 +62,7 @@ func TestDocOutlineFindPatchVerify(t *testing.T) {
 
 	// 1) outline：结构 + 指纹
 	ol := outline(t, srv.WsURL(), id, 1)
-	if ol.Kind != "docx" || len(ol.Nodes) != 2 || ol.Digest == "" {
+	if ol.DocKind != "docx" || len(ol.Nodes) != 2 || ol.Digest == "" {
 		t.Fatalf("outline 结果不符: %+v", ol)
 	}
 	if ol.Nodes[0].ID != "body/p1" || !strings.Contains(ol.Nodes[0].Text, "上海某某") {
@@ -126,7 +126,7 @@ func TestDocOutlineFindPatchVerify(t *testing.T) {
 	if err := protocol.DecodeRaw(rrp.Data, &rr); err != nil {
 		t.Fatal(err)
 	}
-	if rr.Text != "合计 200 元" || rr.Total != len([]rune("合计 200 元")) || rr.Next != 0 {
+	if rr.DocKind != "docx" || rr.Text != "合计 200 元" || rr.Total != len([]rune("合计 200 元")) || rr.Next != 0 {
 		t.Fatalf("read_range 结果不符: %+v", rr)
 	}
 	if rr.Digest != pres.Digest {
