@@ -279,7 +279,7 @@ func (s *Store) SetKeyDone(itemID string, n int) error {
 // MarkItem 落一项的终态，并抹掉原始 input。
 //
 // 抹掉不是可选项：落盘窗口只覆盖任务存活期，项一终结就没有"还要重跑"的可能，
-// 留着就是纯隐私负担（DESIGN §3.5）。
+// 留着就是纯隐私负担。
 //
 // preview 列是 NOT NULL DEFAULT x”：直接写 nil 会被 SQLite 拒（DEFAULT 只在"没写这列"
 // 时生效），失败项本来就没有摘要，所以这里显式归一成空 BLOB。
