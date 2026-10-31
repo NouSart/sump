@@ -99,7 +99,14 @@ func (c *Client) Call(ctx context.Context, env Envelope) (Envelope, error) {
 	}()
 
 	if err := c.Send(env); err != nil {
-		return Envelope{}, err
+		// Send 写失败时会关连接。此时调用方关心的是「连接没了」，
+		// 而不是底层是 ECONNRESET 还是 EPIPE——和读循环那条路径统一。
+		select {
+		case <-c.closed:
+			return Envelope{}, ErrConnClosed
+		default:
+			return Envelope{}, err
+		}
 	}
 	select {
 	case resp := <-ch:
