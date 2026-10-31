@@ -429,6 +429,9 @@ func pptOpReplace(doc *pptxDoc, op protocol.PptEditOperation) (int, error) {
 	if strings.TrimSpace(op.Old) == "" {
 		return 0, fmt.Errorf("old 不能为空")
 	}
+	if strings.ContainsAny(op.New, "\n\t") {
+		return 0, fmt.Errorf("new 不能含换行或制表符：pptx 的换行是段落级 <a:br/>，v0 不改 run 结构，写不出合法文件")
+	}
 	total := 0
 	for _, name := range doc.names {
 		out, counts, err := replaceInTextNodes([]byte(doc.slides[name]), pptxTextSpec,
