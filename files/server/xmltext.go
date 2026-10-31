@@ -4,18 +4,16 @@
 // 把 old="t" 替换成 "Z" 会把 <a:t> 改成 <a:Z>，文本节点再也提不出来，
 // 而调用方拿到的是「成功 13 处」和一个空文档（#15）。
 //
-// 这里的做法是逐 token 拷贝原始字节（RawToken + InputOffset），只改目标元素的 CharData，
-// 其余字节一个都不碰。换行/制表符仍按 OOXML 的兄弟节点写法展开
-// （</w:t><w:br/><w:t>），保留原有语义，且复用原始开始标签以保留 xml:space 等属性。
+// 扫描与字节拼接交给 docmodel/ooxml（Scan / TextElements / Apply），这里只留两件
+// 格式相关的事：哪种元素算文本节点，以及换行 / 制表符展开成哪个标签。
 package server
 
 import (
 	"bytes"
-	"encoding/xml"
-	"errors"
 	"fmt"
-	"io"
 	"strings"
+
+	"github.com/NouSart/sump/files/docmodel/ooxml"
 )
 
 // textReplace 是一次纯文本替换。
@@ -32,8 +30,12 @@ type textNodeSpec struct {
 }
 
 var (
+	// docx 的 <w:br/> / <w:tab/> 是 <w:r> 的子元素，和 <w:t> 同级，展开合法。
 	docxTextSpec = textNodeSpec{Element: "t", Break: "<w:br/>", Tab: "<w:tab/>"}
-	pptxTextSpec = textNodeSpec{Element: "t", Break: "<a:br/>", Tab: "<a:tab/>"}
+	// pptx 的 <a:br/> 是段落（<a:p>）的子元素，和 <a:r> 同级；<a:r> 里再塞 <a:br/>
+	// 是非法结构，PowerPoint 会当成需要修复的文件。改 run 结构超出 v0 范围，
+	// 所以这里不给标签：遇到换行 / 制表符宁可报错，也不写出坏文件。
+	pptxTextSpec = textNodeSpec{Element: "t"}
 )
 
 // errTextNotFound 表示某个替换操作在文本节点里一处都没匹配到。
@@ -48,14 +50,21 @@ func (e errTextNotFound) Error() string {
 }
 
 // replaceInTextNodes 按顺序在文本节点内应用 ops，返回新的 XML 与每个 op 的替换处数。
+// 只有内容真的变了的文本节点才产生一次字节替换，其余字节原样保留。
 // 任一 op 一处都没命中时返回 errTextNotFound（此时 out 无意义，调用方不应使用）。
 func replaceInTextNodes(src []byte, spec textNodeSpec, ops []textReplace) ([]byte, []int, error) {
 	if len(ops) == 0 {
 		return src, nil, nil
 	}
+	els, err := ooxml.TextElements(src, spec.Element)
+	if err != nil {
+		return nil, nil, fmt.Errorf("解析 XML 失败: %w", err)
+	}
+
 	counts := make([]int, len(ops))
-	out, err := walkTextNodes(src, spec, func(text string) (string, []int, bool) {
-		next := text
+	var edits []ooxml.Edit
+	for _, el := range els {
+		next := el.Text
 		local := make([]int, len(ops))
 		for i, op := range ops {
 			if n := strings.Count(next, op.Old); n > 0 {
@@ -63,111 +72,71 @@ func replaceInTextNodes(src []byte, spec textNodeSpec, ops []textReplace) ([]byt
 				local[i] = n
 			}
 		}
-		if next == text {
-			return text, nil, false
+		if next == el.Text {
+			continue
 		}
-		return next, local, true
-	}, counts)
-	if err != nil {
-		return nil, nil, err
+		rendered, err := renderTextNode(src[el.Start:el.InnerStart], next, spec)
+		if err != nil {
+			return nil, nil, err
+		}
+		for i, n := range local {
+			counts[i] += n
+		}
+		edits = append(edits, ooxml.Edit{
+			Start:   el.InnerStart,
+			End:     el.InnerEnd,
+			Replace: rendered,
+		})
 	}
+
 	for i := range ops {
 		if counts[i] == 0 {
 			return nil, nil, errTextNotFound{Op: i + 1, Old: ops[i].Old}
 		}
 	}
+	if len(edits) == 0 {
+		return src, counts, nil
+	}
+	out, err := ooxml.Apply(src, edits)
+	if err != nil {
+		return nil, nil, err
+	}
 	return out, counts, nil
 }
 
-// walkTextNodes 逐 token 拷贝 src，只在目标元素的 CharData 上调用 fn；
-// fn 返回 changed=true 时用新文本重写该节点（并展开换行/制表符），否则原样拷贝。
-// counts 会被累加 fn 返回的每个 op 的命中数。
-func walkTextNodes(src []byte, spec textNodeSpec, fn func(string) (string, []int, bool), counts []int) ([]byte, error) {
+// renderTextNode 把新文本渲染成文本节点的内容：换行 / 制表符展开成兄弟标签，
+// 其余字符按 XML 规则转义。展开要先关掉当前文本节点、插入标签、再用原始开始
+// 标签重开——OOXML 里 w:br / w:tab 是 w:t 的兄弟节点，不能嵌在字符数据里；
+// 重开复用原始开始标签，才能保住 xml:space="preserve" 之类的属性。
+func renderTextNode(startTag []byte, text string, spec textNodeSpec) ([]byte, error) {
+	closeTag := "</" + startTagName(startTag) + ">"
 	var buf bytes.Buffer
-	dec := xml.NewDecoder(bytes.NewReader(src))
-
-	var (
-		depth    int    // 目标元素嵌套深度
-		qname    string // 目标元素的限定名（含前缀），用于重新打开
-		startTag []byte // 目标元素的原始开始标签，重新打开时复用（保留属性）
-	)
-
-	for {
-		before := dec.InputOffset()
-		tok, err := dec.RawToken()
-		after := dec.InputOffset()
-		if errors.Is(err, io.EOF) {
-			break
+	for _, seg := range splitKeeps(text) {
+		if seg.tag == "" {
+			buf.WriteString(ooxml.EscapeText(seg.text))
+			continue
 		}
-		if err != nil {
-			return nil, fmt.Errorf("解析 XML 失败: %w", err)
+		tag := spec.Break
+		if seg.tag == "\t" {
+			tag = spec.Tab
 		}
-		raw := src[before:after]
-
-		switch t := tok.(type) {
-		case xml.StartElement:
-			if t.Name.Local == spec.Element {
-				if depth == 0 {
-					qname = t.Name.Space
-					if qname != "" {
-						qname += ":"
-					}
-					qname += t.Name.Local
-					startTag = raw
-				}
-				depth++
-			}
-			buf.Write(raw)
-
-		case xml.EndElement:
-			if t.Name.Local == spec.Element && depth > 0 {
-				depth--
-				if depth == 0 {
-					startTag = nil
-				}
-			}
-			buf.Write(raw)
-
-		case xml.CharData:
-			if depth > 0 {
-				next, local, changed := fn(string(t))
-				if changed {
-					for i, n := range local {
-						if i < len(counts) {
-							counts[i] += n
-						}
-					}
-					writeExpanded(&buf, next, spec, qname, startTag)
-					continue
-				}
-			}
-			buf.Write(raw)
-
-		default:
-			buf.Write(raw)
+		if tag == "" {
+			return nil, fmt.Errorf("该格式的文本节点无法表达换行或制表符（v0 不改 run 结构）")
 		}
+		buf.WriteString(closeTag)
+		buf.WriteString(tag)
+		buf.Write(startTag)
 	}
 	return buf.Bytes(), nil
 }
 
-// writeExpanded 写出替换后的文本节点内容，把 \n / \t 展开成兄弟标签。
-// 展开需要先关掉当前文本节点、插入标签、再用原始开始标签重开——OOXML 里
-// w:br / w:tab 是 w:t 的兄弟节点，不能嵌在字符数据里。
-func writeExpanded(buf *bytes.Buffer, text string, spec textNodeSpec, qname string, startTag []byte) {
-	closeTag := "</" + qname + ">"
-	for _, seg := range splitKeeps(text) {
-		if seg.tag != "" {
-			tag := spec.Break
-			if seg.tag == "\t" {
-				tag = spec.Tab
-			}
-			buf.WriteString(closeTag)
-			buf.WriteString(tag)
-			buf.Write(startTag)
-			continue
-		}
-		escapeText(buf, seg.text)
+// startTagName 取开始标签的限定名：`<w:t xml:space="preserve">` → `w:t`。
+func startTagName(tag []byte) string {
+	s := bytes.TrimPrefix(tag, []byte("<"))
+	if i := bytes.IndexAny(s, " \t\r\n/>"); i >= 0 {
+		return string(s[:i])
 	}
+	return string(s)
 }
 
 type textSeg struct {
@@ -199,8 +168,4 @@ func splitKeeps(s string) []textSeg {
 	}
 	flush()
 	return out
-}
-
-func escapeText(buf *bytes.Buffer, s string) {
-	_ = xml.EscapeText(buf, []byte(s))
 }

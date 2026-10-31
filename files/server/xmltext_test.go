@@ -3,6 +3,8 @@ package server
 import (
 	"strings"
 	"testing"
+
+	"github.com/NouSart/sump/protocol"
 )
 
 // 这些用例守的是 #15 的根因：替换只能落在文本节点里，
@@ -92,5 +94,44 @@ func TestReplaceInTextNodesSequentialOps(t *testing.T) {
 	}
 	if got := string(out); got != `<w:t>丙丁</w:t>` {
 		t.Fatalf("结果不符: %s", got)
+	}
+}
+
+// pptx 的 <a:br/> 是段落（<a:p>）的子元素，塞进 <a:r> 会写出需要修复的文件；
+// 所以 pptxTextSpec 没有换行标签，遇到换行必须报错而不是降级写坏。
+func TestReplaceInTextNodesRejectsUnsupportedBreak(t *testing.T) {
+	src := `<a:p><a:r><a:t>甲</a:t></a:r></a:p>`
+
+	_, _, err := replaceInTextNodes([]byte(src), pptxTextSpec, []textReplace{{Old: "甲", New: "一\n二"}})
+	if err == nil {
+		t.Fatal("pptx 的文本节点表达不了换行，应报错")
+	}
+	if !strings.Contains(err.Error(), "换行") {
+		t.Fatalf("错误应说明换行不支持: %v", err)
+	}
+
+	// 不含换行的普通替换不受影响。
+	out, counts, err := replaceInTextNodes([]byte(src), pptxTextSpec, []textReplace{{Old: "甲", New: "乙"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[0] != 1 || string(out) != `<a:p><a:r><a:t>乙</a:t></a:r></a:p>` {
+		t.Fatalf("普通替换被牵连: counts=%v out=%s", counts, out)
+	}
+}
+
+// pptOpReplace 在动作层就要挡住换行：这里是模型真正会打到的入口。
+func TestPptOpReplaceRejectsNewline(t *testing.T) {
+	doc := &pptxDoc{
+		names:  []string{"ppt/slides/slide1.xml"},
+		slides: map[string]string{"ppt/slides/slide1.xml": `<a:p><a:r><a:t>甲</a:t></a:r></a:p>`},
+	}
+	if _, err := pptOpReplace(doc, protocol.PptEditOperation{Op: "replace", Old: "甲", New: "一\n二"}); err == nil {
+		t.Fatal("new 含换行时应报错")
+	} else if !strings.Contains(err.Error(), "换行") {
+		t.Fatalf("错误应说明换行不支持: %v", err)
+	}
+	if doc.slides["ppt/slides/slide1.xml"] != `<a:p><a:r><a:t>甲</a:t></a:r></a:p>` {
+		t.Fatal("报错时不该改动幻灯片内容")
 	}
 }
