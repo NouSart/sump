@@ -6,6 +6,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -265,28 +266,6 @@ func (d *pptxDoc) save() ([]byte, error) {
 	return out, nil
 }
 
-// contains 报告已转义的 old 是否出现在任一幻灯片中。
-func (d *pptxDoc) contains(old string) bool {
-	for _, name := range d.names {
-		if strings.Contains(d.slides[name], old) {
-			return true
-		}
-	}
-	return false
-}
-
-// replaceText 在所有幻灯片中把 old 替换为 new，返回替换条数。
-func (d *pptxDoc) replaceText(old, new string) int {
-	replaced := 0
-	for _, name := range d.names {
-		if count := strings.Count(d.slides[name], old); count > 0 {
-			d.slides[name] = strings.ReplaceAll(d.slides[name], old, new)
-			replaced += count
-		}
-	}
-	return replaced
-}
-
 // pptOpHandler 是单个编辑操作的处理函数：就地修改 doc 并返回本次替换条数。
 // 新增 op 类型时只需实现一个 handler 并注册进 pptOpHandlers，动作协议无需改动。
 type pptOpHandler func(doc *pptxDoc, op protocol.PptEditOperation) (int, error)
@@ -295,16 +274,30 @@ var pptOpHandlers = map[string]pptOpHandler{
 	"replace": pptOpReplace,
 }
 
-// pptOpReplace 实现 op="replace"：在所有幻灯片中把 old 替换为 new。
+// pptOpReplace 实现 op="replace"：在所有幻灯片的 <a:t> 文本节点内把 old 替换为 new。
+// 不能对整段 XML 做字符串替换——那会打到 <a:t> 这类标签名上（#15）。
 func pptOpReplace(doc *pptxDoc, op protocol.PptEditOperation) (int, error) {
 	if strings.TrimSpace(op.Old) == "" {
 		return 0, fmt.Errorf("old 不能为空")
 	}
-	old := escapeForPpt(op.Old)
-	if !doc.contains(old) {
+	total := 0
+	for _, name := range doc.names {
+		out, counts, err := replaceInTextNodes([]byte(doc.slides[name]), pptxTextSpec,
+			[]textReplace{{Old: op.Old, New: op.New}})
+		if err != nil {
+			var nf errTextNotFound
+			if errors.As(err, &nf) {
+				continue // 这一页没有这段文本，继续看下一页
+			}
+			return 0, fmt.Errorf("处理 %s 失败: %w", name, err)
+		}
+		doc.slides[name] = string(out)
+		total += counts[0]
+	}
+	if total == 0 {
 		return 0, fmt.Errorf("未找到文本 %q", op.Old)
 	}
-	return doc.replaceText(old, escapeForPpt(op.New)), nil
+	return total, nil
 }
 
 // editPptx 对 .pptx 的所有幻灯片执行操作列表，返回新字节和替换条数。
@@ -331,15 +324,6 @@ func editPptx(data []byte, ops []protocol.PptEditOperation, budget int64) ([]byt
 		return nil, 0, err
 	}
 	return out, replaced, nil
-}
-
-// pptEscaper 按 OOXML 文本节点约定转义 & < >；引号与撇号原样保留——
-// PowerPoint 在 <a:t> 中不转义引号/撇号，若全量转义会因字节不一致而匹配不到。
-var pptEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
-
-// escapeForPpt 把普通文本转为可安全放入 PPT XML 文本节点的字符串。
-func escapeForPpt(s string) string {
-	return pptEscaper.Replace(s)
 }
 
 // rebuildZipMulti 复制 zip 中所有条目，并用 contents（文件名→新文本）替换命中的条目。
