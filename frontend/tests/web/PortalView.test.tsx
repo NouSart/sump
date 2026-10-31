@@ -20,7 +20,7 @@ function mount(over: { retryable?: boolean; onRetry?: () => Promise<void> }) {
       onSend={async () => true}
       onOpenSettings={() => undefined}
       tasks={[]}
-      workflowExpand="auto"
+      workflowExpand="focus"
       retryable={over.retryable}
       onRetry={over.onRetry}
       t={t}
