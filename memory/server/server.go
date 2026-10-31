@@ -120,9 +120,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "recall", Input: "任务上下文 {conversation_id, messages, boss}", Output: "受理回执；随后向调用方发送 resume（注入记忆后的上下文）"},
 			{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
 			{Action: "history", Input: "{conversation_id, limit}", Output: "{conversation_id, messages:[{role, content, at}]}（按时间正序；供界面回填，不做记忆组装）"},
-			{Action: "conversation_list", Input: "{limit?, include_archived?}", Output: "{conversations:[{id, title, entry, status, created_at, updated_at}]}（按最近活跃排序；不进 provides — 给界面列会话，不是给模型的工具）"},
-			{Action: "conversation_rename", Input: "{id, title}（空标题 = 清掉名字）", Output: "{conversation}（不进 provides）"},
-			{Action: "note", Input: "经验 {content, conversation_id?, task_id?, durability?}（core | durable | transient）", Output: "{id, node_ids, duplicate, skipped}（不进 provides：整理由复盘流程调；duplicate = 同一件事又说了一遍）"},
+			{Action: "conversation_list", Input: "{limit?, include_archived?}", Output: "{conversations:[{id, title, entry, status, created_at, updated_at}]}（按最近活跃排序；不暴露给模型 — 给界面列会话，不是给模型的工具）"},
+			{Action: "conversation_rename", Input: "{id, title}（空标题 = 清掉名字）", Output: "{conversation}（不暴露给模型）"},
+			{Action: "note", Input: "经验 {content, conversation_id?, task_id?, durability?}（core | durable | transient）", Output: "{id, node_ids, duplicate, skipped}（不暴露给模型：整理由复盘流程调；duplicate = 同一件事又说了一遍）"},
 			{Action: "dig", Tool: true, Input: "{entry_id?, node_id?, limit?}（entry_id = 翻同簇兄弟，node_id = 展开整个大类）", Output: "{notes[], total}（顺着线头往下扒）"},
 			{Action: "lineheads", Input: "{query, limit?}", Output: "{heads:[{node_id, text, count, score, task_id, members}]}（一行一条；recall 里自动带）"},
 			{Action: "prune", Input: "{}", Output: "{entries, links}（软剪枝：只标状态、只断干枯的线，不删行）"},
@@ -339,7 +339,7 @@ func (s *Server) actionHistory(_ context.Context, _ protocol.Envelope, in protoc
 }
 
 // actionConversationList 列会话（给门户的历史记录页分行）。
-// 不进 provides：这是界面导航，不是模型该自己调的决策。
+// 不暴露给模型：这是界面导航，不是模型该自己调的决策。
 func (s *Server) actionConversationList(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p protocol.ConversationListPayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
@@ -352,7 +352,7 @@ func (s *Server) actionConversationList(_ context.Context, _ protocol.Envelope, 
 	return protocol.ConversationListResult{Conversations: list}, nil
 }
 
-// actionConversationRename 改会话名（空标题 = 清掉名字）。不进 provides：起名是人的事。
+// actionConversationRename 改会话名（空标题 = 清掉名字）。不暴露给模型：起名是人的事。
 func (s *Server) actionConversationRename(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p protocol.ConversationRenamePayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
@@ -511,7 +511,7 @@ func (s *Server) actionRemember(ctx context.Context, env protocol.Envelope, in p
 	return protocol.RememberResult{ID: id, Created: created}, nil
 }
 
-// actionForget 软删一条长期记忆（不进 provides——不给 LLM 删记忆的按钮；手动 / 直接跳转调用）。
+// actionForget 软删一条长期记忆（不暴露给模型——不给 LLM 删记忆的按钮；手动 / 直接跳转调用）。
 func (s *Server) actionForget(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p protocol.ForgetPayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {

@@ -123,9 +123,11 @@ func (s *Server) controlOne(op, id string) bool {
 				s.logger.Printf("取消任务 %s 时跳过未开始项失败: %v", id, err)
 			}
 			counts, _ := s.store.CountByStatus(id)
-			_ = s.store.Finish(id, protocol.BatchPhaseCancelled,
+			if err := s.store.Finish(id, protocol.BatchPhaseCancelled,
 				counts[protocol.BatchItemOK], counts[protocol.BatchItemFailed],
-				counts[protocol.BatchItemSkipped], "已取消（未开始的项作废）", time.Now())
+				counts[protocol.BatchItemSkipped], "已取消（未开始的项作废）", time.Now()); err != nil {
+				s.logger.Printf("取消任务 %s 落库失败: %v（重启后它会按账本复活）", id, err)
+			}
 			return true
 		}
 	case protocol.BatchPhaseAccepted, protocol.BatchPhaseRunning:
@@ -149,7 +151,9 @@ func (s *Server) controlMemory(op string, j *runningJob) bool {
 		}
 		j.paused = true
 		j.mu.Unlock()
-		_ = s.store.SetPhase(j.id, protocol.BatchPhasePaused)
+		if err := s.store.SetPhase(j.id, protocol.BatchPhasePaused); err != nil {
+			s.logger.Printf("任务 %s 暂停状态落库失败: %v（重启后会按账本恢复，可能重现）", j.id, err)
+		}
 		// 槽位不在这里放：在飞的项还占着真实并发。等调度循环把在飞的收完、确认暂停后
 		// 再一次性归还（见 runScheduler 的暂停出口）。
 		s.logger.Printf("任务 %s 已暂停（在飞的项会跑完）", j.id)
@@ -189,7 +193,9 @@ func (s *Server) controlMemory(op string, j *runningJob) bool {
 		j.reserved = need
 		j.paused = false
 		j.mu.Unlock()
-		_ = s.store.SetPhase(j.id, protocol.BatchPhaseRunning)
+		if err := s.store.SetPhase(j.id, protocol.BatchPhaseRunning); err != nil {
+			s.logger.Printf("任务 %s 恢复状态落库失败: %v（重启后会按账本恢复）", j.id, err)
+		}
 		if !s.startBackground(func() { s.runScheduler(j) }) {
 			s.release(need)
 			s.logger.Printf("任务 %s 恢复失败：服务正在关闭", j.id)

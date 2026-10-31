@@ -170,6 +170,15 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}()
 	s.logger.Printf("%s 监听 %s", s.cfg.Name, s.selfURL)
+	// 内部 WS 不做身份认证：信封里的 from 是发送方自称的字段，只在敏感动作上比对
+	// （见 docs/concepts/protocol.md 的「信任边界」）。这条日志是部署前提的显式回声——
+	// 把端口暴露到不可信网络之前，看到它的那个人应该先停一下。
+	if addr := ln.Addr().String(); addr != "" {
+		host, _, _ := net.SplitHostPort(addr)
+		if host != "127.0.0.1" && host != "::1" && host != "localhost" {
+			s.logger.Printf("%s 监听在非回环地址 %s：内部协议无身份认证，请确认仅可信内网可达", s.cfg.Name, host)
+		}
+	}
 
 	if err := s.connectAndRegister(ctx); err != nil {
 		lifeCancel()
