@@ -39,6 +39,8 @@ SUMP 是「服务的互联网」式智能体系统：每个能力是**独立进�
 | 4 | qq 入口需要外部 NapCat | 不起 NapCat 就只有门户一个入口 |
 | 5 | 审批第二层只有「批准 / 拒绝」 | 解释（LLM 解读命令）与富通知未做；用户批准后 30 秒内必须执行（排队过期即作废） |
 | 6 | 门户只有一个会话 | 会话身份固定为 `web:private:owner`，还没有多会话列表；任务板块的「会话 → 任务」目录目前只挂这一个 |
+| 7 | 审批档位对 PowerShell 不生效 | `auto_approve` 只在 bash 侧被读取（`engine.Tier()` 的唯一调用点），面板上改档位对 PowerShell 命令没有效果 —— [#31](https://github.com/NouSart/sump/issues/31) |
+| 8 | 每条命令的审批解析约 276ms | 每次评估都起一个 `pwsh` 子进程做 AST 解析（p50 276ms / p95 293ms）；它落在每条命令的必经路径上 —— [#33](https://github.com/NouSart/sump/issues/33) |
 
 ## 文档
 
