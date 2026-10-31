@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -18,7 +19,12 @@ import (
 	"github.com/NouSart/sump/protocol"
 )
 
-const pptxSlidesDir = "ppt/slides/"
+const (
+	pptxSlidesDir = "ppt/slides/"
+	// presentation.xml 的 <p:sldIdLst> 才是放映顺序；slideN.xml 的编号只是部件名。
+	pptxPresentationPart = "ppt/presentation.xml"
+	pptxPresentationRels = "ppt/_rels/presentation.xml.rels"
+)
 
 // cleanMime 去掉 mime 中可选的 "; charset=..." 参数，只保留媒体类型主体。
 func cleanMime(mime string) string {
@@ -64,7 +70,8 @@ func pptxToText(data []byte, maxChars int, budget int64) (string, bool, error) {
 		return "", false, err
 	}
 
-	// 按文件名顺序读取 ppt/slides/slideN.xml，保证幻灯片顺序稳定。
+	// 按放映顺序读取幻灯片：顺序以 presentation.xml 的 <p:sldIdLst> 为准，
+	// 不按 slideN.xml 的文件名编号（PowerPoint 里拖过页序的 deck 两者不同）。
 	var slides []string
 	for _, name := range slideXMLNames(zr) {
 		text, err := extractSlideText(zr, name)
@@ -105,8 +112,150 @@ func pptxToText(data []byte, maxChars int, budget int64) (string, bool, error) {
 	return strings.TrimRight(b.String(), "\n"), false, nil
 }
 
-// slideXMLNames 返回 zip 中所有幻灯片 XML 文件名（严格匹配 ppt/slides/slide<数字>.xml），按页序排序。
+// slideXMLNames 返回幻灯片 XML 文件名，顺序与 PowerPoint 中的放映顺序一致。
+// 顺序取自 presentation.xml 的 <p:sldIdLst>，经 presentation.xml.rels 的 Id→Target 映射到具体部件。
+// 缺 presentation.xml / rels 或解析失败时退回按文件名编号排序；sldIdLst 未引用但确实存在的幻灯片追加在末尾。
 func slideXMLNames(zr *zip.Reader) []string {
+	byFile := slideNamesByFilename(zr)
+	ordered := slideNamesByPresentationOrder(zr)
+	if len(ordered) == 0 {
+		return byFile
+	}
+	seen := make(map[string]bool, len(ordered))
+	for _, name := range ordered {
+		seen[name] = true
+	}
+	for _, name := range byFile {
+		if !seen[name] {
+			ordered = append(ordered, name)
+		}
+	}
+	return ordered
+}
+
+// slideNamesByPresentationOrder 按 <p:sldIdLst> 的顺序返回幻灯片部件名；无法确定顺序时返回 nil（调用方降级）。
+func slideNamesByPresentationOrder(zr *zip.Reader) []string {
+	ids := slideRelIDs(zr)
+	if len(ids) == 0 {
+		return nil
+	}
+	rels := presentationSlideRels(zr)
+	if len(rels) == 0 {
+		return nil
+	}
+	exists := make(map[string]bool, len(zr.File))
+	for _, f := range zr.File {
+		exists[f.Name] = true
+	}
+	names := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		name, ok := rels[id]
+		if !ok || !exists[name] || seen[name] {
+			continue // 关系缺失、部件不在包里、重复登记：跳过而不是出错
+		}
+		names = append(names, name)
+		seen[name] = true
+	}
+	return names
+}
+
+// slideRelIDs 按文档顺序返回 <p:sldIdLst> 中每个 <p:sldId> 的关系 ID（r:id）。
+// 只认「带命名空间的 id」：<p:sldId> 上另有一个纯数字的 id 属性（放映编号），不能混用。
+func slideRelIDs(zr *zip.Reader) []string {
+	data, err := readZipFile(zr, pptxPresentationPart)
+	if err != nil {
+		return nil
+	}
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	var ids []string
+	inList := false
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// presentation.xml 损坏时不要交出「半截顺序」：整份降级到文件名顺序，
+			// 免得出现前几页按 sldIdLst、后面按文件名的混合顺序。
+			return nil
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "sldIdLst":
+				inList = true
+			case "sldId":
+				if inList {
+					if id := relAttrID(t); id != "" {
+						ids = append(ids, id)
+					}
+				}
+			}
+		case xml.EndElement:
+			if t.Name.Local == "sldIdLst" {
+				inList = false
+			}
+		}
+	}
+	return ids
+}
+
+// relAttrID 取元素上关系命名空间里的 id 属性（r:id）。
+// 过渡模式（schemas.openxmlformats.org）与严格模式（purl.oclc.org）命名空间不同，
+// 所以只判断「有命名空间的 id」，不写死 URL。
+func relAttrID(se xml.StartElement) string {
+	for _, a := range se.Attr {
+		if a.Name.Local == "id" && a.Name.Space != "" {
+			return a.Value
+		}
+	}
+	return ""
+}
+
+// presentationSlideRels 解析 ppt/_rels/presentation.xml.rels，返回 关系ID → zip 内部件名（仅幻灯片关系）。
+func presentationSlideRels(zr *zip.Reader) map[string]string {
+	data, err := readZipFile(zr, pptxPresentationRels)
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Relationships []struct {
+			ID     string `xml:"Id,attr"`
+			Type   string `xml:"Type,attr"`
+			Target string `xml:"Target,attr"`
+		} `xml:"Relationship"`
+	}
+	if err := xml.Unmarshal(data, &doc); err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(doc.Relationships))
+	for _, r := range doc.Relationships {
+		if !strings.HasSuffix(r.Type, "/slide") {
+			continue
+		}
+		if name := pptPartName(r.Target); name != "" {
+			out[r.ID] = name
+		}
+	}
+	return out
+}
+
+// pptPartName 把 rels 里的 Target 解析成 zip 内部件名。
+// Target 相对 presentation.xml 所在目录（如 slides/slide2.xml），或以 "/" 开头表示包内绝对路径。
+func pptPartName(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	if strings.HasPrefix(target, "/") {
+		return strings.TrimPrefix(target, "/")
+	}
+	return path.Join("ppt", target)
+}
+
+// slideNamesByFilename 返回所有幻灯片 XML 文件名（严格匹配 ppt/slides/slide<数字>.xml），按编号排序。
+func slideNamesByFilename(zr *zip.Reader) []string {
 	type slide struct {
 		name string
 		num  int
