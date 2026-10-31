@@ -89,7 +89,7 @@ func New(cfg Config) (*Server, error) {
 	if s.logger == nil {
 		s.logger = log.Default()
 	}
-	s.portalReady = func() bool { return s.portalInRoster(s.portalNow()) }
+	s.portalReady = func() bool { return portalInRoster(s.portalNow(), s.Roster()) }
 	// 挂起要活得比单次动作超时更久：ActionTimeout 必须覆盖 TTL（否则用户还没点，上下文先被掐）。
 	actionTimeout := 8 * time.Second
 	if cfg.Portal != "" {

@@ -41,11 +41,14 @@ func (s *Server) maxPendingNow() int {
 
 // portalInRoster 判断门户是否在名册里。门户不在 = 没人能裁决 → 不挂起，直接按 review 返回
 // （fail-closed：不把调用方的时间浪费在等一个不会到来的裁决上）。
-func (s *Server) portalInRoster(name string) bool {
+//
+// 写成纯函数而不是直接读 s.Roster()：名册在 service 包里，测试拿不到 setter，
+// 之前这个判断因此**从未被执行过**（测试全把 portalReady 换成桩）。
+func portalInRoster(name string, cards []protocol.ServiceCard) bool {
 	if name == "" {
 		return false
 	}
-	for _, card := range s.Roster() {
+	for _, card := range cards {
 		if card.Name == name {
 			return true
 		}
