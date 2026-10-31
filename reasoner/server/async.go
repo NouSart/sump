@@ -273,7 +273,7 @@ func (s *Server) deliverFollowUp(j *asyncJob, text string) string {
 	if st != nil {
 		st.mu.Lock()
 		same := j.origin != nil && (st == j.origin || st.followUpOf == j.origin) && st.trace == j.trace && st.taskID == j.taskID && st.boss == j.boss
-		if !st.closed && same {
+		if !st.closed && !st.finishing && same {
 			st.messages = append(st.messages, llm.Message{Role: "user", Content: text})
 			st.gen++
 			st.mu.Unlock()
@@ -281,7 +281,20 @@ func (s *Server) deliverFollowUp(j *asyncJob, text string) string {
 			s.boardKick(st)
 			return "injected"
 		}
+		// 这一轮正在交付最终答复、马上收尾：注入进去的消息不会再开新轮次
+		// （boardKick 看到 running），收尾后 gen 检查也认为没有未处理进展，
+		// 等于静默丢掉。提前按已收尾处理（置 closed + 摘板），改走下面的开补报轮。
+		closing := st.finishing && same
+		if closing {
+			st.closed = true
+		}
 		st.mu.Unlock()
+		if closing {
+			if s.board[j.cid] == st {
+				delete(s.board, j.cid)
+			}
+			st = nil
+		}
 	}
 	if j.boss == "" {
 		s.boardMu.Unlock()

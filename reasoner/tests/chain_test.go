@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,7 +25,11 @@ type stubBoss struct {
 	srv       *http.Server
 	delivered chan protocol.DeliverPayload
 	progress  chan protocol.ProgressPayload
+	delay     atomic.Int64 // 交付响应前的停顿：把补报卡在「正在交付」的窗口里（见 TestReportResultNotSwallowedWhileDelivering）
 }
+
+// setDeliverDelay 设置交付响应的延迟（0 = 不延迟）。
+func (b *stubBoss) setDeliverDelay(d time.Duration) { b.delay.Store(int64(d)) }
 
 func startStubBoss(t *testing.T, center *stubCenter) *stubBoss {
 	t.Helper()
@@ -92,6 +97,9 @@ func (b *stubBoss) handleWS(w http.ResponseWriter, r *http.Request) {
 			select {
 			case b.delivered <- p:
 			default:
+			}
+			if d := time.Duration(b.delay.Load()); d > 0 {
+				time.Sleep(d)
 			}
 			resp, _ := protocol.NewResponse(env, "stub-boss", protocol.ResponsePayload{OK: true})
 			c.send(resp)
@@ -248,26 +256,28 @@ func TestInferChain(t *testing.T) {
 		return false
 	}, 5*time.Second)
 	var gotUser, gotAssistant, gotCall, gotResult bool
-	lastSeq := int64(0)
+	var seqUser, seqAssistant, seqCall, seqResult int64
 	for _, s := range stores {
-		if s.Seq <= lastSeq {
-			t.Fatalf("seq 必须单调递增: %+v", stores)
-		}
-		lastSeq = s.Seq
 		switch {
 		case s.Role == "user" && s.Kind == "user" && s.Content == "你好":
-			gotUser = true
+			gotUser, seqUser = true, s.Seq
 		case s.Role == "assistant" && s.Kind == "assistant" && s.Content == "最终答复：你好！":
-			gotAssistant = true
+			gotAssistant, seqAssistant = true, s.Seq
 		case s.Kind == "tool_call" && s.Content != "":
-			gotCall = true
+			gotCall, seqCall = true, s.Seq
 		case s.Kind == "tool_result" && s.Content != "":
-			gotResult = true
+			gotResult, seqResult = true, s.Seq
 		}
 	}
 	if !gotUser || !gotAssistant || !gotCall || !gotResult {
 		t.Fatalf("store 内容不符（user=%v assistant=%v tool_call=%v tool_result=%v）: %+v",
 			gotUser, gotAssistant, gotCall, gotResult, stores)
+	}
+	// 到达顺序不是契约：reasoner 用 Fire 并发投递，memory 侧按 seq 排序落库与读取
+	// （见 memory/tests/net_resilience_test.go）。这里守的是 seq 体现了因果顺序。
+	if !(seqUser < seqCall && seqCall < seqResult && seqResult < seqAssistant) {
+		t.Fatalf("seq 应体现因果顺序 user<call<result<assistant，实际 user=%d call=%d result=%d assistant=%d: %+v",
+			seqUser, seqCall, seqResult, seqAssistant, stores)
 	}
 }
 
