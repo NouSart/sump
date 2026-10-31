@@ -27,7 +27,7 @@ SUMP v2 的文件库：独立 SQLite 元数据 + 二进制目录，支持保存�
 - `read` 返回文本上限默认 4000 字符，可通过 `-read-max-chars` 或设置中心 `read_max_chars` 调整。
 - 旧版 `.xls` 与 `.doc`（OLE2）不支持阅读和编辑，会提示另存为 `.xlsx` / `.docx`。
 - `edit_word` v0 为纯文本占位符替换：要求 `old` 在 `word/document.xml` 的某个 `<w:t>` 节点内连续出现；不支持跨 run、段落/表格结构增删、图片替换。未知 `op` 类型直接报错。
-- `edit_ppt` v0 为纯文本占位符替换：在所有 `ppt/slides/slideN.xml` 中替换 `old`；要求 `old` 在单个 `<a:t>` 节点内连续出现；不改动母版、版式、备注、图表数据；不支持新增/删除幻灯片。未知 `op` 类型直接报错。
+- `edit_ppt` v0 为纯文本占位符替换：在所有 `ppt/slides/slideN.xml` 中替换 `old`；要求 `old` 在单个 `<a:t>` 节点内连续出现；**`new` 不能含换行或制表符**（pptx 的换行是段落级 `<a:br/>`，改 run 结构不在 v0 范围内，硬塞会写出需要修复的文件）；不改动母版、版式、备注、图表数据；不支持新增/删除幻灯片。未知 `op` 类型直接报错。
 - `edit_pdf` v0 仅做元数据与页操作：`set_info` 写 Info 字典（键用标准名 `Title`/`Author`/`Subject`/`Keywords` 等）、`rotate` 按 90 的整数倍旋转、`delete_pages` 删页、`keep_pages` 只保留指定页。**不支持任意文本替换**（字体子集/编码使纯 Go 可靠替换不可行）、不新增/重排页面结构、不做水印/合并/加解密（这些留给后续 op 扩展）。未知 `op` 类型直接报错。
 - PDF 读取按页提取纯文本，页数受上限封顶；加密 PDF 明确拒绝；扫描件（图片型，无文本层）读取报错引导，不做 OCR。
 - `outline`/`read_range`/`find`/`patch`/`verify` v0 只接 `.docx`（其它格式会明确报"仅支持按节点编辑 .docx"）。节点地址形如 `body/p3`、`body/tbl1/r2/c1/p1`；写到 run 一级（`body/p3/r2`）会归到所在段落。
