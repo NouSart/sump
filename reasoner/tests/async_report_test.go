@@ -271,6 +271,49 @@ func TestReportResultOpensSupplementAfterClose(t *testing.T) {
 	}
 }
 
+// TestReportResultNotSwallowedWhileDelivering：最终补报正好落在「最终答复正在交付、
+// 任务还没收尾」的窗口里时，不能注入那个任务——它这一轮马上结束，boardKick 会因为
+// running 不开新轮次，收尾后 gen 检查又认为没有未处理进展，注入的消息既不会被 LLM
+// 看到，也不会再交付给 boss，等于静默丢掉。正确行为是提前按已收尾处理，走开补报轮。
+func TestReportResultNotSwallowedWhileDelivering(t *testing.T) {
+	sc := startStubCenter(t)
+	async := startStubAsync(t, sc, "cmd-slow-deliver")
+	fake := &llm.Fake{Replies: []llm.Message{
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{
+			ID: "call_1", Type: "function",
+			Function: llm.FunctionCall{Name: "stub-async__run", Arguments: `{"command":"echo hi"}`},
+		}}},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{
+			ID: "call_wait", Type: "function",
+			Function: llm.FunctionCall{Name: "wait", Arguments: "{}"},
+		}}},
+		{Role: "assistant", Content: "已受理，结果稍后送达"},
+		{Role: "assistant", Content: "补充：hello"},
+	}}
+	s, boss, _ := startReportEnv(t, sc, fake, func(b *stubBoss, _ *stubMemory) {
+		b.setDeliverDelay(time.Second)
+	})
+	sendUser(t, s, "跑个命令")
+	<-async.got
+
+	// boss 收到第一交付 ⇒ reasoner 此刻正卡在等 boss 的响应，正是那个窗口。
+	select {
+	case d := <-boss.delivered:
+		if d.Text != "已受理，结果稍后送达" {
+			t.Fatalf("第一交付文本不符: %q", d.Text)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("等待第一交付超时")
+	}
+
+	out := reportUntilAccepted(t, s, (<-async.envelope).Trace, "cmd-slow-deliver", "done", "命令执行完成：hello", true)
+	if out.Delivery != "new_task" {
+		t.Fatalf("交付窗口内的补报应开补报轮（注入会被吞掉）: %+v", out)
+	}
+	boss.setDeliverDelay(0)
+	waitDelivery(t, boss, "补充：hello")
+}
+
 // TestReportResultInjectedIntoLiveTask：补报到达时任务还在跑 → 注入同一条链，并唤醒新一轮；
 // 该轮能看到补报 + 未完成的慢工具结果 + 原用户消息（证明是注入，不是另起任务）。
 func TestReportResultInjectedIntoLiveTask(t *testing.T) {

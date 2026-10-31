@@ -60,6 +60,7 @@ type taskState struct {
 	seen       int64                 // 已安排给“下一轮”的水位（gen != seen = 有未处理的进展）
 	running    bool                  // 是否有一轮 LLM 在跑（每会话同时至多一轮）
 	closed     bool                  // 已交付 / 被取代：残留事件一律丢弃
+	finishing  bool                  // 正在把最终答复交付给 boss：此时注入的补报会被丢掉，按已收尾处理
 
 	taskID      string // 这次工作所属的任务（记忆服务在 recall 时确定）
 	taskName    string // 任务名（写进系统提示，也是历史列表的标题）
@@ -414,7 +415,17 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 		return
 	}
 
+	// 交付在途时不再接受补报注入：这一轮马上就要结束，注入进来的消息既不会开新轮次
+	// （boardKick 看到 running），收尾后 gen 检查也认为没有未处理进展——结果是静默丢掉。
+	// 置 finishing 让 deliverFollowUp 提前把任务按「已收尾」处理，改走开补报轮。
+	st.mu.Lock()
+	st.finishing = true
+	st.mu.Unlock()
+
 	if err := s.deliverToBoss(st, text); err != nil {
+		st.mu.Lock()
+		st.finishing = false
+		st.mu.Unlock()
 		s.logger.Printf("会话 %s：交付 boss(%s) 失败: %v（按“送达后不重试”原则停住，等下一次事件）", st.cid, st.boss, err)
 		return
 	}
