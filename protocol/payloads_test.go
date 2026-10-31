@@ -88,6 +88,8 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 		{"fileWordEditResult", FileWordEditResult{ID: "01J", Replaced: 1}, &FileWordEditResult{}},
 		{"filePptEdit", FilePptEditPayload{ID: "01J", Operations: []PptEditOperation{{Op: "replace", Old: "旧标题", New: "新标题"}}}, &FilePptEditPayload{}},
 		{"filePptEditResult", FilePptEditResult{ID: "01J", Replaced: 1}, &FilePptEditResult{}},
+		{"filePdfEdit", FilePdfEditPayload{ID: "01J", Operations: []PdfEditOperation{{Op: "rotate", Pages: "1-3", Degrees: 90}, {Op: "set_info", Properties: map[string]string{"title": "标题"}}}}, &FilePdfEditPayload{}},
+		{"filePdfEditResult", FilePdfEditResult{ID: "01J", Applied: 2}, &FilePdfEditResult{}},
 		{"save", ImageSavePayload{URL: "http://x/i.png", Mime: "image/png"}, &ImageSavePayload{}},
 		{"saveResult", ImageSaveResult{ID: "01J", Mime: "image/png", Size: 123}, &ImageSaveResult{}},
 		{"fetch", ImageFetchPayload{ID: "01J"}, &ImageFetchPayload{}},
