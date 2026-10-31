@@ -13,14 +13,45 @@ import (
 	"github.com/NouSart/sump/protocol"
 )
 
+// pptxOpts 控制测试用最小 .pptx 的构造方式。
+type pptxOpts struct {
+	Extra      map[string]string // 额外注入的条目（非标准文件名等）
+	SldIDOrder []int             // <p:sldIdLst> 的顺序（1 起的文件序号）；nil 表示与文件顺序一致
+	NoPresPart bool              // 不写 presentation.xml 及其 rels，用于验证降级为文件名顺序
+}
+
 // makePptx 在内存中构造一个最小 .pptx，包含若干幻灯片，每页若干段落。
 func makePptx(t *testing.T, slides ...[]string) []byte {
-	return makePptxExtra(t, nil, slides...)
+	return makePptxWith(t, pptxOpts{}, slides...)
 }
 
 // makePptxExtra 同 makePptx，并可额外注入 extra 条目（用于测试非标准文件名）。
 func makePptxExtra(t *testing.T, extra map[string]string, slides ...[]string) []byte {
+	return makePptxWith(t, pptxOpts{Extra: extra}, slides...)
+}
+
+// makePptxOrdered 同 makePptx，但把 <p:sldIdLst> 写成 order 指定的顺序（对应 PowerPoint 里拖过页序的 deck）。
+func makePptxOrdered(t *testing.T, order []int, slides ...[]string) []byte {
+	return makePptxWith(t, pptxOpts{SldIDOrder: order}, slides...)
+}
+
+func makePptxWith(t *testing.T, opts pptxOpts, slides ...[]string) []byte {
 	t.Helper()
+	order := opts.SldIDOrder
+	if order == nil {
+		order = make([]int, len(slides))
+		for i := range slides {
+			order[i] = i + 1
+		}
+	}
+	if len(order) != len(slides) {
+		t.Fatalf("SldIDOrder 长度 %d 与幻灯片数 %d 不符", len(order), len(slides))
+	}
+	for _, num := range order {
+		if num < 1 || num > len(slides) {
+			t.Fatalf("SldIDOrder 里的序号 %d 超出 1..%d", num, len(slides))
+		}
+	}
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
 
@@ -39,24 +70,26 @@ func makePptxExtra(t *testing.T, extra map[string]string, slides ...[]string) []
 </Relationships>`
 	writeZipEntry(t, w, "_rels/.rels", rels)
 
-	var presRels strings.Builder
-	presRels.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+	if !opts.NoPresPart {
+		var presRels strings.Builder
+		presRels.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`)
-	for i := range slides {
-		presRels.WriteString(fmt.Sprintf(`<Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide%d.xml"/>`, i+1, i+1))
-	}
-	presRels.WriteString(`</Relationships>`)
-	writeZipEntry(t, w, "ppt/_rels/presentation.xml.rels", presRels.String())
+		for i := range slides {
+			presRels.WriteString(fmt.Sprintf(`<Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide%d.xml"/>`, i+1, i+1))
+		}
+		presRels.WriteString(`</Relationships>`)
+		writeZipEntry(t, w, "ppt/_rels/presentation.xml.rels", presRels.String())
 
-	presentation := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+		presentation := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <p:sldIdLst>`
-	for i := range slides {
-		presentation += fmt.Sprintf(`<p:sldId id="%d" r:id="rId%d"/>`, 256+i+1, i+1)
-	}
-	presentation += `</p:sldIdLst>
+		for i, num := range order {
+			presentation += fmt.Sprintf(`<p:sldId id="%d" r:id="rId%d"/>`, 256+i+1, num)
+		}
+		presentation += `</p:sldIdLst>
 </p:presentation>`
-	writeZipEntry(t, w, "ppt/presentation.xml", presentation)
+		writeZipEntry(t, w, "ppt/presentation.xml", presentation)
+	}
 
 	for i, paras := range slides {
 		var body strings.Builder
@@ -70,7 +103,7 @@ func makePptxExtra(t *testing.T, extra map[string]string, slides ...[]string) []
 		writeZipEntry(t, w, fmt.Sprintf("ppt/slides/slide%d.xml", i+1), slide)
 	}
 
-	for name, data := range extra {
+	for name, data := range opts.Extra {
 		writeZipEntry(t, w, name, data)
 	}
 
@@ -293,5 +326,59 @@ func TestReadPptxIgnoresNonSlideEntries(t *testing.T) {
 	want := "# 幻灯片 1\n正常页"
 	if rr.Text != want {
 		t.Fatalf("非标准条目应被忽略:\n%q\n想要:\n%q", rr.Text, want)
+	}
+}
+
+// TestReadPptxFollowsPresentationOrder 页序以 <p:sldIdLst> 为准，而不是 slideN.xml 的文件名编号。
+// PowerPoint 里拖过页序的 deck 两者不同，read 的「第 N 张」必须与放映顺序一致。
+func TestReadPptxFollowsPresentationOrder(t *testing.T) {
+	sc := startStubCenter(t)
+	srv := startFiles(t, sc.URL(), 4000)
+	// 文件里第 1/2/3 篇是 甲/乙/丙，但放映顺序是 乙 → 丙 → 甲。
+	data := makePptxOrdered(t, []int{2, 3, 1},
+		[]string{"甲"}, []string{"乙"}, []string{"丙"})
+	id := savePptx(t, srv.WsURL(), "乱序.pptx", data)
+
+	rr := readFile(t, srv.WsURL(), id)
+	want := "# 幻灯片 1\n乙\n# 幻灯片 2\n丙\n# 幻灯片 3\n甲"
+	if rr.Text != want {
+		t.Fatalf("未按 sldIdLst 排序:\n%q\n想要:\n%q", rr.Text, want)
+	}
+}
+
+// TestEditPptKeepsPresentationOrder 编辑后页序不变：读与改共用同一份幻灯片顺序。
+func TestEditPptKeepsPresentationOrder(t *testing.T) {
+	sc := startStubCenter(t)
+	srv := startFiles(t, sc.URL(), 4000)
+	data := makePptxOrdered(t, []int{3, 1, 2},
+		[]string{"甲"}, []string{"乙"}, []string{"丙"})
+	id := savePptx(t, srv.WsURL(), "乱序.pptx", data)
+
+	rp := call(t, srv.WsURL(), "edit_ppt", protocol.FilePptEditPayload{
+		ID:         id,
+		Operations: []protocol.PptEditOperation{{Op: "replace", Old: "乙", New: "乙2"}},
+	})
+	if !rp.OK {
+		t.Fatalf("edit_ppt 失败: %s", rp.Error)
+	}
+
+	rr := readFile(t, srv.WsURL(), id)
+	want := "# 幻灯片 1\n丙\n# 幻灯片 2\n甲\n# 幻灯片 3\n乙2"
+	if rr.Text != want {
+		t.Fatalf("编辑后页序变了:\n%q\n想要:\n%q", rr.Text, want)
+	}
+}
+
+// TestReadPptxFallsBackToFilenameOrder 缺 presentation.xml / rels 时退回按文件名编号排序，不报错。
+func TestReadPptxFallsBackToFilenameOrder(t *testing.T) {
+	sc := startStubCenter(t)
+	srv := startFiles(t, sc.URL(), 4000)
+	data := makePptxWith(t, pptxOpts{NoPresPart: true}, []string{"甲"}, []string{"乙"})
+	id := savePptx(t, srv.WsURL(), "无清单.pptx", data)
+
+	rr := readFile(t, srv.WsURL(), id)
+	want := "# 幻灯片 1\n甲\n# 幻灯片 2\n乙"
+	if rr.Text != want {
+		t.Fatalf("降级顺序不符:\n%q\n想要:\n%q", rr.Text, want)
 	}
 }
