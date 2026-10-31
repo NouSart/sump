@@ -65,6 +65,8 @@ type Server struct {
 	entryMu sync.Mutex        // 会话入口表锁（交付失败时往哪补一条）
 	entries map[string]string // 会话 → 入口服务名（user_message 的 from）
 
+	retryFrom func(string) bool // 测试注入：retry 的来源校验（名册在 service 包里，测试拿不到 setter）
+
 	memSeq int64 // 会话记录的单调序号（atomic）：并发写（Fire 是 goroutine）也按真实先后落库
 
 	setMu   sync.Mutex    // 运行时可设项锁（设置下发 / 拉取即时生效）
@@ -133,6 +135,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "think", Input: "单步推理 {prompt, system?, model?, max_tokens?}", Output: "{text}（一次补全：不带工具、不开任务、不进黑板；所有非任务型模型调用的统一出口）"},
 			{Action: "echo", Input: "任意", Output: "原样返回（测试用）"},
 			{Action: "debug_jump", Input: "{to, action, input}", Output: "目标服务的响应数据（调试用）"},
+			{Action: "retry", Input: "{conversation_id}（门户专用：对上一轮失败、任务还开着的会话再跑一轮）", Output: "{retried, conversation_id}"},
 		},
 		Logger: logger,
 	})
@@ -237,6 +240,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("report_result", s.actionReportResult)
 	// 用户停手（入口服务的控制面，不是模型工具）：见 hold.go。
 	s.Handle("user_hold", s.actionUserHold)
+	s.Handle("retry", s.actionRetry)
 	return s
 }
 

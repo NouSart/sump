@@ -982,3 +982,16 @@ type PruneResult struct {
 	Entries int `msgpack:"entries"`
 	Links   int `msgpack:"links"`
 }
+
+// ---------- 重试（门户对失败的一轮再跑一次） ----------
+
+// RetryPayload 是 reasoner.retry 的 payload：只带会话号，任务由黑板里那个进行中的实例决定。
+type RetryPayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+}
+
+// RetryResult 是重试被受理的回执。真正是否跑起来由后续 progress/deliver 体现。
+type RetryResult struct {
+	Retried        bool   `msgpack:"retried"`
+	ConversationID string `msgpack:"conversation_id"`
+}

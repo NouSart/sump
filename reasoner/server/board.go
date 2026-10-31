@@ -61,6 +61,7 @@ type taskState struct {
 	running    bool                  // 是否有一轮 LLM 在跑（每会话同时至多一轮）
 	closed     bool                  // 已交付 / 被取代：残留事件一律丢弃
 	finishing  bool                  // 正在把最终答复交付给 boss：此时注入的补报会被丢掉，按已收尾处理
+	lastError  string                // 上一轮 LLM 失败的原文（清空即可重试；空 = 没有待重试的失败）
 
 	taskID      string // 这次工作所属的任务（记忆服务在 recall 时确定）
 	taskName    string // 任务名（写进系统提示，也是历史列表的标题）
@@ -175,7 +176,11 @@ func (s *Server) boardRound(st *taskState) {
 		Images:   s.resolveImages(context.Background(), st.trace, snapshot),
 	})
 	if err != nil {
-		s.logger.Printf("会话 %s：LLM 调用失败: %v（任务停住，等下一次事件重试）", st.cid, err)
+		s.logger.Printf("会话 %s：LLM 调用失败: %v（任务保留，可在门户重试）", st.cid, err)
+		st.mu.Lock()
+		st.lastError = err.Error()
+		st.mu.Unlock()
+		s.notifyRoundFailure(st, err)
 		return
 	}
 
@@ -449,6 +454,84 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 	if !replaced {
 		s.reflectOnTask(st, text)
 	}
+}
+
+// notifyRoundFailure 把「这一轮没跑起来」告诉 boss，并且**不关任务**。
+//
+// 不复用 deliverToBoss：那条路径是最终答复的收尾（写记忆 + boardClose），而这里两件事
+// 都不该发生 —— 任务要留着，等用户点「重试」或直接发新消息。
+// 送达失败只记日志：这是兜底通知，通知本身失败不该让服务崩。
+func (s *Server) notifyRoundFailure(st *taskState, cause error) {
+	st.mu.Lock()
+	boss, cid, taskID, trace := st.boss, st.cid, st.taskID, st.trace
+	st.mu.Unlock()
+	if boss == "" || boss == "self" {
+		return
+	}
+	text := fmt.Sprintf("⚠️ 本轮推理失败：%v\n任务还开着（没有关闭）：可以点「重试」再跑一次，或直接发新消息。", cause)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := s.Call(ctx, boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: cid, TaskID: taskID}, trace, ""); err != nil {
+		s.logger.Printf("会话 %s：失败说明没能送达 boss(%s): %v", cid, boss, err)
+	}
+}
+
+// actionRetry 让门户对「上一轮失败、任务还开着」的任务再跑一轮。
+//
+// 只认门户：重试是对用户意图的重放，不该让任意服务替用户按下这个按钮。
+func (s *Server) actionRetry(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var allowed bool
+	if s.retryFrom != nil {
+		allowed = s.retryFrom(env.From) // 测试注入：名册在 service 包里，测试拿不到 setter
+	} else {
+		allowed = isPortalFrom(env.From, s.Roster())
+	}
+	if !allowed {
+		return nil, fmt.Errorf("retry: 只有门户（frontend / qq）可以触发重试，收到来自 %q 的请求", env.From)
+	}
+	var p protocol.RetryPayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, fmt.Errorf("retry: 载荷无效: %w", err)
+	}
+	cid := strings.TrimSpace(p.ConversationID)
+	if cid == "" {
+		return nil, errors.New("retry: conversation_id 必填")
+	}
+	st := s.boardGet(cid)
+	if st == nil {
+		return nil, errors.New("retry: 这个会话没有进行中的任务（可能已交付或已被取代）")
+	}
+	st.mu.Lock()
+	closed, running, lastErr := st.closed, st.running, st.lastError
+	if !closed && !running && lastErr != "" {
+		st.lastError = ""
+		st.gen++ // 制造「有未处理进展」，让 boardKick 真的开一轮
+	}
+	st.mu.Unlock()
+	switch {
+	case closed:
+		return nil, errors.New("retry: 任务已结束，没有可重试的对象")
+	case running:
+		return nil, errors.New("retry: 任务正在跑，稍等再试")
+	case lastErr == "":
+		return nil, errors.New("retry: 没有待重试的失败（上一轮没失败过）")
+	}
+	s.boardKick(st)
+	return protocol.RetryResult{Retried: true, ConversationID: cid}, nil
+}
+
+// isPortalFrom 判断请求是否来自用户门户（frontend / qq）。
+// 纯函数：名册由调用方给，测试才能覆盖「在名册里」这条正路。
+func isPortalFrom(name string, cards []protocol.ServiceCard) bool {
+	if name != "frontend" && name != "qq" {
+		return false
+	}
+	for _, card := range cards {
+		if card.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // deliverToBoss 把最终结果直达 boss（短响应；Call 内部只对“拨号失败”安全重试）。
