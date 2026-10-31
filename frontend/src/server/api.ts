@@ -228,6 +228,23 @@ export function createRequestHandler(
     });
   };
 
+  // retryRound 让 reasoner 对「上一轮失败、任务还开着」的会话再跑一轮。
+  // 门户不自己判断能不能重试——把 conversation_id 交出去，由 reasoner 回答。
+  const retryRound = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const body = asObject(await readJSON(req)) ?? {};
+    const rawCid = typeof body.conversation_id === 'string' ? body.conversation_id.trim() : '';
+    const conversationId = rawCid || PORTAL_CONVERSATION_ID;
+    let data: { retried?: unknown } | undefined;
+    try {
+      data = (await center.jumpTo(cfg.reasoner, 'retry', { conversation_id: conversationId })) as {
+        retried?: unknown;
+      };
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    sendJSON(res, 200, { retried: data?.retried === true });
+  };
+
   // fetchHistory 取某任务（默认当前任务）的记录：直连记忆服务，中心只当地址簿。
   const fetchHistory = async (
     res: ServerResponse,
@@ -424,6 +441,10 @@ export function createRequestHandler(
       await sendUserMessage(req, res);
       return;
     }
+    if (pathname === '/api/retry' && req.method === 'POST') {
+      await retryRound(req, res);
+      return;
+    }
     if (pathname === '/api/settings/set' && req.method === 'POST') {
       await mutate(res, 'set_setting', asObject(await readJSON(req)) ?? {});
       return;
@@ -469,7 +490,7 @@ export function createRequestHandler(
       await decideApproval(req, res);
       return;
     }
-    if (pathname === '/api/overview' || pathname === '/api/message' || pathname === '/api/settings/set' || pathname === '/api/settings/reset' || pathname === '/api/events' || pathname === '/api/approvals' || pathname === '/api/history' || pathname === '/api/i18n' || pathname === '/api/i18n/locales') {
+    if (pathname === '/api/overview' || pathname === '/api/message' || pathname === '/api/retry' || pathname === '/api/settings/set' || pathname === '/api/settings/reset' || pathname === '/api/events' || pathname === '/api/approvals' || pathname === '/api/history' || pathname === '/api/i18n' || pathname === '/api/i18n/locales') {
       throw new HttpError(405, `方法不允许: ${req.method ?? ''}`);
     }
     if (pathname.startsWith('/api/')) {

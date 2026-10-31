@@ -19,6 +19,9 @@ interface Props {
   onOpenSettings: () => void;
   /** 任务清单：面板按任务分节，节头要用它的名字与状态。 */
   tasks: TaskView[];
+  /** 上一轮推理失败、任务还开着：显示「重试」。 */
+  retryable?: boolean;
+  onRetry?: () => Promise<void>;
   /** 工作流展开档位：决定过程条目（思考 / 输出）什么时候自己摊开。 */
   workflowExpand: WorkflowExpand;
   t: Translate;
@@ -166,7 +169,7 @@ function TraceDetails({ mode, children }: { mode: WorkflowExpand; children: Reac
 }
 // PortalView 是门户的对话面：消息流铺满整个面板，输入区（含待审/计时器/报错）作为浮层压在底部——
 // 所以输入框是悬浮的，消息能滚到它背后透出来。消息只有两条来源：本地回显，与 SSE 送来的 deliver。
-export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend, onOpenSettings, tasks, workflowExpand, t }: Props) {
+export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend, onOpenSettings, tasks, workflowExpand, retryable, onRetry, t }: Props) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   // 终端 = 放大的输入框：开关只影响这一页，退出即收起。
@@ -303,6 +306,21 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
             void submit(e);
           }}
         >
+          {/* 上一轮推理失败但任务还开着：给一个明确的「重试」，不用用户自己想办法触发。 */}
+          {retryable === true && onRetry !== undefined && (
+            <div className="composer-retry" role="status">
+              <span>{t('ui.portal.roundFailed', '上一轮推理失败，任务还在')}</span>
+              <button
+                type="button"
+                className="composer-retry-btn"
+                onClick={() => {
+                  void onRetry();
+                }}
+              >
+                {t('ui.portal.retry', '重试')}
+              </button>
+            </div>
+          )}
           {/* 终端就长在输入框里：展开后上半部是终端，底部仍是给 agent 的消息框。 */}
           <TerminalDock
             open={terminalOpen}
