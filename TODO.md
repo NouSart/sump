@@ -45,7 +45,7 @@
 - [ ] **文件 · 文档模型覆盖** — `outline` / `read_range` / `find` / `patch` / `verify` 当前只实现 `.docx`；`.pptx` / `.xlsx` / `.pdf` 的节点地址约定写在 `files/docmodel` 注释里但**未实现**，遇到非 docx 明确报错；页眉 / 页脚 / 脚注 / 批注不在编辑范围
 - [ ] **文件 · 续读** — `read` 只收 `{id}`，超长截断后模型无法接着读；PDF 按页 / Excel 按行 / PPT 按张续读（`from` / `to` + 回显 `total`）未做——`.docx` 已由 `read_range` 覆盖
 - [ ] **设置键命名统一** — `read_max_chars` 这类裸键 → `<域>.<名>`；改名是破坏性变更，须按命名基线登记
-- [ ] **审批的解释与富通知** — `approval/review/ports.go` 四个接口尚未接生产实现
+- [ ] **审批的解释与富通知** — 未实现；原先 `approval/review` 的四个占位接口已删（全仓零引用，属画出来的边界），要做时按真实需求重新设计
 - [ ] **服务清单收尾** — tools 是否再拆
 
 ## 文档缺口
