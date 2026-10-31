@@ -189,6 +189,7 @@ func loadCorpus(path string) ([]Sample, error) {
 		return nil, err
 	}
 	var s []Sample
+	b = bytes.TrimPrefix(b, []byte("\ufeff")) // 容忍 PowerShell 写出的 BOM
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, fmt.Errorf("解析语料: %w", err)
 	}
