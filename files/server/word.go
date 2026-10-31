@@ -6,6 +6,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -15,11 +16,7 @@ import (
 	"github.com/NouSart/sump/protocol"
 )
 
-const (
-	docxDocumentXML = "word/document.xml"
-	wordBr          = "<w:br/>"
-	wordTab         = "<w:tab/>"
-)
+const docxDocumentXML = "word/document.xml"
 
 // isWordFile 判定 .docx：mime 为准；扩展名兜底（docx 是 zip，嗅探只得 application/zip）。
 func isWordFile(mime, filename string) bool {
@@ -176,32 +173,27 @@ func editDocx(data []byte, ops []protocol.WordEditOperation, budget int64) ([]by
 	if int64(len(contentBytes)) > budget {
 		return nil, 0, fmt.Errorf("document.xml 解压后超过 %d 字节上限（压缩炸弹防线）", budget)
 	}
-	content := string(contentBytes)
 
-	// 预检查：所有 old 必须存在。
+	// 只在 <w:t> 文本节点内替换：整段 XML 字符串替换会把标签名/属性一并改掉，
+	// 结果是动作返回成功、正文却再也提不出来（#15）。
+	ops2 := make([]textReplace, len(ops))
 	for i, op := range ops {
-		old := escapeForDocx(op.Old)
-		if !strings.Contains(content, old) {
-			return nil, 0, fmt.Errorf("第 %d 个 replace 未找到文本 %q", i+1, op.Old)
-		}
+		ops2[i] = textReplace{Old: op.Old, New: op.New}
 	}
-
+	newContent, counts, err := replaceInTextNodes(contentBytes, docxTextSpec, ops2)
+	if err != nil {
+		var nf errTextNotFound
+		if errors.As(err, &nf) {
+			return nil, 0, fmt.Errorf("%w", nf)
+		}
+		return nil, 0, fmt.Errorf("处理 document.xml 失败: %w", err)
+	}
 	replaced := 0
-	for i, op := range ops {
-		old := escapeForDocx(op.Old)
-		newText := escapeForDocx(op.New)
-		if !strings.Contains(content, old) {
-			return nil, 0, fmt.Errorf("第 %d 个 replace 在替换前文本已消失", i+1)
-		}
-		count := strings.Count(content, old)
-		if count == 0 {
-			return nil, 0, fmt.Errorf("第 %d 个 replace 未匹配到任何内容", i+1)
-		}
-		content = strings.Replace(content, old, newText, -1)
-		replaced += count
+	for _, n := range counts {
+		replaced += n
 	}
 
-	out, err := rebuildZip(zr, docxDocumentXML, []byte(content))
+	out, err := rebuildZip(zr, docxDocumentXML, newContent)
 	if err != nil {
 		return nil, 0, fmt.Errorf("重建 docx 失败: %w", err)
 	}
@@ -268,14 +260,6 @@ func rebuildZip(zr *zip.Reader, replaceName string, newContent []byte) ([]byte, 
 	return buf.Bytes(), nil
 }
 
-// escapeForDocx 把普通文本转为可安全放入 Word XML 的字符串，并把 \n/\t 转为 Word 标签。
-func escapeForDocx(s string) string {
-	var buf bytes.Buffer
-	_ = xml.EscapeText(&buf, []byte(s))
-	out := buf.String()
-	out = strings.ReplaceAll(out, "&#xD;&#xA;", wordBr)
-	out = strings.ReplaceAll(out, "&#xA;", wordBr)
-	out = strings.ReplaceAll(out, "&#xD;", wordBr)
-	out = strings.ReplaceAll(out, "&#x9;", wordTab)
-	return out
-}
+// escapeForDocx 已随「只在文本节点内替换」的实现移除：
+// 匹配与转义现在都由 replaceInTextNodes 在解码后的字符数据上完成，
+// 不再需要先把用户文本转成 XML 片段再做整段字符串匹配。
