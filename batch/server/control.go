@@ -52,8 +52,12 @@ func (s *Server) actionControl(ctx context.Context, env protocol.Envelope, in pr
 	} else if !ok {
 		return nil, fmt.Errorf("BATCH_JOB_UNKNOWN: 没有这个任务（或已过期）: %s", id)
 	}
+	changed, err := s.controlOne(op, id)
+	if err != nil {
+		return nil, fmt.Errorf("BATCH_OP: 任务 %s 的 %s 落库失败: %w", id, op, err)
+	}
 	affected := 0
-	if s.controlOne(op, id) {
+	if changed {
 		affected = 1
 	}
 	// 恢复拿不到槽位时要明说，不能只回 affected=0 让人以为"本来就在跑"。
@@ -73,15 +77,20 @@ func (s *Server) controlAll(op string) (any, error) {
 	}
 	affected := 0
 	for _, j := range jobs {
-		if s.controlOne(op, j.ItemID) {
+		changed, err := s.controlOne(op, j.ItemID)
+		if err != nil {
+			// 一条失败就整批报错：状态没落库却回「成功」，重启后会看到另一半的世界。
+			return nil, fmt.Errorf("BATCH_OP: 任务 %s 的 %s 落库失败: %w", j.ItemID, op, err)
+		}
+		if changed {
 			affected++
 		}
 	}
 	return s.controlResult(op, protocol.BatchScopeAll, affected), nil
 }
 
-// controlOne 对单个任务执行，返回是否改变了状态。
-func (s *Server) controlOne(op, id string) bool {
+// controlOne 对单个任务执行，返回 (是否改变了状态, 错误)。
+func (s *Server) controlOne(op, id string) (bool, error) {
 	s.mu.Lock()
 	j := s.jobs[id]
 	s.mu.Unlock()
@@ -91,8 +100,11 @@ func (s *Server) controlOne(op, id string) bool {
 	}
 	// 不在内存里：可能是重启后转暂停的任务（resume 时重建）。
 	stored, ok, err := s.store.Job(id)
-	if err != nil || !ok {
-		return false
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
 	}
 	switch stored.Phase {
 	case protocol.BatchPhasePaused:
@@ -101,11 +113,11 @@ func (s *Server) controlOne(op, id string) bool {
 			rj, err := s.rebuildJob(stored)
 			if err != nil {
 				s.logger.Printf("恢复任务 %s 失败: %v", id, err)
-				return false
+				return false, nil
 			}
 			if !s.reserve(rj.reserved) {
 				s.logger.Printf("恢复任务 %s 失败：全局槽位不足", id)
-				return false
+				return false, nil
 			}
 			s.mu.Lock()
 			s.jobs[id] = rj
@@ -115,53 +127,59 @@ func (s *Server) controlOne(op, id string) bool {
 				s.mu.Lock()
 				delete(s.jobs, id)
 				s.mu.Unlock()
-				return false
+				return false, nil
 			}
-			return true
+			return true, nil
 		case protocol.BatchOpCancel:
 			if _, err := s.store.SkipPending(id); err != nil {
-				s.logger.Printf("取消任务 %s 时跳过未开始项失败: %v", id, err)
+				return false, fmt.Errorf("跳过未开始项失败: %w", err)
 			}
-			counts, _ := s.store.CountByStatus(id)
+			counts, err := s.store.CountByStatus(id)
+			if err != nil {
+				return false, fmt.Errorf("统计项状态失败: %w", err)
+			}
 			if err := s.store.Finish(id, protocol.BatchPhaseCancelled,
 				counts[protocol.BatchItemOK], counts[protocol.BatchItemFailed],
 				counts[protocol.BatchItemSkipped], "已取消（未开始的项作废）", time.Now()); err != nil {
-				s.logger.Printf("取消任务 %s 落库失败: %v（重启后它会按账本复活）", id, err)
+				return false, fmt.Errorf("取消落库失败: %w", err)
 			}
-			return true
+			return true, nil
 		}
 	case protocol.BatchPhaseAccepted, protocol.BatchPhaseRunning:
 		// 不在内存却仍是 running/accepted：只可能是并发窗口里的瞬间状态，忽略。
 	}
-	return false
+	return false, nil
 }
 
 // controlMemory 对内存里的活动任务执行。
-func (s *Server) controlMemory(op string, j *runningJob) bool {
+//
+// 返回 (是否改变状态, 错误)。落库失败**必须**回错：内存说「已暂停/已取消」而账本还是
+// running，重启后 recoverAfterRestart 会按账本把任务捞回来——用户看到的取消是假的。
+func (s *Server) controlMemory(op string, j *runningJob) (bool, error) {
 	j.mu.Lock()
 	if j.finished {
 		j.mu.Unlock()
-		return false
+		return false, nil
 	}
 	switch op {
 	case protocol.BatchOpPause:
 		if j.paused {
 			j.mu.Unlock()
-			return false
+			return false, nil
 		}
 		j.paused = true
 		j.mu.Unlock()
 		if err := s.store.SetPhase(j.id, protocol.BatchPhasePaused); err != nil {
-			s.logger.Printf("任务 %s 暂停状态落库失败: %v（重启后会按账本恢复，可能重现）", j.id, err)
+			return false, fmt.Errorf("暂停状态落库失败: %w", err)
 		}
 		// 槽位不在这里放：在飞的项还占着真实并发。等调度循环把在飞的收完、确认暂停后
 		// 再一次性归还（见 runScheduler 的暂停出口）。
 		s.logger.Printf("任务 %s 已暂停（在飞的项会跑完）", j.id)
-		return true
+		return true, nil
 	case protocol.BatchOpCancel:
 		if j.cancelled {
 			j.mu.Unlock()
-			return false
+			return false, nil
 		}
 		j.cancelled = true
 		// 暂停中的任务没有调度循环在跑，没人会替它收尾——这里必须自己落终态。
@@ -171,11 +189,11 @@ func (s *Server) controlMemory(op string, j *runningJob) bool {
 			s.finishJob(j)
 		}
 		s.logger.Printf("任务 %s 已取消（未开始的项作废，在飞的跑完）", j.id)
-		return true
+		return true, nil
 	case protocol.BatchOpResume:
 		if !j.paused {
 			j.mu.Unlock()
-			return false
+			return false, nil
 		}
 		need := j.concurrency
 		if n := len(j.items) + j.inflight; need > n {
@@ -188,24 +206,30 @@ func (s *Server) controlMemory(op string, j *runningJob) bool {
 		if !s.reserve(need) {
 			j.mu.Unlock()
 			s.logger.Printf("恢复任务 %s 失败：全局槽位不足（需要 %d）", j.id, need)
-			return false
+			return false, nil
 		}
 		j.reserved = need
 		j.paused = false
 		j.mu.Unlock()
 		if err := s.store.SetPhase(j.id, protocol.BatchPhaseRunning); err != nil {
-			s.logger.Printf("任务 %s 恢复状态落库失败: %v（重启后会按账本恢复）", j.id, err)
+			// 内存已经切到 running、槽位也占了：回滚到暂停，别留下「内存跑着、账本停着」。
+			j.mu.Lock()
+			j.paused = true
+			j.reserved = 0
+			j.mu.Unlock()
+			s.release(need)
+			return false, fmt.Errorf("恢复状态落库失败: %w", err)
 		}
 		if !s.startBackground(func() { s.runScheduler(j) }) {
 			s.release(need)
 			s.logger.Printf("任务 %s 恢复失败：服务正在关闭", j.id)
-			return false
+			return false, nil
 		}
 		s.logger.Printf("任务 %s 已恢复", j.id)
-		return true
+		return true, nil
 	}
 	j.mu.Unlock()
-	return false
+	return false, nil
 }
 
 // controlResult 汇总当前 paused / running 计数。
