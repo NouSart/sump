@@ -20,6 +20,7 @@
 | 我是 AI 代理，先看红线 | [../AGENTS.md](../AGENTS.md) |
 | 接手团队待办 | [../TODO.md](../TODO.md) |
 | 查历史（旧设计、进度、验收快照） | [archive/](archive/) |
+| 查实验结论（LLM 判官 vs 规则等） | [../experiments/](../experiments/) |
 
 ## 每篇的定位
 
