@@ -123,7 +123,9 @@ func docxToText(data []byte, maxChars int, budget int64) (string, bool, error) {
 	for i, p := range paragraphs {
 		line := p
 		if i > 0 {
-			line = "\n\n" + p
+			// 段落之间用单个换行：与 docmodel（read_range / verify / find / patch 的文本投影）
+			// 保持一致。两套口径会让模型拿 read 的文本去 verify 却匹配不上，patch 的偏移也会偏。
+			line = "\n" + p
 		}
 		n := utf8.RuneCountInString(line)
 		if used+n > maxChars {

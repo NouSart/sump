@@ -88,7 +88,7 @@ func TestReadDocx(t *testing.T) {
 	if rr.Truncated {
 		t.Fatalf("小文件不应截断: %+v", rr)
 	}
-	want := "第一段\n\n第二段"
+	want := "第一段\n第二段"
 	if rr.Text != want {
 		t.Fatalf("读取结果不符:\n%q\n想要:\n%q", rr.Text, want)
 	}
@@ -158,7 +158,7 @@ func TestEditWord(t *testing.T) {
 	}
 
 	rr := readFile(t, srv.WsURL(), id)
-	if rr.Text != "开头\n\n结尾" {
+	if rr.Text != "开头\n结尾" {
 		t.Fatalf("替换未生效:\n%s", rr.Text)
 	}
 
@@ -254,7 +254,7 @@ func TestEditWordReplacesAllOccurrences(t *testing.T) {
 	}
 
 	rr := readFile(t, srv.WsURL(), id)
-	if rr.Text != "改过\n\n中间\n\n改过" {
+	if rr.Text != "改过\n中间\n改过" {
 		t.Fatalf("全替换未生效:\n%s", rr.Text)
 	}
 }
