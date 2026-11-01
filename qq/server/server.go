@@ -68,6 +68,9 @@ type Server struct {
 
 	groupsMu sync.Mutex
 	groups   map[int64]groupMeta // 群资料缓存（群名 / 成员数 = 扩散面）
+
+	titleMu sync.Mutex
+	titled  map[string]bool // 本进程里已经试过起名的会话（失败不重复试）
 }
 
 // New 创建实例并注册动作。
@@ -99,6 +102,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		groupMode:   cfg.GroupMode,
 		locks:       map[string]*sync.Mutex{},
 		groups:      map[int64]groupMeta{},
+		titled:      map[string]bool{},
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
@@ -396,6 +400,12 @@ func (s *Server) onPrivate(ev napcat.Event) {
 		Channel: "private", ID: uid, Name: ev.DisplayName(),
 		Owner: true, Mentioned: true,
 	}
+	// 会话标题：私聊的名字只有一处来源（发送者），第一次见到就定下来。
+	name := sender.Name
+	if name == "" {
+		name = uid
+	}
+	s.titleLater(cid, "QQ 私聊 · "+name)
 	// 私聊里只有主人能进来，扩散面恒为"只有他"——不需要额外的策略附加信息。
 	if err := s.callReasoner("user_message", protocol.UserMessagePayload{
 		Text: text, ConversationID: cid, Images: ids, Files: fileIDs, Sender: sender,
@@ -436,6 +446,12 @@ func (s *Server) onGroup(ev napcat.Event) {
 		GroupID: gid, GroupName: info.Name, GroupSize: info.Members,
 		Owner:     owner != "" && uid == owner,
 		Mentioned: ev.Mentions(ev.SelfID),
+	}
+
+	// 群名是会话标题的一半（"QQ 群「编程交流」"）：取到名字时补上（每个会话只试一次）。
+	// 取不到就不起名——按会话号兜底显示，比编一个"未知群"诚实。
+	if info.Name != "" {
+		s.titleLater(cid, "QQ 群「"+info.Name+"」")
 	}
 
 	if !s.shouldReason(sender) {
@@ -550,6 +566,35 @@ func (s *Server) callReasoner(action string, payload any) error {
 	defer cancel()
 	_, err := s.Call(ctx, s.reasonerName(), action, payload, protocol.NewID(), s.cfg.Name)
 	return err
+}
+
+// titleLater 给会话起一个人话标题（门户侧栏显示的就是它）：每个会话只试一次，
+// 并且**不挡消息本身的路**——起名是锦上添花，记忆服务抖动时也不能让聊天卡住。
+func (s *Server) titleLater(cid, title string) {
+	if title == "" {
+		return
+	}
+	s.titleMu.Lock()
+	done := s.titled[cid]
+	s.titled[cid] = true
+	s.titleMu.Unlock()
+	if done {
+		return
+	}
+	go s.titleConversation(cid, title)
+}
+
+// titleConversation 调 memory 的 conversation_open 把标题交上去（只在标题为空时生效）。
+func (s *Server) titleConversation(cid, title string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, err := s.Call(ctx, s.memoryName(), "conversation_open", protocol.ConversationOpenPayload{
+		ID:    cid,
+		Title: title,
+	}, protocol.NewID(), s.cfg.Name)
+	if err != nil {
+		s.logger.Printf("会话 %s：起名（%s）失败: %v", cid, title, err)
+	}
 }
 
 // send 发一条 QQ 消息：kind = private / group。

@@ -85,14 +85,15 @@ QQ 这类多人入口，模型必须能分辨「主人在私聊里说的」和�
 | 动作（jump 到 `memory`） | 输入 | 输出 |
 | --- | --- | --- |
 | `conversation_list` | `{limit?, include_archived?}` | `{conversations:[{id, title, entry, status, created_at, updated_at}]}` |
+| `conversation_open` | `{id, title?, entry?}`（幂等建行；只在空时填） | `{conversation}` |
 | `conversation_rename` | `{id, title}`（空串 = 清掉名字） | `{conversation}` |
 
 - **只存元信息**：`title` / `entry` / `status` / 两个时间。消息数、任务数、最后一句说什么全部现算——冗余字段迟早和真相打架。
 - **写入即建行**：`store` 落库成功后自动 upsert（`Record` 内部），谁都不用显式建会话。只有落库**成功**才推 `updated_at`，否则列表里会出现「刚活跃过」的空会话。
 - **`entry` 取 boss 不取 `env.From`**：记录是 reasoner 代写的，真正「从哪扇门进来」的是它替谁办事（`frontend` / `qq`）。只在空时填，后来的不覆盖——第一次从哪进来就是哪。
-- **`title` 为空是真的空**，不造假名字：界面自己回退一个占位。起名是件明确的事（`conversation_rename`），不靠「顺带」。
+- **`title` 为空是真的空**，不造假名字：界面自己回退一个占位。起名是件明确的事（`conversation_rename`），不靠「顺带」。**入口服务例外**：它第一次见到会话时就知道这是谁（qq 会写「QQ 私聊 · 昵称」/「QQ 群「群名」」），用 `conversation_open` 把名字交上来；只在原来为空时填，用户改过的名字不会被顶掉。取不到名字（比如群资料拿不到）就不起名，宁可让界面回退占位。
 - **老库回填**：从 `messages` / `tasks` 里已有的 `conversation_id` 聚合出会话行（首末时间为界），升级后历史记录页立刻能用。
-- 两个动作都**不声明 `tool:true`**（在 `provides` 里可见、可直连，但不给模型当工具）：界面导航不是模型该自己做的决策。
+- 这几个动作都**不声明 `tool:true`**（在 `provides` 里可见、可直连，但不给模型当工具）：界面导航不是模型该自己做的决策。
 
 ## 4. 经验网：把做过的事变成能「抓线头」的经验
 
