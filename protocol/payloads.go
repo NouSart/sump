@@ -1009,6 +1009,81 @@ type PruneResult struct {
 	Links   int `msgpack:"links"`
 }
 
+// ---------- 共享经验库（跨会话的提炼物） ----------
+//
+// 会话库（messages / tasks）永远只在当事会话里；这里传的是**提炼后的摘要**。
+// 载荷里没有任何承载原文的字段——这是边界，不是过滤器。
+
+// PublishSessionPayload 发布一次任务的摘要（由复盘在交付后调用）。
+// Private 为真 = 只写经验、不进会话目录（任务里有不适合给别人看的东西）。
+type PublishSessionPayload struct {
+	ConversationID string   `msgpack:"conversation_id"`
+	TaskID         string   `msgpack:"task_id"`
+	Title          string   `msgpack:"title,omitempty"`
+	Goal           string   `msgpack:"goal,omitempty"`
+	Outcome        string   `msgpack:"outcome,omitempty"`
+	Capabilities   []string `msgpack:"capabilities,omitempty"`
+	Private        bool     `msgpack:"private,omitempty"`
+}
+
+// SharedTaskView 是目录里的一条任务摘要。
+type SharedTaskView struct {
+	Title        string   `msgpack:"title,omitempty"`
+	Goal         string   `msgpack:"goal,omitempty"`
+	Outcome      string   `msgpack:"outcome,omitempty"`
+	Capabilities []string `msgpack:"capabilities,omitempty"`
+	CreatedAt    string   `msgpack:"created_at,omitempty"`
+}
+
+// SharedSessionView 是目录里的一条会话：叫什么、最近在做什么。
+// SessionID 只在共享库内部用于归并，界面与模型都不必看见。
+type SharedSessionView struct {
+	SessionID string           `msgpack:"session_id,omitempty"`
+	Entry     string           `msgpack:"entry,omitempty"`
+	Title     string           `msgpack:"title,omitempty"`
+	Tasks     []SharedTaskView `msgpack:"tasks,omitempty"`
+	UpdatedAt string           `msgpack:"updated_at,omitempty"`
+}
+
+// SharedSessionsPayload 取会话目录（Exclude = 不列这个会话，通常是调用方自己）。
+type SharedSessionsPayload struct {
+	Limit   int    `msgpack:"limit,omitempty"`
+	Exclude string `msgpack:"exclude,omitempty"`
+	Query   string `msgpack:"query,omitempty"`
+}
+
+// SharedSessionsResult 是会话目录。
+type SharedSessionsResult struct {
+	Sessions []SharedSessionView `msgpack:"sessions"`
+}
+
+// SharedForgetPayload 删共享物：给 SessionID 删整个会话，给 TaskID 只删那一条。
+type SharedForgetPayload struct {
+	SessionID string `msgpack:"session_id,omitempty"`
+	TaskID    string `msgpack:"task_id,omitempty"`
+}
+
+// SharedForgetResult 是删除结果的计数。
+type SharedForgetResult struct {
+	Sessions int `msgpack:"sessions"`
+	Tasks    int `msgpack:"tasks"`
+}
+
+// ---------- 会话开合（多会话用） ----------
+
+// ConversationOpenPayload 幂等建会话（已有就只补空标题）。
+type ConversationOpenPayload struct {
+	ID    string `msgpack:"id"`
+	Title string `msgpack:"title,omitempty"`
+	Entry string `msgpack:"entry,omitempty"`
+}
+
+// ConversationArchivePayload 归档 / 取消归档一个会话（归档 = 只读，不进默认列表）。
+type ConversationArchivePayload struct {
+	ID       string `msgpack:"id"`
+	Archived bool   `msgpack:"archived"`
+}
+
 // ---------- 重试（门户对失败的一轮再跑一次） ----------
 
 // RetryPayload 是 reasoner.retry 的 payload：只带会话号，任务由黑板里那个进行中的实例决定。

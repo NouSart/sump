@@ -38,6 +38,7 @@ type Config struct {
 	ToolTimeout       time.Duration // 单个工具调用的执行超时（默认 60s）
 	NotifyMode        string        // 工具结果通知模式："each"（逐条唤醒，默认）/ "batch"（攒批唤醒）；设置中心 tool.notify_mode 覆盖此项
 	Reflect           bool          // 交付后是否复盘写经验（零值关闭；main.go 打开。测试默认不打开：复盘会多花一次模型调用）
+	Share             bool          // 复盘时是否把任务摘要发布到共享经验库（零值关闭；main.go 默认打开）
 	SecretFile        string        // 秘密项（llm.key）的本地持久化路径（空 = data/<name>-secret.json；"-" = 不落盘）
 }
 
@@ -74,6 +75,7 @@ type Server struct {
 	conc    int           // 单会话工具并发上限（-1 = 不限制）
 	timeout time.Duration // 单个工具调用的执行超时
 	reflect bool          // 交付后是否复盘写经验（reflect.on）
+	share   bool          // 复盘摘要是否进共享经验库（share.on）
 
 	liveMu   sync.RWMutex // 可热改运行配置快照锁（LLM 客户端 / 记忆与图片服务名）
 	llm      llm.Client   // 当前 LLM 客户端（llm.base/model/key 任一变化即重建；Key 为空 = nil）
@@ -115,6 +117,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		conc:         cfg.ToolConcurrency,
 		timeout:      cfg.ToolTimeout,
 		reflect:      cfg.Reflect,
+		share:        cfg.Share,
 
 		llm:      cfg.LLM,
 		memory:   cfg.Memory,
@@ -180,6 +183,16 @@ func New(cfg Config, logger *log.Logger) *Server {
 		return nil
 	}, service.Label("交付后复盘写经验"),
 		service.Hint("关掉之后每次交付不再多花一次模型调用；已经写进经验网的不会删"),
+		service.As("bool"))
+	s.HandleSetting("share.on", strconv.FormatBool(cfg.Share), func(v string) error {
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("需要 true / false，收到 %q", v)
+		}
+		s.setShareOn(b)
+		return nil
+	}, service.Label("把任务摘要放进共享经验库"),
+		service.Hint("别的会话只能看到一句话摘要（在做什么、做到哪了），看不到对话原文；关掉就只写经验"),
 		service.As("bool"))
 	// 推理侧可热改项：LLM 三件套 + 记忆 / 图片服务名（预设 = main.go 的启动 flag）。
 	s.HandleSetting("llm.base", cfg.LLMBase, func(v string) error {
@@ -308,6 +321,20 @@ func (s *Server) reflectOn() bool {
 func (s *Server) setReflectOn(v bool) {
 	s.setMu.Lock()
 	s.reflect = v
+	s.setMu.Unlock()
+}
+
+// shareOn 返回"交付后要不要把任务摘要放进共享经验库"。
+func (s *Server) shareOn() bool {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.share
+}
+
+// setShareOn 开关共享摘要（设置下发 / 拉取调用）。
+func (s *Server) setShareOn(v bool) {
+	s.setMu.Lock()
+	s.share = v
 	s.setMu.Unlock()
 }
 

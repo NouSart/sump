@@ -204,7 +204,7 @@ func TestParseNotes(t *testing.T) {
 		`{"content":"坑C","kind":"坑"},` +
 		`{"content":"取舍D","kind":"取舍"}` +
 		"]}\n```"
-	notes := parseNotes(raw)
+	_, notes := parseReflect(raw)
 	if len(notes) != reflectMaxNotes {
 		t.Fatalf("应截到 %d 条: %+v", reflectMaxNotes, notes)
 	}
@@ -216,11 +216,11 @@ func TestParseNotes(t *testing.T) {
 	}
 
 	// 空内容被跳过；全空 = 什么都不写（宁缺勿滥）。
-	if got := parseNotes(`{"notes":[{"content":"","kind":"坑"}]}`); len(got) != 0 {
+	if _, got := parseReflect(`{"notes":[{"content":"","kind":"坑"}]}`); len(got) != 0 {
 		t.Fatalf("空内容应被丢弃: %+v", got)
 	}
 	// 模型胡说八道时也不要抛错，当没写。
-	if got := parseNotes("我觉得这次干得不错"); len(got) != 0 {
+	if _, got := parseReflect("我觉得这次干得不错"); len(got) != 0 {
 		t.Fatalf("解析不了就当没写: %+v", got)
 	}
 }

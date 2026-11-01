@@ -15,7 +15,7 @@ import (
 
 	"github.com/NouSart/sump/memory/compose"
 	"github.com/NouSart/sump/memory/longterm"
-	"github.com/NouSart/sump/memory/memnet"
+	"github.com/NouSart/sump/memory/shared"
 	"github.com/NouSart/sump/memory/store"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/service"
@@ -23,16 +23,16 @@ import (
 
 // Config 是 memory 服务的启动配置。
 type Config struct {
-	Name              string          // 服务名（注册用，默认 memory）
-	Listen            string          // 监听地址 host:port
-	Center            string          // 设置中心 WS 地址
-	HeartbeatInterval time.Duration   // 心跳间隔（默认 15s）
-	Store             *store.Store    // 会话库
-	Longterm          *longterm.Store // 长期记忆库（与会话库共享同一 SQLite 句柄）
-	Net               *memnet.Store   // 经验网（同上；边界独立，只吃 *sql.DB）
-	HistoryLimit      int             // recall 返回的最近消息条数（默认 12；作为声明预设上报）
-	Embedding         string          // embedding 服务名（默认 embedding；语义召回不可用时静默回落 bigram）
-	DBPath            string          // 数据库路径（只读项展示用：换它要重启）
+	Name              string        // 服务名（注册用，默认 memory）
+	Listen            string        // 监听地址 host:port
+	Center            string        // 设置中心 WS 地址
+	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
+	Store             *store.Store  // 会话库（私有：messages / tasks / conversations）
+	Shared            *shared.Store // 共享经验库（另一文件：偏好 / 经验网 / 会话目录）
+	HistoryLimit      int           // recall 返回的最近消息条数（默认 12；作为声明预设上报）
+	Embedding         string        // embedding 服务名（默认 embedding；语义召回不可用时静默回落 bigram）
+	DBPath            string        // 会话库路径（只读项展示用：换它要重启）
+	SharedPath        string        // 共享库路径（只读项展示用）
 }
 
 // v0 注入预算的默认值（对齐 v1 量级；作为声明预设，可被设置中心覆盖）。
@@ -61,13 +61,15 @@ type Server struct {
 	cfg    Config
 	logger *log.Logger
 
-	setMu        sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
-	historyLimit int        // recall 返回的最近消息条数
-	coreLimit    int        // 核心记忆条数上限
-	coreMaxChars int        // 核心记忆字符预算
-	relLimit     int        // 相关记忆条数上限
-	relMaxChars  int        // 相关记忆字符预算
-	embedding    string     // 当前 embedding 服务名（recall.embedding 热改）
+	setMu         sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
+	historyLimit  int        // recall 返回的最近消息条数
+	coreLimit     int        // 核心记忆条数上限
+	coreMaxChars  int        // 核心记忆字符预算
+	relLimit      int        // 相关记忆条数上限
+	relMaxChars   int        // 相关记忆字符预算
+	embedding     string     // 当前 embedding 服务名（recall.embedding 热改）
+	shareSessions int        // 会话目录注入条数（share.sessions_limit）
+	shareChars    int        // 会话摘要单条字数（share.digest_chars）
 
 	// 经验网的种子向量（懒补齐）：只在五个大类还没有定义向量时做一次，
 	// 失败就下次再试——embedding 服务此刻可能还没上线。
@@ -102,12 +104,14 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}
 	s := &Server{
 		cfg: cfg, logger: logger,
-		historyLimit: cfg.HistoryLimit,
-		coreLimit:    defaultCoreLimit,
-		coreMaxChars: defaultCoreMaxChars,
-		relLimit:     defaultRelLimit,
-		relMaxChars:  defaultRelMaxChars,
-		embedding:    cfg.Embedding,
+		historyLimit:  cfg.HistoryLimit,
+		coreLimit:     defaultCoreLimit,
+		coreMaxChars:  defaultCoreMaxChars,
+		relLimit:      defaultRelLimit,
+		relMaxChars:   defaultRelMaxChars,
+		embedding:     cfg.Embedding,
+		shareSessions: defaultShareSessions,
+		shareChars:    defaultShareChars,
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
@@ -127,6 +131,11 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "lineheads", Input: "{query, limit?}", Output: "{heads:[{node_id, text, count, score, task_id, members}]}（一行一条；recall 里自动带）"},
 			{Action: "prune", Input: "{}", Output: "{entries, links}（软剪枝：只标状态、只断干枯的线，不删行）"},
 			{Action: "remember", Tool: true, Input: "长期记忆条目 {kind, content, priority?}（kind 如 偏好/身份/知识/事件；priority>0 = 核心记忆，每次对话都会带上）", Output: "{id, created}（同 kind+content 已有 active 条目时幂等跳过）"},
+			{Action: "publish_session", Input: "任务摘要 {conversation_id, task_id, title?, goal?, outcome?, capabilities?, private?}（复盘调用；已脱敏，不暴露给模型）", Output: "{published, private}"},
+			{Action: "shared_sessions", Tool: true, Input: "{limit?, exclude?, query?}（别的会话在做什么的摘要；看不到它们的对话）", Output: "{sessions:[{entry, title, tasks:[{title, goal, outcome, capabilities, created_at}]}]}"},
+			{Action: "shared_forget", Input: "{session_id?, task_id?}（删共享物；不暴露给模型）", Output: "{sessions, tasks}"},
+			{Action: "conversation_open", Input: "{id, title?, entry?}（幂等建会话；不暴露给模型）", Output: "{conversation}"},
+			{Action: "conversation_archive", Input: "{id, archived}（归档 = 只读；不暴露给模型）", Output: "{conversation}"},
 		},
 		Logger: logger,
 	})
@@ -207,6 +216,12 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("prune", s.actionNetPrune)
 	s.Handle("remember", s.actionRemember)
 	s.Handle("forget", s.actionForget)
+	// 共享经验库：跨会话只共享提炼物（另一个库文件；会话流水不在这里）。
+	s.Handle("publish_session", s.actionPublishSession)
+	s.Handle("shared_sessions", s.actionSharedSessions)
+	s.Handle("shared_forget", s.actionSharedForget)
+	s.Handle("conversation_open", s.actionConversationOpen)
+	s.Handle("conversation_archive", s.actionConversationArchive)
 	// 任务：会话的结构（agent 在任务里工作；没有任务就没有上下文可取）。
 	s.Handle("task_current", s.actionTaskCurrent)
 	s.Handle("task_open", s.actionTaskOpen)
@@ -221,8 +236,38 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}, service.Label("用哪个服务算语义向量"),
 		service.Hint("关掉就退回关键词匹配——不花算力，但只认字面相近的记忆"),
 		service.As("optional-service"))
+	// 共享经验库的注入预算：目录是背景信息，宁可少给，别挤占对话。
+	s.HandleSetting("share.sessions_limit", strconv.Itoa(defaultShareSessions), func(v string) error {
+		n, err := parseNonNeg(v)
+		if err != nil {
+			return err
+		}
+		if n > 20 {
+			return fmt.Errorf("最多 20 个会话，收到 %d", n)
+		}
+		s.setShareSessions(n)
+		return nil
+	}, service.Label("带上几个别的会话"),
+		service.Hint("每轮回答前，把别的会话「在做什么」的摘要带几条；0 = 不带"),
+		service.As("number"),
+		service.Unit("count"))
+	s.HandleSetting("share.digest_chars", strconv.Itoa(defaultShareChars), func(v string) error {
+		n, err := parseNonNeg(v)
+		if err != nil {
+			return err
+		}
+		if n < 20 || n > 500 {
+			return fmt.Errorf("需要 20~500 的整数（字符），收到 %d", n)
+		}
+		s.setShareChars(n)
+		return nil
+	}, service.Label("单条会话摘要的字数上限"),
+		service.Hint("太长会挤占对话空间；这些摘要本来就该是一句话"),
+		service.As("number"),
+		service.Unit("chars"))
 	// 只读项：启动参数带起来的（换它要重启）。db 是库身份——运行中换库不做。
 	s.HandleReadOnly("db", cfg.DBPath)
+	s.HandleReadOnly("shared_db", cfg.SharedPath)
 	s.HandleReadOnly("name", cfg.Name)
 	s.HandleReadOnly("addr", cfg.Listen)
 	s.HandleReadOnly("center", cfg.Center)
@@ -494,17 +539,17 @@ func (s *Server) actionRemember(ctx context.Context, env protocol.Envelope, in p
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
 	}
-	if s.cfg.Longterm == nil {
+	if s.longterm() == nil {
 		return nil, errors.New("长期记忆未启用")
 	}
-	id, created, err := s.cfg.Longterm.Add(p.Kind, p.Content, p.Priority, p.ConversationID, env.From)
+	id, created, err := s.longterm().Add(p.Kind, p.Content, p.Priority, p.ConversationID, env.From)
 	if err != nil {
 		return nil, fmt.Errorf("remember: %w", err)
 	}
 	if created {
 		if vecs, model, err := s.embedTexts(ctx, env, []string{p.Content}, false); err != nil {
 			s.logger.Printf("remember 向量化失败（召回时将懒补齐）: %v", err)
-		} else if err := s.cfg.Longterm.SetEmbedding(id, vecs[0], model); err != nil {
+		} else if err := s.longterm().SetEmbedding(id, vecs[0], model); err != nil {
 			s.logger.Printf("remember 向量落库失败（召回时将懒补齐）: %v", err)
 		}
 	}
@@ -517,13 +562,13 @@ func (s *Server) actionForget(_ context.Context, _ protocol.Envelope, in protoco
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
 	}
-	if s.cfg.Longterm == nil {
+	if s.longterm() == nil {
 		return nil, errors.New("长期记忆未启用")
 	}
 	if p.ID <= 0 {
 		return nil, errors.New("forget: id 必填")
 	}
-	ok, err := s.cfg.Longterm.Forget(p.ID)
+	ok, err := s.longterm().Forget(p.ID)
 	if err != nil {
 		return nil, fmt.Errorf("forget: %w", err)
 	}
@@ -576,8 +621,8 @@ func (s *Server) actionRecall(ctx context.Context, env protocol.Envelope, in pro
 
 	// 长期记忆：核心条目（priority>0，不看相关性）+ 相关召回（语义为主、bigram 兜底）。
 	var core, relevant []string
-	if s.cfg.Longterm != nil {
-		entries, err := s.cfg.Longterm.ListActive()
+	if s.longterm() != nil {
+		entries, err := s.longterm().ListActive()
 		if err != nil {
 			return nil, fmt.Errorf("查询长期记忆失败: %w", err)
 		}
@@ -598,8 +643,9 @@ func (s *Server) actionRecall(ctx context.Context, env protocol.Envelope, in pro
 		}
 	}
 
+	// 其他会话：只给摘要（读共享库，不发网络跳；失败只省略本节）。
 	final := compose.Inject(tc.Messages, compose.BuildMemory(history, core, relevant,
-		s.experienceLines(ctx, env, recallQuery(tc.Messages))))
+		s.experienceLines(ctx, env, recallQuery(tc.Messages)), s.otherSessionLines(cid)))
 
 	if err := s.fireResume(env, protocol.ResumePayload{Context: protocol.TaskContext{
 		ConversationID: cid,
@@ -675,7 +721,7 @@ func (s *Server) backfillEmbeddings(ctx context.Context, env protocol.Envelope, 
 		for j, i := range idx {
 			entries[i].Embedding = vecs[j]
 			entries[i].EmbeddingModel = vecModel
-			if err := s.cfg.Longterm.SetEmbedding(entries[i].ID, vecs[j], vecModel); err != nil {
+			if err := s.longterm().SetEmbedding(entries[i].ID, vecs[j], vecModel); err != nil {
 				if firstErr == nil {
 					firstErr = err
 				}

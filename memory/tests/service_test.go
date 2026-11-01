@@ -20,8 +20,8 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/NouSart/sump/memory/compose"
-	"github.com/NouSart/sump/memory/longterm"
 	"github.com/NouSart/sump/memory/server"
+	"github.com/NouSart/sump/memory/shared"
 	"github.com/NouSart/sump/memory/store"
 	"github.com/NouSart/sump/protocol"
 )
@@ -300,17 +300,19 @@ func startMemory(t *testing.T, centerURL string, historyLimit int, opts ...func(
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	lt, err := longterm.Open(st.DB())
+	dir := t.TempDir()
+	sh, err := shared.Open(filepath.Join(dir, "experience.db"), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sh.Close() })
 	cfg := server.Config{
 		Name:              "memory",
 		Listen:            "127.0.0.1:0",
 		Center:            centerURL,
 		HeartbeatInterval: 200 * time.Millisecond,
 		Store:             st,
-		Longterm:          lt,
+		Shared:            sh,
 		HistoryLimit:      historyLimit,
 	}
 	for _, opt := range opts {

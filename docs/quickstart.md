@@ -23,7 +23,8 @@ cd sump
 - 首次运行会自动装前端依赖、建 Python venv，需要几分钟；之后是秒级
 - 门户：<http://127.0.0.1:9501/>
 - `Ctrl+C` 停止（脚本会清理全部子进程）
-- 数据落在 `data/`（`memory.db` / `images.db` / `files.db` / `settings.json` / `images/` / `files/` / `models/`），不入库
+- 数据落在 `data/`（`memory.db` 会话库 / `experience.db` 共享经验库 / `images.db` / `files.db` / `settings.json` / `images/` / `files/` / `models/`），不入库
+- 首次升级会从旧 `memory.db` 里把长期记忆与经验网搬到 `experience.db`：**先复制一份 `memory.db.bak-<时间>`**，旧表只改名 `legacy_*`、不删字节
 
 接真模型：
 
