@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/ledongthuc/pdf"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
@@ -47,68 +46,54 @@ func isPdfFile(mime, filename string) bool {
 		(mime == "" || mime == "application/octet-stream")
 }
 
-// pdfToText 把 PDF 按页提取纯文本，每页以 "# 第 N 页" 分节（页边界截断，单页内按字符截断）。
+// pdfToTextWindow 把 PDF 按页提取纯文本，每页以 "# 第 N 页" 分节，并返回字符窗口。
 // pageLimit 是页数上限：超出部分不读并置 truncated。空页（无文本层）跳过，若全篇无文本则报错。
-func pdfToText(data []byte, maxChars, pageLimit int) (string, bool, error) {
+func pdfToTextWindow(data []byte, offset, limit, pageLimit int) (string, int, int, bool, error) {
 	r, err := pdf.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		// 加密的 PDF 在读取库里报成「malformed PDF: … encryption key」，
 		// 与真正的损坏混在一起；这里分开说清楚，用户才知道下一步该做什么。
 		if isEncryptedPdf(data) {
-			return "", false, errPdfEncrypted
+			return "", 0, 0, false, errPdfEncrypted
 		}
-		return "", false, fmt.Errorf("解析 PDF 失败（文件可能已损坏）: %w", err)
+		return "", 0, 0, false, fmt.Errorf("解析 PDF 失败（文件可能已损坏）: %w", err)
 	}
-	total := r.NumPage()
-	if total <= 0 {
-		return "", false, errors.New("该 PDF 无页面，无法读取")
+	pages := r.NumPage()
+	if pages <= 0 {
+		return "", 0, 0, false, errors.New("该 PDF 无页面，无法读取")
 	}
-	limit := total
-	if limit > pageLimit {
-		limit = pageLimit
+	last := pages
+	if last > pageLimit {
+		last = pageLimit
 	}
 
-	var b strings.Builder
-	used := 0
-	truncated := false
-	writeBlock := func(s string) bool {
-		n := utf8.RuneCountInString(s)
-		if used+n > maxChars {
-			return false
-		}
-		b.WriteString(s)
-		used += n
-		return true
-	}
-	for i := 1; i <= limit; i++ {
+	w := newReadWindow(offset, limit)
+	for i := 1; i <= last; i++ {
 		pageText, err := r.Page(i).GetPlainText(nil)
 		if err != nil {
-			return "", false, fmt.Errorf("第 %d 页文本提取失败: %w", i, err)
+			return "", 0, 0, false, fmt.Errorf("第 %d 页文本提取失败: %w", i, err)
 		}
 		body := strings.TrimSpace(pageText)
 		if body == "" {
 			continue
 		}
-		if !writeBlock(fmt.Sprintf("# 第 %d 页\n", i)) {
-			truncated = true
-			break
-		}
-		if !writeBlock(body + "\n") {
-			if remain := maxChars - used; remain > 0 {
-				part, _ := truncateRunes(body, remain)
-				b.WriteString(part)
-			}
-			truncated = true
-			break
-		}
+		w.line(fmt.Sprintf("# 第 %d 页", i))
+		w.chunkLine(body)
 	}
-	if total > pageLimit {
-		truncated = true
+	if w.total == 0 {
+		return "", 0, 0, false, errors.New("未提取到文本，可能是扫描件（图片型 PDF），暂不支持 OCR")
 	}
-	if b.Len() == 0 {
-		return "", false, errors.New("未提取到文本，可能是扫描件（图片型 PDF），暂不支持 OCR")
+	if pages > pageLimit {
+		// 页数封顶也是“没给全”；即使正好读到末尾，也不能让调用方以为全文已读完。
+		return w.text(), w.total, w.next(), true, nil
 	}
-	return strings.TrimRight(b.String(), "\n"), truncated, nil
+	return w.text(), w.total, w.next(), w.truncated(), nil
+}
+
+// pdfToText 是旧调用形状的兼容包装：从开头读 maxChars，返回是否截断。
+func pdfToText(data []byte, maxChars, pageLimit int) (string, bool, error) {
+	text, _, _, truncated, err := pdfToTextWindow(data, 0, maxChars, pageLimit)
+	return text, truncated, err
 }
 
 // ---------- edit_pdf：op 注册表扩展接缝 ----------

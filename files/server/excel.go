@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/xuri/excelize/v2"
 
@@ -44,19 +43,11 @@ func isLegacyXls(mime, filename string) bool {
 }
 
 // xlsxToText 把 xlsx 逐 sheet 转为 TSV 文本（“# 工作表: 名”开头，制表符分列）。
-// 超 maxChars 在行边界截断（不切断整行），返回 truncated=true。
-func xlsxToText(f *excelize.File, maxChars int) (string, bool) {
-	var b strings.Builder
-	used := 0
+// 返回完整投影长度与续读起点；单表读取失败时跳过，其余表照常。
+func xlsxToText(f *excelize.File, offset, limit int) (string, int, int, bool) {
+	w := newReadWindow(offset, limit)
 	for _, sheet := range f.GetSheetList() {
-		header := "# 工作表: " + sheet + "\n"
-		n := utf8.RuneCountInString(header)
-		if used+n > maxChars {
-			return strings.TrimRight(b.String(), "\n"), true
-		}
-		b.WriteString(header)
-		used += n
-
+		w.line("# 工作表: " + sheet)
 		rows, err := f.GetRows(sheet)
 		if err != nil {
 			continue // 单表读取失败跳过，其余表照常
@@ -66,16 +57,10 @@ func xlsxToText(f *excelize.File, maxChars int) (string, bool) {
 			for i, cell := range row {
 				cells[i] = escapeTSVCell(cell)
 			}
-			line := strings.Join(cells, "\t") + "\n"
-			n = utf8.RuneCountInString(line)
-			if used+n > maxChars {
-				return strings.TrimRight(b.String(), "\n"), true
-			}
-			b.WriteString(line)
-			used += n
+			w.line(strings.Join(cells, "\t"))
 		}
 	}
-	return strings.TrimRight(b.String(), "\n"), false
+	return w.text(), w.total, w.next(), w.truncated()
 }
 
 // escapeTSVCell 把单元格里会破坏 TSV 结构的字符转义：制表符 → `\t`、换行 → `\n`、回车 → `\r`。

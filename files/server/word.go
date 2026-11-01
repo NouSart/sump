@@ -5,14 +5,13 @@ package server
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
-	"unicode/utf8"
 
+	"github.com/NouSart/sump/files/docmodel"
 	"github.com/NouSart/sump/protocol"
 )
 
@@ -47,99 +46,42 @@ func isLegacyDoc(mime, filename string) bool {
 		(mime == "" || mime == "application/octet-stream")
 }
 
-// docxToText 把 .docx 正文按段落提取为纯文本，超 maxChars 在段落边界截断。
-// budget 是**解压后**的字节上限（压缩炸弹防线）：先按 zip 目录里的实体大小预检，再用
-// LimitReader 兜住"头部撒谎"的包。
-func docxToText(data []byte, maxChars int, budget int64) (string, bool, error) {
-	r := bytes.NewReader(data)
-	zr, err := zip.NewReader(r, int64(len(data)))
+// docxToTextWindow 把 .docx 正文投影成纯文本，并返回字符窗口。
+//
+// 投影直接复用 docmodel 的 docx 实现：read、read_range、find、patch、verify 看到的是
+// 同一份段落序列（含空段落、文本框与内容控件里的段落）。以前 read 自己扫 XML，
+// 会悄悄丢掉空段落，还会把文本框正文混进外层段落——两套投影让 rune 偏移对不上。
+//
+// budget 是**解压后**的字节上限（压缩炸弹防线）：先按 zip 目录里的实体大小预检，
+// 再用 docmodel 的容器预算兜住“头部撒谎”的包。
+func docxToTextWindow(data []byte, offset, limit int, budget int64) (string, int, int, bool, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return "", false, fmt.Errorf("解析 docx 失败: %w", err)
+		return "", 0, 0, false, fmt.Errorf("解析 docx 失败: %w", err)
 	}
 	if err := checkExpandBudget(zr, budget); err != nil {
-		return "", false, err
+		return "", 0, 0, false, err
 	}
-	f, err := openZipFile(zr, docxDocumentXML)
+	doc, err := docmodel.Open(docmodel.KindDocx, data)
 	if err != nil {
-		return "", false, err
+		return "", 0, 0, false, err
 	}
-	defer f.Close()
+	text, ok := doc.(interface{ Text() string })
+	if !ok {
+		return "", 0, 0, false, errors.New("docx 实现没有文本投影")
+	}
+	w := newReadWindow(offset, limit)
+	// 按段落喂窗口：默认截断落在段落边界，与 read 的既有手感一致；空段落也保留。
+	for _, line := range strings.Split(text.Text(), "\n") {
+		w.line(line)
+	}
+	return w.text(), w.total, w.next(), w.truncated(), nil
+}
 
-	dec := xml.NewDecoder(io.LimitReader(f, budget+1))
-	var paragraphs []string
-	var para strings.Builder
-	var run strings.Builder
-	inT := false
-
-	flushRun := func() {
-		if run.Len() > 0 {
-			para.WriteString(run.String())
-			run.Reset()
-		}
-	}
-	flushPara := func() {
-		flushRun()
-		if para.Len() > 0 {
-			paragraphs = append(paragraphs, para.String())
-			para.Reset()
-		}
-	}
-
-	for {
-		tok, err := dec.Token()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return "", false, fmt.Errorf("解析 document.xml 失败: %w", err)
-		}
-		switch t := tok.(type) {
-		case xml.StartElement:
-			switch t.Name.Local {
-			case "t":
-				inT = true
-			case "br":
-				run.WriteByte('\n')
-			case "tab":
-				run.WriteByte('\t')
-			}
-		case xml.EndElement:
-			switch t.Name.Local {
-			case "t":
-				inT = false
-			case "p":
-				flushPara()
-			}
-		case xml.CharData:
-			if inT {
-				run.WriteString(string(t))
-			}
-		}
-	}
-	flushPara()
-
-	var b strings.Builder
-	used := 0
-	for i, p := range paragraphs {
-		line := p
-		if i > 0 {
-			// 段落之间用单个换行：与 docmodel（read_range / verify / find / patch 的文本投影）
-			// 保持一致。两套口径会让模型拿 read 的文本去 verify 却匹配不上，patch 的偏移也会偏。
-			line = "\n" + p
-		}
-		n := utf8.RuneCountInString(line)
-		if used+n > maxChars {
-			if i == 0 {
-				// 第一个段落就超限，按字符截断（避免空返回）
-				text, _ := truncateRunes(p, maxChars)
-				return text, true, nil
-			}
-			return strings.TrimRight(b.String(), "\n"), true, nil
-		}
-		b.WriteString(line)
-		used += n
-	}
-	return strings.TrimRight(b.String(), "\n"), false, nil
+// docxToText 是旧调用形状的兼容包装：从开头读 maxChars，返回是否截断。
+func docxToText(data []byte, maxChars int, budget int64) (string, bool, error) {
+	text, _, _, truncated, err := docxToTextWindow(data, 0, maxChars, budget)
+	return text, truncated, err
 }
 
 // editDocx 对 .docx 正文执行操作列表，返回新字节和替换条数。

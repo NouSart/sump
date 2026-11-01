@@ -10,7 +10,7 @@ SUMP v2 的文件库：独立 SQLite 元数据 + 二进制目录，支持保存�
 |------|------|------|------|
 | `save` | `{url}` 或 `{data(base64), filename, mime}` | `{id, filename, mime, size}` | 保存文件，返回 id |
 | `fetch` | `{id}` | `{id, filename, mime, data(base64), size}` | 取回完整文件 |
-| `read` | `{id}` | `{id, filename, text, truncated}` | LLM 工具；支持文本类、`.xlsx` 转 TSV、`.docx`/`.pptx`/`.pdf` 提取正文；二进制报错 |
+| `read` | `{id, offset?, limit?}` | `{id, filename, text, truncated, total, next, warnings}` | LLM 工具；支持文本类、`.xlsx` 转 TSV、`.docx`/`.pptx`/`.pdf` 提取正文；`next` 非 0 时带上它当 `offset` 续读；二进制报错 |
 | `write` | `{id, sheet, edits:[{cell, value}]}` | `{id, sheet, updated}` | LLM 工具；仅编辑 `.xlsx` 单元格 |
 | `edit_word` | `{id, operations:[{op, old, new}]}` | `{id, replaced}` | LLM 工具；仅编辑 `.docx` 正文；v0 仅 `op="replace"` |
 | `edit_ppt` | `{id, operations:[{op, old, new}]}` | `{id, replaced}` | LLM 工具；仅编辑 `.pptx` 幻灯片文本；v0 仅 `op="replace"` |
@@ -24,7 +24,10 @@ SUMP v2 的文件库：独立 SQLite 元数据 + 二进制目录，支持保存�
 ## 限制
 
 - 单文件上限默认 100MiB，可通过 `-max-mb` 或设置中心 `max_mb` 调整。
-- `read` 返回文本上限默认 4000 字符，可通过 `-read-max-chars` 或设置中心 `read_max_chars` 调整。
+- `read` 单次返回上限默认 4000 字符，可通过 `-read-max-chars` 或设置中心 `read_max_chars` 调整；`limit` 只能缩小、不能放大这个上限。
+- `read` 支持 `offset`/`limit` 续读，结果带 `total` 与 `next`。不带 `offset` 时文本类按字符、DOCX/PPTX/Excel 按段落/行边界截断（沿用旧手感）；带 `offset` 时按字符精确切片，拼接回来不会丢字。
+- 混合版本时（新调用方打到旧 `files`）：旧服务的 `read` 名片只有 `{id}`，按协议忽略不认识的 `offset`/`limit`，从头返回。续读前先看名册里对端的 `provides[].input`，不要只凭动作名 `read` 假定支持 `offset`。
+- 文本类目前按 UTF-8 解码；GBK / UTF-16 等其它编码没有自动探测与转码（可能被当作非法 UTF-8 拒绝，也可能带 NUL/BOM 原样返回）。
 - 旧版 `.xls` 与 `.doc`（OLE2）不支持阅读和编辑，会提示另存为 `.xlsx` / `.docx`。
 - `edit_word` v0 为纯文本占位符替换：要求 `old` 在 `word/document.xml` 的某个 `<w:t>` 节点内连续出现；不支持跨 run、段落/表格结构增删、图片替换。未知 `op` 类型直接报错。
 - `edit_ppt` v0 为纯文本占位符替换：在所有 `ppt/slides/slideN.xml` 中替换 `old`；要求 `old` 在单个 `<a:t>` 节点内连续出现；**`new` 不能含换行或制表符**（pptx 的换行是段落级 `<a:br/>`，改 run 结构不在 v0 范围内，硬塞会写出需要修复的文件）；不改动母版、版式、备注、图表数据；不支持新增/删除幻灯片。未知 `op` 类型直接报错。
@@ -32,6 +35,7 @@ SUMP v2 的文件库：独立 SQLite 元数据 + 二进制目录，支持保存�
 - `edit_pdf` v0 仅做元数据与页操作：`set_info` 写 Info 字典（键用标准名 `Title`/`Author`/`Subject`/`Keywords` 等）、`rotate` 按 90 的整数倍旋转、`delete_pages` 删页、`keep_pages` 只保留指定页。**不支持任意文本替换**（字体子集/编码使纯 Go 可靠替换不可行）、不新增/重排页面结构、不做水印/合并/加解密（这些留给后续 op 扩展）。未知 `op` 类型直接报错。
 - PDF 读取按页提取纯文本，页数受上限封顶；加密 PDF 明确拒绝；扫描件（图片型，无文本层）读取报错引导，不做 OCR。
 - `outline`/`read_range`/`find`/`patch`/`verify` v0 只接 `.docx`（其它格式会明确报"仅支持按节点编辑 .docx"）。节点地址形如 `body/p3`、`body/tbl1/r2/c1/p1`；写到 run 一级（`body/p3/r2`）会归到所在段落。文本框内的段落是 `body/p3/p1`、内容控件里的段落是 `body/sdt1/p1`——它们和正文段落走同一份投影，`read` 看得见的文字都有节点地址。
+- `read` 的 DOCX 文本与 `read_range` 完全同源：空段落保留（`A\n\nB` 不会被读成 `A\nB`），文本框/内容控件/修订插入容器里的段落不会漏。
 - `patch` 的 `replace_text` 只在受影响 run 内改字（第一处写新文本、后续只删旧字），**不新建 run**，因此不会丢字符样式；`delete_node` 只清空段落文字、保留 `<w:p>`（样式 / 编号还在）。换行写成 `<w:br/>`、制表写成 `<w:tab/>`，不落裸控制字符。
 - `patch` 是整批原子的：任意一条失败（节点不存在、区间越界、`anchor` / `exact_anchor` 对不上、未知 `op`）就整批拒绝，库里的字节不变；全部成功才回写一次。
 - `anchor` / `digest` 会折叠空白，适合“文字没变”的乐观锁；带 `range` 的编辑应使用 `exact_anchor` / `exact_digest`（不折叠空白）。精确锚点对不上时整批拒绝，避免空白变化后旧 rune 坐标改到别处。

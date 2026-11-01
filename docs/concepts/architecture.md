@@ -115,7 +115,7 @@ sequenceDiagram
 ### 4.3 文件链路（qq → files → llm 凭 id 自取）
 
 - qq 收到文件：交给 files `save`，`user_message` 携带文件 id，并在文本里附加占位 `[文件: 名, id=...]`——占位必须带 id：文件不自动内联，是模型凭 id 自取。
-- `read` 在 `provides` 里声明 `tool: true`，经名册自动成为 LLM 工具（`files__read`），**reasoner 零改动**（同 `remember` 先例）：文本类返回截断文本（`read_max_chars` 默认 4000，`truncated` 显式标记「没给全」）；`.xlsx` 转 TSV、`.docx` 提取正文；二进制 / 旧版 Office 明确拒绝。
+- `read` 在 `provides` 里声明 `tool: true`，经名册自动成为 LLM 工具（`files__read`），**reasoner 零改动**（同 `remember` 先例）：文本类返回截断文本（`read_max_chars` 默认 4000，`truncated` 显式标记「没给全」；`next` 非 0 时带 `offset` 续读）；`.xlsx` 转 TSV、`.docx` 提取正文；二进制 / 旧版 Office 明确拒绝。
 - `write` 单元格级编辑、`edit_word` / `edit_ppt` 纯文本替换，都就地修改库内**唯一权威副本**。
 - **就地覆盖的取舍（明写在案）**：原字节不留（无副本、无版本、无回收站）——改文件是显式动作，留副本等于把 files 变成版本库，那是另一个服务的边界。代价说清楚：模型一次调用就能改掉主人的原文件且**不可回退**；要原件请在改动前 `fetch` 一份。
 - **解压封顶（压缩炸弹防线）**：`.xlsx` / `.docx` 都是 zip，文件本体受 `max_mb` 管，但解压后的大小不受它管。两道防线：zip 目录实体大小预检 + 读取时 `io.LimitReader` 兜住「头部撒谎」的包；xlsx 侧把同一上限传给 excelize 的 `UnzipSizeLimit`。上限 256MiB。

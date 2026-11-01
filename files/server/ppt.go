@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/NouSart/sump/protocol"
 )
@@ -59,57 +58,40 @@ func isLegacyPpt(mime, filename string) bool {
 		(mime == "" || mime == "application/octet-stream")
 }
 
-// pptxToText 把 .pptx 按幻灯片提取文本，每页以 "# 幻灯片 N" 分节，超 maxChars 在幻灯片边界截断。
+// pptxToTextWindow 把 .pptx 按幻灯片提取文本，每页以 "# 幻灯片 N" 分节。
 // budget 是解压后的字节上限（压缩炸弹防线），与 .xlsx/.docx 同口径。
-func pptxToText(data []byte, maxChars int, budget int64) (string, bool, error) {
+func pptxToTextWindow(data []byte, offset, limit int, budget int64) (string, int, int, bool, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return "", false, fmt.Errorf("解析 pptx 失败: %w", err)
+		return "", 0, 0, false, fmt.Errorf("解析 pptx 失败: %w", err)
 	}
 	if err := checkExpandBudget(zr, budget); err != nil {
-		return "", false, err
+		return "", 0, 0, false, err
 	}
 
 	// 按放映顺序读取幻灯片：顺序以 presentation.xml 的 <p:sldIdLst> 为准，
 	// 不按 slideN.xml 的文件名编号（PowerPoint 里拖过页序的 deck 两者不同）。
-	var slides []string
-	for _, name := range slideXMLNames(zr) {
+	w := newReadWindow(offset, limit)
+	for i, name := range slideXMLNames(zr) {
 		text, err := extractSlideText(zr, name)
 		if err != nil {
-			return "", false, err
+			return "", 0, 0, false, err
 		}
-		slides = append(slides, text)
-	}
-
-	var b strings.Builder
-	used := 0
-	// writeBlock 在不超过 maxChars 时写入 s 并更新已用字符数；超限返回 false。
-	writeBlock := func(s string) bool {
-		n := utf8.RuneCountInString(s)
-		if used+n > maxChars {
-			return false
-		}
-		b.WriteString(s)
-		used += n
-		return true
-	}
-
-	for i, text := range slides {
 		if text == "" {
 			continue
 		}
-		if !writeBlock(fmt.Sprintf("# 幻灯片 %d\n", i+1)) {
-			return strings.TrimRight(b.String(), "\n"), true, nil
-		}
-		if !writeBlock(text + "\n") {
-			if remain := maxChars - used; remain > 0 {
-				trunc, _ := truncateRunes(text, remain)
-				b.WriteString(trunc)
-			}
-			return strings.TrimRight(b.String(), "\n"), true, nil
+		w.line(fmt.Sprintf("# 幻灯片 %d", i+1))
+		for _, para := range strings.Split(text, "\n") {
+			w.line(para)
 		}
 	}
-	return strings.TrimRight(b.String(), "\n"), false, nil
+	return w.text(), w.total, w.next(), w.truncated(), nil
+}
+
+// pptxToText 是旧调用形状的兼容包装：从开头读 maxChars，返回是否截断。
+func pptxToText(data []byte, maxChars int, budget int64) (string, bool, error) {
+	text, _, _, truncated, err := pptxToTextWindow(data, 0, maxChars, budget)
+	return text, truncated, err
 }
 
 // slideXMLNames 返回幻灯片 XML 文件名，顺序与 PowerPoint 中的放映顺序一致。
