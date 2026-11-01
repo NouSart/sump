@@ -1,7 +1,9 @@
 package protocol
 
 import (
+	"fmt"
 	"math"
+	"strings"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -216,6 +218,10 @@ type TaskContext struct {
 	Messages       []Message `msgpack:"messages"`
 	Boss           string    `msgpack:"boss,omitempty"`
 	Task           *Task     `msgpack:"task,omitempty"`
+	// TaskName 是入口服务给"这一轮该开什么任务"想的名字（可选）。
+	// 为什么不在记忆侧从正文推：上下文里的用户消息可能带来源标注前缀（Sender.Label），
+	// 取第一行会取出一串标签，而任务名会显示在界面的会话树里。为空则沿用旧规则。
+	TaskName string `msgpack:"task_name,omitempty"`
 }
 
 // RecallPayload 是 recall（向记忆请求记忆）的 payload：把任务上下文交给记忆服务。
@@ -245,6 +251,11 @@ type StorePayload struct {
 	Meta           string `msgpack:"meta,omitempty"`
 	Seq            int64  `msgpack:"seq,omitempty"`
 	TaskID         string `msgpack:"task_id,omitempty"`
+	// TaskName 是入口服务给这条用户消息想的任务名（可选）。
+	// 为什么需要它：正文可能带来源标注前缀（见 Sender.Label），从正文第一行推任务名会推出一串标签，
+	// 而任务名会显示在界面的会话树里。入口服务知道人话标题是什么，就顺手给出；
+	// 为空则沿用记忆侧"取正文第一行"的旧规则（保持老调用方行为不变）。
+	TaskName string `msgpack:"task_name,omitempty"`
 }
 
 // HistoryPayload 是 history 的 payload：向记忆服务要某会话最近的消息（供门户回填对话视图）。
@@ -292,12 +303,122 @@ type ProgressPayload struct {
 
 // ---------- 任务链入口 ----------
 
-// UserMessagePayload 是 user_message（链入口）的 payload：用户消息文本 + 图片/文件引用。
+// Sender 是"这句话是谁说的"：入口服务把接入侧的事实交给推理侧，模型据此判断该不该听、
+// 该不该答、以及这句话的**扩散面**（Channel 是私聊还是群聊、群里多少人能看见）。
+//
+// 规矩：
+//   - 只有入口服务填（门户不填 = 单用户私聊，与今天一致）；字段全是接入侧事实，不是推断；
+//   - 空字段表示"这一项不清楚"，不造假值（群名 / 人数取不到就留空）；
+//   - ID 是**入口服务自己的** id（QQ 号、群号），与其他服务的 id 不同源，别混用。
+//
+// 这是附加信息不是权限判定：授权与否由模型按主人设置在上下文里判断，
+// 协议只保证它看到的事实是对的。
+type Sender struct {
+	Channel   string `msgpack:"channel,omitempty"`    // private / group
+	ID        string `msgpack:"id,omitempty"`         // 发送者 id（QQ 号）
+	Name      string `msgpack:"name,omitempty"`       // 昵称或群名片（取不到就空）
+	GroupID   string `msgpack:"group_id,omitempty"`   // 群号（Channel=group 时有）
+	GroupName string `msgpack:"group_name,omitempty"` // 群名（取不到就空）
+	GroupSize int    `msgpack:"group_size,omitempty"` // 扩散面：这条消息多少人能看见（0 = 未知）
+	Owner     bool   `msgpack:"owner,omitempty"`      // 发送者是不是主人本人
+	Mentioned bool   `msgpack:"mentioned,omitempty"`  // 这条有没有点到智能体（群里的 @；私聊恒为真）
+}
+
+// Label 把来源标注渲染成一行**给人也给模型看**的标签，例如：
+//
+//	[私聊 · 主人(2271917353)]
+//	[群聊 · 群「编程交流」(67890) · 12 人可见 · 张三(12345) · 非主人 · 未@我]
+//
+// 为什么渲染放在协议包里：这段文本会被写进记忆（入口服务可能直接落库，推理侧也会落库），
+// 同一件事只能有一份实现——否则同一个群的两条记录会带着两种标签，模型读到的历史自相矛盾。
+// 标签是**事实**（谁/哪里/多少人看得见），不含任何策略判断。
+//
+// 缺失的项宁可不写也不编：群名没有就只写群号，人数不知道就写「人数未知」——
+// 模型据此判断"能不能往外说"，猜错的方向必须是保守的。
+func (s *Sender) Label() string {
+	if s == nil {
+		return ""
+	}
+	parts := make([]string, 0, 7)
+	switch s.Channel {
+	case "private":
+		parts = append(parts, "私聊")
+	case "group":
+		parts = append(parts, "群聊")
+	case "":
+		// 没给渠道：只写知道的那几项（不写"未知渠道"这种废话）
+	default:
+		parts = append(parts, s.Channel)
+	}
+	if s.Channel == "group" {
+		switch {
+		case s.GroupName != "" && s.GroupID != "":
+			parts = append(parts, fmt.Sprintf("群「%s」(%s)", s.GroupName, s.GroupID))
+		case s.GroupName != "":
+			parts = append(parts, "群「"+s.GroupName+"」")
+		case s.GroupID != "":
+			parts = append(parts, "群 "+s.GroupID)
+		default:
+			parts = append(parts, "群（未知）")
+		}
+		if s.GroupSize > 0 {
+			parts = append(parts, fmt.Sprintf("%d 人可见", s.GroupSize))
+		} else {
+			parts = append(parts, "人数未知")
+		}
+	}
+	switch {
+	case s.Name != "" && s.ID != "":
+		parts = append(parts, fmt.Sprintf("%s(%s)", s.Name, s.ID))
+	case s.ID != "":
+		parts = append(parts, s.ID)
+	case s.Name != "":
+		parts = append(parts, s.Name)
+	}
+	if s.Channel != "" {
+		if s.Owner {
+			parts = append(parts, "主人")
+		} else {
+			parts = append(parts, "非主人")
+		}
+	}
+	if s.Channel == "group" {
+		if s.Mentioned {
+			parts = append(parts, "已@我")
+		} else {
+			parts = append(parts, "未@我")
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "[" + strings.Join(parts, " · ") + "]"
+}
+
+// ClampTaskName 把任务名压成一行、截到 24 个字（超出补省略号）。空串 = 没有可用的名字。
+//
+// 为什么这条规则住在协议包里：任务名会显示在界面会话树里，而**谁都能建任务**——
+// 入口服务（qq 的"只记录不推理"路径）直接落库，推理侧（reasoner）代写记忆，记忆服务自己
+// 从正文兜底时也要用同一把尺子。三份实现迟早会分叉成三种长度，同一个任务在两处两个名字。
+func ClampTaskName(name string) string {
+	line := strings.Join(strings.Fields(name), " ")
+	if line == "" {
+		return ""
+	}
+	if runes := []rune(line); len(runes) > 24 {
+		return string(runes[:24]) + "…"
+	}
+	return line
+}
+
+// UserMessagePayload 是 user_message（链入口）的 payload：用户消息文本 + 图片/文件引用 + 来源标注。
 type UserMessagePayload struct {
 	Text           string   `msgpack:"text"`
 	ConversationID string   `msgpack:"conversation_id,omitempty"`
 	Images         []string `msgpack:"images,omitempty"` // 图片引用（images 服务中的 id）
 	Files          []string `msgpack:"files,omitempty"`  // 文件引用（files 服务中的 id；占位文本亦随行，供模型凭 id 调 files__read）
+	// Sender 是这条消息的来源（谁、群还是私聊、扩散面）。可选：不带 = 单用户入口（门户）。
+	Sender *Sender `msgpack:"sender,omitempty"`
 	// Notes 是随用户消息一起送进模型的附注：**不是用户说的话**，是入口服务替系统转达的事实。
 	//
 	// 通用通道。批量任务的用户操作是第一个使用者；以后别的东西（定时器触发、

@@ -311,7 +311,13 @@ func (s *Server) actionStore(_ context.Context, _ protocol.Envelope, in protocol
 	if taskID == "" {
 		if p.Kind == "" || p.Kind == "user" {
 			// 用户消息可以开新任务（"没有任务必须创建"）。
-			task, err := s.cfg.Store.EnsureTask(cid, taskNameFrom(p.Content))
+			// 入口服务给了任务名就用它：正文可能带来源标注前缀（QQ 的群聊/私聊标签），
+			// 从第一行推会推出一串标签，而任务名要显示在界面上。
+			name := protocol.ClampTaskName(p.TaskName)
+			if name == "" {
+				name = taskNameFrom(p.Content)
+			}
+			task, err := s.cfg.Store.EnsureTask(cid, name)
 			if err != nil {
 				return nil, fmt.Errorf("任务解析失败: %w", err)
 			}
@@ -339,15 +345,11 @@ func (s *Server) actionStore(_ context.Context, _ protocol.Envelope, in protocol
 // 模型之后可以用 task_status 的 title 把它改准。
 func taskNameFrom(text string) string {
 	line := strings.TrimSpace(strings.SplitN(text, "\n", 2)[0])
-	line = strings.Join(strings.Fields(line), " ")
-	runes := []rune(line)
-	if len(runes) > 24 {
-		return string(runes[:24]) + "…"
-	}
-	if line == "" {
+	name := protocol.ClampTaskName(line)
+	if name == "" {
 		return "未命名任务"
 	}
-	return line
+	return name
 }
 
 // actionHistory 把某会话最近的记录原样交还（界面回填用：不做记忆组装、不碰长期记忆、不改上下文）。
@@ -607,7 +609,12 @@ func (s *Server) actionRecall(ctx context.Context, env protocol.Envelope, in pro
 
 	// 任务：agent 必须在任务里工作——没有进行中的任务就地新建（名字取这次用户消息）。
 	// 拿不到任务就不往下走：宁可这一轮失败，也不要在"无主"的状态下开工。
-	task, err := s.cfg.Store.EnsureTask(cid, taskNameFrom(recallQuery(tc.Messages)))
+	// 名字优先用入口服务给的那个：正文可能带来源标注前缀，从第一行推会推出一串标签。
+	newName := protocol.ClampTaskName(tc.TaskName)
+	if newName == "" {
+		newName = taskNameFrom(recallQuery(tc.Messages))
+	}
+	task, err := s.cfg.Store.EnsureTask(cid, newName)
 	if err != nil {
 		return nil, fmt.Errorf("任务解析失败: %w", err)
 	}

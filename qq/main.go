@@ -1,5 +1,5 @@
-// qq：SUMP v2 的 QQ 接入服务（第一批，仅私聊）。
-// NapCat（OneBot 11）正向 WS → user_message 任务链；deliver → 发回 QQ。
+// qq：SUMP v2 的 QQ 接入服务（私聊 + 群聊）。
+// NapCat（OneBot 11）正向 WS → user_message 任务链（带来源标注）；deliver → 发回 QQ。
 package main
 
 import (
@@ -22,6 +22,8 @@ func main() {
 	reasoner := flag.String("reasoner", "reasoner", "任务跳转目标（reasoner 服务名）")
 	images := flag.String("images", "images", "图片服务名")
 	files := flag.String("files", "files", "文件服务名（设置中心 files 可热改）")
+	memory := flag.String("memory", "memory", "记忆服务名（群消息只记录时直连它）")
+	groupMode := flag.String("group-mode", "judge", "群聊策略：observe（只记录）/ mention（仅@）/ judge（每条都进上下文，由模型判断说不说）")
 	secretFile := flag.String("secret-file", "", "秘密文件路径（空 = data/<服务名>-secret.json；\"-\" = 不落盘）")
 	flag.Parse()
 
@@ -37,6 +39,8 @@ func main() {
 		Reasoner:    *reasoner,
 		Images:      *images,
 		Files:       *files,
+		Memory:      *memory,
+		GroupMode:   *groupMode,
 		SecretFile:  *secretFile,
 	}, logger)
 	if err := s.Start(context.Background()); err != nil {

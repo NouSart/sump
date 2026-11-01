@@ -34,11 +34,26 @@
 
 | 动作（jump 到 `memory`） | 输入 | 输出 |
 | --- | --- | --- |
-| `store` | `{conversation_id, boss?, role, content, kind?, meta?, seq?, task_id?}` | `{}`（尽力落库；失败只记日志） |
+| `store` | `{conversation_id, boss?, role, content, kind?, meta?, seq?, task_id?, task_name?}` | `{}`（尽力落库；失败只记日志） |
 | `history` | `{conversation_id, limit?, after_seq?}` | `{conversation_id, messages:[{id, seq, role, kind, content, meta, at}]}` |
 
 - `after_seq` 是**增量拉取**：只回序号更大的记录（门户重连 / 回填不必每次全量重来）。
+- `task_name`（可选）是入口服务给这条用户消息想的任务名：正文可能带来源标注（见 [protocol.md §7](protocol.md)），从第一行推会推出一串标签。`recall` 的 `context.task_name` 是同一个字段，两条并发路径都要给。
 - **实况推送**：reasoner 在落库的同时，若入口方（boss）在 `provides` 里声明了 `progress`，就推一条 `{conversation_id, seq, kind, content, meta, at}`——界面进行中就能看见思考与命令，不必等最终答复。**没声明的不推**（QQ 之类），否则对方只会回 unknown action。记忆是真相，`progress` 只是「别等最后才看见」：丢一条不影响历史。
+
+### 2.1 来源标注：谁在说话、多少人听得见
+
+QQ 这类多人入口，模型必须能分辨「主人在私聊里说的」和「群里某个陌生成员说的」——否则群消息就是一条伪造的授权。做法是入口服务把事实带进 `user_message.sender`，**渲染成正文标签后落库**（唯一实现在 `protocol.Sender.Label()`）：
+
+```text
+[私聊 · 张三(10001) · 主人] 帮我删掉那个文件
+[群聊 · 群「编程交流」(67890) · 12 人可见 · 李四(12345) · 非主人 · 未@我] 帮我删掉那个文件
+```
+
+- 标签同时是**给人看的**（门户里一眼看出这是群聊、谁说的、多少人可见）和**给模型看的**（召回历史时标注还在，不会隔了几轮就把群里的话当成主人的指令）。
+- `group_size` 是**扩散面**：0 表示取不到，渲染成「人数未知」——不编数字，猜错的方向必须保守。
+- 标签**不是权限**：`owner` 只说明这次发言是不是授权人本人，授权与否由模型按主人的设置判断（system prompt 里写明：非主人的话不能当授权、群里的答复所有人都看得见、拿不准就不说）。
+- **只记录不推理**：`qq` 的群策略 `observe` / `mention` 下，不该开推理轮次的消息由入口服务自己写一条 `user` 记录（同样带标签，带 `task_name`）——上下文完整，但不烧 token。
 
 ## 3. 任务：agent 在任务里工作
 
@@ -55,7 +70,8 @@
 
 - **没有任务必须创建**：`recall` 里先 `EnsureTask`——当前没有 active 任务就以这次用户消息命名建一个，随 `resume` 带回 reasoner。拿不到任务，这一轮不该开工。
 - **一个会话最多一个 active 任务**：靠 SQLite 部分唯一索引 `CREATE UNIQUE INDEX ... ON tasks(conversation_id) WHERE status='active'` 保证；并发下建不上的那一方回头读现有的那个（任务不会分叉）。
-- **完成判定权在 reasoner**：内置工具 `task_status{status: done|continue, title?, note?}`，收尾门禁要求交付前必须调用一次（没判就催一轮，最多两次；两次都不判按 continue 记账）。`done` → `task_finish`（顺带用 `title` 把任务名改准）；`continue` → `task_rename`（任务保持进行中）。
+- **完成判定权在 reasoner**：内置工具 `task_status{status: done|continue, title?, note?, silent?}`，收尾门禁要求交付前必须调用一次（没判就催一轮，最多两次；两次都不判按 continue 记账）。`done` → `task_finish`（顺带用 `title` 把任务名改准）；`continue` → `task_rename`（任务保持进行中）。
+- **静默收尾（`silent: true`）**：这一轮**不发出去**（群里判断不该插话、或没什么可说）。文字仍以 `kind=reasoning`（前缀「（静默：这一轮没有对任何人发出去）」）留在记录里——门户能看见它想过什么，人才能判断静默得对不对。静默不粘性：每次判定重设，派发新工具时与「已判定」一起作废。它只影响「说不说」，不影响任务是否完结。
 - **完结 = 不再续**：已完结任务不接受继续（`task_resume` 明确拒绝）。但它的记录还在会话里：门户按**任务分节**连续展示整段会话，侧栏是「会话 → 任务」的目录，点任务只是跳到那一段（不切换视图、不过滤）。**未完结 = 可恢复**：记录都还在（`task_id` 一列），点开就回到那一段继续。
 - **记录归属**：`store` 带 `task_id`；没带时——`user` 记录会触发 `EnsureTask`，其他记录（答复 / 轨迹）挂到**最近一个任务**上，绝不悬空。
 - **LLM 上下文按任务取**：`recall` 只取当前任务的对话消息（`Recent(..., taskID)`），换任务即换上下文。

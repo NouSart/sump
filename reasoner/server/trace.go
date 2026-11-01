@@ -56,6 +56,17 @@ func clampRecord(text string) (string, bool) {
 // record 落一条会话记录：写记忆 + （入口方声明了 progress 时）推一条实况。
 // meta 只放**给人看**的附加信息（工具名、命令、call_id…），不放正文。
 func (s *Server) record(cid, boss, trace, taskID, kind, role, content string, meta map[string]any) {
+	s.recordNamed(cid, boss, trace, taskID, kind, role, content, meta, "")
+}
+
+// recordTask 与 record 相同，但带上**入口服务给的任务名**：正文若是用户消息、
+// 且带着来源标注前缀（见 protocol.Sender.Label），记忆侧从第一行推会推出一串标签。
+// 只有 user_message 那一条需要它（其余记录都挂在已有任务上）。
+func (s *Server) recordTask(cid, boss, trace, taskID, kind, role, content string, meta map[string]any, taskName string) {
+	s.recordNamed(cid, boss, trace, taskID, kind, role, content, meta, taskName)
+}
+
+func (s *Server) recordNamed(cid, boss, trace, taskID, kind, role, content string, meta map[string]any, taskName string) {
 	if strings.TrimSpace(content) == "" {
 		return
 	}
@@ -78,6 +89,7 @@ func (s *Server) record(cid, boss, trace, taskID, kind, role, content string, me
 	seq := s.nextSeq()
 	s.Fire(s.memoryName(), "store", protocol.StorePayload{
 		ConversationID: cid, TaskID: taskID, Boss: boss, Role: role, Content: clamped, Kind: kind, Meta: metaJSON, Seq: seq,
+		TaskName: taskName,
 	}, trace, s.cfg.Name)
 	if s.bossWantsProgress(boss) {
 		s.Fire(boss, "progress", protocol.ProgressPayload{

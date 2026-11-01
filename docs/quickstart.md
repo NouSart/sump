@@ -114,7 +114,11 @@ cd ..
 .\scripts\run-local.ps1 -Owner <你的QQ> -NapCatURL ws://<napcat地址>:3000 -NapCatToken <token>
 ```
 
-QQ 连不上会自动重试，不影响其余服务；不填 `-Owner` 则拒绝所有 QQ 私聊。MCP 未设置入口 token 时会拒绝所有外部请求，配置方法见 [mcp/README.md](../mcp/README.md)。
+QQ 连不上会自动重试，不影响其余服务；不填 `-Owner` 则拒绝所有 QQ 私聊。
+
+**群聊**默认 `-group-mode judge`：群消息全部进上下文（带来源标注：谁说的、群还是私聊、多少人可见、是否主人、是否被 @），说不说由智能体按你的设置判断；改成 `mention` 只在被 @ 时推理，`observe` 则群消息只记录不回应（这两种模式下不推理的消息仍会写进记忆）。
+
+MCP 未设置入口 token 时会拒绝所有外部请求，配置方法见 [mcp/README.md](../mcp/README.md)。
 
 ## 6. 已知限制
 

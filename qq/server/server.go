@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -31,8 +32,18 @@ type Config struct {
 	Reasoner          string        // 任务跳转目标（reasoner 服务名，默认 reasoner）
 	Images            string        // 图片服务名（默认 images）
 	Files             string        // 文件服务名（默认 files）
+	Memory            string        // 记忆服务名（默认 memory）：群消息"只记录不推理"时直接写进去
+	GroupMode         string        // 群聊策略 observe / mention / judge（默认 judge）
 	SecretFile        string        // 秘密项（napcat.token）的本地持久化路径（空 = data/<名>-secret.json；"-" = 不落盘）
 }
+
+// 群聊三档策略。默认 judge：群消息全部进上下文，说不说由模型按主人设置判断——
+// 这正是"智能体知道自己在哪个群、谁在说话"的意义所在，入口不替它做决定。
+const (
+	GroupObserve = "observe" // 只记录不推理：群消息进记忆，不开推理轮次（省 token）
+	GroupMention = "mention" // 没点到我就只记录
+	GroupJudge   = "judge"   // 每条都进推理，回答与否由模型判断
+)
 
 // Server 是 qq 服务实例（服务骨架 + NapCat 客户端）。
 type Server struct {
@@ -49,9 +60,14 @@ type Server struct {
 	reasoner    string     // 当前任务跳转目标（reasoner 服务名）
 	images      string     // 当前图片服务名
 	files       string     // 当前文件服务名
+	memory      string     // 当前记忆服务名（群消息只记录时直连它）
+	groupMode   string     // 当前群聊策略
 
 	locksMu sync.Mutex
 	locks   map[string]*sync.Mutex // 会话级串行锁（防同一会话消息乱序）
+
+	groupsMu sync.Mutex
+	groups   map[int64]groupMeta // 群资料缓存（群名 / 成员数 = 扩散面）
 }
 
 // New 创建实例并注册动作。
@@ -65,6 +81,12 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.Files == "" {
 		cfg.Files = "files"
 	}
+	if cfg.Memory == "" {
+		cfg.Memory = "memory"
+	}
+	if cfg.GroupMode == "" {
+		cfg.GroupMode = GroupJudge
+	}
 	s := &Server{
 		cfg: cfg, logger: logger,
 		owner:       cfg.Owner,
@@ -73,7 +95,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		reasoner:    cfg.Reasoner,
 		images:      cfg.Images,
 		files:       cfg.Files,
+		memory:      cfg.Memory,
+		groupMode:   cfg.GroupMode,
 		locks:       map[string]*sync.Mutex{},
+		groups:      map[int64]groupMeta{},
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
@@ -82,7 +107,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		SecretFile:        cfg.SecretFile,
-		Description:       "QQ 接入（NapCat/OneBot 11 · 仅私聊）：消息 → 任务链；deliver → 发回 QQ",
+		Description:       "QQ 接入（NapCat/OneBot 11 · 私聊 + 群聊）：消息（带来源标注）→ 任务链；deliver → 发回 QQ",
 		Provides: []protocol.Provide{
 			{Action: "deliver", Input: "{text, conversation_id}", Output: "回执（已发回 QQ）"},
 		},
@@ -141,6 +166,27 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}, service.Label("文件服务名"),
 		service.Hint("QQ 里发的文件存到哪个服务"),
 		service.As("service"))
+	s.HandleSetting("memory", cfg.Memory, func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return errors.New("不接受空服务名")
+		}
+		s.setMemory(v)
+		return nil
+	}, service.Label("记忆服务名"),
+		service.Hint("群消息「只记录不推理」时直接写进哪个服务"),
+		service.As("service"))
+	s.HandleSetting("group.mode", cfg.GroupMode, func(v string) error {
+		// 界面上传的是取值（observe / mention / judge）；人话在语言包里。
+		switch strings.TrimSpace(v) {
+		case GroupObserve, GroupMention, GroupJudge:
+		default:
+			return fmt.Errorf("群聊策略只能是 %s / %s / %s，收到 %q", GroupObserve, GroupMention, GroupJudge, v)
+		}
+		s.setGroupMode(v)
+		return nil
+	}, service.Label("群聊策略"),
+		service.Hint("观察=群消息只进上下文不回答；仅@=被点到才回答，其余只记录；判断=每条都进上下文，说不说由智能体自己判断"),
+		service.As("enum", GroupObserve, GroupMention, GroupJudge))
 	s.Handle("deliver", s.actionDeliver)
 	s.napcat = napcat.New(napcat.Config{
 		URL:       cfg.NapCatURL,
@@ -231,10 +277,38 @@ func (s *Server) setFiles(v string) {
 	s.setMu.Unlock()
 }
 
+// memoryName 返回当前记忆服务名（群消息只记录时写进去的那个）。
+func (s *Server) memoryName() string {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.memory
+}
+
+// setMemory 更新记忆服务名。
+func (s *Server) setMemory(v string) {
+	s.setMu.Lock()
+	s.memory = v
+	s.setMu.Unlock()
+}
+
+// groupModeNow 返回当前群聊策略。
+func (s *Server) groupModeNow() string {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	return s.groupMode
+}
+
+// setGroupMode 更新群聊策略。
+func (s *Server) setGroupMode(v string) {
+	s.setMu.Lock()
+	s.groupMode = v
+	s.setMu.Unlock()
+}
+
 // Start 启动服务骨架，并额外启动 NapCat 连接循环（连不上会自动重试，不阻塞其余服务）。
 func (s *Server) Start(ctx context.Context) error {
 	if s.cfg.Owner == "" {
-		s.logger.Printf("警告: 未配置主人 QQ（-owner），所有私聊都将被拒绝")
+		s.logger.Printf("警告: 未配置主人 QQ（-owner），所有私聊都将被拒绝；群聊仍按 group.mode=%s 处理", s.groupModeNow())
 	}
 	if err := s.Service.Start(ctx); err != nil {
 		return err
@@ -245,7 +319,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 // ---------- 动作 ----------
 
-// actionDeliver 是 boss 约定动作：把任务结果发回原 QQ 会话。
+// actionDeliver 是 boss 约定动作：把任务结果发回原 QQ 会话（私聊或群聊）。
 func (s *Server) actionDeliver(ctx context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p protocol.DeliverPayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
@@ -258,44 +332,146 @@ func (s *Server) actionDeliver(ctx context.Context, _ protocol.Envelope, in prot
 	if !ok {
 		return nil, fmt.Errorf("deliver: 无法解析会话标识 %q", p.ConversationID)
 	}
-	if kind != "private" {
-		return nil, errors.New("deliver: 群聊未启用")
-	}
-	uid, err := strconv.ParseInt(id, 10, 64)
+	target, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("deliver: 会话 id 无效 %q", id)
 	}
-	if err := s.sendPrivate(ctx, uid, p.Text); err != nil {
-		return nil, fmt.Errorf("发送 QQ 消息失败: %w", err)
+	// 私聊与群聊只差一个参数名（user_id / group_id），send 里按 kind 选。
+	if kind != "private" && kind != "group" {
+		return nil, fmt.Errorf("deliver: 未知会话类型 %q（只认 private / group）", kind)
+	}
+	if err := s.send(ctx, kind, target, p.Text); err != nil {
+		return nil, fmt.Errorf("发送 QQ 消息失败（%s）: %w", kind, err)
 	}
 	return map[string]any{}, nil
 }
 
-// ---------- QQ 私聊 → 任务链 ----------
+// ---------- QQ 消息 → 任务链 ----------
 
 // onQQEvent 处理一条 NapCat 消息事件（napcat 客户端的回调 goroutine）。
+//
+// 两条路都由入口服务补上**来源标注**（谁是发送者、群还是私聊、扩散面多大），
+// 这样记忆、模型上下文、门户看到的是同一句话；说不说、能不能外发由模型判断。
 func (s *Server) onQQEvent(ev napcat.Event) {
-	if ev.MessageType != "private" {
-		s.logger.Printf("忽略非私聊消息（群聊未启用）: type=%s group=%d", ev.MessageType, ev.GroupID)
+	// 自己发出去的消息不回灌（否则"我回了 A，A 又被当成新消息"）。
+	if ev.SelfID != 0 && ev.UserID == ev.SelfID {
 		return
 	}
+	switch ev.MessageType {
+	case "private":
+		s.onPrivate(ev)
+	case "group":
+		s.onGroup(ev)
+	default:
+		s.logger.Printf("忽略未知消息类型: type=%q", ev.MessageType)
+	}
+}
+
+// onPrivate 处理私聊：只认主人，其余礼貌拒绝且不触发任务。
+func (s *Server) onPrivate(ev napcat.Event) {
 	uid := strconv.FormatInt(ev.UserID, 10)
 	owner := s.ownerNow()
 	if owner == "" || uid != owner {
 		s.logger.Printf("拒绝非主人私聊: user_id=%s", uid)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := s.sendPrivate(ctx, ev.UserID, "抱歉，你不是授权用户，已拒绝执行。"); err != nil {
+		if err := s.send(ctx, "private", ev.UserID, "抱歉，你不是授权用户，已拒绝执行。"); err != nil {
 			s.logger.Printf("发送拒绝语失败: %v", err)
 		}
 		return
 	}
 
 	// 会话级串行：同一会话逐条处理，不阻塞其他会话。
-	lock := s.convLock(uid)
+	lock := s.convLock("private:" + uid)
 	lock.Lock()
 	defer lock.Unlock()
 
+	text, ids, fileIDs := s.collect(ev)
+	if text == "" && len(ids) == 0 && len(fileIDs) == 0 {
+		return
+	}
+
+	cid := "qq:private:" + uid
+	sender := &protocol.Sender{
+		Channel: "private", ID: uid, Name: ev.DisplayName(),
+		Owner: true, Mentioned: true,
+	}
+	// 私聊里只有主人能进来，扩散面恒为"只有他"——不需要额外的策略附加信息。
+	if err := s.callReasoner("user_message", protocol.UserMessagePayload{
+		Text: text, ConversationID: cid, Images: ids, Files: fileIDs, Sender: sender,
+	}); err != nil {
+		s.logger.Printf("user_message 未受理: %v", err)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err2 := s.send(ctx, "private", ev.UserID, "抱歉，服务暂时不可用。"); err2 != nil {
+			s.logger.Printf("发送失败提示失败: %v", err2)
+		}
+	}
+}
+
+// onGroup 处理群聊：**任何人都能进来**（多人的上下文才叫群聊），
+// 说不说由 group.mode 与模型判断，入口只负责把事实标清楚。
+func (s *Server) onGroup(ev napcat.Event) {
+	gid := strconv.FormatInt(ev.GroupID, 10)
+	if gid == "0" {
+		s.logger.Printf("群消息缺少 group_id（丢弃）: user_id=%d", ev.UserID)
+		return
+	}
+	uid := strconv.FormatInt(ev.UserID, 10)
+
+	lock := s.convLock("group:" + gid)
+	lock.Lock()
+	defer lock.Unlock()
+
+	text, ids, fileIDs := s.collect(ev)
+	if text == "" && len(ids) == 0 && len(fileIDs) == 0 {
+		return
+	}
+
+	info := s.groupInfo(ev.GroupID)
+	owner := s.ownerNow()
+	cid := "qq:group:" + gid
+	sender := &protocol.Sender{
+		Channel: "group", ID: uid, Name: ev.DisplayName(),
+		GroupID: gid, GroupName: info.Name, GroupSize: info.Members,
+		Owner:     owner != "" && uid == owner,
+		Mentioned: ev.Mentions(ev.SelfID),
+	}
+
+	if !s.shouldReason(sender) {
+		s.logger.Printf("群 %s：消息按策略（%s）只记录不推理（from=%s 提及=%v）", gid, s.groupModeNow(), uid, sender.Mentioned)
+		s.storeQuietly(cid, sender, text, ids, fileIDs)
+		return
+	}
+	if err := s.callReasoner("user_message", protocol.UserMessagePayload{
+		Text: text, ConversationID: cid, Images: ids, Files: fileIDs, Sender: sender,
+	}); err != nil {
+		s.logger.Printf("群 %s：user_message 未受理: %v", gid, err)
+		if sender.Mentioned {
+			// 被点名了却没接住：在群里说一声，别让人干等。
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err2 := s.send(ctx, "group", ev.GroupID, "抱歉，服务暂时不可用。"); err2 != nil {
+				s.logger.Printf("群 %s：发送失败提示失败: %v", gid, err2)
+			}
+		}
+	}
+}
+
+// shouldReason 判断这条群消息要不要开推理轮次（策略在入口侧，模型看不见被拦下的消息）。
+func (s *Server) shouldReason(sender *protocol.Sender) bool {
+	switch s.groupModeNow() {
+	case GroupObserve:
+		return false
+	case GroupMention:
+		return sender.Mentioned
+	default: // GroupJudge
+		return true
+	}
+}
+
+// collect 把一条消息里的文字、图片、文件整理成任务链需要的样子。
+func (s *Server) collect(ev napcat.Event) (string, []string, []string) {
 	text := ev.Text()
 	var ids []string
 	for _, u := range ev.ImageURLs() {
@@ -323,20 +499,7 @@ func (s *Server) onQQEvent(ev napcat.Event) {
 		// 占位必须带 id——文件是模型凭 id 调 files__read 自取的（与图片的自动内联不同）。
 		text = appendLine(text, fmt.Sprintf("[文件: %s, id=%s]", fr.Name, id))
 	}
-	if strings.TrimSpace(text) == "" && len(ids) == 0 && len(fileIDs) == 0 {
-		return
-	}
-
-	cid := "qq:private:" + uid
-	payload := protocol.UserMessagePayload{Text: text, ConversationID: cid, Images: ids, Files: fileIDs}
-	if err := s.callReasoner("user_message", payload); err != nil {
-		s.logger.Printf("user_message 未受理: %v", err)
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if err2 := s.sendPrivate(ctx, ev.UserID, "抱歉，服务暂时不可用。"); err2 != nil {
-			s.logger.Printf("发送失败提示失败: %v", err2)
-		}
-	}
+	return text, ids, fileIDs
 }
 
 // saveImage 把图片 URL 交给 images 服务保存，返回图片 id。
@@ -389,14 +552,110 @@ func (s *Server) callReasoner(action string, payload any) error {
 	return err
 }
 
-// sendPrivate 私聊发送一条文本。
-func (s *Server) sendPrivate(ctx context.Context, uid int64, text string) error {
-	_, err := s.napcat.Call(ctx, "send_msg", map[string]any{
-		"message_type": "private",
-		"user_id":      uid,
-		"message":      text,
-	})
+// send 发一条 QQ 消息：kind = private / group。
+// 参数名照 NapCat（OneBot 11）：私聊用 user_id，群聊用 group_id。
+func (s *Server) send(ctx context.Context, kind string, target int64, text string) error {
+	params := map[string]any{"message_type": kind, "message": text}
+	if kind == "group" {
+		params["group_id"] = target
+	} else {
+		params["user_id"] = target
+	}
+	_, err := s.napcat.Call(ctx, "send_msg", params)
 	return err
+}
+
+// ---------- 群资料（扩散面）----------
+
+// groupMeta 是一个群的资料缓存。
+type groupMeta struct {
+	Name    string
+	Members int
+	at      time.Time
+}
+
+// groupInfoTTL 是群资料缓存的有效期：群名会改、人数会变，缓存只是为了别每条消息都去问一次。
+const groupInfoTTL = 10 * time.Minute
+
+// groupInfoRetry 是"没取到"的缓存期：网关不支持或一时不通时，别让每条消息都等一次超时。
+const groupInfoRetry = time.Minute
+
+// groupInfo 取群资料（带缓存）：群名与成员数是来源标注里"扩散面"的一半。
+// 取不到就返回空资料——宁可写"人数未知"，也不编一个数字（过一会儿再试）。
+func (s *Server) groupInfo(groupID int64) groupMeta {
+	s.groupsMu.Lock()
+	meta, ok := s.groups[groupID]
+	s.groupsMu.Unlock()
+	if ok {
+		ttl := groupInfoTTL
+		if meta.Name == "" {
+			ttl = groupInfoRetry // 上次没取到：短缓存，别把"未知"锁十分钟
+		}
+		if meta.at.Add(ttl).After(time.Now()) {
+			return meta
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := s.napcat.GroupInfo(ctx, groupID)
+	if err != nil {
+		s.logger.Printf("群 %d 资料取不到（按未知处理）: %v", groupID, err)
+	}
+	meta = groupMeta{Name: info.Name, Members: info.Members, at: time.Now()}
+	s.groupsMu.Lock()
+	s.groups[groupID] = meta
+	s.groupsMu.Unlock()
+	return meta
+}
+
+// storeQuietly 把一条"只记录不推理"的消息写进记忆：上下文里留痕，但不烧推理轮次。
+//
+// 正文带上与推理侧同样的来源标注（Sender.Label 是协议里的唯一实现），
+// 这样以后模型召回这段历史时知道这句话是谁在群里说的；
+// 任务名显式给出（否则会从标注那一行推出一个像标签的任务名）。
+func (s *Server) storeQuietly(cid string, sender *protocol.Sender, text string, ids, fileIDs []string) {
+	label := sender.Label()
+	content := text
+	if label != "" {
+		if content == "" {
+			content = label
+		} else {
+			content = label + " " + content
+		}
+	}
+	meta, _ := json.Marshal(map[string]any{
+		"sender": sender, "images": ids, "files": fileIDs,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := s.Call(ctx, s.memoryName(), "store", protocol.StorePayload{
+		ConversationID: cid,
+		Boss:           s.cfg.Name,
+		Role:           "user",
+		Kind:           "user",
+		Content:        content,
+		Meta:           string(meta),
+		TaskName:       taskNameOf(text, ids, fileIDs),
+	}, protocol.NewID(), s.cfg.Name)
+	if err != nil {
+		s.logger.Printf("会话 %s：只记录模式落库失败: %v", cid, err)
+	}
+}
+
+// taskNameOf 从消息正文里取一个任务名；正文为空（只发了图 / 文件）时按附件类型兜底——
+// 否则任务名会退化成来源标注那一行。名字的截断规则只有一份（protocol.ClampTaskName），
+// 这样 qq 直接落库与 reasoner 代写记忆得到的是同一个名字。
+func taskNameOf(text string, images, files []string) string {
+	if name := protocol.ClampTaskName(strings.SplitN(text, "\n", 2)[0]); name != "" {
+		return name
+	}
+	switch {
+	case len(images) > 0:
+		return "[图片]"
+	case len(files) > 0:
+		return "[文件]"
+	}
+	return ""
 }
 
 // parseConversation 解析会话标识（qq:private:<uid> / qq:group:<gid>）。
