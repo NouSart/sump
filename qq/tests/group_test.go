@@ -26,10 +26,13 @@ type memoryStore struct {
 }
 
 type stubMemory struct {
-	ln     net.Listener
-	srv    *http.Server
-	mu     sync.Mutex
-	stores []memoryStore
+	ln        net.Listener
+	srv       *http.Server
+	mu        sync.Mutex
+	stores    []memoryStore
+	opens     []protocol.ConversationOpenPayload
+	failOpen  bool          // 让 conversation_open 回 ok:false（验证起名失败的处理）
+	openDelay time.Duration // 让 conversation_open 慢一点（验证起名不挡消息的路）
 }
 
 func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
@@ -87,6 +90,22 @@ func (sm *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
 			sm.mu.Lock()
 			sm.stores = append(sm.stores, rec)
 			sm.mu.Unlock()
+		case "conversation_open":
+			var p protocol.ConversationOpenPayload
+			_ = protocol.DecodeRaw(jp.Input, &p)
+			sm.mu.Lock()
+			sm.opens = append(sm.opens, p)
+			fail := sm.failOpen
+			delay := sm.openDelay
+			sm.mu.Unlock()
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			if fail {
+				resp, _ := protocol.NewResponse(env, "memory", protocol.ResponsePayload{OK: false, Error: "记忆写不进去"})
+				c.send(resp)
+				continue
+			}
 		default:
 			resp, _ := protocol.NewResponse(env, "memory", protocol.ResponsePayload{OK: false, Error: "unknown action: " + jp.Action})
 			c.send(resp)
@@ -101,6 +120,30 @@ func (sm *stubMemory) storesLen() int {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	return len(sm.stores)
+}
+
+func (sm *stubMemory) opensLen() int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return len(sm.opens)
+}
+
+// waitOpen 等 memory.conversation_open（qq 起会话标题时发）。
+func (sm *stubMemory) waitOpen(t *testing.T, timeout time.Duration) protocol.ConversationOpenPayload {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		sm.mu.Lock()
+		if len(sm.opens) > 0 {
+			o := sm.opens[0]
+			sm.mu.Unlock()
+			return o
+		}
+		sm.mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("等待 memory.conversation_open 超时")
+	return protocol.ConversationOpenPayload{}
 }
 
 func (sm *stubMemory) waitStore(t *testing.T, timeout time.Duration) memoryStore {
