@@ -31,6 +31,8 @@ interface Props {
   onRetry?: () => Promise<void>;
   /** 工作流展开档位：决定过程条目（思考 / 输出）什么时候自己摊开。 */
   workflowExpand: WorkflowExpand;
+  /** 只读：这是别的入口（QQ）的会话——能看记录，不能在这里说话。 */
+  readOnly?: boolean;
   t: Translate;
 }
 
@@ -183,7 +185,7 @@ function TraceDetails({ mode, children }: { mode: WorkflowExpand; children: Reac
 }
 // PortalView 是门户的对话面：消息流铺满整个面板，输入区（含待审/计时器/报错）作为浮层压在底部——
 // 所以输入框是悬浮的，消息能滚到它背后透出来。消息只有两条来源：本地回显，与 SSE 送来的 deliver。
-export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend, onUpload, onTerminal, terminalRuns, onOpenSettings, tasks, workflowExpand, retryable, onRetry, t }: Props) {
+export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend, onUpload, onTerminal, terminalRuns, onOpenSettings, tasks, workflowExpand, retryable, onRetry, readOnly, t }: Props) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   // 附件：上传成功的留在列表里，随下一条消息一起发出去；上传中/失败各自有态。
@@ -355,6 +357,12 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
             void submit(e);
           }}
         >
+          {/* 只读会话（QQ）：记录能看，话要回 QQ 说——门户不替别的入口发言。 */}
+          {readOnly === true && (
+            <div className="composer-readonly" role="status">
+              <span>{t('ui.portal.readonly', '只读查看：这是 QQ 里的对话，回到 QQ 里回复')}</span>
+            </div>
+          )}
           {/* 上一轮推理失败但任务还开着：给一个明确的「重试」，不用用户自己想办法触发。 */}
           {retryable === true && onRetry !== undefined && (
             <div className="composer-retry" role="status">
@@ -408,15 +416,17 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
             className={terminalOpen ? 'composer-input is-compact' : 'composer-input'}
             aria-label={t('ui.portal.input', '消息')}
             rows={terminalOpen ? 1 : 2}
-            value={text}
+            value={readOnly === true ? '' : text}
             placeholder={
-              !connected
-                ? t('ui.portal.offline', '未连接设置中心')
-                : focused
-                  ? t('ui.portal.placeholder', '说点什么…（Enter 发送，Shift+Enter 换行）')
-                  : ''
+              readOnly === true
+                ? t('ui.portal.readonlyPlaceholder', '只读查看（回复请去 QQ）')
+                : !connected
+                  ? t('ui.portal.offline', '未连接设置中心')
+                  : focused
+                    ? t('ui.portal.placeholder', '说点什么…（Enter 发送，Shift+Enter 换行）')
+                    : ''
             }
-            disabled={!connected}
+            disabled={!connected || readOnly === true}
             onFocus={() => {
               setFocused(true);
             }}
@@ -440,7 +450,7 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
             <button
               type="button"
               className="chip"
-              disabled={!connected || uploading}
+              disabled={!connected || uploading || readOnly === true}
               aria-label={t('ui.portal.attach', '添加附件')}
               title={t('ui.portal.attach', '添加附件')}
               onClick={() => {
@@ -463,6 +473,7 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
               type="button"
               className={terminalOpen ? 'chip is-on' : 'chip'}
               aria-pressed={terminalOpen}
+              disabled={readOnly === true}
               onClick={() => {
                 setTerminalOpen((value) => !value);
               }}
@@ -478,7 +489,7 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
               aria-label={t('ui.portal.send', '发送')}
               aria-busy={busy}
               title={t('ui.portal.sendHint', '发送（Enter）')}
-              disabled={!connected || busy || uploading || (text.trim() === '' && attachments.length === 0)}
+              disabled={!connected || readOnly === true || busy || uploading || (text.trim() === '' && attachments.length === 0)}
             >
               <IconSend />
             </button>

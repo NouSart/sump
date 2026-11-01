@@ -1,5 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { decideApproval, fetchHistory, fetchOverview, fetchTasks, parseMeta, resetSetting, retryRound, resumeTask, runTerminalCommand, sendMessage, setSetting, uploadFile, type UploadResult } from './api';
+import {
+  archiveConversation,
+  createConversation,
+  decideApproval,
+  fetchConversations,
+  fetchHistory,
+  fetchOverview,
+  fetchTasks,
+  parseMeta,
+  renameConversation,
+  resetSetting,
+  retryRound,
+  resumeTask,
+  runTerminalCommand,
+  sendMessage,
+  setSetting,
+  uploadFile,
+  type UploadResult,
+} from './api';
 import { PortalView } from './components/PortalView';
 import { MessageCards } from './components/MessageCards';
 import { buildFeed } from './messageFeed';
@@ -14,6 +32,7 @@ import { useTimeTheme } from './timeTheme';
 import { useWorkflowExpand } from './workflowExpand';
 import { useBubblePrefs } from './bubblePrefs';
 import type {
+  ConversationView,
   Overview,
   PendingApprovalView,
   PortalMessage,
@@ -87,6 +106,9 @@ export function App() {
   // 上一轮推理失败、任务还开着 → 显示「重试」。由 deliver 的文案前缀置位，发新消息时收起。
   const [retryable, setRetryable] = useState(false);
   const [tasks, setTasks] = useState<TaskView[]>([]);
+  // 多会话：侧栏第一层。activeCid 为空 = 还没选（首屏拉到列表后选最近活跃的那个）。
+  const [conversations, setConversations] = useState<ConversationView[]>([]);
+  const [activeCid, setActiveCid] = useState('');
   const [timers, setTimers] = useState<TimerView[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
   // 终端事件按到达顺序留最近 40 条：够把刚跑完的几条对上，不当地址簿用。
@@ -94,6 +116,13 @@ export function App() {
   const [portalError, setPortalError] = useState<string | null>(null);
   const pendingKeysRef = useRef(new Set<string>());
   const rosterRevRef = useRef(-1);
+  // 当前会话（回调里读，避免闭包拿到旧的 state）。
+  const activeCidRef = useRef('');
+  // 语言包在回调里也要能读最新值（切换语言不该重连 SSE / 重拉会话）。
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
 
   const pushToast = useCallback((kind: Toast['kind'], text: string) => {
     const id = ++toastSeq;
@@ -131,6 +160,121 @@ export function App() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // ---------- 会话（多会话） ----------
+
+  // switchConversation 切到一个会话：清掉上一个会话的实时状态，重新拉它的任务与整段记录。
+  // activeCidRef 挡住"点得快、旧响应后到"——否则会把上一个会话的记录画进来。
+  const switchConversation = useCallback(async (cid: string): Promise<void> => {
+    if (cid === '') return;
+    activeCidRef.current = cid;
+    setActiveCid(cid);
+    setMessages([]);
+    setTerminalRuns([]);
+    setRetryable(false);
+    setPortalError(null);
+    try {
+      const [list, history] = await Promise.all([fetchTasks(cid), fetchHistory(300, 0, '', true, cid)]);
+      if (activeCidRef.current !== cid) return;
+      setTasks(list);
+      // 增量轮询的水位从这里起步：已经拿到的最大 seq 之前不必再问一遍。
+      pollSeqRef.current = Math.max(0, ...history.map((m) => m.seq ?? 0));
+      // 与"切换期间已经到达的实时消息"合并，而不是覆盖——deliver / progress 可能先到。
+      // 上一个会话的残留已在上面清空，且 SSE 按 conversationId 过滤过，所以这里的 prev 只属于本会话。
+      setMessages((prev) => mergeMessages(history, prev));
+    } catch (err) {
+      if (activeCidRef.current === cid) {
+        setPortalError(`${tRef.current('ui.app.historyFailed', '历史未取回：')}${(err as Error).message}`);
+      }
+    }
+  }, []);
+
+  const refreshConversations = useCallback(async (): Promise<void> => {
+    try {
+      setConversations(await fetchConversations());
+    } catch {
+      // 列表刷新失败不该打断对话：下一次发消息 / 切换时会再试。
+    }
+  }, []);
+
+  // 当前会话是不是"别人的门"（QQ 私聊 / QQ 群）：能看，不能在这里说话。
+  // 判断以服务端给的 readonly 为准——门户不自己猜会话号的含义。
+  const activeConv = conversations.find((c) => c.id === activeCid) ?? null;
+  const readOnly = activeConv?.readonly === true;
+
+  // 只读会话收不到实时推送（门户的 SSE 只推它自己的会话），所以按固定间隔增量拉取。
+  // 这是"在门户里看得见 QQ 里发生了什么"的最小代价实现：打开就轮询，切走立刻停。
+  const pollSeqRef = useRef(0);
+  const pollTickRef = useRef(0);
+  useEffect(() => {
+    if (!readOnly || activeCid === '') return;
+    const cid = activeCid;
+    pollTickRef.current = 0;
+    let stopped = false;
+    const tick = async (): Promise<void> => {
+      if (stopped || activeCidRef.current !== cid) return;
+      try {
+        const history = await fetchHistory(200, pollSeqRef.current, '', true, cid);
+        if (stopped || activeCidRef.current !== cid || history.length === 0) return;
+        const maxSeq = Math.max(pollSeqRef.current, ...history.map((m) => m.seq ?? 0));
+        pollSeqRef.current = maxSeq;
+        setMessages((prev) => mergeMessages(prev, history));
+        // 会话的 updated_at / 标题会随新消息变化：隔几次再刷列表，别每次都问。
+        pollTickRef.current++;
+        if (pollTickRef.current % 4 === 1) void refreshConversations();
+      } catch {
+        // 轮询失败不打扰用户：下一拍自己会再来（真的断了也只影响"看不看得见新消息"）。
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => {
+      void tick();
+    }, 4000);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+    };
+  }, [activeCid, readOnly, refreshConversations]);
+
+  const onCreateConversation = useCallback(async (): Promise<void> => {
+    try {
+      const conv = await createConversation();
+      setConversations(await fetchConversations());
+      await switchConversation(conv.id);
+    } catch (err) {
+      pushToast('error', `${tRef.current('ui.conv.createFailed', '新建会话失败：')}${(err as Error).message}`);
+    }
+  }, [pushToast, switchConversation]);
+
+  const onRenameConversation = useCallback(
+    async (cid: string, title: string): Promise<void> => {
+      try {
+        await renameConversation(cid, title);
+        setConversations(await fetchConversations());
+      } catch (err) {
+        pushToast('error', `${tRef.current('ui.conv.renameFailed', '重命名失败：')}${(err as Error).message}`);
+      }
+    },
+    [pushToast],
+  );
+
+  const onArchiveConversation = useCallback(
+    async (cid: string): Promise<void> => {
+      try {
+        await archiveConversation(cid, true);
+        const list = await fetchConversations();
+        setConversations(list);
+        // 归档的正是当前会话：切到剩下最近的一个（列表里至少还有默认会话）。
+        if (activeCidRef.current === cid) {
+          const next = list.find((c) => c.id !== cid) ?? list[0];
+          if (next !== undefined) await switchConversation(next.id);
+        }
+      } catch (err) {
+        pushToast('error', `${tRef.current('ui.conv.archiveFailed', '归档失败：')}${(err as Error).message}`);
+      }
+    },
+    [pushToast, switchConversation],
+  );
 
   // settings 事件：更新行的会话内状态（待确认 → 已生效 / 未送达），并刷新设置视图。
   const handleSettingsEvent = useCallback(
@@ -189,7 +333,16 @@ export function App() {
     });
     // 门户投递：智能体经 deliver 送来的消息，落到对话里。
     es.addEventListener('deliver', (ev) => {
-      const d = JSON.parse((ev as MessageEvent).data) as { text: string; taskId?: string; at: string };
+      const d = JSON.parse((ev as MessageEvent).data) as {
+        text: string;
+        taskId?: string;
+        at: string;
+        conversationId?: string;
+      };
+      // 别的会话的答复不进这条对话（门户现在可能有多个会话）。
+      if (typeof d.conversationId === 'string' && d.conversationId !== '' && d.conversationId !== activeCidRef.current) {
+        return;
+      }
       setMessages((prev) =>
         appendMessage(prev, {
           author: 'agent',
@@ -204,13 +357,16 @@ export function App() {
       // 正常答复到达 → 收起它。判定靠稳定的文案前缀，重试是否可行仍由 reasoner 回答。
       setRetryable(d.text.startsWith('⚠️ 本轮推理失败'));
       // 答复到了：任务名/状态可能刚被判定改过，顺手对齐一次（失败不影响对话）。
-      void fetchTasks()
+      void fetchTasks(activeCidRef.current)
         .then(setTasks)
         .catch(() => undefined);
+      // 会话的 updated_at / 标题也可能变了（任务判定时改了名）。
+      void refreshConversations();
     });
     // 任务实况：思考 / 终端命令 / 终端输出——进行中就画出来，不必等最终答复。
     es.addEventListener('progress', (ev) => {
       const d = JSON.parse((ev as MessageEvent).data) as ProgressEventView;
+      if (d.conversationId !== '' && d.conversationId !== activeCidRef.current) return;
       const kind = d.kind;
       if (kind !== 'reasoning' && kind !== 'tool_call' && kind !== 'tool_result') return;
       setMessages((prev) =>
@@ -237,6 +393,9 @@ export function App() {
     es.addEventListener('terminal', (ev) => {
       const d = JSON.parse((ev as MessageEvent).data) as TerminalRunUpdate;
       if (typeof d.itemId !== 'string' || typeof d.phase !== 'string') return;
+      if (typeof d.conversationId === 'string' && d.conversationId !== '' && d.conversationId !== activeCidRef.current) {
+        return;
+      }
       setTerminalRuns((prev) => [...prev, d].slice(-40));
     });
     return () => es.close();
@@ -386,6 +545,15 @@ export function App() {
     [messages, timers, tasks],
   );
 
+  // 终端事件是全局推来的（shell 不认会话）：只把当前会话的交给面板。
+  const visibleTerminalRuns = useMemo(
+    () =>
+      terminalRuns.filter(
+        (r) => r.conversationId === undefined || r.conversationId === '' || r.conversationId === activeCid,
+      ),
+    [terminalRuns, activeCid],
+  );
+
   // onJumpTask：侧栏点任务。已经在会话里就跳过去；不在就先把它这一段取回来——
   // 进行中的任务走 task_resume（记忆服务会把它顶成当前任务），已完结的直接按 task_id 读历史。
   const onJumpTask = useCallback(
@@ -439,40 +607,42 @@ export function App() {
         id: nextLocalMessageID(),
       };
       setMessages((prev) => appendMessage(prev, echo));
+      const cid = activeCidRef.current;
       try {
-        await sendMessage(text, attachments);
+        await sendMessage(text, attachments, cid);
       } catch (err) {
         setMessages((prev) => prev.filter((m) => m !== echo));
         setPortalError(`${t('ui.app.undelivered', '未送达：')}${(err as Error).message}`);
         return false;
       }
       // 新任务可能刚被创建：刷新一次任务列表（记录由 reasoner 落库，稍后才到）。
-      void fetchTasks()
+      void fetchTasks(cid)
         .then(setTasks)
         .catch(() => undefined);
+      void refreshConversations();
       return true;
     },
-    [currentTask, t],
+    [currentTask, t, refreshConversations],
   );
-  // 首屏：一次拉全"任务清单 + 整段会话"——面板按会话展示，任务只是里面的分节。
+  // 首屏：先取会话列表，选最近活跃的那个，再拉它的任务与整段记录（之后全靠 SSE 增量）。
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const [list, history] = await Promise.all([fetchTasks(), fetchHistory(300, 0, '', true)]);
+        const list = await fetchConversations();
         if (cancelled) return;
-        setTasks(list);
-        // 与"加载期间已经到达的实时消息"合并，而不是覆盖——deliver / progress 可能先到。
-        setMessages((prev) => mergeMessages(history, prev));
+        setConversations(list);
+        const first = list.find((c) => c.status !== 'archived') ?? list[0];
+        if (first !== undefined) await switchConversation(first.id);
       } catch (err) {
-        if (!cancelled) setPortalError(`${t('ui.app.historyFailed', '历史未取回：')}${(err as Error).message}`);
+        if (!cancelled) setPortalError(`${tRef.current('ui.app.historyFailed', '历史未取回：')}${(err as Error).message}`);
       }
     })();
     return () => {
       cancelled = true;
     };
-    // 只跑一次：首屏把任务清单与整段会话拉下来，之后全靠 SSE 增量。
-  }, []);
+    // 只跑一次：之后切换会话走 switchConversation，实时消息走 SSE。
+  }, [switchConversation]);
 
   // onDecide：把用户的裁决送回 approval。成功后由 SSE 的 approvals 事件把卡片删掉
   // （服务端是唯一真相：门户不自己先删，避免"界面说批了、其实 approval 已经过期"）。
@@ -538,7 +708,28 @@ export function App() {
               />
             </nav>
           ) : (
-            <TaskList tasks={tasks} jumps={taskIdsWithRecords} current={currentTask?.id ?? ''} onJump={onJumpTask} t={t} />          )}
+            <TaskList
+              conversations={conversations}
+              active={activeCid}
+              tasks={tasks}
+              jumps={taskIdsWithRecords}
+              current={currentTask?.id ?? ''}
+              onSelectConversation={(cid) => {
+                void switchConversation(cid);
+              }}
+              onCreateConversation={() => {
+                void onCreateConversation();
+              }}
+              onRenameConversation={(cid, title) => {
+                void onRenameConversation(cid, title);
+              }}
+              onArchiveConversation={(cid) => {
+                void onArchiveConversation(cid);
+              }}
+              onJump={onJumpTask}
+              t={t}
+            />
+          )}
           <div className="me">
             <span className="avatar" aria-hidden="true">{t('ui.me.avatar', '我')}</span>
             <span className="me-name">{t('ui.me.name', '本机用户')}</span>
@@ -595,8 +786,8 @@ export function App() {
             error={portalError}
             onSend={onSend}
             onUpload={uploadFile}
-            onTerminal={runTerminalCommand}
-            terminalRuns={terminalRuns}
+            onTerminal={(command) => runTerminalCommand(command, activeCidRef.current)}
+            terminalRuns={visibleTerminalRuns}
             onOpenSettings={() => {
               // 每次进设置页都回门户默认页（除非之后在页内亲手点了别的服务）。
               selectedByUserRef.current = false;
@@ -606,9 +797,10 @@ export function App() {
             tasks={tasks}
             workflowExpand={workflowExpand.mode}
             retryable={retryable}
+            readOnly={readOnly}
             onRetry={async () => {
               try {
-                await retryRound();
+                await retryRound(activeCidRef.current);
                 setRetryable(false);
               } catch (err) {
                 setRetryable(true);

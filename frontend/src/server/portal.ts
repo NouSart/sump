@@ -3,8 +3,25 @@
 // 定位：frontend 与 qq 是**同类型的用户交互门户**——对外提供 deliver（智能体 → 用户），
 // 自己 jump user_message 给 reasoner（用户 → 智能体）。设置面板则是它的另一页。
 //
-// 单用户：固定一个会话 id（多用户以后再说），形状与 qq 的 qq:private:<uid> 一致。
-export const PORTAL_CONVERSATION_ID = 'web:private:owner';
+// 单用户：会话 id 形状与 qq 的 qq:private:<uid> 一致。
+// 默认会话保留老 id（历史记录都挂在它下面）；新会话在它后面接短后缀。
+export const DEFAULT_CONVERSATION_ID = 'web:private:owner';
+/** 兼容旧名字：默认会话。 */
+export const PORTAL_CONVERSATION_ID = DEFAULT_CONVERSATION_ID;
+
+// newPortalConversationId 生成一个新会话 id（时间 + 随机，可读且不撞）。
+export function newPortalConversationId(now = Date.now(), rand = Math.random): string {
+  const noise = Math.floor(rand() * 0x100000000).toString(36);
+  return `${DEFAULT_CONVERSATION_ID}-${now.toString(36)}${noise}`;
+}
+
+// isPortalConversationId 判断一个 id 是不是**门户自己的**会话。
+//
+// 这不是格式洁癖，是隐私边界：门户能通过 HTTP 指定 conversation_id，
+// 若不设限，浏览器就能拿它去读 qq:private:* 那类别的入口的会话。
+export function isPortalConversationId(id: string): boolean {
+  return id === DEFAULT_CONVERSATION_ID || id.startsWith(`${DEFAULT_CONVERSATION_ID}-`);
+}
 
 export interface DeliverMessage {
   text: string;
@@ -98,6 +115,8 @@ export function parseProgress(raw: unknown, log: (m: string) => void): ProgressU
 export interface TerminalUpdate {
   /** shell 的任务 id（也是审批项 id：终端据此显示"等待审批"）。 */
   itemId: string;
+  /** 这条命令属于哪个门户会话（发起时记下；shell 的补报里没有这个字段）。 */
+  conversationId?: string;
   /** queued / approved / rejected / done / failed。 */
   phase: string;
   command: string;

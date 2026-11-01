@@ -4,7 +4,17 @@ import type { AddressInfo } from 'node:net';
 import type { WebSocketServer } from 'ws';
 import { createRequestHandler } from './api.ts';
 import { CenterLink } from './center.ts';
-import { createApprovalStore, createDeliverHub, createProgressHub, createTerminalHub, createTimerStore, parsePendingApproval, PORTAL_CONVERSATION_ID, type TerminalUpdate, type TrustConfig } from './portal.ts';
+import {
+  DEFAULT_CONVERSATION_ID,
+  createApprovalStore,
+  createDeliverHub,
+  createProgressHub,
+  createTerminalHub,
+  createTimerStore,
+  parsePendingApproval,
+  type TerminalUpdate,
+  type TrustConfig,
+} from './portal.ts';
 import { attachJumpEndpoint, parseTimerItems, portalProvides, portalSettings } from './service.ts';
 
 export const frontendDescription =
@@ -80,7 +90,13 @@ function urlHost(host: string): string {
 // 终端与 agent 共享同一个工作现场：用户自己跑过什么，模型下一轮必须看得见，
 // 否则"共享终端"就只是个并排的窗口。写进记忆用 kind=tool_result——记忆服务对空 kind
 // 或 "user" 会 EnsureTask（凭空造一个任务），tool_result 只挂到最近那个任务上。
-function recordTerminal(link: CenterLink, memory: string, u: TerminalUpdate, log: (m: string) => void): void {
+function recordTerminal(
+  link: CenterLink,
+  memory: string,
+  u: TerminalUpdate,
+  conversationId: string,
+  log: (m: string) => void,
+): void {
   const clip = (s: string, max = 4096): string => (s.length > max ? `${s.slice(0, max)}…（截断）` : s);
   const out = [clip(u.stdout.trim()), clip(u.stderr.trim()), clip(u.error.trim())].filter((s) => s !== '').join('\n');
   const head = `$ ${u.command}`;
@@ -90,7 +106,7 @@ function recordTerminal(link: CenterLink, memory: string, u: TerminalUpdate, log
     .jumpTo(
       memory,
       'store',
-      { conversation_id: PORTAL_CONVERSATION_ID, role: 'tool', kind: 'tool_result', content },
+      { conversation_id: conversationId, role: 'tool', kind: 'tool_result', content },
       5000,
     )
     .catch((err: unknown) => {
@@ -115,6 +131,18 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
   const timers = createTimerStore();
   const approvals = createApprovalStore();
   const trust: TrustConfig = { boundAddr: addr, trustedHosts: cfg.trustedHosts };
+
+  // shell 的补报只带 item_id，不带会话：发起命令时记下归属，回来时才知道该推给谁、入账到哪。
+  // 只留最近 200 条（终端是"刚跑完的几条"的视图，不是地址簿）。
+  const terminalOwners = new Map<string, string>();
+  const rememberTerminalOwner = (itemId: string, conversationId: string): void => {
+    terminalOwners.set(itemId, conversationId);
+    while (terminalOwners.size > 200) {
+      const oldest = terminalOwners.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      terminalOwners.delete(oldest);
+    }
+  };
   const link = new CenterLink({
     name: cfg.name,
     title: '门户',
@@ -150,7 +178,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
         images: cfg.images ?? 'images',
         uploadMaxBytes: cfg.uploadMaxBytes ?? 20 << 20,
         shell: cfg.shell ?? 'shell',
-        terminal: { recent: terminal.recent, on: terminal.on },
+        terminal: { recent: terminal.recent, on: terminal.on, rememberOwner: rememberTerminalOwner },
         trust,
       },
       log,
@@ -169,8 +197,9 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
       return true;
     },
     (u) => {
-      terminal.publish(u);
-      if (u.final) recordTerminal(link, cfg.memory, u, log);
+      const conversationId = terminalOwners.get(u.itemId) ?? DEFAULT_CONVERSATION_ID;
+      terminal.publish({ ...u, conversationId });
+      if (u.final) recordTerminal(link, cfg.memory, u, conversationId, log);
       return true;
     },
     trust,
