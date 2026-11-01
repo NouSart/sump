@@ -142,6 +142,13 @@ export interface TraceMeta {
   fullChars?: number;
 }
 
+// 附件引用：别的入口（QQ）带来的图片 / 文件在记录 meta 里只有 id——门户按 id 惰性取，
+// 不把 base64 塞进历史（那会把每条消息都撑大）。
+export interface AttachmentRef {
+  kind: 'image' | 'file';
+  id: string;
+}
+
 // PortalMessage 是门户对话里的一条消息：
 //  - user/assistant 是**对话**（用户发的本地回显 / 智能体经 deliver 送来的）；
 //  - reasoning / tool_call / tool_result 是**过程轨迹**（深度思考 / 终端命令 / 终端输出），
@@ -156,6 +163,8 @@ export interface PortalMessage {
   seq?: number;
   /** 轨迹条目的附加信息。 */
   meta?: TraceMeta;
+  /** 消息附带的图片 / 文件（别的入口带来的，只有 id；界面按 id 惰性取）。 */
+  attachments?: AttachmentRef[];
   /** 这条消息属于哪个任务（面板按任务分节展示）。 */
   taskId?: string;
   /** 客户端本地标识：无 seq 的消息（本地回显 / deliver）用它当 React key，避免按下标做 key。 */

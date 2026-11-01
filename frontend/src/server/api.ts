@@ -389,6 +389,61 @@ export function createRequestHandler(
     });
   };
 
+  // attachment 读一个**别的入口带过来的附件**（QQ 的图片 / 文件）。
+  //
+  // 只读、按 id 惰性取：门户本来就不存这些字节，也不该把 base64 塞进历史（那会把每条消息都撑大）。
+  // 图片走 images.fetch（默认缩略图，够看"这是什么"）；文件走 files.read（文本预览，二进制会明确报错）。
+  // 门户只做转发：真正的权威副本在 images / files 里，取不到就是取不到，不缓存、不代劳。
+  const attachment = async (res: ServerResponse, url: URL): Promise<void> => {
+    const kind = (url.searchParams.get('kind') ?? '').trim();
+    const id = (url.searchParams.get('id') ?? '').trim();
+    if (kind !== 'image' && kind !== 'file') {
+      throw new HttpError(400, `kind 只能是 image 或 file（收到 ${kind}）`);
+    }
+    if (!attachmentIdPattern.test(id)) {
+      throw new HttpError(400, `附件 id 不合法: ${id}`);
+    }
+    if (kind === 'image') {
+      let data: { mime?: unknown; data?: unknown } | undefined;
+      try {
+        data = (await center.jumpTo(cfg.images, 'fetch', { id })) as { mime?: unknown; data?: unknown };
+      } catch (err) {
+        throw mapCenterError(err);
+      }
+      const body = typeof data?.data === 'string' ? data.data : '';
+      if (body === '') throw new HttpError(502, `${cfg.images} 没有回图片数据`);
+      const bytes = Buffer.from(body, 'base64');
+      res.writeHead(200, {
+        'content-type': typeof data?.mime === 'string' && data.mime !== '' ? data.mime : 'application/octet-stream',
+        'content-length': String(bytes.length),
+        // 附件按 id 寻址、内容不会变（编辑会生成新 id），可以放心让浏览器缓存。
+        'cache-control': 'private, max-age=300',
+      });
+      res.end(bytes);
+      return;
+    }
+    const offset = Math.max(0, Math.trunc(Number(url.searchParams.get('offset') ?? '0')) || 0);
+    const rawLimit = Number(url.searchParams.get('limit') ?? '');
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.trunc(rawLimit), 20000) : 0;
+    let read: { filename?: unknown; text?: unknown; next?: unknown; total?: unknown } | undefined;
+    try {
+      read = (await center.jumpTo(cfg.files, 'read', { id, offset, limit })) as {
+        filename?: unknown;
+        text?: unknown;
+        next?: unknown;
+        total?: unknown;
+      };
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    sendJSON(res, 200, {
+      filename: typeof read?.filename === 'string' ? read.filename : '',
+      text: typeof read?.text === 'string' ? read.text : '',
+      next: typeof read?.next === 'number' ? read.next : 0,
+      total: typeof read?.total === 'number' ? read.total : 0,
+    });
+  };
+
   // runTerminalCommand：用户在终端里敲回车 → 门户直接把命令交给 shell。
   //
   // 审批不绕过：门户只是另一个调用方，shell 照样找 approval；待审项的 item_id 就是这里回的
@@ -802,6 +857,10 @@ export function createRequestHandler(
       sendJSON(res, 200, await loadPack(want));
       return;
     }
+        if (pathname === '/api/attachment' && req.method === 'GET') {
+      await attachment(res, url);
+      return;
+    }
     if (pathname === '/api/history' && req.method === 'GET') {
       const raw = Number(url.searchParams.get('limit') ?? '');
       const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.trunc(raw), 500) : 100;
@@ -860,6 +919,7 @@ export function createRequestHandler(
       pathname === '/api/events' ||
       pathname === '/api/approvals' ||
       pathname === '/api/history' ||
+      pathname === '/api/attachment' ||
       pathname === '/api/tasks' ||
       pathname === '/api/tasks/resume' ||
       pathname === '/api/conversations' ||

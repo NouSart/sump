@@ -382,6 +382,28 @@ button { font: inherit; }
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
+/* 附件：别的入口（QQ）带来的图片与文件。图片内联成缩略图；文件点开才取文本预览。 */
+.step-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.step-attach-img {
+  max-width: 240px; max-height: 240px; border-radius: var(--r-sm);
+  border: 1px solid var(--accent-line); background: var(--accent-soft);
+}
+.step-attach-file { display: flex; flex-direction: column; gap: 6px; max-width: 68ch; }
+.step-attach-open {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 10px; border-radius: var(--r-sm); cursor: pointer;
+  background: var(--accent-soft); border: 1px solid var(--accent-line);
+  color: var(--text-1); font-family: var(--font-mono); font-size: var(--fs-micro);
+}
+.step-attach-hint { color: var(--text-2); }
+.step-attach-text {
+  margin: 0; padding: 8px 10px; border-radius: var(--r-sm);
+  background: var(--accent-soft); border: 1px solid var(--accent-line);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 240px; overflow: auto; font-size: var(--fs-micro);
+}
+.step-attach-error { margin: 0; color: var(--text-2); font-size: var(--fs-micro); }
+
 /* 命令：等宽，一行，超长省略 */
 .step-cmd {
   min-width: 0; color: var(--text-2);
