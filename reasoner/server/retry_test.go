@@ -120,7 +120,10 @@ func TestActionRetryOnClosedTask(t *testing.T) {
 // 正常路径：清掉失败标记、推进水位，并回 {retried:true}。
 func TestActionRetryAccepts(t *testing.T) {
 	s := newRetryServer(t)
-	st := &taskState{cid: "c1", lastError: "boom", gen: 3, seen: 3}
+	// gen/seen 是并发水位：boardKick 起的轮次会立刻把 seen 追平 gen，
+	// 所以只能断言「相对调用前推进了」，不能断言 gen>seen（那是竞态）。
+	const genBefore = 3
+	st := &taskState{cid: "c1", lastError: "boom", gen: genBefore, seen: genBefore}
 	s.boardMu.Lock()
 	s.board["c1"] = st
 	s.boardMu.Unlock()
@@ -139,8 +142,8 @@ func TestActionRetryAccepts(t *testing.T) {
 	if lastErr != "" {
 		t.Fatalf("失败标记应被清掉，实际 %q", lastErr)
 	}
-	if gen <= seen {
-		t.Fatalf("水位应被推进（gen>seen），实际 gen=%d seen=%d", gen, seen)
+	if gen <= genBefore {
+		t.Fatalf("水位应被推进（gen>%d），实际 gen=%d seen=%d", genBefore, gen, seen)
 	}
 }
 
