@@ -86,13 +86,15 @@ go run . -addr 127.0.0.1:9902 -center ws://127.0.0.1:9000/ws -http-addr 127.0.0.
 
 | MCP 工具 | 原生目标 | 输入 | 成功结果 |
 | --- | --- | --- | --- |
-| `files__read` | `files.read` | `{"id":"已有文件ID"}` | `id`、`filename`、`text`、`truncated` |
+| `files__read` | `files.read` | `{"id":"已有文件ID","offset?":起始字符,"limit?":本次最多字符}` | `id`、`filename`、`text`、`truncated`、`total`、`next`、`warnings` |
 
-只有 `exports` 包含工具且当前名册的目标动作是 `tool:true`、`async` 与绑定一致时才可见、可调用。`files__read` 是同步动作，`timer__sleep` 是异步动作。客户端不能指定内部 `from/to/boss`。参数必须是对象；拒绝重复键、未知字段、空 ID、非 UTF-8、过深嵌套及过长 ID。
+只有 `exports` 包含工具且当前名册的目标动作是 `tool:true`、`async` 与绑定一致时才可见、可调用。`files__read` 是同步动作，`timer__sleep` 是异步动作。客户端不能指定内部 `from/to/boss`。参数必须是对象；拒绝重复键、未知字段、空 ID、负数 `offset`、非正 `limit`、非 UTF-8、过深嵌套及过长 ID。
+
+`offset` 是字符（rune）偏移，`limit` 是本次最多返回的字符数且仍受 files 的 `read_max_chars` 上限约束；省略时从开头读。结果里 `total` 是全文长度，`next` 非 0 表示还有下一块，续读时把 `next` 当 `offset`。`warnings` 非空表示结果不完整（例如某张工作表损坏）；`truncated:true` 而 `next` 缺失或为 0 表示没有可续读的下一块。
 
 入口在每个请求上验证凭据，不创建应用层会话。客户端按新协议发送请求元信息及 `MCP-Protocol-Version`、`Mcp-Method` 等必要头部。无需旧式初始化；不提供旧协议兼容通道。结果标为 `private`、TTL 0，HTTP 使用 `no-store`。
 
-MCP 发出新的原生调用 ID/trace，以 `from=mcp,boss=mcp` 直接调用 files。返回 `CallToolResult`，结构化结果同时提供 JSON 文本。文件文本超限时按 UTF-8 边界裁切，并设置 `truncated:true`；元数据不能裁切，超限时报错。原服务的裁切标志也保留。
+MCP 发出新的原生调用 ID/trace，以 `from=mcp,boss=mcp` 直接调用 files。返回 `CallToolResult`，结构化结果同时提供 JSON 文本。文件文本超限时按 UTF-8 边界裁切，设置 `truncated:true`，并把 `next` 改成“被裁掉的位置”（而不是上游原来的下一块），避免续读跳过中间正文；元数据不能裁切，超限时报错。原服务的 `truncated`、`total`、`warnings` 均保留；`next` 在上游未触发本地裁剪时原样保留。
 
 参数或权限拒绝返回 `isError:true`；派发后超时或无法确认结果，明确返回结果未知，不自动重发。撤销在本地准入前生效；准入后的调用可能继续抵达原服务，不能据此宣称远端已停止。
 

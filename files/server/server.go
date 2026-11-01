@@ -80,15 +80,15 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Provides: []protocol.Provide{
 			{Action: "save", Tool: true, Input: "{url} 或 {data(base64), filename, mime}", Output: "{id, filename, mime, size}"},
 			{Action: "fetch", Input: "{id}", Output: "{id, filename, mime, data(base64), size}"},
-			{Action: "read", Input: "{id}", Output: "{id, filename, text, truncated}（文本类 / .xlsx 转 TSV / .docx/.pptx/.pdf 提取正文；其余二进制报错）", Tool: true},
+			{Action: "read", Input: "{id, offset?, limit?}", Output: "{id, filename, text, truncated, total, next, warnings}（文本类 / .xlsx 转 TSV / .docx/.pptx/.pdf 提取正文；next 非 0 时带 offset 续读）", Tool: true},
 			{Action: "write", Input: "{id, sheet, edits:[{cell, value}]}", Output: "{id, sheet, updated}（就地修改 .xlsx；先 read 看清坐标再改）", Tool: true},
 			{Action: "edit_word", Input: "{id, operations:[{op, old, new}]}", Output: "{id, replaced}（就地修改 .docx 正文；v0 仅 op='replace'）", Tool: true},
 			{Action: "edit_ppt", Input: "{id, operations:[{op, old, new}]}", Output: "{id, replaced}（就地修改 .pptx 幻灯片文本；v0 仅 op='replace'）", Tool: true},
 			{Action: "edit_pdf", Input: "{id, operations:[{op, pages?, degrees?, properties?}]}", Output: "{id, applied}（就地修改 .pdf；v0 支持 set_info/rotate/delete_pages/keep_pages）", Tool: true},
-			{Action: "outline", Input: "{id, depth?}", Output: "{id, doc_kind, digest, nodes:[{id, type, text, level, truncated, children}], node_count, chars, tables, parts, warnings}（先看结构再决定读哪段；digest 是整篇指纹）", Tool: true},
-			{Action: "read_range", Input: "{id, node?, offset?, limit?}", Output: "{id, doc_kind, digest, node, text, total, next}（按节点分页读；next 非 0 表示还有下一块）", Tool: true},
-			{Action: "find", Input: "{id, text, node?, regex?, limit?}", Output: "{id, digest, matches:[{node, run, start, end, context}]}（只找位置不改文档；同段多处各占一条）", Tool: true},
-			{Action: "patch", Input: "{id, anchor?, operations:[{op, node, range?, text?, anchor?}]}", Output: "{id, applied, digest, diff, warnings}（按节点地址就地改 .docx；op = replace_text / delete_node；整批原子）", Tool: true},
+			{Action: "outline", Input: "{id, depth?}", Output: "{id, doc_kind, digest, exact_digest, nodes:[{id, type, text, level, truncated, exact_anchor, children}], node_count, chars, tables, parts, warnings}（先看结构再决定读哪段；digest 规范化空白，exact_digest 不折叠）", Tool: true},
+			{Action: "read_range", Input: "{id, node?, offset?, limit?}", Output: "{id, doc_kind, digest, exact_digest, node, text, total, next}（按节点分页读；next 非 0 表示还有下一块）", Tool: true},
+			{Action: "find", Input: "{id, text, node?, regex?, limit?}", Output: "{id, digest, exact_digest, matches:[{node, run, start, end, context, exact_anchor}]}（只找位置不改文档；同段多处各占一条）", Tool: true},
+			{Action: "patch", Input: "{id, anchor?, exact_anchor?, operations:[{op, node, range?, text?, anchor?, exact_anchor?}]}", Output: "{id, applied, digest, exact_digest, diff, warnings}（按节点地址就地改 .docx；range 编辑用 exact_anchor；整批原子）", Tool: true},
 			{Action: "verify", Input: "{id, digest?, contains?, not_contains?}", Output: "{id, ok, digest, failures}（改完自查：指纹与片段核对）", Tool: true},
 		},
 		Logger: logger,
@@ -256,6 +256,17 @@ func (s *Server) actionRead(_ context.Context, _ protocol.Envelope, in protocol.
 	if p.ID == "" {
 		return nil, errors.New("read: id 必填")
 	}
+	if p.Offset < 0 {
+		return nil, fmt.Errorf("read: offset 不能为负（收到 %d）", p.Offset)
+	}
+	if p.Limit < 0 {
+		return nil, fmt.Errorf("read: limit 不能为负（收到 %d）", p.Limit)
+	}
+	limit := p.Limit
+	max := s.readMaxCharsNow()
+	if limit == 0 || limit > max {
+		limit = max
+	}
 	meta, err := s.cfg.Store.Stat(p.ID)
 	if err != nil {
 		return nil, err
@@ -268,22 +279,40 @@ func (s *Server) actionRead(_ context.Context, _ protocol.Envelope, in protocol.
 	case isLegacyPpt(meta.Mime, meta.Filename):
 		return nil, errors.New("read: 旧版 .ppt 不支持，请另存为 .pptx 后重试")
 	case isExcelFile(meta.Mime, meta.Filename):
-		return s.readXlsx(p.ID, meta)
+		return s.readXlsx(p.ID, meta, p.Offset, limit)
 	case isWordFile(meta.Mime, meta.Filename):
-		return s.readDocx(p.ID, meta)
+		return s.readDocx(p.ID, meta, p.Offset, limit)
 	case isPptFile(meta.Mime, meta.Filename):
-		return s.readPptx(p.ID, meta)
+		return s.readPptx(p.ID, meta, p.Offset, limit)
 	case isPdfFile(meta.Mime, meta.Filename):
-		return s.readPdf(p.ID, meta)
+		return s.readPdf(p.ID, meta, p.Offset, limit)
 	case isTextual(meta.Mime, meta.Filename):
-		return s.readText(p.ID, meta)
+		return s.readText(p.ID, meta, p.Offset, limit)
 	default:
 		return nil, fmt.Errorf("read: 该文件类型（%s）暂不支持阅读，仅支持文本类、.xlsx、.docx、.pptx 与 .pdf", meta.Mime)
 	}
 }
 
-// readText 文本类读取：UTF-8 校验 + 按字符数截断。
-func (s *Server) readText(id string, meta store.Meta) (any, error) {
+// fileReadResult 统一组装 read 结果，三个信号各答一个问题：
+//   - next：还有下一块，可续读（0 = 读完）；
+//   - truncated：这次结果不能当作完整内容（窗口截断、格式层封顶、或有 warning）；
+//   - warnings：为什么没给全（例如某张工作表损坏）。
+//
+// “有 warning 即不完整”只在这里判断一次，格式层不必各自重复。
+func fileReadResult(id string, meta store.Meta, text string, total, next int, warnings []string, truncated bool) protocol.FileReadResult {
+	return protocol.FileReadResult{
+		ID:        id,
+		Filename:  meta.Filename,
+		Text:      text,
+		Truncated: truncated || next != 0 || len(warnings) > 0,
+		Total:     total,
+		Next:      next,
+		Warnings:  warnings,
+	}
+}
+
+// readText 文本类读取：UTF-8 校验 + 字符窗口。
+func (s *Server) readText(id string, meta store.Meta, offset, limit int) (any, error) {
 	data, _, err := s.cfg.Store.Load(id)
 	if err != nil {
 		return nil, err
@@ -291,13 +320,14 @@ func (s *Server) readText(id string, meta store.Meta) (any, error) {
 	if !utf8.Valid(data) {
 		return nil, fmt.Errorf("read: %s 的内容不是有效的 UTF-8 文本", meta.Filename)
 	}
-	text, truncated := truncateRunes(string(data), s.readMaxCharsNow())
-	s.logger.Printf("已读取文件 %s（%s, %d 字节, 截断=%v）", id, meta.Filename, len(data), truncated)
-	return protocol.FileReadResult{ID: id, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
+	w := newReadWindow(offset, limit)
+	w.add(string(data))
+	s.logger.Printf("已读取文件 %s（%s, %d 字节, offset=%d, 截断=%v）", id, meta.Filename, len(data), offset, w.truncated())
+	return fileReadResult(id, meta, w.text(), w.total, w.next(), nil, w.truncated()), nil
 }
 
-// readXlsx .xlsx 读取：逐 sheet 转 TSV（行边界截断）。
-func (s *Server) readXlsx(id string, meta store.Meta) (any, error) {
+// readXlsx .xlsx 读取：逐 sheet 转 TSV（字符窗口）。
+func (s *Server) readXlsx(id string, meta store.Meta, offset, limit int) (any, error) {
 	data, _, err := s.cfg.Store.Load(id)
 	if err != nil {
 		return nil, err
@@ -310,51 +340,52 @@ func (s *Server) readXlsx(id string, meta store.Meta) (any, error) {
 		return nil, expandError(fmt.Errorf("read: 解析 %s 为 xlsx 失败: %w", meta.Filename, err))
 	}
 	defer f.Close()
-	text, truncated := xlsxToText(f, s.readMaxCharsNow())
-	s.logger.Printf("已读取 xlsx %s（%s, %d 字节, 截断=%v）", id, meta.Filename, len(data), truncated)
-	return protocol.FileReadResult{ID: id, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
+	text, total, next, warnings, truncated := xlsxToText(f, offset, limit)
+	warnings = append(validateWorksheetXML(data), warnings...)
+	s.logger.Printf("已读取 xlsx %s（%s, %d 字节, offset=%d, 截断=%v, 警告=%d）", id, meta.Filename, len(data), offset, truncated, len(warnings))
+	return fileReadResult(id, meta, text, total, next, warnings, truncated), nil
 }
 
-// readDocx .docx 读取：提取正文段落文本（段落边界截断）。
-func (s *Server) readDocx(id string, meta store.Meta) (any, error) {
+// readDocx .docx 读取：与文档模型共用同一份正文投影（字符窗口）。
+func (s *Server) readDocx(id string, meta store.Meta, offset, limit int) (any, error) {
 	data, _, err := s.cfg.Store.Load(id)
 	if err != nil {
 		return nil, err
 	}
-	text, truncated, err := docxToText(data, s.readMaxCharsNow(), maxExpandBytes)
+	text, total, next, truncated, err := docxToTextWindow(data, offset, limit, maxExpandBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read: 解析 %s 为 docx 失败: %w", meta.Filename, err)
 	}
-	s.logger.Printf("已读取 docx %s（%s, %d 字节, 截断=%v）", id, meta.Filename, len(data), truncated)
-	return protocol.FileReadResult{ID: id, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
+	s.logger.Printf("已读取 docx %s（%s, %d 字节, offset=%d, 截断=%v）", id, meta.Filename, len(data), offset, truncated)
+	return fileReadResult(id, meta, text, total, next, nil, truncated), nil
 }
 
-// readPptx .pptx 读取：按幻灯片提取文本（幻灯片边界截断，单页内按字符截断）。
-func (s *Server) readPptx(id string, meta store.Meta) (any, error) {
+// readPptx .pptx 读取：按幻灯片提取文本（字符窗口）。
+func (s *Server) readPptx(id string, meta store.Meta, offset, limit int) (any, error) {
 	data, _, err := s.cfg.Store.Load(id)
 	if err != nil {
 		return nil, err
 	}
-	text, truncated, err := pptxToText(data, s.readMaxCharsNow(), maxExpandBytes)
+	text, total, next, truncated, err := pptxToTextWindow(data, offset, limit, maxExpandBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read: 解析 %s 为 pptx 失败: %w", meta.Filename, err)
 	}
-	s.logger.Printf("已读取 pptx %s（%s, %d 字节, 截断=%v）", id, meta.Filename, len(data), truncated)
-	return protocol.FileReadResult{ID: id, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
+	s.logger.Printf("已读取 pptx %s（%s, %d 字节, offset=%d, 截断=%v）", id, meta.Filename, len(data), offset, truncated)
+	return fileReadResult(id, meta, text, total, next, nil, truncated), nil
 }
 
-// readPdf .pdf 读取：按页提取文本（页边界截断，单页内按字符截断；页数受 pdfMaxPages 封顶）。
-func (s *Server) readPdf(id string, meta store.Meta) (any, error) {
+// readPdf .pdf 读取：按页提取文本（字符窗口；页数受 pdfMaxPages 封顶）。
+func (s *Server) readPdf(id string, meta store.Meta, offset, limit int) (any, error) {
 	data, _, err := s.cfg.Store.Load(id)
 	if err != nil {
 		return nil, err
 	}
-	text, truncated, err := pdfToText(data, s.readMaxCharsNow(), pdfMaxPages)
+	text, total, next, truncated, err := pdfToTextWindow(data, offset, limit, pdfMaxPages)
 	if err != nil {
 		return nil, fmt.Errorf("read: 解析 %s 为 pdf 失败: %w", meta.Filename, err)
 	}
-	s.logger.Printf("已读取 pdf %s（%s, %d 字节, 截断=%v）", id, meta.Filename, len(data), truncated)
-	return protocol.FileReadResult{ID: id, Filename: meta.Filename, Text: text, Truncated: truncated}, nil
+	s.logger.Printf("已读取 pdf %s（%s, %d 字节, offset=%d, 截断=%v）", id, meta.Filename, len(data), offset, truncated)
+	return fileReadResult(id, meta, text, total, next, nil, truncated), nil
 }
 
 // actionWrite 编辑 xlsx 的单元格（LLM 工具，就地修改权威副本）。

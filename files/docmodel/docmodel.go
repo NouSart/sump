@@ -59,6 +59,8 @@ const (
 //	docx  body/p12            正文第 12 个段落
 //	      body/tbl3/r2/c1     第 3 个表格第 2 行第 1 列
 //	      p12/r3              第 12 段第 3 个 run
+//	      body/p12/p1         第 12 段文本框里的第 1 个嵌套段落
+//	      body/sdt1/p2        第 1 个内容控件里的第 2 个段落
 //	pptx  slide4/sp2          第 4 张幻灯片上 shape id=2 的形状
 //	xlsx  sheet1!C7           工作表 sheet1 的 C7 单元格
 //	pdf   page2               第 2 页
@@ -89,6 +91,8 @@ type Node struct {
 	Children []Node `json:"children,omitempty"`
 	// Truncated 表示 Text 只是预览（ReadRange 能取全）。
 	Truncated bool `json:"truncated,omitempty"`
+	// ExactAnchor 是节点原始文本的指纹（段落节点才有）；range 编辑用它校验坐标。
+	ExactAnchor string `json:"exact_anchor,omitempty"`
 }
 
 // Stats 是文档规模统计：用于分诊（大文件先 outline）与预算判断。
@@ -120,11 +124,12 @@ type Query struct {
 // Match 是一处命中：定位到节点 + 节点文本投影上的字符区间。
 // Node 是编辑要用的地址；Start/End 是 rune 偏移（不是字节，模型读得懂）。
 type Match struct {
-	Node    NodeID `json:"node"`
-	Run     string `json:"run,omitempty"` // 命中所落的 run ID（docx 用得上）
-	Start   int    `json:"start"`
-	End     int    `json:"end"`
-	Context string `json:"context"` // 前后各若干字符，供模型判断该改哪处
+	Node        NodeID `json:"node"`
+	Run         string `json:"run,omitempty"` // 命中所落的 run ID（docx 用得上）
+	Start       int    `json:"start"`
+	End         int    `json:"end"`
+	Context     string `json:"context"`      // 前后各若干字符，供模型判断该改哪处
+	ExactAnchor string `json:"exact_anchor"` // 命中节点的原始文本指纹（range 编辑用）
 }
 
 // Selector 是一次读取的范围（分页读，避免整篇塞进上下文）。
@@ -168,12 +173,16 @@ type PatchOp struct {
 	Node NodeID `json:"node"`
 	// Anchor 是创建操作时看到的节点文本指纹（见 Fingerprint）。非空则校验，
 	// 不匹配即整批拒绝——"文档变了就别照着旧地图改"。
-	Anchor  string            `json:"anchor,omitempty"`
-	Range   *TextRange        `json:"range,omitempty"`
-	Text    string            `json:"text,omitempty"`
-	Value   string            `json:"value,omitempty"`
-	Formula string            `json:"formula,omitempty"`
-	Style   map[string]string `json:"style,omitempty"`
+	// 注意：Fingerprint 会折叠空白，带 Range 的精确编辑应优先用 ExactAnchor。
+	Anchor string `json:"anchor,omitempty"`
+	// ExactAnchor 是节点原始文本投影的指纹（见 ExactFingerprint）。非空则校验；
+	// 它不折叠空白，适合 range 编辑——空白变化也会让旧坐标失效。
+	ExactAnchor string            `json:"exact_anchor,omitempty"`
+	Range       *TextRange        `json:"range,omitempty"`
+	Text        string            `json:"text,omitempty"`
+	Value       string            `json:"value,omitempty"`
+	Formula     string            `json:"formula,omitempty"`
+	Style       map[string]string `json:"style,omitempty"`
 }
 
 // DiffEntry 是一条可回放的变更：改前 / 改后（截断到可读长度）。
@@ -207,6 +216,9 @@ type Document interface {
 	// Digest 是整篇可见文本的规范化指纹：服务层把它当一个"整篇版本号"用——
 	// outline / read_range / find 返回它，patch 可带上它做乐观锁（对不上就整批拒绝）。
 	Digest() string
+	// ExactDigest 是未折叠空白的整篇文本指纹。带 rune 区间的编辑应拿它做版本校验：
+	// 规范化 digest 对空白变化不敏感，不能证明旧坐标仍然指同一段文字。
+	ExactDigest() string
 }
 
 // Opener 打开一份文档（data 是完整文件字节）。
@@ -265,6 +277,13 @@ var (
 // 是文档编辑里最贵的一类事故。
 func Fingerprint(text string) string {
 	sum := sha256.Sum256([]byte(normalizeSpace(text)))
+	return hex.EncodeToString(sum[:8])
+}
+
+// ExactFingerprint 与 Fingerprint 同长度，但不折叠任何字符。
+// 任何文字或空白变化都会改变结果，适合校验带 rune 区间的编辑坐标。
+func ExactFingerprint(text string) string {
+	sum := sha256.Sum256([]byte(text))
 	return hex.EncodeToString(sum[:8])
 }
 

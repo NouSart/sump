@@ -551,8 +551,11 @@ type FileFetchResult struct {
 }
 
 // FileReadPayload 是 files.read 的 payload：读取文件的文本内容（LLM 工具，凭 id 自取）。
+// offset / limit 可选；省略时从开头读到 read_max_chars，与旧行为一致。
 type FileReadPayload struct {
-	ID string `msgpack:"id"`
+	ID     string `msgpack:"id"`
+	Offset int    `msgpack:"offset,omitempty"` // 起始字符（rune）
+	Limit  int    `msgpack:"limit,omitempty"`  // 本次最多返回多少字；0 = read_max_chars
 }
 
 // FileReadResult 是 files.read 的结果：文本类文件的内容（超长按 read.max_chars 截断）；
@@ -562,6 +565,11 @@ type FileReadResult struct {
 	Filename  string `msgpack:"filename"`
 	Text      string `msgpack:"text"`
 	Truncated bool   `msgpack:"truncated"` // true = 内容被截断，未给全（模型可据此决定后续动作）
+	// Total 是完整可见文本的字符数（rune）；Next 非 0 表示还有下一块，续读时把它当 offset。
+	Total int `msgpack:"total,omitempty"`
+	Next  int `msgpack:"next,omitempty"`
+	// Warnings 是“读到了但结果不完整/需注意”的事（例如某个工作表读取失败）。
+	Warnings []string `msgpack:"warnings,omitempty"`
 }
 
 // FileWriteEdit 是一次单元格写入：A1 风格坐标 + 值（v0 统一字符串）。
@@ -617,26 +625,28 @@ type DocOutlinePayload struct {
 
 // DocNode 是结构树上的一个节点（与 docmodel.Node 一一对应的线上形态）。
 type DocNode struct {
-	ID        string    `msgpack:"id"`
-	Type      string    `msgpack:"type"` // paragraph / table / row / cell
-	Text      string    `msgpack:"text,omitempty"`
-	Level     int       `msgpack:"level,omitempty"`
-	Truncated bool      `msgpack:"truncated,omitempty"`
-	Children  []DocNode `msgpack:"children,omitempty"`
+	ID          string    `msgpack:"id"`
+	Type        string    `msgpack:"type"` // paragraph / table / row / cell
+	Text        string    `msgpack:"text,omitempty"`
+	Level       int       `msgpack:"level,omitempty"`
+	Truncated   bool      `msgpack:"truncated,omitempty"`
+	ExactAnchor string    `msgpack:"exact_anchor,omitempty"` // 原始文本指纹（range 编辑用）
+	Children    []DocNode `msgpack:"children,omitempty"`
 }
 
 // DocOutlineResult 是 files.outline 的结果：结构树 + 规模 + 整篇指纹。
 // digest 是整篇可见文本的指纹，后续 patch 可把它当 anchor 用（防止照着旧目录改）。
 type DocOutlineResult struct {
-	ID        string    `msgpack:"id"`
-	DocKind   string    `msgpack:"doc_kind"` // docx（未来 pdf / xlsx / pptx）
-	Digest    string    `msgpack:"digest"`
-	Nodes     []DocNode `msgpack:"nodes"`
-	NodeCount int       `msgpack:"node_count"`
-	Chars     int       `msgpack:"chars"`
-	Tables    int       `msgpack:"tables,omitempty"`
-	Parts     int       `msgpack:"parts,omitempty"`
-	Warnings  []string  `msgpack:"warnings,omitempty"`
+	ID          string    `msgpack:"id"`
+	DocKind     string    `msgpack:"doc_kind"`     // docx（未来 pdf / xlsx / pptx）
+	Digest      string    `msgpack:"digest"`       // 规范化空白后的整篇指纹
+	ExactDigest string    `msgpack:"exact_digest"` // 未折叠空白的整篇指纹（range 编辑乐观锁）
+	Nodes       []DocNode `msgpack:"nodes"`
+	NodeCount   int       `msgpack:"node_count"`
+	Chars       int       `msgpack:"chars"`
+	Tables      int       `msgpack:"tables,omitempty"`
+	Parts       int       `msgpack:"parts,omitempty"`
+	Warnings    []string  `msgpack:"warnings,omitempty"`
 }
 
 // DocReadPayload 是 files.read_range 的 payload：按节点分页读，绕开 read 的字数上限。
@@ -649,13 +659,14 @@ type DocReadPayload struct {
 
 // DocReadResult 是 files.read_range 的结果：next 非 0 表示还有下一块，续读带上它当 offset。
 type DocReadResult struct {
-	ID      string `msgpack:"id"`
-	DocKind string `msgpack:"doc_kind"`
-	Digest  string `msgpack:"digest"`
-	Node    string `msgpack:"node"`
-	Text    string `msgpack:"text"`
-	Total   int    `msgpack:"total"`
-	Next    int    `msgpack:"next,omitempty"`
+	ID          string `msgpack:"id"`
+	DocKind     string `msgpack:"doc_kind"`
+	Digest      string `msgpack:"digest"`
+	ExactDigest string `msgpack:"exact_digest"`
+	Node        string `msgpack:"node"`
+	Text        string `msgpack:"text"`
+	Total       int    `msgpack:"total"`
+	Next        int    `msgpack:"next,omitempty"`
 }
 
 // DocFindPayload 是 files.find 的 payload：只找位置，不改文档。
@@ -669,18 +680,20 @@ type DocFindPayload struct {
 
 // DocMatch 是一处命中：节点地址 + 字符区间（rune，左闭右开）+ 上下文。
 type DocMatch struct {
-	Node    string `msgpack:"node"`
-	Run     string `msgpack:"run,omitempty"` // 命中起点所在的 run 地址（docx：body/p12/r3）
-	Start   int    `msgpack:"start"`
-	End     int    `msgpack:"end"`
-	Context string `msgpack:"context,omitempty"`
+	Node        string `msgpack:"node"`
+	Run         string `msgpack:"run,omitempty"` // 命中起点所在的 run 地址（docx：body/p12/r3）
+	Start       int    `msgpack:"start"`
+	End         int    `msgpack:"end"`
+	Context     string `msgpack:"context,omitempty"`
+	ExactAnchor string `msgpack:"exact_anchor,omitempty"` // 命中节点的原始文本指纹
 }
 
 // DocFindResult 是 files.find 的结果：命中列表（同一个节点多处会各占一条）。
 type DocFindResult struct {
-	ID      string     `msgpack:"id"`
-	Digest  string     `msgpack:"digest"`
-	Matches []DocMatch `msgpack:"matches"`
+	ID          string     `msgpack:"id"`
+	Digest      string     `msgpack:"digest"`
+	ExactDigest string     `msgpack:"exact_digest"`
+	Matches     []DocMatch `msgpack:"matches"`
 }
 
 // DocRange 是节点文本投影上的字符区间（rune，左闭右开）。
@@ -695,15 +708,20 @@ type DocPatchOp struct {
 	Node   string    `msgpack:"node"`             // 节点地址（body/p12、body/tbl1/r1/c1/p1）
 	Range  *DocRange `msgpack:"range,omitempty"`  // replace_text 的区间；省略 = 整段
 	Text   string    `msgpack:"text,omitempty"`   // replace_text 的新文本（\n / \t 按格式语义展开）
-	Anchor string    `msgpack:"anchor,omitempty"` // 节点当前文本指纹（见 docmodel.Fingerprint）
+	Anchor string    `msgpack:"anchor,omitempty"` // 节点规范化文本指纹（见 docmodel.Fingerprint）
+	// ExactAnchor 是节点原始文本指纹（见 docmodel.ExactFingerprint）。带 range 时应优先使用，
+	// 因为空白变化也能让旧 rune 坐标失效。
+	ExactAnchor string `msgpack:"exact_anchor,omitempty"`
 }
 
 // DocPatchPayload 是 files.patch 的 payload：一次调用里多条操作要么全生效，要么全不动。
 // anchor 是整篇指纹（outline / read_range 返回的 digest）：非空且不匹配即整批拒绝。
 type DocPatchPayload struct {
-	ID         string       `msgpack:"id"`
-	Anchor     string       `msgpack:"anchor,omitempty"`
-	Operations []DocPatchOp `msgpack:"operations"`
+	ID     string `msgpack:"id"`
+	Anchor string `msgpack:"anchor,omitempty"` // 规范化整篇指纹
+	// ExactAnchor 是未折叠空白的整篇指纹；与 anchor 同时给出时两者都必须匹配。
+	ExactAnchor string       `msgpack:"exact_anchor,omitempty"`
+	Operations  []DocPatchOp `msgpack:"operations"`
 }
 
 // DocDiff 是一条可回放的变更（改前 / 改后截断成可读长度）。
@@ -716,11 +734,12 @@ type DocDiff struct {
 
 // DocPatchResult 是 files.patch 的结果：diff 说明改了什么，digest 是改后的整篇指纹。
 type DocPatchResult struct {
-	ID       string    `msgpack:"id"`
-	Applied  int       `msgpack:"applied"`
-	Digest   string    `msgpack:"digest"`
-	Diff     []DocDiff `msgpack:"diff,omitempty"`
-	Warnings []string  `msgpack:"warnings,omitempty"`
+	ID          string    `msgpack:"id"`
+	Applied     int       `msgpack:"applied"`
+	Digest      string    `msgpack:"digest"`
+	ExactDigest string    `msgpack:"exact_digest"`
+	Diff        []DocDiff `msgpack:"diff,omitempty"`
+	Warnings    []string  `msgpack:"warnings,omitempty"`
 }
 
 // DocVerifyPayload 是 files.verify 的 payload：改完自查。

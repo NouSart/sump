@@ -53,11 +53,12 @@ func (s *Server) loadDoc(id, action string) (docmodel.Document, store.Meta, erro
 // toDocNode 把节点树转成线上形态（逐层递归；P0 的树只有 body→tbl→tr→tc→p 这几层）。
 func toDocNode(n docmodel.Node) protocol.DocNode {
 	out := protocol.DocNode{
-		ID:        n.ID.String(),
-		Type:      string(n.Type),
-		Text:      n.Text,
-		Level:     n.Level,
-		Truncated: n.Truncated,
+		ID:          n.ID.String(),
+		Type:        string(n.Type),
+		Text:        n.Text,
+		Level:       n.Level,
+		Truncated:   n.Truncated,
+		ExactAnchor: n.ExactAnchor,
 	}
 	if len(n.Children) > 0 {
 		out.Children = make([]protocol.DocNode, 0, len(n.Children))
@@ -88,15 +89,16 @@ func (s *Server) actionDocOutline(ctx context.Context, _ protocol.Envelope, in p
 	}
 	s.logger.Printf("已列出文档结构 %s（%s, %d 个顶层节点, %d 字）", p.ID, meta.Filename, len(nodes), outline.Stats.Chars)
 	return protocol.DocOutlineResult{
-		ID:        p.ID,
-		DocKind:   outline.Kind.String(),
-		Digest:    doc.Digest(),
-		Nodes:     nodes,
-		NodeCount: outline.Stats.Nodes,
-		Chars:     outline.Stats.Chars,
-		Tables:    outline.Stats.Tables,
-		Parts:     outline.Stats.Parts,
-		Warnings:  outline.Warnings,
+		ID:          p.ID,
+		DocKind:     outline.Kind.String(),
+		Digest:      doc.Digest(),
+		ExactDigest: doc.ExactDigest(),
+		Nodes:       nodes,
+		NodeCount:   outline.Stats.Nodes,
+		Chars:       outline.Stats.Chars,
+		Tables:      outline.Stats.Tables,
+		Parts:       outline.Stats.Parts,
+		Warnings:    outline.Warnings,
 	}, nil
 }
 
@@ -119,13 +121,14 @@ func (s *Server) actionDocReadRange(ctx context.Context, _ protocol.Envelope, in
 		return nil, fmt.Errorf("read_range: 读取 %s 失败: %w", meta.Filename, err)
 	}
 	return protocol.DocReadResult{
-		ID:      p.ID,
-		DocKind: doc.Kind().String(),
-		Digest:  doc.Digest(),
-		Node:    chunk.Node.String(),
-		Text:    chunk.Text,
-		Total:   chunk.Total,
-		Next:    chunk.Next,
+		ID:          p.ID,
+		DocKind:     doc.Kind().String(),
+		Digest:      doc.Digest(),
+		ExactDigest: doc.ExactDigest(),
+		Node:        chunk.Node.String(),
+		Text:        chunk.Text,
+		Total:       chunk.Total,
+		Next:        chunk.Next,
 	}, nil
 }
 
@@ -154,14 +157,20 @@ func (s *Server) actionDocFind(ctx context.Context, _ protocol.Envelope, in prot
 	out := make([]protocol.DocMatch, 0, len(matches))
 	for _, m := range matches {
 		out = append(out, protocol.DocMatch{
-			Node:    m.Node.String(),
-			Run:     m.Run,
-			Start:   m.Start,
-			End:     m.End,
-			Context: m.Context,
+			Node:        m.Node.String(),
+			Run:         m.Run,
+			Start:       m.Start,
+			End:         m.End,
+			Context:     m.Context,
+			ExactAnchor: m.ExactAnchor,
 		})
 	}
-	return protocol.DocFindResult{ID: p.ID, Digest: doc.Digest(), Matches: out}, nil
+	return protocol.DocFindResult{
+		ID:          p.ID,
+		Digest:      doc.Digest(),
+		ExactDigest: doc.ExactDigest(),
+		Matches:     out,
+	}, nil
 }
 
 // actionDocPatch 按节点地址改文档（LLM 工具，就地修改权威副本）。
@@ -194,6 +203,9 @@ func (s *Server) actionDocPatch(ctx context.Context, _ protocol.Envelope, in pro
 	if p.Anchor != "" && p.Anchor != doc.Digest() {
 		return nil, fmt.Errorf("%w（当前 digest 是 %s）", docmodel.ErrStale, doc.Digest())
 	}
+	if p.ExactAnchor != "" && p.ExactAnchor != doc.ExactDigest() {
+		return nil, fmt.Errorf("%w（当前 exact_digest 是 %s）", docmodel.ErrStale, doc.ExactDigest())
+	}
 	res, err := doc.Patch(ctx, ops)
 	if err != nil {
 		return nil, fmt.Errorf("patch: 改 %s 失败: %w", meta.Filename, err)
@@ -212,11 +224,12 @@ func (s *Server) actionDocPatch(ctx context.Context, _ protocol.Envelope, in pro
 	}
 	s.logger.Printf("已按节点编辑 docx %s（%s, %d 条操作）", p.ID, meta.Filename, res.Applied)
 	return protocol.DocPatchResult{
-		ID:       p.ID,
-		Applied:  res.Applied,
-		Digest:   doc.Digest(),
-		Diff:     diff,
-		Warnings: res.Warnings,
+		ID:          p.ID,
+		Applied:     res.Applied,
+		Digest:      doc.Digest(),
+		ExactDigest: doc.ExactDigest(),
+		Diff:        diff,
+		Warnings:    res.Warnings,
 	}, nil
 }
 
@@ -229,10 +242,11 @@ func toDocPatchOp(op protocol.DocPatchOp) (docmodel.PatchOp, error) {
 		return docmodel.PatchOp{}, errors.New("node 必填")
 	}
 	out := docmodel.PatchOp{
-		Op:     docmodel.Op(op.Op),
-		Node:   docmodel.NodeID(op.Node),
-		Text:   op.Text,
-		Anchor: op.Anchor,
+		Op:          docmodel.Op(op.Op),
+		Node:        docmodel.NodeID(op.Node),
+		Text:        op.Text,
+		Anchor:      op.Anchor,
+		ExactAnchor: op.ExactAnchor,
 	}
 	if op.Range != nil {
 		out.Range = &docmodel.TextRange{Start: op.Range.Start, End: op.Range.End}
@@ -240,8 +254,8 @@ func toDocPatchOp(op protocol.DocPatchOp) (docmodel.PatchOp, error) {
 	return out, nil
 }
 
-// docTextLimit 是 verify 取全文时的上限：整篇文本一次取完（不做分页）。
-const docTextLimit = 1 << 24
+// verifyChunkRunes 是 verify 每块读取的字符数；块与块之间保留片段长度的重叠。
+const verifyChunkRunes = 64 << 10
 
 // actionDocVerify 改完自查：整篇指纹 + 必须出现 / 必须不出现的片段。
 // 结果永远是"已判定的结论"（ok=false 也只描述事实，不报错）——让模型自己决定下一步。
@@ -257,30 +271,30 @@ func (s *Server) actionDocVerify(ctx context.Context, _ protocol.Envelope, in pr
 	if err != nil {
 		return nil, err
 	}
-	chunk, err := doc.ReadRange(ctx, docmodel.Selector{Limit: docTextLimit})
-	if err != nil {
-		return nil, fmt.Errorf("verify: 读取 %s 失败: %w", meta.Filename, err)
-	}
 	digest := doc.Digest()
 	var failures []string
 	if p.Digest != "" && p.Digest != digest {
 		failures = append(failures, fmt.Sprintf("整篇指纹不匹配：期望 %s，实际 %s", p.Digest, digest))
 	}
-	for _, want := range p.Contains {
+	missing, present, err := verifyFragments(ctx, doc, p.Contains, p.NotContains)
+	if err != nil {
+		return nil, fmt.Errorf("verify: 读取 %s 失败: %w", meta.Filename, err)
+	}
+	for i, want := range p.Contains {
 		if want == "" {
 			failures = append(failures, "contains 里有一项是空串（无法核对）")
 			continue
 		}
-		if !strings.Contains(chunk.Text, want) {
+		if missing[i] {
 			failures = append(failures, fmt.Sprintf("缺少片段：%s", want))
 		}
 	}
-	for _, bad := range p.NotContains {
+	for i, bad := range p.NotContains {
 		if bad == "" {
 			failures = append(failures, "not_contains 里有一项是空串（无法核对）")
 			continue
 		}
-		if strings.Contains(chunk.Text, bad) {
+		if present[i] {
 			failures = append(failures, fmt.Sprintf("仍有片段：%s", bad))
 		}
 	}
@@ -291,4 +305,62 @@ func (s *Server) actionDocVerify(ctx context.Context, _ protocol.Envelope, in pr
 		Digest:   digest,
 		Failures: failures,
 	}, nil
+}
+
+// verifyFragments 分块扫完整篇文本，并保留跨块重叠。
+//
+// 返回与 contains / not_contains 等长的布尔切片：missing[i] 表示没找到，
+// present[i] 表示（not_contains 的）片段仍然存在。空串由调用方单独报成无法核对；
+// 这里跳过，避免 strings.Contains(s, "") 恒为 true 的假结论。
+func verifyFragments(ctx context.Context, doc docmodel.Document, contains, notContains []string) (missing, present []bool, err error) {
+	missing = make([]bool, len(contains))
+	present = make([]bool, len(notContains))
+	maxNeedle := 0
+	for _, s := range append(append([]string(nil), contains...), notContains...) {
+		if n := len([]rune(s)); n > maxNeedle {
+			maxNeedle = n
+		}
+	}
+	if maxNeedle == 0 {
+		return missing, present, nil
+	}
+	for i, s := range contains {
+		missing[i] = s != ""
+	}
+	chunkLimit := verifyChunkRunes
+	if maxNeedle > chunkLimit {
+		chunkLimit = maxNeedle
+	}
+
+	offset := 0
+	var carry []rune
+	for {
+		chunk, rerr := doc.ReadRange(ctx, docmodel.Selector{Offset: offset, Limit: chunkLimit})
+		if rerr != nil {
+			return nil, nil, rerr
+		}
+		window := string(carry) + chunk.Text
+		for i, want := range contains {
+			if missing[i] && strings.Contains(window, want) {
+				missing[i] = false
+			}
+		}
+		for i, bad := range notContains {
+			if !present[i] && bad != "" && strings.Contains(window, bad) {
+				present[i] = true
+			}
+		}
+		if chunk.Next == 0 {
+			break
+		}
+		// 下一块要能看见“跨边界的片段”：保留上一块末尾 maxNeedle-1 个字符。
+		rs := []rune(window)
+		keep := maxNeedle - 1
+		if keep > len(rs) {
+			keep = len(rs)
+		}
+		carry = rs[len(rs)-keep:]
+		offset = chunk.Next
+	}
+	return missing, present, nil
 }

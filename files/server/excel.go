@@ -3,11 +3,13 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/xuri/excelize/v2"
 
@@ -44,38 +46,63 @@ func isLegacyXls(mime, filename string) bool {
 }
 
 // xlsxToText 把 xlsx 逐 sheet 转为 TSV 文本（“# 工作表: 名”开头，制表符分列）。
-// 超 maxChars 在行边界截断（不切断整行），返回 truncated=true。
-func xlsxToText(f *excelize.File, maxChars int) (string, bool) {
-	var b strings.Builder
-	used := 0
+// 返回完整投影长度与续读起点；某个工作表读取失败时返回 warning，
+// 由 fileReadResult 统一把“有 warning”归入 truncated——绝不能“少读一张表还说自己完整”。
+func xlsxToText(f *excelize.File, offset, limit int) (string, int, int, []string, bool) {
+	w := newReadWindow(offset, limit)
+	var warnings []string
 	for _, sheet := range f.GetSheetList() {
-		header := "# 工作表: " + sheet + "\n"
-		n := utf8.RuneCountInString(header)
-		if used+n > maxChars {
-			return strings.TrimRight(b.String(), "\n"), true
-		}
-		b.WriteString(header)
-		used += n
-
+		w.line("# 工作表: " + sheet)
 		rows, err := f.GetRows(sheet)
 		if err != nil {
-			continue // 单表读取失败跳过，其余表照常
+			warnings = append(warnings, fmt.Sprintf("工作表 %q 读取失败，结果不完整: %v", sheet, err))
+			continue
 		}
 		for _, row := range rows {
 			cells := make([]string, len(row))
 			for i, cell := range row {
 				cells[i] = escapeTSVCell(cell)
 			}
-			line := strings.Join(cells, "\t") + "\n"
-			n = utf8.RuneCountInString(line)
-			if used+n > maxChars {
-				return strings.TrimRight(b.String(), "\n"), true
-			}
-			b.WriteString(line)
-			used += n
+			w.line(strings.Join(cells, "\t"))
 		}
 	}
-	return strings.TrimRight(b.String(), "\n"), false
+	return w.text(), w.total, w.next(), warnings, w.truncated()
+}
+
+// validateWorksheetXML 逐张工作表做一次严格 XML 扫描。
+//
+// 为什么不能只信 GetRows 的 error：excelize 的行迭代器在底层 XML 截断 / 标签未闭合时
+// 会把解析错误吞成“读到一半就结束”，GetRows 返回的行看似正常（实测坏掉的第二张表
+// 直接消失且 err=nil）。这里先用严格 decoder 扫一遍，坏表至少以 warning 外显。
+func validateWorksheetXML(data []byte) []string {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return []string{fmt.Sprintf("xlsx 容器无法重新读取，结果不完整: %v", err)}
+	}
+	var warnings []string
+	for _, f := range zr.File {
+		if !strings.HasPrefix(f.Name, "xl/worksheets/") || !strings.HasSuffix(f.Name, ".xml") {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("工作表 XML %s 打开失败，结果不完整: %v", f.Name, err))
+			continue
+		}
+		dec := xml.NewDecoder(io.LimitReader(rc, maxExpandBytes+1))
+		for {
+			_, err := dec.Token()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("工作表 XML %s 解析失败，结果不完整: %v", f.Name, err))
+				break
+			}
+		}
+		_ = rc.Close()
+	}
+	return warnings
 }
 
 // escapeTSVCell 把单元格里会破坏 TSV 结构的字符转义：制表符 → `\t`、换行 → `\n`、回车 → `\r`。
