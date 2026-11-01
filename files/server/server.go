@@ -293,13 +293,18 @@ func (s *Server) actionRead(_ context.Context, _ protocol.Envelope, in protocol.
 	}
 }
 
-// fileReadResult 统一组装 read 结果：next 非 0 或格式层另有截断（如 PDF 页数封顶）都算 truncated。
+// fileReadResult 统一组装 read 结果，三个信号各答一个问题：
+//   - next：还有下一块，可续读（0 = 读完）；
+//   - truncated：这次结果不能当作完整内容（窗口截断、格式层封顶、或有 warning）；
+//   - warnings：为什么没给全（例如某张工作表损坏）。
+//
+// “有 warning 即不完整”只在这里判断一次，格式层不必各自重复。
 func fileReadResult(id string, meta store.Meta, text string, total, next int, warnings []string, truncated bool) protocol.FileReadResult {
 	return protocol.FileReadResult{
 		ID:        id,
 		Filename:  meta.Filename,
 		Text:      text,
-		Truncated: truncated || next != 0,
+		Truncated: truncated || next != 0 || len(warnings) > 0,
 		Total:     total,
 		Next:      next,
 		Warnings:  warnings,
@@ -335,9 +340,10 @@ func (s *Server) readXlsx(id string, meta store.Meta, offset, limit int) (any, e
 		return nil, expandError(fmt.Errorf("read: 解析 %s 为 xlsx 失败: %w", meta.Filename, err))
 	}
 	defer f.Close()
-	text, total, next, truncated := xlsxToText(f, offset, limit)
-	s.logger.Printf("已读取 xlsx %s（%s, %d 字节, offset=%d, 截断=%v）", id, meta.Filename, len(data), offset, truncated)
-	return fileReadResult(id, meta, text, total, next, nil, truncated), nil
+	text, total, next, warnings, truncated := xlsxToText(f, offset, limit)
+	warnings = append(validateWorksheetXML(data), warnings...)
+	s.logger.Printf("已读取 xlsx %s（%s, %d 字节, offset=%d, 截断=%v, 警告=%d）", id, meta.Filename, len(data), offset, truncated, len(warnings))
+	return fileReadResult(id, meta, text, total, next, warnings, truncated), nil
 }
 
 // readDocx .docx 读取：与文档模型共用同一份正文投影（字符窗口）。

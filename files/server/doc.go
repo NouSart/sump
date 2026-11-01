@@ -254,8 +254,8 @@ func toDocPatchOp(op protocol.DocPatchOp) (docmodel.PatchOp, error) {
 	return out, nil
 }
 
-// docTextLimit 是 verify 取全文时的上限：整篇文本一次取完（不做分页）。
-const docTextLimit = 1 << 24
+// verifyChunkRunes 是 verify 每块读取的字符数；块与块之间保留片段长度的重叠。
+const verifyChunkRunes = 64 << 10
 
 // actionDocVerify 改完自查：整篇指纹 + 必须出现 / 必须不出现的片段。
 // 结果永远是"已判定的结论"（ok=false 也只描述事实，不报错）——让模型自己决定下一步。
@@ -271,30 +271,30 @@ func (s *Server) actionDocVerify(ctx context.Context, _ protocol.Envelope, in pr
 	if err != nil {
 		return nil, err
 	}
-	chunk, err := doc.ReadRange(ctx, docmodel.Selector{Limit: docTextLimit})
-	if err != nil {
-		return nil, fmt.Errorf("verify: 读取 %s 失败: %w", meta.Filename, err)
-	}
 	digest := doc.Digest()
 	var failures []string
 	if p.Digest != "" && p.Digest != digest {
 		failures = append(failures, fmt.Sprintf("整篇指纹不匹配：期望 %s，实际 %s", p.Digest, digest))
 	}
-	for _, want := range p.Contains {
+	missing, present, err := verifyFragments(ctx, doc, p.Contains, p.NotContains)
+	if err != nil {
+		return nil, fmt.Errorf("verify: 读取 %s 失败: %w", meta.Filename, err)
+	}
+	for i, want := range p.Contains {
 		if want == "" {
 			failures = append(failures, "contains 里有一项是空串（无法核对）")
 			continue
 		}
-		if !strings.Contains(chunk.Text, want) {
+		if missing[i] {
 			failures = append(failures, fmt.Sprintf("缺少片段：%s", want))
 		}
 	}
-	for _, bad := range p.NotContains {
+	for i, bad := range p.NotContains {
 		if bad == "" {
 			failures = append(failures, "not_contains 里有一项是空串（无法核对）")
 			continue
 		}
-		if strings.Contains(chunk.Text, bad) {
+		if present[i] {
 			failures = append(failures, fmt.Sprintf("仍有片段：%s", bad))
 		}
 	}
@@ -305,4 +305,62 @@ func (s *Server) actionDocVerify(ctx context.Context, _ protocol.Envelope, in pr
 		Digest:   digest,
 		Failures: failures,
 	}, nil
+}
+
+// verifyFragments 分块扫完整篇文本，并保留跨块重叠。
+//
+// 返回与 contains / not_contains 等长的布尔切片：missing[i] 表示没找到，
+// present[i] 表示（not_contains 的）片段仍然存在。空串由调用方单独报成无法核对；
+// 这里跳过，避免 strings.Contains(s, "") 恒为 true 的假结论。
+func verifyFragments(ctx context.Context, doc docmodel.Document, contains, notContains []string) (missing, present []bool, err error) {
+	missing = make([]bool, len(contains))
+	present = make([]bool, len(notContains))
+	maxNeedle := 0
+	for _, s := range append(append([]string(nil), contains...), notContains...) {
+		if n := len([]rune(s)); n > maxNeedle {
+			maxNeedle = n
+		}
+	}
+	if maxNeedle == 0 {
+		return missing, present, nil
+	}
+	for i, s := range contains {
+		missing[i] = s != ""
+	}
+	chunkLimit := verifyChunkRunes
+	if maxNeedle > chunkLimit {
+		chunkLimit = maxNeedle
+	}
+
+	offset := 0
+	var carry []rune
+	for {
+		chunk, rerr := doc.ReadRange(ctx, docmodel.Selector{Offset: offset, Limit: chunkLimit})
+		if rerr != nil {
+			return nil, nil, rerr
+		}
+		window := string(carry) + chunk.Text
+		for i, want := range contains {
+			if missing[i] && strings.Contains(window, want) {
+				missing[i] = false
+			}
+		}
+		for i, bad := range notContains {
+			if !present[i] && bad != "" && strings.Contains(window, bad) {
+				present[i] = true
+			}
+		}
+		if chunk.Next == 0 {
+			break
+		}
+		// 下一块要能看见“跨边界的片段”：保留上一块末尾 maxNeedle-1 个字符。
+		rs := []rune(window)
+		keep := maxNeedle - 1
+		if keep > len(rs) {
+			keep = len(rs)
+		}
+		carry = rs[len(rs)-keep:]
+		offset = chunk.Next
+	}
+	return missing, present, nil
 }
