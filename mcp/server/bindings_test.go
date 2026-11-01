@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -255,4 +256,68 @@ func TestFileReadBindingLocalCutMovesContinuation(t *testing.T) {
 	if err != nil || len(encoded) > 240 {
 		t.Fatalf("裁剪结果超出字节预算: %d 字节, %v", len(encoded), err)
 	}
+}
+
+// 协议是唯一事实源，这份绑定是手写的显式投影。协议新增字段而不更新绑定
+// 不会破坏编译，却会让 MCP 客户端悄悄看不到新能力；这里把“漏掉”变成红灯。
+// 某个字段若确实不该透出，也必须在这里显式登记并写明原因，不能默认忽略。
+func TestFileReadBindingTracksProtocolFields(t *testing.T) {
+	binding := BuiltinBindings()["files__read"]
+	inputFields := msgpackFieldNames(reflect.TypeOf(protocol.FileReadPayload{}))
+	knownInput := make(map[string]bool, len(inputFields))
+	for _, name := range inputFields {
+		knownInput[name] = true
+	}
+	properties := binding.Tool.InputSchema.(map[string]any)["properties"].(map[string]any)
+	notExposedInput := map[string]string{} // 形如 "字段": "为什么不透出"；当前无
+	for _, name := range inputFields {
+		if _, skip := notExposedInput[name]; skip {
+			continue
+		}
+		if _, ok := properties[name]; !ok {
+			t.Errorf("协议输入字段 %q 未在 files__read 的输入契约中登记", name)
+		}
+	}
+	for name := range properties {
+		if !knownInput[name] {
+			t.Errorf("files__read 输入契约暴露了协议里不存在的字段 %q", name)
+		}
+	}
+
+	notExposed := map[string]string{} // 形如 "字段": "为什么不透出"；当前无
+	source := protocol.FileReadResult{
+		ID: "id", Filename: "f.txt", Text: "text", Truncated: true,
+		Total: 4, Next: 2, Warnings: []string{"warning"},
+	}
+	out, err := binding.DecodeOutput(packResult(t, source), 1<<20, protocol.FileReadPayload{ID: "id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultFields := msgpackFieldNames(reflect.TypeOf(protocol.FileReadResult{}))
+	knownOutput := make(map[string]bool, len(resultFields))
+	for _, name := range resultFields {
+		knownOutput[name] = true
+		if _, skip := notExposed[name]; skip {
+			continue
+		}
+		if _, ok := out[name]; !ok {
+			t.Errorf("协议结果字段 %q 未在 files__read 的结果中透出", name)
+		}
+	}
+	for name := range out {
+		if !knownOutput[name] {
+			t.Errorf("files__read 结果含协议里不存在的字段 %q", name)
+		}
+	}
+}
+
+func msgpackFieldNames(t reflect.Type) []string {
+	names := make([]string, 0, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		name := strings.Split(t.Field(i).Tag.Get("msgpack"), ",")[0]
+		if name != "" && name != "-" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
