@@ -32,20 +32,19 @@ func (d *Document) Warnings() []string { return append([]string(nil), d.warnings
 // Digest 是整篇可见文本的规范化指纹（规范化空白后取 sha256，十六进制全串）。
 // 用于 verify：改完重算一遍，和预期值比对就知道"文档内容确实变成了这个样子"。
 func (d *Document) Digest() string {
-	var b strings.Builder
-	for _, id := range d.order {
-		b.WriteString(d.paras[id].text)
-		b.WriteByte('\n')
-	}
-	sum := sha256.Sum256([]byte(strings.Join(strings.Fields(b.String()), " ")))
+	sum := sha256.Sum256([]byte(strings.Join(strings.Fields(d.visibleText()), " ")))
 	return hex.EncodeToString(sum[:])
 }
 
 // Text 返回整篇可见文本（段落以单个换行分隔）。
 //
-// 与 `read` 的正文提取（`files/server/word.go`）用**同一个口径**：段落之间都是一个 `\n`。
-// 两套格式会让模型拿 read 的文本去 verify.contains 却匹配不上，patch 的 rune 偏移也会偏。
-func (d *Document) Text() string {
+// 与 `read` 的正文提取（`files/server/word.go`）用**同一个口径**：段落之间都是一个 `\n`，
+// 空段落也占一个位置。两套格式会让模型拿 read 的文本去 verify.contains 却匹配不上，
+// patch 的 rune 偏移也会偏。
+func (d *Document) Text() string { return d.visibleText() }
+
+// visibleText 是整篇文本投影的唯一实现；digest、read_range、find 默认范围都走它。
+func (d *Document) visibleText() string {
 	parts := make([]string, 0, len(d.order))
 	for _, id := range d.order {
 		parts = append(parts, d.paras[id].text)
@@ -293,6 +292,17 @@ func (d *Document) scopeParas(node docmodel.NodeID) ([]*para, error) {
 		}
 	}
 	return nil, fmt.Errorf("%w: %s", docmodel.ErrNodeNotFound, node)
+}
+
+// allParas 返回表格下所有单元格段落（按行/列顺序）。
+func (t *table) allParas() []docmodel.NodeID {
+	var out []docmodel.NodeID
+	for _, row := range t.rows {
+		for _, cell := range row.cells {
+			out = append(out, cell.paras...)
+		}
+	}
+	return out
 }
 
 // parasUnder 返回表格/行/单元格下的段落 ID（不是其地址则返回空）。

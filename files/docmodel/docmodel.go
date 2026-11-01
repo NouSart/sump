@@ -59,6 +59,8 @@ const (
 //	docx  body/p12            正文第 12 个段落
 //	      body/tbl3/r2/c1     第 3 个表格第 2 行第 1 列
 //	      p12/r3              第 12 段第 3 个 run
+//	      body/p12/p1         第 12 段文本框里的第 1 个嵌套段落
+//	      body/sdt1/p2        第 1 个内容控件里的第 2 个段落
 //	pptx  slide4/sp2          第 4 张幻灯片上 shape id=2 的形状
 //	xlsx  sheet1!C7           工作表 sheet1 的 C7 单元格
 //	pdf   page2               第 2 页

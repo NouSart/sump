@@ -31,7 +31,7 @@ SUMP v2 的文件库：独立 SQLite 元数据 + 二进制目录，支持保存�
 - `read` / `edit_ppt` 的幻灯片顺序以 `ppt/presentation.xml` 的 `<p:sldIdLst>` 为准（与 PowerPoint 的放映顺序一致），不按 `slideN.xml` 的文件名编号；缺 `presentation.xml` 或其 rels、或清单损坏解析失败时整体退回文件名顺序。
 - `edit_pdf` v0 仅做元数据与页操作：`set_info` 写 Info 字典（键用标准名 `Title`/`Author`/`Subject`/`Keywords` 等）、`rotate` 按 90 的整数倍旋转、`delete_pages` 删页、`keep_pages` 只保留指定页。**不支持任意文本替换**（字体子集/编码使纯 Go 可靠替换不可行）、不新增/重排页面结构、不做水印/合并/加解密（这些留给后续 op 扩展）。未知 `op` 类型直接报错。
 - PDF 读取按页提取纯文本，页数受上限封顶；加密 PDF 明确拒绝；扫描件（图片型，无文本层）读取报错引导，不做 OCR。
-- `outline`/`read_range`/`find`/`patch`/`verify` v0 只接 `.docx`（其它格式会明确报"仅支持按节点编辑 .docx"）。节点地址形如 `body/p3`、`body/tbl1/r2/c1/p1`；写到 run 一级（`body/p3/r2`）会归到所在段落。
+- `outline`/`read_range`/`find`/`patch`/`verify` v0 只接 `.docx`（其它格式会明确报"仅支持按节点编辑 .docx"）。节点地址形如 `body/p3`、`body/tbl1/r2/c1/p1`；写到 run 一级（`body/p3/r2`）会归到所在段落。文本框内的段落是 `body/p3/p1`、内容控件里的段落是 `body/sdt1/p1`——它们和正文段落走同一份投影，`read` 看得见的文字都有节点地址。
 - `patch` 的 `replace_text` 只在受影响 run 内改字（第一处写新文本、后续只删旧字），**不新建 run**，因此不会丢字符样式；`delete_node` 只清空段落文字、保留 `<w:p>`（样式 / 编号还在）。换行写成 `<w:br/>`、制表写成 `<w:tab/>`，不落裸控制字符。
 - `patch` 是整批原子的：任意一条失败（节点不存在、区间越界、`anchor` 对不上整篇指纹、未知 `op`）就整批拒绝，库里的字节不变；全部成功才回写一次。
 - `verify` 的 `digest` 是整篇可见文本的规范化指纹，可直接拿 `outline`/`find`/`patch` 返回值当"版本号"做乐观锁。

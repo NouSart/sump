@@ -10,6 +10,7 @@ package docx
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/NouSart/sump/files/docmodel"
 	"github.com/NouSart/sump/files/docmodel/ooxml"
@@ -110,38 +111,212 @@ func (d *Document) parse() error {
 	d.blocks = nil
 	d.warnings = nil
 
-	depth := toks[body].Depth + 1
-	paraNum, tblNum := 0, 0
-	for i := body + 1; i < bodyEnd; i++ {
+	if err := d.parseBlockContainer(toks, body+1, bodyEnd, toks[body].Depth+1, "body"); err != nil {
+		return err
+	}
+	if len(d.order) == 0 {
+		d.warnings = append(d.warnings, "正文里没有段落（文档可能是空的或结构异常）")
+	}
+	return nil
+}
+
+// parseBlockContainer 解析一个块级容器（body / 单元格 / sdtContent …）。
+//
+// 直接子段落继续使用容器原有编号（body/pN、cell/pN），所以历史地址不变；
+// 容器里的 sdt / customXml / 修订容器递归展开，路径追加一段（body/sdt1/p1）。
+// 这样文本框、内容控件里的段落不再是“read 看得见、节点模型看不见”。
+func (d *Document) parseBlockContainer(toks []ooxml.Token, start, end, depth int, path string) error {
+	pn, tn, sn := 0, 0, 0
+	for i := start; i < end; i++ {
 		t := toks[i]
 		if t.Kind != ooxml.TokStart || t.Depth != depth {
 			continue
 		}
 		switch t.Name {
 		case "p":
-			paraNum++
-			p, endIdx, err := d.newPara(toks, i, docmodel.NodeID(fmt.Sprintf("body/p%d", paraNum)))
+			pn++
+			p, pEnd, err := d.newPara(toks, i, docmodel.NodeID(fmt.Sprintf("%s/p%d", path, pn)))
 			if err != nil {
 				return err
 			}
-			d.paras[p.id] = p
-			d.order = append(d.order, p.id)
+			d.registerPara(p)
 			d.blocks = append(d.blocks, block{id: p.id, typ: docmodel.NodeParagraph, para: p})
-			i = endIdx
+			if err := d.parseNestedIn(toks, i, pEnd, string(p.id), nil, true); err != nil {
+				return err
+			}
+			i = pEnd
 		case "tbl":
-			tblNum++
-			tbl, err := d.newTable(toks, i, fmt.Sprintf("body/tbl%d", tblNum))
+			tn++
+			tbl, err := d.newTable(toks, i, fmt.Sprintf("%s/tbl%d", path, tn))
 			if err != nil {
 				return err
 			}
 			d.blocks = append(d.blocks, block{id: tbl.id, typ: docmodel.NodeTable, tbl: tbl})
 			i = matchEnd(toks, i)
+		case "sdt", "customXml", "ins", "moveTo", "AlternateContent":
+			sn++
+			next, nextEnd, ok := wrapperContent(toks, i)
+			if !ok {
+				i = matchEnd(toks, i)
+				continue
+			}
+			childPath := fmt.Sprintf("%s/%s%d", path, wrapperSegment(t.Name), sn)
+			if err := d.parseBlockContainer(toks, next+1, nextEnd, toks[next].Depth+1, childPath); err != nil {
+				return err
+			}
+			i = nextEnd
+		case "del", "moveFrom", "Fallback":
+			// 修订删除与 AlternateContent 的兼容分支不是当前可见正文；跳过以免重复计数。
+			if e := matchEnd(toks, i); e > i {
+				i = e
+			}
 		}
 	}
-	if paraNum == 0 {
-		d.warnings = append(d.warnings, "正文里没有段落（文档可能是空的或结构异常）")
+	return nil
+}
+
+// parseCellBlocks 解析表格单元格里的块；嵌套段落追加到 cell.paras，不进入 body 大纲。
+func (d *Document) parseCellBlocks(toks []ooxml.Token, start, end, depth int, path string, cellParas *[]docmodel.NodeID) error {
+	pn, tn, sn := 0, 0, 0
+	for i := start; i < end; i++ {
+		t := toks[i]
+		if t.Kind != ooxml.TokStart || t.Depth != depth {
+			continue
+		}
+		switch t.Name {
+		case "p":
+			pn++
+			p, pEnd, err := d.newPara(toks, i, docmodel.NodeID(fmt.Sprintf("%s/p%d", path, pn)))
+			if err != nil {
+				return err
+			}
+			d.registerPara(p)
+			*cellParas = append(*cellParas, p.id)
+			if err := d.parseNestedIn(toks, i, pEnd, string(p.id), cellParas, false); err != nil {
+				return err
+			}
+			i = pEnd
+		case "tbl":
+			tn++
+			tbl, err := d.newTable(toks, i, fmt.Sprintf("%s/tbl%d", path, tn))
+			if err != nil {
+				return err
+			}
+			*cellParas = append(*cellParas, tbl.allParas()...)
+			i = matchEnd(toks, i)
+		case "sdt", "customXml", "ins", "moveTo", "AlternateContent":
+			sn++
+			next, nextEnd, ok := wrapperContent(toks, i)
+			if !ok {
+				i = matchEnd(toks, i)
+				continue
+			}
+			childPath := fmt.Sprintf("%s/%s%d", path, wrapperSegment(t.Name), sn)
+			if err := d.parseCellBlocks(toks, next+1, nextEnd, toks[next].Depth+1, childPath, cellParas); err != nil {
+				return err
+			}
+			i = nextEnd
+		case "del", "moveFrom", "Fallback":
+			if e := matchEnd(toks, i); e > i {
+				i = e
+			}
+		}
 	}
 	return nil
+}
+
+// parseNestedIn 找段落内部的嵌套段落/表格（文本框、内容控件、图形组等）。
+//
+// 只按“在父段落里出现的顺序”编号：body/p1/p1、body/p1/p2。不把 txbx/drawing
+// 这类前缀写进地址——它们会随 Word 版本变化，而顺序是稳定的结构事实。
+func (d *Document) parseNestedIn(toks []ooxml.Token, start, end int, path string, cellParas *[]docmodel.NodeID, addBlocks bool) error {
+	pn, tn := 0, 0
+	for i := start + 1; i < end; i++ {
+		t := toks[i]
+		if t.Kind != ooxml.TokStart {
+			continue
+		}
+		switch t.Name {
+		case "Fallback", "del", "moveFrom":
+			if e := matchEnd(toks, i); e > i {
+				i = e
+			}
+			continue
+		case "p":
+			pn++
+			p, pEnd, err := d.newPara(toks, i, docmodel.NodeID(fmt.Sprintf("%s/p%d", path, pn)))
+			if err != nil {
+				return err
+			}
+			d.registerPara(p)
+			if cellParas != nil {
+				*cellParas = append(*cellParas, p.id)
+			}
+			if addBlocks {
+				d.blocks = append(d.blocks, block{id: p.id, typ: docmodel.NodeParagraph, para: p})
+			}
+			if err := d.parseNestedIn(toks, i, pEnd, string(p.id), cellParas, addBlocks); err != nil {
+				return err
+			}
+			i = pEnd
+		case "tbl":
+			tn++
+			tbl, err := d.newTable(toks, i, fmt.Sprintf("%s/tbl%d", path, tn))
+			if err != nil {
+				return err
+			}
+			if cellParas != nil {
+				*cellParas = append(*cellParas, tbl.allParas()...)
+			}
+			if addBlocks {
+				d.blocks = append(d.blocks, block{id: tbl.id, typ: docmodel.NodeTable, tbl: tbl})
+			}
+			i = matchEnd(toks, i)
+		}
+	}
+	return nil
+}
+
+// registerPara 把段落放进全局索引与文档顺序。
+func (d *Document) registerPara(p *para) {
+	d.paras[p.id] = p
+	d.order = append(d.order, p.id)
+}
+
+// wrapperContent 返回块级包装元素里承载内容的直接子元素（sdtContent / Choice）。
+// customXml / ins 本身没有中间层，直接以自身内容为容器。
+func wrapperContent(toks []ooxml.Token, i int) (start, end int, ok bool) {
+	end = matchEnd(toks, i)
+	if end < 0 {
+		return 0, 0, false
+	}
+	want := "sdtContent"
+	if toks[i].Name == "AlternateContent" {
+		want = "Choice"
+	}
+	if toks[i].Name == "customXml" || toks[i].Name == "ins" || toks[i].Name == "moveTo" {
+		return i, end, true
+	}
+	depth := toks[i].Depth + 1
+	for j := i + 1; j < end; j++ {
+		if toks[j].Kind == ooxml.TokStart && toks[j].Depth == depth && toks[j].Name == want {
+			jEnd := matchEnd(toks, j)
+			if jEnd < 0 {
+				return 0, 0, false
+			}
+			return j, jEnd, true
+		}
+	}
+	return 0, 0, false
+}
+
+// wrapperSegment 把包装元素名转成地址段（统一小写，避免大小写差异影响地址）。
+func wrapperSegment(name string) string {
+	switch name {
+	case "AlternateContent":
+		return "alt"
+	}
+	return strings.ToLower(name)
 }
 
 // matchEnd 返回与 toks[i] 配对的结束 token 下标；自闭合元素返回紧随其后的合成 End。
@@ -203,21 +378,8 @@ func (d *Document) newTable(toks []ooxml.Token, i int, path string) (*table, err
 			if tcEnd < 0 {
 				return nil, fmt.Errorf("w:tc 未闭合（偏移 %d）", tc.Start)
 			}
-			paraDepth := tc.Depth + 1
-			for m := k + 1; m < tcEnd; m++ {
-				pt := toks[m]
-				if pt.Kind != ooxml.TokStart || pt.Depth != paraDepth || pt.Name != "p" {
-					continue
-				}
-				id := docmodel.NodeID(fmt.Sprintf("%s/p%d", cell.id, len(cell.paras)+1))
-				p, pEnd, err := d.newPara(toks, m, id)
-				if err != nil {
-					return nil, err
-				}
-				d.paras[p.id] = p
-				d.order = append(d.order, p.id)
-				cell.paras = append(cell.paras, p.id)
-				m = pEnd
+			if err := d.parseCellBlocks(toks, k+1, tcEnd, tc.Depth+1, string(cell.id), &cell.paras); err != nil {
+				return nil, err
 			}
 			if len(r.cells)+1 > tbl.cols {
 				tbl.cols = len(r.cells) + 1

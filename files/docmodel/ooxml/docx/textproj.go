@@ -59,7 +59,6 @@ type para struct {
 //   - <w:delText>（修订删除）、<w:instrText>（域代码）不计入正文；
 //   - 文本框里的嵌套 <w:p> 整体跳过——那是另一个段落，会由自己的节点地址覆盖。
 func (p *para) buildPieces(data []byte, toks []ooxml.Token, startIdx, endIdx int) error {
-	depth := toks[startIdx].Depth
 	var b strings.Builder
 	runes := 0
 	runIdx := -1
@@ -90,14 +89,10 @@ func (p *para) buildPieces(data []byte, toks []ooxml.Token, startIdx, endIdx int
 			}
 			continue
 		case "r":
-			if t.Depth <= depth+2 {
-				runIdx++
-			}
+			// 已经跳过嵌套段落，剩下的 run 都属于本段（包括行内 sdt / ins 里的 run）。
+			runIdx++
 			continue
 		case "br", "cr", "tab":
-			if t.Depth > depth+3 {
-				continue
-			}
 			e := matchEnd(toks, j)
 			if e < 0 {
 				return fmt.Errorf("w:%s 未闭合（偏移 %d）", t.Name, t.Start)
@@ -109,9 +104,8 @@ func (p *para) buildPieces(data []byte, toks []ooxml.Token, startIdx, endIdx int
 			add(kind, text, t.Start, toks[e].End, 0, 0, 0, false)
 			j = e
 		case "t":
-			if t.Depth > depth+3 {
-				continue
-			}
+			// 不要用固定深度判断：行内内容控件的路径是 p→sdt→sdtContent→r→t，
+			// 比 p→r→t 深；嵌套文本框里的段落已在上面整体跳过，不会有重复风险。
 			e := matchEnd(toks, j)
 			if e < 0 {
 				return fmt.Errorf("w:t 未闭合（偏移 %d）", t.Start)
