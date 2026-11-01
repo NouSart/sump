@@ -106,12 +106,3 @@ func (d *Document) reload() error {
 	d.warnings = nd.warnings
 	return nil
 }
-
-// Paragraph 返回某个段落节点的当前文本（verify / 测试断言用）。
-func (d *Document) Paragraph(id docmodel.NodeID) (string, bool) {
-	p, ok := d.paras[id]
-	if !ok {
-		return "", false
-	}
-	return p.text, true
-}

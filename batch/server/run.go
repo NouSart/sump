@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -645,11 +644,4 @@ func truncateBytes(raw []byte, n int) []byte {
 		cut = cut[:len(cut)-1]
 	}
 	return cut
-}
-
-// sortedTags 给测试与调试用（保序去重后的样例）。
-func sortedTags(in []string) []string {
-	out := append([]string(nil), in...)
-	sort.Strings(out)
-	return out
 }

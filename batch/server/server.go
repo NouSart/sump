@@ -500,12 +500,6 @@ func (s *Server) maxConcValue() int {
 	return s.maxConc
 }
 
-func (s *Server) maxInflightValue() int {
-	s.setMu.Lock()
-	defer s.setMu.Unlock()
-	return s.maxInflight
-}
-
 func (s *Server) maxItemsValue() int {
 	s.setMu.Lock()
 	defer s.setMu.Unlock()
