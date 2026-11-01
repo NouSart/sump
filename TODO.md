@@ -54,5 +54,4 @@
 
 ## 文档缺口
 
-- [ ] **补 5 个服务页**：images / qq / reasoner / settings-center / approval（按 [add-a-service](docs/guides/add-a-service.md) 的模板：职责 / 端口 / 动作表 / 设置项 / 数据 / 依赖 / 怎么测）
 - [ ] **`docs/index.md` 的链接由 `tests/docs_test.go` 守着**——新增或移动文档后跑一次 `cd tests; go test -run Docs ./...`
