@@ -344,6 +344,48 @@ test('消息 / 历史 / 任务都按会话走：读能看别的入口，写只�
 
 // 重试：失败的那一轮可能发生在 QQ 会话里（入口自己才是那扇门），门户只是把请求转过去；
 // 但会话号仍然要过形状校验——它会被原样放进跳转。
+test('GET /api/attachment：按 id 去 images / files 取，门户只转发', async (t) => {
+  const images = await startStub((action) => {
+    assert.equal(action, 'fetch');
+    return { id: 'img-1', mime: 'image/png', data: Buffer.from('PNGDATA').toString('base64') };
+  });
+  t.after(images.stop);
+  const files = await startStub((action) => {
+    assert.equal(action, 'read');
+    return { id: 'file-1', filename: '报告.md', text: '正文', next: 0, total: 2 };
+  });
+  t.after(files.stop);
+  const { handle, center } = await startPortal([
+    { name: 'images', addr: images.url },
+    { name: 'files', addr: files.url },
+  ]);
+  t.after(async () => {
+    await handle.close();
+    await center.stop();
+  });
+
+  // 图片：直接把字节吐回来（界面用 <img src> 内联）。
+  const img = await fetch(`http://${handle.addr}/api/attachment?kind=image&id=img-1`);
+  assert.equal(img.status, 200);
+  assert.equal(img.headers.get('content-type'), 'image/png');
+  assert.equal(Buffer.from(await img.arrayBuffer()).toString(), 'PNGDATA');
+  assert.deepEqual(images.jumps.at(-1)?.input, { id: 'img-1' });
+
+  // 文件：回文本预览（二进制由 files 明确报错，门户照实转达）。
+  const txt = await fetch(`http://${handle.addr}/api/attachment?kind=file&id=file-1`);
+  assert.equal(txt.status, 200);
+  assert.deepEqual(await txt.json(), { filename: '报告.md', text: '正文', next: 0, total: 2 });
+  assert.equal((files.jumps.at(-1)?.input as { id: string }).id, 'file-1');
+
+  // 形状不对就拒，且不跳出去（id 会被拼进 URL）。
+  const before = images.jumps.length;
+  for (const bad of ['kind=video&id=x', 'kind=image&id=../etc/passwd', 'kind=image&id=']) {
+    const res = await fetch(`http://${handle.addr}/api/attachment?${bad}`);
+    assert.equal(res.status, 400, bad);
+  }
+  assert.equal(images.jumps.length, before, '被拒的附件请求不该跳出去');
+});
+
 test('POST /api/retry：转给 reasoner，会话号要合法', async (t) => {
   const reasoner = await startStub((action) => {
     assert.equal(action, 'retry');

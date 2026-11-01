@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import type { PendingApprovalView, PortalMessage, TaskView, TerminalRunUpdate, TimerView } from '../types';
+import type { AttachmentRef, PendingApprovalView, PortalMessage, TaskView, TerminalRunUpdate, TimerView } from '../types';
 import type { UploadResult } from '../api';
 import { ApprovalStrip } from './ApprovalStrip';
 import type { Translate } from '../i18n';
@@ -61,6 +61,62 @@ function humanSize(n: number): string {
 // remainingText 从共用模块取用并重导出：本组件与测试都从这里取同一个实现。
 import { remainingText } from '../timeText';
 export { remainingText };
+// Attachments 显示一条消息带的图片 / 文件。二者都按 id 惰性取（门户不存这些字节）：
+// 图片直接内联成缩略图；文件点一下才取文本预览——不看就不花这一次跨服务调用。
+function Attachments({ items, t }: { items: AttachmentRef[]; t: Translate }) {
+  return (
+    <div className="step-attachments">
+      {items.map((a) =>
+        a.kind === 'image' ? (
+          <img
+            key={`img-${a.id}`}
+            className="step-attach-img"
+            src={`/api/attachment?kind=image&id=${encodeURIComponent(a.id)}`}
+            alt={t('ui.attach.image', '图片')}
+            loading="lazy"
+          />
+        ) : (
+          <FileAttachment key={`file-${a.id}`} id={a.id} t={t} />
+        ),
+      )}
+    </div>
+  );
+}
+
+// FileAttachment 是一个文件附件：先只显示"文件"，点开才取文本预览。
+// 取不到（二进制 / 服务不在）就如实显示原因——不假装"没有附件"。
+function FileAttachment({ id, t }: { id: string; t: Translate }) {
+  const [state, setState] = useState<{ loading: boolean; filename?: string; text?: string; error?: string }>({
+    loading: false,
+  });
+  const open = async (): Promise<void> => {
+    if (state.loading || state.text !== undefined) return;
+    setState({ loading: true });
+    try {
+      const r = await fetch(`/api/attachment?kind=file&id=${encodeURIComponent(id)}`);
+      const body = (await r.json()) as { filename?: string; text?: string; error?: string };
+      if (!r.ok) {
+        setState({ loading: false, error: body.error ?? `HTTP ${String(r.status)}` });
+        return;
+      }
+      setState({ loading: false, filename: body.filename ?? '', text: body.text ?? '' });
+    } catch (err) {
+      setState({ loading: false, error: (err as Error).message });
+    }
+  };
+  return (
+    <div className="step-attach-file">
+      <button type="button" className="step-attach-open" onClick={() => void open()}>
+        <span aria-hidden="true">📎</span>
+        <span>{state.filename ?? t('ui.attach.file', '文件')}</span>
+        <span className="step-attach-hint">{state.loading ? t('ui.attach.loading', '载入中…') : t('ui.attach.open', '查看')}</span>
+      </button>
+      {state.error !== undefined && <p className="step-attach-error">{state.error}</p>}
+      {state.text !== undefined && <pre className="step-attach-text">{state.text}</pre>}
+    </div>
+  );
+}
+
 // Step 是对话里的一步：左边一个图标 + 竖线（把相邻图标连起来），右边是这一步的内容。
 // 图标按步骤类型分：我 / 深度思考 / 命令 / 输出 / 答复——一眼能看出这条链走到哪了。
 function Step({ m, t, workflowExpand }: { m: PortalMessage; t: Translate; workflowExpand: WorkflowExpand }) {
@@ -79,6 +135,7 @@ function Step({ m, t, workflowExpand }: { m: PortalMessage; t: Translate; workfl
             <time className="step-time">{time}</time>
           </div>
           <p className="step-text">{m.text}</p>
+          {m.attachments !== undefined && <Attachments items={m.attachments} t={t} />}
         </div>
       </li>
     );

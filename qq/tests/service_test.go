@@ -8,6 +8,7 @@ package tests
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -608,7 +609,13 @@ func (sf *stubFiles) waitSave(t *testing.T, timeout time.Duration) fileSave {
 
 func startQQ(t *testing.T, sc *stubCenter, nc *stubNapCat, owner string) *server.Server {
 	t.Helper()
-	logger := log.New(os.Stdout, "[qq-test] ", log.LstdFlags)
+	return startQQWithLog(t, sc, nc, owner, os.Stdout)
+}
+
+// startQQWithLog 同 startQQ，但把日志写到指定 writer（断言"失败有信号"时用）。
+func startQQWithLog(t *testing.T, sc *stubCenter, nc *stubNapCat, owner string, out io.Writer) *server.Server {
+	t.Helper()
+	logger := log.New(out, "[qq-test] ", log.LstdFlags)
 	srv := server.New(server.Config{
 		Name:              "qq",
 		Listen:            "127.0.0.1:0",

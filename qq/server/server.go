@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NouSart/sump/protocol"
@@ -72,6 +73,10 @@ type Server struct {
 
 	titleMu sync.Mutex
 	titled  map[string]bool // 本进程里已经试过起名的会话（失败不重复试）
+
+	// "只记录不推理"这条路径的落库台账：失败会让消息从上下文里消失，必须看得见规模。
+	quietStoreOK       atomic.Int64
+	quietStoreFailures atomic.Int64
 }
 
 // New 创建实例并注册动作。
@@ -682,8 +687,14 @@ func (s *Server) storeQuietly(cid string, sender *protocol.Sender, text string, 
 		TaskName:       taskNameOf(text, ids, fileIDs),
 	}, protocol.NewID(), s.cfg.Name)
 	if err != nil {
-		s.logger.Printf("会话 %s：只记录模式落库失败: %v", cid, err)
+		// 这条消息就此从上下文里消失了——只写一行日志的话，没人知道"少了多少条"。
+		// 记一个累计数（日志里能看出规模），并沿既有的 report 通道上报中心（与"跳转未送达"同一处可见）。
+		failures := s.quietStoreFailures.Add(1)
+		s.logger.Printf("会话 %s：只记录模式落库失败（累计 %d 次，这条消息不在上下文里了）: %v", cid, failures, err)
+		s.Report("store", fmt.Sprintf("qq 只记录落库失败（累计 %d 次，会话 %s）: %v", failures, cid, err))
+		return
 	}
+	s.quietStoreOK.Add(1)
 }
 
 // taskNameOf 从消息正文里取一个任务名；正文为空（只发了图 / 文件）时按附件类型兜底——

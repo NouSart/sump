@@ -1,5 +1,5 @@
 // 与前端服务 HTTP API 的通信（JSON 进出；失败统一抛 Error，消息即中文提示）。
-import type { ConversationView, Overview, PortalMessage, ServiceSettingsView, TaskView, TraceMeta } from './types';
+import type { AttachmentRef, ConversationView, Overview, PortalMessage, ServiceSettingsView, TaskView, TraceMeta } from './types';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -109,12 +109,39 @@ export function historyToMessage(m: {
   const at = m.at ?? '';
   const seq = m.seq ?? 0;
   const taskId = m.task_id ?? '';
-  if (kind === 'user') return { author: 'user', kind: 'user', text, at, seq, taskId };
+  if (kind === 'user') {
+    return { author: 'user', kind: 'user', text, at, seq, taskId, attachments: parseAttachments(m.meta) };
+  }
   if (kind === 'assistant') return { author: 'agent', kind: 'assistant', text, at, seq, taskId };
   if (kind === 'reasoning' || kind === 'tool_call' || kind === 'tool_result') {
     return { author: 'agent', kind, text, at, seq, taskId, meta: parseMeta(m.meta) };
   }
   return null; // 其他 role（system 等）不进对话视图
+}
+
+// parseAttachments 从记录 meta 里取出附件 id（images / files 两个数组）。
+// 只认形状对的 id：界面上要拼进 URL，形状不对的宁可丢一条，也不让脏数据进渲染。
+export function parseAttachments(raw: string | undefined): AttachmentRef[] | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  let v: Record<string, unknown>;
+  try {
+    v = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  const out: AttachmentRef[] = [];
+  const idPattern = /^[A-Za-z0-9_-]{1,64}$/;
+  for (const [field, kind] of [
+    ['images', 'image'],
+    ['files', 'file'],
+  ] as const) {
+    const list = v[field];
+    if (!Array.isArray(list)) continue;
+    for (const id of list) {
+      if (typeof id === 'string' && idPattern.test(id)) out.push({ kind, id });
+    }
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 // parseMeta 解析落库时带的附加信息（形状不对就当没有——展示层不该因为脏数据崩）。
