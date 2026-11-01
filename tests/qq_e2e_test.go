@@ -74,6 +74,16 @@ func (n *napcatStub) handleWS(w http.ResponseWriter, r *http.Request) {
 		n.sent = append(n.sent, m)
 		n.mu.Unlock()
 		resp := map[string]any{"status": "ok", "retcode": 0}
+		if action, _ := m["action"].(string); action == "get_group_info" {
+			// 群资料：来源标注里的「群名 + 扩散面（人数）」靠它。真网关也是这么回的。
+			params, _ := m["params"].(map[string]any)
+			gid, _ := params["group_id"].(float64)
+			resp["data"] = map[string]any{
+				"group_id":     int64(gid),
+				"group_name":   "编程交流",
+				"member_count": 12,
+			}
+		}
 		if echo, _ := m["echo"].(string); echo != "" {
 			resp["echo"] = echo
 		}

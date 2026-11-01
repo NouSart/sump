@@ -416,8 +416,8 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 	st.mu.Unlock()
 
 	// 静默收尾：判定说了这一轮不必发出去（群里不该插话 / 没什么可说）。
-	// 不进 deliver、不关反射，但**文字要留在记录里**——门户里能看见"这一轮它想过什么"，人才能判断
-	// 静默得对不对。kind 用 reasoning（过程轨迹）而不是 assistant：它没有对任何人说过这句话。
+	// 不进 deliver、不跑复盘（复盘只在交付之后），但**文字要留在记录里**——门户里能看见"这一轮它想过什么"，
+	// 人才能判断静默得对不对。kind 用 reasoning（过程轨迹）而不是 assistant：它没有对任何人说过这句话。
 	if silent {
 		st.mu.Lock()
 		replaced := st.closed
@@ -426,6 +426,8 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 			s.logger.Printf("会话 %s：任务已被新消息取代，静默收尾也不再记录", st.cid)
 			return
 		}
+		// 静默也走到了收尾：判定在这里才落库（done → 完结；否则只改名）。
+		s.commitJudgement(st, st.trace)
 		s.record(st.cid, st.boss, st.trace, st.taskID, kindReasoning,
 			"assistant", "（静默：这一轮没有对任何人发出去）\n"+text, nil)
 		s.boardClose(st)
@@ -466,6 +468,9 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 	s.Fire(s.memoryName(), "store", protocol.StorePayload{
 		ConversationID: st.cid, Boss: st.boss, Role: "assistant", Content: text, Kind: "assistant", Seq: s.nextSeq(), TaskID: st.taskID,
 	}, st.trace, s.cfg.Name)
+	// 答复已经送达：这一轮的判定在这里落库（done → 完结；否则只改名）。
+	// 交付失败时不会走到这里——任务保持进行中，下一次事件/重试再说。
+	s.commitJudgement(st, st.trace)
 	s.boardClose(st)
 	if replaced {
 		s.logger.Printf("会话 %s：交付完成（在途已被新任务取代；答复已送达并记入记忆）", st.cid)

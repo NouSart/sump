@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -151,6 +152,52 @@ func TestSenderLabel(t *testing.T) {
 	}
 }
 
+// TestMessageMeta 钉住落库 meta 的形状：入口服务（qq 只记录路径）与推理侧（reasoner）
+// 必须写出同一个形状——正文标签给人看，meta 给程序读，两条路径不一致就等于"谁说过话"
+// 只有半份数据。空内容不写键：`images: []` 这种占位只会让读的人多判断一次。
+func TestMessageMeta(t *testing.T) {
+	sender := &Sender{Channel: "group", ID: "12345", GroupID: "67890", GroupSize: 3}
+
+	if got := MessageMeta(nil, nil, nil); got != nil {
+		t.Fatalf("什么都没有时应返回 nil（不写空 meta），实际 %+v", got)
+	}
+	// 只有发送者：不带空数组。
+	only := MessageMeta(sender, nil, nil)
+	if len(only) != 1 {
+		t.Fatalf("只该有 sender 一个键: %+v", only)
+	}
+	if only["sender"] != sender {
+		t.Fatalf("sender 应是原指针: %+v", only["sender"])
+	}
+	// 附件 id 有时才写。
+	full := MessageMeta(sender, []string{"img-1"}, []string{"file-1"})
+	raw, err := json.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := wire["sender"]; !ok {
+		t.Fatalf("meta 应带 sender: %s", raw)
+	}
+	if got := wire["images"].([]any); len(got) != 1 || got[0] != "img-1" {
+		t.Fatalf("images 不符: %s", raw)
+	}
+	if got := wire["files"].([]any); len(got) != 1 || got[0] != "file-1" {
+		t.Fatalf("files 不符: %s", raw)
+	}
+	// 只有附件没有发送者（门户这类单用户入口）：不写 sender 这个空键。
+	attachmentsOnly := MessageMeta(nil, []string{"img-2"}, nil)
+	if _, ok := attachmentsOnly["sender"]; ok {
+		t.Fatalf("没有 sender 时不该写这个键: %+v", attachmentsOnly)
+	}
+	if _, ok := attachmentsOnly["files"]; ok {
+		t.Fatalf("没有 files 时不该写这个键: %+v", attachmentsOnly)
+	}
+}
+
 // TestClampTaskName 钉住任务名的截断规则——它只有这一处实现，qq 直接落库与 reasoner 代写
 // 记忆都靠它；分叉成两种长度，同一个任务在两处就会有两个名字。
 func TestClampTaskName(t *testing.T) {
@@ -198,6 +245,22 @@ func TestSenderWireKeys(t *testing.T) {
 	}
 	if len(sender) != 8 {
 		t.Fatalf("sender 的线路键数量应为 8，实际 %d：%v", len(sender), keysOf(sender))
+	}
+
+	// 落库 meta 走 JSON：键名必须与线路一致（记忆记录是给人/程序读的另一条出口，
+	// 两套键名会让读的人猜"这是 Go 字段名还是线路名"）。
+	metaRaw, err := json.Marshal(MessageMeta(in.Sender, nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metaJSON map[string]map[string]any
+	if err := json.Unmarshal(metaRaw, &metaJSON); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"channel", "id", "name", "group_id", "group_name", "group_size", "owner", "mentioned"} {
+		if _, has := metaJSON["sender"][key]; !has {
+			t.Fatalf("JSON 里 sender 缺少键 %q（当前键：%v）", key, keysOf(metaJSON["sender"]))
+		}
 	}
 
 	// store 的任务名同样有线路键名（记忆服务是另一个进程，改名对两端都生效、往返测试抓不到）。

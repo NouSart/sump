@@ -7,6 +7,7 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"strings"
@@ -117,6 +118,22 @@ func TestUserMessageCarriesSenderLabel(t *testing.T) {
 	if saved.TaskName != "今天几点开会" {
 		t.Fatalf("task_name 应为正文首行，实际 %q", saved.TaskName)
 	}
+	// 结构化来源跟着记录走，形状与 qq「只记录」路径一致：正文标签给人看，meta 给程序读。
+	var meta struct {
+		Sender map[string]any `json:"sender"`
+	}
+	if err := json.Unmarshal([]byte(saved.Meta), &meta); err != nil {
+		t.Fatalf("user 记录的 meta 不是合法 JSON: %v（%q）", err, saved.Meta)
+	}
+	if meta.Sender == nil {
+		t.Fatalf("user 记录的 meta 应带结构化 sender: %q", saved.Meta)
+	}
+	if meta.Sender["name"] != "张三" || meta.Sender["id"] != "12345" {
+		t.Fatalf("meta.sender 不符: %+v", meta.Sender)
+	}
+	if n, _ := meta.Sender["group_size"].(float64); n != 12 {
+		t.Fatalf("meta.sender.group_size 应是扩散面 12: %+v", meta.Sender)
+	}
 	// 同一条也随上下文托管给记忆（store 与 recall 并发，两条路径都得给）。
 	recalls := mem.RecallContexts()
 	if len(recalls) == 0 {
@@ -176,6 +193,15 @@ func TestSilentCloseDoesNotDeliver(t *testing.T) {
 	}
 	if !strings.Contains(saved.Content, "静默") {
 		t.Fatalf("静默记录应说明没有发送: %q", saved.Content)
+	}
+
+	// 静默只影响「说不说」，不影响任务完结：判了 done 就照常落库（否则任务永远开着）。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(mem.Finished()) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if fin := mem.Finished(); len(fin) != 1 || fin[0].TaskID != "task-1" {
+		t.Fatalf("静默收尾也要把 done 落库: %+v", fin)
 	}
 }
 

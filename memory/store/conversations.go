@@ -27,8 +27,8 @@ const (
 
 // EnsureConversation 保证会话存在（幂等），并记下它的入口。
 //
-// 这是"建会话"的唯一入口：消息落库、任务开启都会先过这里，所以列表里不会出现
-// 有消息却没有会话的孤儿。title 非空且当前为空时填上（不覆盖已有的名字——
+// 显式建会话（带名字 / 入口）走这里；`Record` 落库时也会顺带幂等建行（见 touchConversation），
+// 所以列表里不会出现有消息却没有会话的孤儿。title 非空且当前为空时填上（不覆盖已有的名字——
 // 起名是件明确的事，不能靠"顺带"）。
 func (s *Store) EnsureConversation(id, title, entry string) error {
 	if id == "" {

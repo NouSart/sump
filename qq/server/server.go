@@ -1,6 +1,7 @@
 // qq 服务的核心：把 deliver 动作注册到服务骨架（注册 / 心跳 / 名册 /
-// 断线自愈 / 告别见 service 包），并桥接 QQ 私聊消息 → user_message 任务链（NapCat/OneBot 11 正向 WS）。
-// 零信任：仅主人私聊触发任务；群聊本批次未启用。
+// 断线自愈 / 告别见 service 包），并桥接 QQ 消息 → user_message 任务链（NapCat/OneBot 11 正向 WS）。
+// 零信任：私聊只认主人（其余礼貌拒绝且不触发任务）；群聊任何人都能进来，但入口只负责把
+// 「谁说的、群里多少人看得见、是不是主人、有没有@我」标清楚，说不说由模型按主人设置判断。
 package server
 
 import (
@@ -668,9 +669,7 @@ func (s *Server) storeQuietly(cid string, sender *protocol.Sender, text string, 
 			content = label + " " + content
 		}
 	}
-	meta, _ := json.Marshal(map[string]any{
-		"sender": sender, "images": ids, "files": fileIDs,
-	})
+	meta, _ := json.Marshal(protocol.MessageMeta(sender, ids, fileIDs))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, err := s.Call(ctx, s.memoryName(), "store", protocol.StorePayload{

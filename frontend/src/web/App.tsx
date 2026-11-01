@@ -556,13 +556,18 @@ export function App() {
 
   // onJumpTask：侧栏点任务。已经在会话里就跳过去；不在就先把它这一段取回来——
   // 进行中的任务走 task_resume（记忆服务会把它顶成当前任务），已完结的直接按 task_id 读历史。
+  // 只读会话（QQ）以及它的记录：**不能** resume（那是在改那扇门的当前任务），按 task_id 读，
+  // 并且必须带上会话号——不带就会读到门户自己会话里同 id 的任务（读不到，白跑一趟）。
   const onJumpTask = useCallback(
     (taskId: string) => {
       if (jumpToTask(taskId)) return;
       const task = tasks.find((x) => x.id === taskId);
       if (task === undefined) return;
       setPortalError(null);
-      const load = task.status === 'active' ? resumeTask(taskId) : fetchHistory(200, 0, taskId);
+      const canResume = !readOnly && task.status === 'active';
+      const load = canResume
+        ? resumeTask(taskId, activeCid)
+        : fetchHistory(200, 0, taskId, false, activeCid);
       void load
         .then((history) => {
           if (history.length === 0) {
@@ -574,7 +579,7 @@ export function App() {
           window.setTimeout(() => {
             jumpToTask(taskId);
           }, 0);
-          if (task.status === 'active') {
+          if (canResume) {
             void fetchTasks()
               .then(setTasks)
               .catch(() => undefined);
@@ -584,7 +589,7 @@ export function App() {
           setPortalError(`${t('ui.app.resumeFailed', '载入任务记录失败：')}${(err as Error).message}`);
         });
     },
-    [jumpToTask, tasks, t, pushToast],
+    [jumpToTask, tasks, t, pushToast, readOnly, activeCid],
   );
 
   // onSend：消息永远发进"当前任务"——进行中就直接续，没有进行中的就由记忆服务新开一个。

@@ -101,7 +101,9 @@ test('断开后自动重连并重注册', async (t) => {
   stub.closeConnections();
   await waitFor(() => !link.connected, 2000, '断开');
   await waitFor(() => stub.registrations.length === 2, 4000, '重连重注册');
-  assert.equal(link.connected, true);
+  // 注册被中心收到 ≠ 客户端已经处理完握手响应：这两件事之间隔着一次网络往返，
+  // 直接断言会随机失败（满负载跑整套时尤其明显）。等到"连接标记恢复"这个事实本身。
+  await waitFor(() => link.connected, 2000, '连接标记恢复');
 });
 
 test('注册一直失败：重连间隔逐步翻倍，不会每秒刷屏', async (t) => {
