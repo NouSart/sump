@@ -186,6 +186,88 @@ test('upload：超过门户上限 413，坏 base64 400，非 JSON 415', async (t
   assert.equal(wrongType.status, 415);
 });
 
+test('upload：缺 filename 400；空 mime 也照发（由 files 自己探测）', async (t) => {
+  const stub = await startStub({ ok: true, data: { id: 'f2', mime: 'image/png', size: 3 } });
+  t.after(stub.stop);
+  const handle = await startPortal({ roster: [{ name: 'files', addr: stub.url }] });
+  t.after(handle.close);
+
+  const noName = await postJSON(`http://${handle.addr}/api/upload`, { mime: 'text/plain', data: b64('hi') });
+  assert.equal(noName.status, 400);
+
+  // 浏览器给不出 mime 时不要把请求挡在门口：交给 files 的 DetectContentType。
+  const noMime = await postJSON(`http://${handle.addr}/api/upload`, { filename: 'a.bin', data: b64('hi') });
+  assert.equal(noMime.status, 200);
+  const sent = stub.jumps.at(-1)?.input as { mime: string };
+  assert.equal(sent.mime, '');
+  // 下游回的 mime 优先（它探测出来的才是真的）。
+  assert.equal(((await noMime.json()) as { mime: string }).mime, 'image/png');
+});
+
+test('upload：超过 1 MiB 的提示用 MB 计数；文件名过长被截断', async (t) => {
+  const stub = await startStub({ ok: true, data: { id: 'x', size: 1 } });
+  t.after(stub.stop);
+  const handle = await startPortal({ roster: [{ name: 'files', addr: stub.url }], uploadMaxBytes: 2 << 20 });
+  t.after(handle.close);
+
+  const big = await postJSON(`http://${handle.addr}/api/upload`, {
+    filename: 'big.bin',
+    mime: 'application/octet-stream',
+    data: b64('x'.repeat(3 << 20)),
+  });
+  assert.equal(big.status, 413);
+  // 撞的是请求体上限，也不能只说"请求体过大"：要讲清是文件太大、以及 base64 的膨胀。
+  assert.match(((await big.json()) as { error: string }).error, /文件太大：门户上限 2\.0 MB/);
+
+  // 刚过门户上限、还没撞请求体上限：走的是尺寸校验那条人话。
+  const justOver = await postJSON(`http://${handle.addr}/api/upload`, {
+    filename: 'over.bin',
+    mime: 'application/octet-stream',
+    data: b64('x'.repeat((2 << 20) + 1024)),
+  });
+  assert.equal(justOver.status, 413);
+  assert.match(((await justOver.json()) as { error: string }).error, /超过门户上限 2\.0 MB/);
+  assert.equal(stub.jumps.length, 0, '被门户挡下的请求不该打到下游');
+
+  const longName = `${'a'.repeat(250)}.txt`;
+  const ok = await postJSON(`http://${handle.addr}/api/upload`, {
+    filename: longName,
+    mime: 'text/plain',
+    data: b64('hi'),
+  });
+  assert.equal(ok.status, 200);
+  const name = ((await ok.json()) as { filename: string }).filename;
+  assert.equal(name.length, 201, '超过 200 字符要截断（末位是省略号）');
+  assert.ok(name.endsWith('…'));
+});
+
+test('message：附件清单形状不对整批拒（不猜、不静默丢）', async (t) => {
+  const stub = await startStub({ ok: true, data: {} });
+  t.after(stub.stop);
+  const handle = await startPortal({ roster: [{ name: 'reasoner', addr: stub.url }] });
+  t.after(handle.close);
+
+  const cases: { name: string; attachments: unknown }[] = [
+    { name: '不是数组', attachments: { kind: 'file', id: 'f1' } },
+    { name: '超过 10 个', attachments: Array.from({ length: 11 }, (_, i) => ({ kind: 'file', id: `f${String(i)}` })) },
+    { name: 'id 不合法', attachments: [{ kind: 'file', id: '../etc/passwd' }] },
+  ];
+  for (const c of cases) {
+    const res = await postJSON(`http://${handle.addr}/api/message`, { text: 'x', attachments: c.attachments });
+    assert.equal(res.status, 400, `${c.name} 应被拒`);
+  }
+  assert.equal(stub.jumps.length, 0, '被拒的消息不该打到 reasoner');
+
+  // 缺 filename / size：退回 id 当名字、不写大小段（不编造数据）。
+  const loose = await postJSON(`http://${handle.addr}/api/message`, {
+    text: 'x',
+    attachments: [{ kind: 'file', id: 'f1' }],
+  });
+  assert.equal(loose.status, 200);
+  const text = (stub.jumps.at(-1)?.input as { text: string }).text;
+  assert.equal(text, 'x\n\n[附件] f1（files:f1）——需要时用 files.read {id:"f1"} 读');
+});
+
 test('upload：下游拒绝时把它的原话转出去，且不谎报成功', async (t) => {
   const stub = await startStub({ ok: false, error: 'save: 文件超过 104857600 字节上限' });
   t.after(stub.stop);
@@ -214,6 +296,52 @@ test('upload：文件服务不在名册（下游不可达）→ 503', async (t) 
   });
   assert.equal(res.status, 503);
   assert.match(((await res.json()) as { error: string }).error, /未知目标服务/);
+});
+
+test('upload：下游回了个没有 id 的成功（形状不可用）→ 502', async (t) => {
+  const stub = await startStub({ ok: true, data: { size: 5 } });
+  t.after(stub.stop);
+  const handle = await startPortal({ roster: [{ name: 'files', addr: stub.url }] });
+  t.after(handle.close);
+  const res = await postJSON(`http://${handle.addr}/api/upload`, {
+    filename: 'a.txt',
+    mime: 'text/plain',
+    data: b64('hi'),
+  });
+  assert.equal(res.status, 502);
+  assert.match(((await res.json()) as { error: string }).error, /没有回 id/);
+});
+
+test('message：reasoner 拒绝时把原话转出去（400），不谎报受理', async (t) => {
+  const stub = await startStub({ ok: false, error: 'user_message: 会话忙，请稍后' });
+  t.after(stub.stop);
+  const handle = await startPortal({ roster: [{ name: 'reasoner', addr: stub.url }] });
+  t.after(handle.close);
+  const res = await postJSON(`http://${handle.addr}/api/message`, { text: 'hi' });
+  assert.equal(res.status, 400);
+  assert.match(((await res.json()) as { error: string }).error, /会话忙/);
+});
+
+test('message：小于 1 KiB 的附件按字节读数；没有大小就不写那一段', async (t) => {
+  const stub = await startStub({ ok: true, data: {} });
+  t.after(stub.stop);
+  const handle = await startPortal({ roster: [{ name: 'reasoner', addr: stub.url }] });
+  t.after(handle.close);
+
+  await postJSON(`http://${handle.addr}/api/message`, {
+    text: 'x',
+    attachments: [{ kind: 'file', id: 'f1', filename: 'a.txt', size: 512 }],
+  });
+  const withBytes = (stub.jumps.at(-1)?.input as { text: string }).text;
+  // 512 字节写成 "512 B"：换成 KB 会变成 "0.5 KB"，读起来像被截了。
+  assert.equal(withBytes, 'x\n\n[附件] a.txt（files:f1，512 B）——需要时用 files.read {id:"f1"} 读');
+
+  await postJSON(`http://${handle.addr}/api/message`, {
+    text: 'x',
+    attachments: [{ kind: 'file', id: 'f2', filename: 'b.txt' }],
+  });
+  const noSize = (stub.jumps.at(-1)?.input as { text: string }).text;
+  assert.equal(noSize, 'x\n\n[附件] b.txt（files:f2）——需要时用 files.read {id:"f2"} 读');
 });
 
 test('message：附件写成模型看得懂的一行，文件名里的换行被清掉', async (t) => {

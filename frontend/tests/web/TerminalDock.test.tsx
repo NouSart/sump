@@ -123,6 +123,25 @@ describe('TerminalDock', () => {
     assert.equal(screen.getAllByText(/once/).length, 1);
   });
 
+  it('stderr 与 error 都画成错误行，不混进正常输出', () => {
+    const updates = [update({ phase: 'failed', exitCode: 1, stdout: 'partial', stderr: 'boom', error: '进程被信号终止' })];
+    render(<TerminalDock open onClose={() => {}} onRun={async () => ({ itemId: 'sh-1' })} updates={updates} t={tZh} />);
+    assert.ok(screen.getByText('partial'));
+    assert.ok(screen.getByText('boom'));
+    assert.ok(screen.getByText('进程被信号终止'));
+    const errLine = screen.getByText('boom').closest('p');
+    assert.equal(errLine?.className, 'terminal-line is-err');
+  });
+
+  it('过程态（queued）不产生任何行：等待态由提交那一侧负责', () => {
+    const updates = [update({ phase: 'queued', final: false })];
+    const { container } = render(
+      <TerminalDock open onClose={() => {}} onRun={async () => ({ itemId: 'sh-1' })} updates={updates} t={tZh} />,
+    );
+    assert.equal(container.querySelectorAll('.terminal-line').length, 0);
+    assert.ok(screen.getByText(/终端还没有输出/));
+  });
+
   it('Esc 与关闭按钮都触发 onClose', () => {
     const onClose = vi.fn();
     render(<TerminalDock open onClose={onClose} onRun={async () => ({ itemId: 'x' })} updates={[]} t={tZh} />);

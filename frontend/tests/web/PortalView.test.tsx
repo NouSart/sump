@@ -69,13 +69,17 @@ describe('PortalView 重试入口', () => {
 
 describe('PortalView 附件', () => {
   it('选中文件后出现附件 chip，可移除', async () => {
-    const { container } = mount({});
+    const { container } = mount({
+      onUpload: async (file) => ({ kind: 'file', id: 'f-big', filename: file.name, mime: file.type, size: 3 << 20 }),
+    });
     const input = container.querySelector('input[type="file"]');
     assert.ok(input !== null);
     fireEvent.change(input, { target: { files: [new File(['hi'], '报告.txt', { type: 'text/plain' })] } });
     await waitFor(() => {
       assert.ok(screen.getByText('报告.txt'));
     });
+    // 大小读数按量级换单位：3 MiB 显示成 MB（KB 读不出量级）。
+    assert.ok(screen.getByText('3.0 MB'));
     fireEvent.click(screen.getByRole('button', { name: /移除附件/ }));
     await waitFor(() => {
       assert.equal(screen.queryByText('报告.txt'), null);
@@ -107,6 +111,63 @@ describe('PortalView 附件', () => {
     await waitFor(() => {
       assert.equal(screen.queryByText('a.txt'), null);
     });
+  });
+
+  it('上传中显示等待态，上传结束才出现 chip', async () => {
+    const { container } = mount({
+      onUpload: async (file) => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return { kind: 'file', id: 'f-slow', filename: file.name, mime: file.type, size: file.size };
+      },
+    });
+    const input = container.querySelector('input[type="file"]');
+    assert.ok(input !== null);
+    fireEvent.change(input, { target: { files: [new File(['hi'], 'slow.txt', { type: 'text/plain' })] } });
+    // 同步就能看到等待态：上传是异步的，但"正在传"这件事必须立刻告诉用户。
+    assert.ok(screen.getByText('上传中…'));
+    const chip = await screen.findByText('slow.txt');
+    assert.ok(chip);
+    assert.equal(screen.queryByText('上传中…'), null);
+  });
+
+  it('未连接时回形针不可点（连上传入口都没有意义）', () => {
+    const { container } = render(
+      <PortalView
+        connected={false}
+        messages={[]}
+        timers={[]}
+        approvals={[]}
+        onDecide={async () => undefined}
+        error={null}
+        onSend={async () => true}
+        onUpload={async (file) => ({ kind: 'file', id: 'x', filename: file.name, mime: file.type, size: 0 })}
+        onTerminal={async () => ({ itemId: 'sh' })}
+        terminalRuns={[]}
+        onOpenSettings={() => undefined}
+        tasks={[]}
+        workflowExpand="focus"
+        t={t}
+      />,
+    );
+    assert.equal(container.querySelector('input[type="file"]') !== null, true);
+    const attach = screen.getByRole('button', { name: '添加附件' }) as HTMLButtonElement;
+    assert.equal(attach.disabled, true);
+  });
+
+  it('没有文字也没有附件时，提交不会发出空消息', async () => {
+    const sent: string[] = [];
+    const { container } = mount({
+      onSend: async (text) => {
+        sent.push(text);
+        return true;
+      },
+    });
+    // 直接提交表单（绕过按钮的 disabled）：守的是 submit 自己那道闸。
+    const form = container.querySelector('form');
+    assert.ok(form !== null);
+    fireEvent.submit(form);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(sent, []);
   });
 
   it('上传失败时就地显示原因，不吞掉输入', async () => {

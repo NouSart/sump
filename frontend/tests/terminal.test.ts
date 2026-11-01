@@ -73,7 +73,10 @@ async function startStub(reply: { ok: boolean; data?: unknown; error?: string })
   };
 }
 
-async function startPortal(roster: { name: string; addr: string }[]): Promise<{ handle: FrontendHandle; stub: StubCenter }> {
+async function startPortal(
+  roster: { name: string; addr: string }[],
+  log: (m: string) => void = silent,
+): Promise<{ handle: FrontendHandle; stub: StubCenter }> {
   const stub = new StubCenter();
   const centerURL = await stub.start();
   stub.roster = { services: [{ name: 'frontend', addr: 'ws://127.0.0.1:9/ws' }, ...roster], revision: 7 };
@@ -92,7 +95,7 @@ async function startPortal(roster: { name: string; addr: string }[]): Promise<{ 
       shell: 'shell',
       trustedHosts: [],
     },
-    silent,
+    log,
   );
   await waitFor(() => handle.link.connected, 3000, '门户接入中心');
   return { handle, stub };
@@ -214,6 +217,175 @@ test('terminal：shell 不在名册（下游不可达）→ 503', async (t) => {
   const res = await postJSON(`http://${handle.addr}/api/terminal`, { command: 'echo hi' });
   assert.equal(res.status, 503);
   assert.match(((await res.json()) as { error: string }).error, /未知目标服务/);
+});
+
+test('terminal：命令超过 16 KiB 400；work_dir 原样带给 shell', async (t) => {
+  const stub = await startStub({ ok: true, data: { item_id: 'sh-3', phase: 'queued' } });
+  t.after(stub.stop);
+  const { handle, stub: center } = await startPortal([{ name: 'shell', addr: stub.url }]);
+  t.after(async () => {
+    await handle.close();
+    await center.stop();
+  });
+
+  const tooLong = await postJSON(`http://${handle.addr}/api/terminal`, { command: 'x'.repeat(16 * 1024 + 1) });
+  assert.equal(tooLong.status, 400);
+  assert.match(((await tooLong.json()) as { error: string }).error, /16 KiB/);
+  assert.equal(stub.jumps.length, 0);
+
+  const withDir = await postJSON(`http://${handle.addr}/api/terminal`, { command: 'pwd', work_dir: 'frontend' });
+  assert.equal(withDir.status, 200);
+  assert.deepEqual(stub.jumps.at(-1)?.input, { command: 'pwd', work_dir: 'frontend' });
+
+  // 空 work_dir 不塞进载荷（免得 shell 收到一个空字符串当目录）。
+  const emptyDir = await postJSON(`http://${handle.addr}/api/terminal`, { command: 'pwd', work_dir: '   ' });
+  assert.equal(emptyDir.status, 200);
+  assert.deepEqual(stub.jumps.at(-1)?.input, { command: 'pwd' });
+});
+
+test('terminal：report_result 缺 item_id 或 phase 都不认领', async (t) => {
+  const stub = await startStub({ ok: true, data: { item_id: 'sh-4', phase: 'queued' } });
+  t.after(stub.stop);
+  const { handle, stub: center } = await startPortal([{ name: 'shell', addr: stub.url }]);
+  t.after(async () => {
+    await handle.close();
+    await center.stop();
+  });
+
+  assert.equal((await fireReport(handle.addr, { phase: 'done' })).accepted, false);
+  assert.equal((await fireReport(handle.addr, { item_id: 'sh-4' })).accepted, false);
+  assert.equal((await fireReport(handle.addr, { item_id: '', phase: 'done' })).accepted, false);
+});
+
+test('terminal：终态没有输出时入账写「无输出」，超长输出被剪', async (t) => {
+  const stub = await startStub({ ok: true, data: { item_id: 'sh-5', phase: 'queued' } });
+  t.after(stub.stop);
+  const { handle, stub: center } = await startPortal([{ name: 'memory', addr: stub.url }]);
+  t.after(async () => {
+    await handle.close();
+    await center.stop();
+  });
+
+  await fireReport(handle.addr, { item_id: 'sh-5', phase: 'done', final: true, data: { command: 'true', exit_code: 0 } });
+  await waitFor(() => stub.jumps.some((j) => j.action === 'store'), 3000, '入账');
+  const empty = stub.jumps.find((j) => j.action === 'store')?.input as { content: string };
+  assert.equal(empty.content, '$ true\n（无输出，exit 0）');
+
+  const long = 'y'.repeat(9000);
+  await fireReport(handle.addr, {
+    item_id: 'sh-6',
+    phase: 'done',
+    final: true,
+    data: { command: 'big', exit_code: 0, stdout: long, truncated: true },
+  });
+  await waitFor(() => stub.jumps.filter((j) => j.action === 'store').length >= 2, 3000, '第二次入账');
+  const clipped = stub.jumps.filter((j) => j.action === 'store')[1]?.input as { content: string };
+  assert.ok(clipped.content.length < 5000, `入账内容要剪短，实际 ${String(clipped.content.length)} 字符`);
+  assert.match(clipped.content, /…（截断）/);
+});
+
+test('createTerminalHub：只留最近 keep 条，订阅可退订', async () => {
+  const { createTerminalHub } = await import('../src/server/portal.ts');
+  const hub = createTerminalHub(3);
+  const seen: string[] = [];
+  const off = hub.on((u) => {
+    seen.push(u.itemId);
+  });
+  for (const id of ['a', 'b', 'c', 'd']) {
+    hub.publish({
+      itemId: id,
+      phase: 'done',
+      command: 'x',
+      text: '',
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      error: '',
+      truncated: false,
+      timedOut: false,
+      durationMs: 0,
+      final: true,
+      at: 'now',
+    });
+  }
+  off();
+  hub.publish({
+    itemId: 'e',
+    phase: 'done',
+    command: 'x',
+    text: '',
+    exitCode: 0,
+    stdout: '',
+    stderr: '',
+    error: '',
+    truncated: false,
+    timedOut: false,
+    durationMs: 0,
+    final: true,
+    at: 'now',
+  });
+  assert.deepEqual(hub.recent().map((u) => u.itemId), ['c', 'd', 'e']);
+  assert.deepEqual(seen, ['a', 'b', 'c', 'd'], '退订后不再收到');
+});
+
+test('terminal：入账失败只记日志，终端照样显示（记忆不在名册）', async (t) => {
+  const stub = await startStub({ ok: true, data: { item_id: 'sh-7', phase: 'queued' } });
+  t.after(stub.stop);
+  const logs: string[] = [];
+  // 名册里没有 memory：入账必然失败——这是"日志兜底"的用法，不能让终端哑掉。
+  const { handle, stub: center } = await startPortal([{ name: 'shell', addr: stub.url }], (m) => {
+    logs.push(m);
+  });
+  t.after(async () => {
+    await handle.close();
+    await center.stop();
+  });
+
+  const events: { name: string; data: string }[] = [];
+  const sse = await openSSE(handle.addr, (name, data) => {
+    events.push({ name, data });
+  });
+  t.after(() => {
+    sse.close();
+  });
+  await waitFor(() => events.some((e) => e.name === 'status'), 3000, 'SSE 建立');
+
+  await fireReport(handle.addr, { item_id: 'sh-7', phase: 'done', final: true, data: { command: 'x', exit_code: 0 } });
+  await waitFor(() => events.some((e) => e.name === 'terminal'), 3000, '终端事件');
+  await waitFor(() => logs.some((m) => m.includes('终端结果入账失败')), 4000, '入账失败日志');
+  assert.match(logs.find((m) => m.includes('终端结果入账失败')) ?? '', /未知目标服务/);
+});
+
+test('terminal：过程态（approved）不算终态，也不入账', async (t) => {
+  const stub = await startStub({ ok: true, data: { item_id: 'sh-8', phase: 'queued' } });
+  t.after(stub.stop);
+  const { handle, stub: center } = await startPortal([{ name: 'shell', addr: stub.url }, { name: 'memory', addr: stub.url }]);
+  t.after(async () => {
+    await handle.close();
+    await center.stop();
+  });
+
+  const events: { name: string; data: string }[] = [];
+  const sse = await openSSE(handle.addr, (name, data) => {
+    events.push({ name, data });
+  });
+  t.after(() => {
+    sse.close();
+  });
+  await waitFor(() => events.some((e) => e.name === 'status'), 3000, 'SSE 建立');
+
+  await fireReport(handle.addr, { item_id: 'sh-8', phase: 'approved', final: false, data: { command: 'echo hi' } });
+  await waitFor(() => events.some((e) => e.name === 'terminal'), 3000, 'terminal 事件');
+  const update = JSON.parse(events.find((e) => e.name === 'terminal')?.data ?? '{}') as { final: boolean; phase: string };
+  assert.equal(update.phase, 'approved');
+  // 过程态被当成终态会立刻入账（而且终端会多画一条 exit 行）。
+  assert.equal(update.final, false);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(
+    stub.jumps.some((j) => j.to === 'memory' && j.action === 'store'),
+    false,
+    '过程态不该写进会话记录',
+  );
 });
 
 test('terminal：report_result 经 SSE 推给浏览器，形状坏的被拒', async (t) => {
