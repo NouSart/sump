@@ -15,7 +15,7 @@
 | 理解一次对话怎么流动、状态落在哪 | [concepts/agent-loop.md](concepts/agent-loop.md) |
 | 知道现在做到哪、下一步该证明什么 | [concepts/roadmap.md](concepts/roadmap.md) |
 | 把 MCP 接到远程 / 先做接入检查 | [guides/mcp-connect.md](guides/mcp-connect.md) |
-| 查某个服务的动作与设置项 | 服务目录的 README：[batch](../batch/README.md) / [embedding](../embedding/README.md) / [files](../files/README.md) / [frontend](../frontend/README.md) / [mcp](../mcp/README.md) / [memnet](../memory/memnet/README.md) / [shell](../shell/README.md) / [timer](../timer/README.md) |
+| 查某个服务的动作与设置项 | 服务页：[services/](services/)（images / qq / reasoner / settings-center / approval）；其余看服务目录的 README：[batch](../batch/README.md) / [embedding](../embedding/README.md) / [files](../files/README.md) / [frontend](../frontend/README.md) / [mcp](../mcp/README.md) / [memnet](../memory/memnet/README.md) / [shell](../shell/README.md) / [timer](../timer/README.md) |
 | 交 PR、跑测试、看提交规矩 | [../CONTRIBUTING.md](../CONTRIBUTING.md) |
 | 我是 AI 代理，先看红线 | [../AGENTS.md](../AGENTS.md) |
 | 接手团队待办 | [../TODO.md](../TODO.md) |
@@ -35,6 +35,7 @@
 | [concepts/roadmap.md](concepts/roadmap.md) | 想知道边界与顺序的人 | 有效 | 2026-10-30 |
 | [guides/add-a-service.md](guides/add-a-service.md) | 加新服务的人 | 有效 | 2026-10-30 |
 | [guides/mcp-connect.md](guides/mcp-connect.md) | 接远程 MCP 的人 | 有效 | 2026-10-30 |
+| [services/](services/) | 查某个服务的动作 / 设置项 / 数据 / 依赖 / 怎么测 | 有效 | 2026-11-01 |
 | [archive/v1-to-v2.md](archive/v1-to-v2.md) | 想追溯取舍的人 | 历史，勿据此开发 | 2026-10-30 |
 | [archive/progress-log.md](archive/progress-log.md) | 想查批次进度的人 | 历史 | 2026-10-30 |
 | [archive/mcp-acceptance-2026-10.md](archive/mcp-acceptance-2026-10.md) | 想查验收范围的人 | 历史快照 | 2026-10-30 |
