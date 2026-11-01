@@ -416,8 +416,8 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 	st.mu.Unlock()
 
 	// 静默收尾：判定说了这一轮不必发出去（群里不该插话 / 没什么可说）。
-	// 不进 deliver、不关反射，但**文字要留在记录里**——门户里能看见"这一轮它想过什么"，人才能判断
-	// 静默得对不对。kind 用 reasoning（过程轨迹）而不是 assistant：它没有对任何人说过这句话。
+	// 不进 deliver、不跑复盘（复盘只在交付之后），但**文字要留在记录里**——门户里能看见"这一轮它想过什么"，
+	// 人才能判断静默得对不对。kind 用 reasoning（过程轨迹）而不是 assistant：它没有对任何人说过这句话。
 	if silent {
 		st.mu.Lock()
 		replaced := st.closed

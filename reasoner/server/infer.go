@@ -352,7 +352,8 @@ func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in 
 
 	// 记一条用户消息（尽力送达；幂等与去重在记忆服务侧处理）。
 	// 任务名显式给：正文可能带着来源标注前缀，记忆侧从第一行推会推出一串标签。
-	s.recordTask(cid, "", env.Trace, "", "user", "user", body, nil, taskName)
+	// 结构化来源与附件 id 一并落库：与 qq「只记录」路径同一个形状（protocol.MessageMeta）。
+	s.recordTask(cid, "", env.Trace, "", "user", "user", body, protocol.MessageMeta(p.Sender, p.Images, p.Files), taskName)
 
 	// 用户说话了：解除停手，并把附注拼成前缀块（用户的话与系统附注在数据层是分开的）。
 	s.clearHold(cid)

@@ -313,15 +313,18 @@ type ProgressPayload struct {
 //
 // 这是附加信息不是权限判定：授权与否由模型按主人设置在上下文里判断，
 // 协议只保证它看到的事实是对的。
+//
+// json tag 与 msgpack 线路键保持一致：这条结构会原样落进记忆记录的 meta
+// （`protocol.MessageMeta`），两种编码用两套键名，读的人就得猜哪种是哪种。
 type Sender struct {
-	Channel   string `msgpack:"channel,omitempty"`    // private / group
-	ID        string `msgpack:"id,omitempty"`         // 发送者 id（QQ 号）
-	Name      string `msgpack:"name,omitempty"`       // 昵称或群名片（取不到就空）
-	GroupID   string `msgpack:"group_id,omitempty"`   // 群号（Channel=group 时有）
-	GroupName string `msgpack:"group_name,omitempty"` // 群名（取不到就空）
-	GroupSize int    `msgpack:"group_size,omitempty"` // 扩散面：这条消息多少人能看见（0 = 未知）
-	Owner     bool   `msgpack:"owner,omitempty"`      // 发送者是不是主人本人
-	Mentioned bool   `msgpack:"mentioned,omitempty"`  // 这条有没有点到智能体（群里的 @；私聊恒为真）
+	Channel   string `msgpack:"channel,omitempty" json:"channel,omitempty"`       // private / group
+	ID        string `msgpack:"id,omitempty" json:"id,omitempty"`                 // 发送者 id（QQ 号）
+	Name      string `msgpack:"name,omitempty" json:"name,omitempty"`             // 昵称或群名片（取不到就空）
+	GroupID   string `msgpack:"group_id,omitempty" json:"group_id,omitempty"`     // 群号（Channel=group 时有）
+	GroupName string `msgpack:"group_name,omitempty" json:"group_name,omitempty"` // 群名（取不到就空）
+	GroupSize int    `msgpack:"group_size,omitempty" json:"group_size,omitempty"` // 扩散面：这条消息多少人能看见（0 = 未知）
+	Owner     bool   `msgpack:"owner,omitempty" json:"owner,omitempty"`           // 发送者是不是主人本人
+	Mentioned bool   `msgpack:"mentioned,omitempty" json:"mentioned,omitempty"`   // 这条有没有点到智能体（群里的 @；私聊恒为真）
 }
 
 // Label 把来源标注渲染成一行**给人也给模型看**的标签，例如：
@@ -409,6 +412,28 @@ func ClampTaskName(name string) string {
 		return string(runes[:24]) + "…"
 	}
 	return line
+}
+
+// MessageMeta 把「谁说的 + 附件 id」整理成落库记录的结构化 meta（无内容时返回 nil）。
+//
+// 正文里的标签（Sender.Label）给人也给模型看，meta 留给程序读：入口服务直接落库（qq 的
+// 只记录路径）与推理侧代写记忆（reasoner）必须写出**同一个形状**——否则同一个群的两条记录
+// 一条有结构化来源、一条没有，"谁说过话"就变成半份数据。附件 id 只在有时才写，空数组不占位置。
+func MessageMeta(sender *Sender, images, files []string) map[string]any {
+	if sender == nil && len(images) == 0 && len(files) == 0 {
+		return nil
+	}
+	meta := map[string]any{}
+	if sender != nil {
+		meta["sender"] = sender
+	}
+	if len(images) > 0 {
+		meta["images"] = images
+	}
+	if len(files) > 0 {
+		meta["files"] = files
+	}
+	return meta
 }
 
 // UserMessagePayload 是 user_message（链入口）的 payload：用户消息文本 + 图片/文件引用 + 来源标注。

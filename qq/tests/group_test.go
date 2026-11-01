@@ -313,9 +313,12 @@ func TestGroupObserveOnlyRecords(t *testing.T) {
 	if saved.Payload.TaskName != "随便聊聊" {
 		t.Fatalf("任务名应是正文而不是标注: %q", saved.Payload.TaskName)
 	}
-	// meta 里留着结构化事实（界面以后可以直接画成标签，不必解析正文）。
+	// meta 里留着结构化事实（界面可以直接画成标签，不必解析正文）；没有附件就不写空数组。
 	if _, ok := saved.Meta["sender"].(map[string]any); !ok {
 		t.Fatalf("meta 应带结构化 sender: %+v", saved.Meta)
+	}
+	if _, ok := saved.Meta["images"]; ok {
+		t.Fatalf("纯文本消息不该写空的 images 键: %+v", saved.Meta)
 	}
 
 	time.Sleep(300 * time.Millisecond)
