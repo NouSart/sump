@@ -21,6 +21,7 @@
 | 接手团队待办 | [../TODO.md](../TODO.md) |
 | 查历史（旧设计、进度、验收快照） | [archive/](archive/) |
 | 查实验结论（LLM 判官 vs 规则等） | [../experiments/](../experiments/) |
+| 评测 harness 本身（不是模型） | [../evals/README.md](../evals/README.md) |
 
 ## 每篇的定位
 
@@ -37,6 +38,7 @@
 | [archive/v1-to-v2.md](archive/v1-to-v2.md) | 想追溯取舍的人 | 历史，勿据此开发 | 2026-10-30 |
 | [archive/progress-log.md](archive/progress-log.md) | 想查批次进度的人 | 历史 | 2026-10-30 |
 | [archive/mcp-acceptance-2026-10.md](archive/mcp-acceptance-2026-10.md) | 想查验收范围的人 | 历史快照 | 2026-10-30 |
+| [../evals/README.md](../evals/README.md) | 想给编排层打分的人 | 有效（首版，含已知红项） | 2026-11-01 |
 
 ## 文档的规矩
 
