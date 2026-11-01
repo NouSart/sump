@@ -15,6 +15,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,63 +42,87 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	code, _ := run(mutations, runOptions{root: root, skipSlow: *skipSlow, verbose: *verbose, out: os.Stdout})
+	if code != 0 {
+		os.Exit(code)
+	}
+}
 
-	var survived []string
-	killed := 0
-	skipped := 0
-	for _, m := range mutations {
-		if *skipSlow && m.slow {
-			fmt.Printf("跳过  %s\n", m.name)
-			skipped++
+// runOptions 是一次运行的输入（root 决定改哪棵树；out 决定打印到哪——测试里换成 buffer）。
+type runOptions struct {
+	root     string
+	skipSlow bool
+	verbose  bool
+	out      io.Writer
+}
+
+// runStats 是运行结果的计数（供测试断言，也供 main 决定退出码）。
+type runStats struct {
+	killed        int
+	skipped       int
+	survived      int // 存活 + 过期：两者都意味着"这条异变没被测试守住"
+	survivedNames []string
+}
+
+// run 跑一遍异变清单，返回退出码（0 = 全部杀死）与统计。
+func run(muts []mutation, opts runOptions) (int, runStats) {
+	out := opts.out
+	if out == nil {
+		out = io.Discard
+	}
+	var st runStats
+	for _, m := range muts {
+		if opts.skipSlow && m.slow {
+			fmt.Fprintf(out, "跳过  %s\n", m.name)
+			st.skipped++
 			continue
 		}
-		path := filepath.Join(root, filepath.FromSlash(m.file))
+		path := filepath.Join(opts.root, filepath.FromSlash(m.file))
 		orig, err := os.ReadFile(path)
 		if err != nil {
 			fatal(err)
 		}
 		if !strings.Contains(string(orig), m.old) {
 			// 异变定义与源码不同步：这本身就是缺陷（脚本会静默失效），记为存活。
-			fmt.Printf("过期  %s（%s 里找不到待替换片段，异变定义需要更新）\n", m.name, m.file)
-			survived = append(survived, m.name)
+			fmt.Fprintf(out, "过期  %s（%s 里找不到待替换片段，异变定义需要更新）\n", m.name, m.file)
+			st.survived++
+			st.survivedNames = append(st.survivedNames, m.name)
 			continue
 		}
 		mutated := strings.Replace(string(orig), m.old, m.new, 1)
 
-		code, out := runTest(root, m.pkg, path, mutated, string(orig))
+		code, testOut := runTest(opts.root, m.pkg, path, mutated, string(orig))
 		if code == 0 {
-			fmt.Printf("存活  %s（%s）\n", m.name, m.file)
-			survived = append(survived, m.name)
-			if *verbose {
-				fmt.Println(indent(out))
+			fmt.Fprintf(out, "存活  %s（%s）\n", m.name, m.file)
+			st.survived++
+			st.survivedNames = append(st.survivedNames, m.name)
+			if opts.verbose {
+				fmt.Fprintln(out, indent(testOut))
 			}
 		} else {
-			fmt.Printf("杀死  %s\n", m.name)
-			killed++
-			if *verbose {
-				fmt.Println(indent(out))
+			fmt.Fprintf(out, "杀死  %s\n", m.name)
+			st.killed++
+			if opts.verbose {
+				fmt.Fprintln(out, indent(testOut))
 			}
 		}
 	}
 
-	fmt.Printf("\n异变 %d 条：杀死 %d，存活 %d，跳过 %d\n", killed+len(survived), killed, len(survived), skipped)
-	if len(survived) > 0 {
-		fmt.Println("存活清单（测试太弱，需要补断言）：")
-		for _, s := range survived {
-			fmt.Println("  - " + s)
+	fmt.Fprintf(out, "\n异变 %d 条：杀死 %d，存活 %d，跳过 %d\n",
+		st.killed+st.survived, st.killed, st.survived, st.skipped)
+	if st.survived > 0 {
+		fmt.Fprintln(out, "存活清单（测试太弱，需要补断言）：")
+		for _, s := range st.survivedNames {
+			fmt.Fprintln(out, "  - "+s)
 		}
-		os.Exit(1)
+		return 1, st
 	}
+	return 0, st
 }
 
-// runTest 把变异写进文件 → 跑测试 → 无论结果如何都把原文件写回去。
-func runTest(root, pkg, path, mutated, orig string) (int, string) {
-	if err := os.WriteFile(path, []byte(mutated), 0o644); err != nil {
-		_ = os.WriteFile(path, []byte(orig), 0o644)
-		fatal(err)
-	}
-	defer func() { _ = os.WriteFile(path, []byte(orig), 0o644) }()
-
+// goTest 跑某个包的测试（root 为 evals 模块根）。测试里可以替换成戏台：
+// 一条真异变要跑几十秒，逐条验分类不值得等真的 go test。
+var goTest = func(root, pkg string) (int, string) {
 	cmd := exec.Command("go", "test", pkg, "-count=1")
 	cmd.Dir = root
 	out, err := cmd.CombinedOutput()
@@ -110,11 +135,27 @@ func runTest(root, pkg, path, mutated, orig string) (int, string) {
 	return 0, string(out)
 }
 
+// runTest 把变异写进文件 → 跑测试 → 无论结果如何都把原文件写回去（出错 / panic 也一样）。
+func runTest(root, pkg, path, mutated, orig string) (int, string) {
+	if err := os.WriteFile(path, []byte(mutated), 0o644); err != nil {
+		_ = os.WriteFile(path, []byte(orig), 0o644)
+		fatal(err)
+	}
+	defer func() { _ = os.WriteFile(path, []byte(orig), 0o644) }()
+
+	return goTest(root, pkg)
+}
+
 func moduleRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
+	return moduleRootFrom(dir)
+}
+
+// moduleRootFrom 从 dir 起向上找 evals 模块根（模块名叫 evals 的那个 go.mod）。
+func moduleRootFrom(dir string) (string, error) {
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 			if filepath.Base(dir) == "evals" {

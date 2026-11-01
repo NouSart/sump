@@ -45,6 +45,7 @@ param(
     [switch]$DryRun,
     [switch]$Detach,
     [switch]$Check,
+    [switch]$SourceOnly,
     [switch]$CheckDetail,
     [switch]$Watcher,
     [switch]$Serve,
@@ -355,6 +356,10 @@ function Start-DetachedReload {
     Write-Line '注意：重启会连同 reasoner / shell 一起换掉，这一轮对话会断开；门户重连后继续。' 'DarkGray'
     Write-Line '     结果看日志末尾，或过一两分钟刷新 http://127.0.0.1:9501/' 'DarkGray'
 }
+
+# -SourceOnly：只定义函数、不执行主流程。tests/ 里的脚本测试靠它 dot-source 之后
+# 直接调函数——「停服务时谁先谁后」「哪些进程算 SUMP」这类判断，只有把函数拿出来问才验得准。
+if ($SourceOnly) { return }
 
 # ── 主流程 ───────────────────────────────────────────────────────────────────
 # -Check：只体检前端，不重载。放在最前面，免得它跟 -Detach / 后台派发搅在一起，
