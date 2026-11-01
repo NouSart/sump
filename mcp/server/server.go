@@ -347,7 +347,7 @@ func (s *Server) callTool(ctx context.Context, req *mcp.CallToolRequest, b Bindi
 		}
 		return s.failure(phase, "backend outcome unknown; no automatic retry: "+err.Error())
 	}
-	result, err := b.DecodeOutput(raw, s.cfg.MaxOutputBytes/8)
+	result, err := b.DecodeOutput(raw, s.cfg.MaxOutputBytes/8, input)
 	if err != nil {
 		s.svc.Report("internal", "MCP adapter received an incompatible SUMP result")
 		return s.failure("failed", err.Error())

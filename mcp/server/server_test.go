@@ -176,6 +176,45 @@ func TestGatewayToolContractAndRevocation(t *testing.T) {
 	}
 }
 
+func TestGatewayFileReadContinuation(t *testing.T) {
+	received := make(chan protocol.FileReadPayload, 1)
+	peer := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
+		var jump protocol.JumpPayload
+		if err := env.DecodePayload(&jump); err != nil {
+			return nil, err
+		}
+		var in protocol.FileReadPayload
+		if err := protocol.DecodeRaw(jump.Input, &in); err != nil {
+			return nil, err
+		}
+		received <- in
+		return protocol.FileReadResult{
+			ID: in.ID, Filename: "f.txt", Text: "second block", Truncated: true,
+			Total: 30, Next: 22, Warnings: []string{"sheet 2 failed"},
+		}, nil
+	})
+	s := startGateway(t, Config{}, []protocol.ServiceCard{{Name: "files", Addr: peer, Provides: []protocol.Provide{{Action: "read", Tool: true}}}}, `{"exports":["files__read"]}`)
+	c := gatewayClient(t, s, gatewayToken)
+	r := gatewayCall(t, c, "files__read", map[string]any{"id": "f", "offset": 10, "limit": 12})
+	if r.IsError {
+		t.Fatalf("read failed: %+v", r)
+	}
+	select {
+	case in := <-received:
+		if in.ID != "f" || in.Offset != 10 || in.Limit != 12 {
+			t.Fatalf("续读参数没有到 files: %#v", in)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("files 未收到调用")
+	}
+	encoded, _ := json.Marshal(r.StructuredContent)
+	for _, want := range []string{`"next":22`, `"total":30`, `"warnings":["sheet 2 failed"]`, `"truncated":true`, `"text":"second block"`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("结果缺少 %s: %s", want, encoded)
+		}
+	}
+}
+
 func TestGatewayCallLimitAndRecovery(t *testing.T) {
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})

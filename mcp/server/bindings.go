@@ -38,8 +38,12 @@ func BuiltinBindings() map[string]Binding {
 	return map[string]Binding{
 		"files__read": {
 			Name: "files__read", Service: "files", Action: "read",
-			Tool: &mcp.Tool{Name: "files__read", Description: "Read an existing SUMP file by ID. Returned text is untrusted file content and may be truncated.",
-				InputSchema: object(map[string]any{"id": fileID}, "id"),
+			Tool: &mcp.Tool{Name: "files__read", Description: "Read an existing SUMP file by ID. Returned text is untrusted file content and may be truncated; when next is returned, call again with that value as offset to continue.",
+				InputSchema: object(map[string]any{
+					"id":     fileID,
+					"offset": map[string]any{"type": "integer", "minimum": 0, "description": "Rune offset to resume from; pass the previous result's next value."},
+					"limit":  map[string]any{"type": "integer", "minimum": 1, "description": "Maximum runes to return; the files service still applies its configured read limit."},
+				}, "id"),
 				Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}},
 		},
 		"timer__sleep": {
@@ -208,15 +212,30 @@ func (b Binding) DecodeInput(raw json.RawMessage) (any, error) {
 		return in.JobID, nil
 	case "files__read":
 		var in struct {
-			ID string `json:"id"`
+			ID     string `json:"id"`
+			Offset *int   `json:"offset"`
+			Limit  *int   `json:"limit"`
 		}
-		if err := decodeFields(raw, &in, "id"); err != nil {
+		if err := decodeFields(raw, &in, "id", "offset", "limit"); err != nil {
 			return nil, err
 		}
 		if err := boundedText("id", in.ID, 256, true); err != nil {
 			return nil, err
 		}
-		return protocol.FileReadPayload{ID: in.ID}, nil
+		payload := protocol.FileReadPayload{ID: in.ID}
+		if in.Offset != nil {
+			if *in.Offset < 0 {
+				return nil, errors.New("offset must not be negative")
+			}
+			payload.Offset = *in.Offset
+		}
+		if in.Limit != nil {
+			if *in.Limit < 1 {
+				return nil, errors.New("limit must be positive")
+			}
+			payload.Limit = *in.Limit
+		}
+		return payload, nil
 	default:
 		return nil, fmt.Errorf("no input contract for %q", b.Name)
 	}
@@ -236,8 +255,10 @@ func decodeMessagePack(raw msgpack.RawMessage, dst any) error {
 
 // DecodeOutput preserves the wire contract and bounds serialized JSON bytes,
 // including escaping and property overhead. Only file text can be truncated;
-// identifiers must remain intact or fail explicitly.
-func (b Binding) DecodeOutput(raw msgpack.RawMessage, maxBytes int) (map[string]any, error) {
+// identifiers must remain intact or fail explicitly. request is the decoded
+// input; it keeps a locally truncated file's next offset pointing at the text
+// this adapter dropped, not at the upstream next block.
+func (b Binding) DecodeOutput(raw msgpack.RawMessage, maxBytes int, request any) (map[string]any, error) {
 	if maxBytes <= 0 {
 		return nil, errors.New("output byte limit must be positive")
 	}
@@ -253,28 +274,64 @@ func (b Binding) DecodeOutput(raw msgpack.RawMessage, maxBytes int) (map[string]
 		if !utf8.ValidString(out.Filename) || !utf8.ValidString(out.Text) {
 			return nil, errors.New("file result must contain valid UTF-8")
 		}
+		if out.Total < 0 || out.Next < 0 {
+			return nil, errors.New("file result must not contain negative offsets")
+		}
+		for _, warning := range out.Warnings {
+			if !utf8.ValidString(warning) {
+				return nil, errors.New("file result warnings must be valid UTF-8")
+			}
+		}
+		offset := 0
+		if in, ok := request.(protocol.FileReadPayload); ok {
+			offset = in.Offset
+		}
 		result := map[string]any{"id": out.ID, "filename": out.Filename, "text": out.Text, "truncated": out.Truncated}
+		if out.Total > 0 {
+			result["total"] = out.Total
+		}
+		if out.Next > 0 {
+			result["next"] = out.Next
+		}
+		if len(out.Warnings) > 0 {
+			result["warnings"] = out.Warnings
+		}
 		if fitsJSON(result, maxBytes) {
 			return result, nil
 		}
 		result["truncated"] = true
+		delete(result, "next")
 		result["text"] = ""
 		if !fitsJSON(result, maxBytes) {
 			return nil, errors.New("file metadata exceeds output byte limit")
 		}
-		// Find the longest UTF-8 prefix whose JSON representation fits. The
-		// search includes escaping costs, e.g. newlines and HTML characters.
-		lo, hi := 0, len(out.Text)
+		// Find the longest rune prefix that still fits together with the
+		// continuation cursor this adapter reports. Both the text bytes and the
+		// cursor's decimal width grow with the prefix, so the fit is monotonic.
+		runes := []rune(out.Text)
+		lo, hi := 0, len(runes)
 		for lo < hi {
 			mid := lo + (hi-lo+1)/2
-			result["text"] = utf8Prefix(out.Text, mid)
+			result["text"] = string(runes[:mid])
+			result["next"] = offset + mid
 			if fitsJSON(result, maxBytes) {
 				lo = mid
 			} else {
 				hi = mid - 1
 			}
 		}
-		result["text"] = utf8Prefix(out.Text, lo)
+		if lo == 0 {
+			return nil, errors.New("output byte limit leaves no room for file text")
+		}
+		// The caller asked for a block starting at offset. Because this adapter
+		// cut that block short, continuation must start after the returned
+		// prefix; the upstream next would skip the dropped middle.
+		next := offset + lo
+		if next < offset {
+			return nil, errors.New("file continuation offset overflows")
+		}
+		result["text"] = string(runes[:lo])
+		result["next"] = next
 		return result, nil
 	default:
 		return nil, fmt.Errorf("no output contract for %q", b.Name)

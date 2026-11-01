@@ -116,7 +116,7 @@ func TestBindingFileOutputTruncatesSerializedUTF8(t *testing.T) {
 	source := protocol.FileReadResult{ID: "id", Filename: "资料.txt", Text: strings.Repeat("中🙂\n<>\"", 100)}
 	raw := packResult(t, source)
 	for _, budget := range []int{80, 100, 101, 512} {
-		out, err := binding.DecodeOutput(raw, budget)
+		out, err := binding.DecodeOutput(raw, budget, protocol.FileReadPayload{ID: "id"})
 		if err != nil {
 			t.Fatalf("budget %d: %v", budget, err)
 		}
@@ -137,16 +137,16 @@ func TestBindingFileOutputTruncatesSerializedUTF8(t *testing.T) {
 			t.Fatalf("truncated more text than necessary at budget %d", budget)
 		}
 	}
-	if _, err := binding.DecodeOutput(raw, 10); err == nil {
+	if _, err := binding.DecodeOutput(raw, 10, protocol.FileReadPayload{ID: "id"}); err == nil {
 		t.Fatal("metadata over budget was accepted")
 	}
 	plain := protocol.FileReadResult{ID: "id", Text: "content", Truncated: true}
-	out, err := binding.DecodeOutput(packResult(t, plain), 1024)
+	out, err := binding.DecodeOutput(packResult(t, plain), 1024, protocol.FileReadPayload{ID: "id"})
 	if err != nil || out["text"] != "content" || out["truncated"] != true {
 		t.Fatalf("upstream truncation lost: %#v, %v", out, err)
 	}
 	plain.Text = "\xff"
-	if _, err := binding.DecodeOutput(packResult(t, plain), 1024); err == nil {
+	if _, err := binding.DecodeOutput(packResult(t, plain), 1024, protocol.FileReadPayload{ID: "id"}); err == nil {
 		t.Fatal("invalid UTF-8 output accepted")
 	}
 }
@@ -162,5 +162,97 @@ func TestBindingSchemasAreIndependentAndExplicit(t *testing.T) {
 		if two[name].Tool.Description == "modified" {
 			t.Fatalf("%s shares mutable tool metadata", name)
 		}
+	}
+}
+
+func TestFileReadBindingInputContinuation(t *testing.T) {
+	binding := BuiltinBindings()["files__read"]
+	got, err := binding.DecodeInput([]byte(`{"id":"file","offset":12,"limit":34}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := got.(protocol.FileReadPayload)
+	if payload.ID != "file" || payload.Offset != 12 || payload.Limit != 34 {
+		t.Fatalf("续读参数未映射到协议 payload: %#v", payload)
+	}
+	zero, err := binding.DecodeInput([]byte(`{"id":"file","offset":0}`))
+	if err != nil || zero.(protocol.FileReadPayload).Offset != 0 {
+		t.Fatalf("offset=0 应等价于从头读: %#v, %v", zero, err)
+	}
+	for _, raw := range []string{
+		`{"id":"file","offset":-1}`,
+		`{"id":"file","offset":1.5}`,
+		`{"id":"file","offset":"1"}`,
+		`{"id":"file","offset":null}`,
+		`{"id":"file","limit":0}`,
+		`{"id":"file","limit":-1}`,
+		`{"id":"file","limit":true}`,
+		`{"id":"file","limit":null}`,
+	} {
+		if _, err := binding.DecodeInput([]byte(raw)); err == nil {
+			t.Errorf("accepted invalid continuation input %s", raw)
+		}
+	}
+}
+
+func TestFileReadBindingExposesContinuationAndCompleteness(t *testing.T) {
+	binding := BuiltinBindings()["files__read"]
+	source := protocol.FileReadResult{
+		ID: "id", Filename: "f.txt", Text: "text", Truncated: true,
+		Total: 4, Next: 2, Warnings: []string{"sheet 2 failed"},
+	}
+	out, err := binding.DecodeOutput(packResult(t, source), 1<<20, protocol.FileReadPayload{ID: "id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{
+		"id": "id", "filename": "f.txt", "text": "text", "truncated": true,
+		"total": 4, "next": 2,
+	} {
+		if out[key] != want {
+			t.Errorf("%s = %#v, 期望 %#v（完整结果 %#v）", key, out[key], want, out)
+		}
+	}
+	warnings, ok := out["warnings"].([]string)
+	if !ok || len(warnings) != 1 || warnings[0] != "sheet 2 failed" {
+		t.Fatalf("warnings 未透出: %#v", out["warnings"])
+	}
+}
+
+func TestFileReadBindingLocalCutMovesContinuation(t *testing.T) {
+	binding := BuiltinBindings()["files__read"]
+	source := protocol.FileReadResult{
+		ID: "id", Filename: "资料.txt", Text: strings.Repeat("中", 200),
+		Truncated: true, Total: 500, Next: 300,
+	}
+	request := protocol.FileReadPayload{ID: "id", Offset: 100, Limit: 200}
+	raw := packResult(t, source)
+
+	full, err := binding.DecodeOutput(raw, 1<<20, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full["next"] != 300 || full["total"] != 500 {
+		t.Fatalf("未裁剪的块应保留上游游标: %#v", full)
+	}
+
+	cut, err := binding.DecodeOutput(raw, 240, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := cut["text"].(string)
+	if text == "" || !strings.HasPrefix(source.Text, text) || cut["truncated"] != true {
+		t.Fatalf("本地裁剪结果不符: %#v", cut)
+	}
+	next, ok := cut["next"].(int)
+	if !ok || next != request.Offset+utf8.RuneCountInString(text) {
+		t.Fatalf("本地裁剪后的 next 应指向被裁掉的位置: %#v", cut)
+	}
+	if next == source.Next {
+		t.Fatal("本地裁剪后沿用上游 next 会跳过被裁掉的正文")
+	}
+	encoded, err := json.Marshal(cut)
+	if err != nil || len(encoded) > 240 {
+		t.Fatalf("裁剪结果超出字节预算: %d 字节, %v", len(encoded), err)
 	}
 }
