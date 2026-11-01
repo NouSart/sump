@@ -26,3 +26,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+
+# 编辑器统计（VS Code Counter 之类）——本地产物，不入库
+.VSCodeCounter/

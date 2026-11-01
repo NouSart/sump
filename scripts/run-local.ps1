@@ -28,7 +28,9 @@ param(
     [string]$Owner = '',
     [string]$LlmBase = 'https://api.deepseek.com',
     [string]$LlmKey = $env:DEEPSEEK_API_KEY,
-    [string]$LlmModel = 'deepseek-flash'
+    [string]$LlmModel = 'deepseek-flash',
+    # 只定义函数、不启动任何东西（tests/ 里的脚本测试用）：
+    [switch]$SourceOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,6 +72,8 @@ function Wait-Port([string]$Addr, [int]$TimeoutSec, $Proc = $null) {
     }
     return $false
 }
+
+if ($SourceOnly) { return }
 
 foreach ($a in @($CenterAddr, $MemoryAddr, $EmbeddingAddr, $ImageAddr, $FilesAddr, $QQAddr, $ApprovalAddr, $BatchAddr, $ShellAddr, $TimerAddr, $MCPAddr, $MCPHTTPAddr, $ReasonerAddr, $FrontendAddr)) {
     Assert-PortFree $a
