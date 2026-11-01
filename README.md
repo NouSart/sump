@@ -33,7 +33,7 @@ SUMP 是「服务的互联网」式智能体系统：每个能力是**独立进�
 
 | # | 限制 | 影响 / 现状 |
 | - | ---- | ----------- |
-| 1 | 门户没有文件上传入口 | 模型能 `files.save`（给 URL 入库）→ `read`，但「用户本地上传一个文件」还没有入口；临时替代：给 URL，或用 shell 把文件放到 `data/files` 后手工入库 |
+| 1 | 门户上传有上限，且只能是 JSON | 回形针可上传（图片进 `images`、其余进 `files`，模型随即能用 `images.fetch` / `files.read`）；但门户自己有一道 20 MiB 上限（`-upload-max-bytes` 可调），超过就拒——服务侧上限更宽（files 100 MiB / images 32 MiB）。请求体是 base64 的 JSON（保住"只收 application/json"那道跨站闸），所以 20 MiB 文件约 27 MiB 请求体 |
 | 2 | 取二进制内容会把上下文撑大 | `files.fetch` 不暴露给模型（返回整份 base64）；`images.fetch` 暴露，但默认返回**缩略图**（长边 ≤ max_side，默认 768），要看细节就用 `x1,y1,x2,y2`（原图像素）取那一块的原图——超大局部会自动等比缩小并在 `downscaled` 里说明；原图只有服务间调用能拿（`images.fetch_full`，不给模型） |
 | 3 | 语义召回需要模型文件 | 没有 `data/models/bge-small-zh-v1.5/` 时以 fake 后端启动，召回退化为 bigram |
 | 4 | qq 入口需要外部 NapCat | 不起 NapCat 就只有门户一个入口 |
@@ -41,6 +41,7 @@ SUMP 是「服务的互联网」式智能体系统：每个能力是**独立进�
 | 6 | 门户只有一个会话 | 会话身份固定为 `web:private:owner`，还没有多会话列表；任务板块的「会话 → 任务」目录目前只挂这一个 |
 | 7 | 审批档位对 PowerShell 不生效 | `auto_approve` 只在 bash 侧被读取（`engine.Tier()` 的唯一调用点），面板上改档位对 PowerShell 命令没有效果 —— [#31](https://github.com/NouSart/sump/issues/31) |
 | 8 | 每条命令的审批解析约 276ms | 每次评估都起一个 `pwsh` 子进程做 AST 解析（p50 276ms / p95 293ms）；它落在每条命令的必经路径上 —— [#33](https://github.com/NouSart/sump/issues/33) |
+| 9 | 门户终端不是 PTY | 输入框里的终端能真执行命令（经 shell，走同一套审批，结果把 `$ 命令 / 输出 / exit N` 写回会话记录），但 shell 只有 `run`：没有交互程序（vim / top）、没有 Ctrl+C、没有流式输出——输出在命令结束时一次到达 |
 
 ## 文档
 

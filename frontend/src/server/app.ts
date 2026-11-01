@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import type { WebSocketServer } from 'ws';
 import { createRequestHandler } from './api.ts';
 import { CenterLink } from './center.ts';
-import { createApprovalStore, createDeliverHub, createProgressHub, createTimerStore, parsePendingApproval, type TrustConfig } from './portal.ts';
+import { createApprovalStore, createDeliverHub, createProgressHub, createTerminalHub, createTimerStore, parsePendingApproval, PORTAL_CONVERSATION_ID, type TerminalUpdate, type TrustConfig } from './portal.ts';
 import { attachJumpEndpoint, parseTimerItems, portalProvides, portalSettings } from './service.ts';
 
 export const frontendDescription =
@@ -25,6 +25,14 @@ export interface FrontendConfig {
   lang: string;
   /** 审批服务名（第二层裁决由门户送回它）。 */
   approval: string;
+  /** 文件服务名：上传的文档转交给它（缺省 files）。 */
+  files?: string;
+  /** 图片服务名：上传的图片转交给它（缺省 images）。 */
+  images?: string;
+  /** 门户自己的上传上限（字节；缺省 20 MiB）。 */
+  uploadMaxBytes?: number;
+  /** shell 服务名：终端命令经它执行（缺省 shell）。 */
+  shell?: string;
   trustedHosts: string[];
 }
 
@@ -67,6 +75,29 @@ function urlHost(host: string): string {
   return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
 }
 
+// recordTerminal 把终端里跑过的命令写进会话记录。
+//
+// 终端与 agent 共享同一个工作现场：用户自己跑过什么，模型下一轮必须看得见，
+// 否则"共享终端"就只是个并排的窗口。写进记忆用 kind=tool_result——记忆服务对空 kind
+// 或 "user" 会 EnsureTask（凭空造一个任务），tool_result 只挂到最近那个任务上。
+function recordTerminal(link: CenterLink, memory: string, u: TerminalUpdate, log: (m: string) => void): void {
+  const clip = (s: string, max = 4096): string => (s.length > max ? `${s.slice(0, max)}…（截断）` : s);
+  const out = [clip(u.stdout.trim()), clip(u.stderr.trim()), clip(u.error.trim())].filter((s) => s !== '').join('\n');
+  const head = `$ ${u.command}`;
+  const content =
+    out === '' ? `${head}\n（无输出，exit ${String(u.exitCode)}）` : `${head}\n${out}${u.truncated ? '\n（输出已截断）' : ''}`;
+  void link
+    .jumpTo(
+      memory,
+      'store',
+      { conversation_id: PORTAL_CONVERSATION_ID, role: 'tool', kind: 'tool_result', content },
+      5000,
+    )
+    .catch((err: unknown) => {
+      log(`终端结果入账失败（不影响终端显示）: ${String(err)}`);
+    });
+}
+
 export async function startFrontend(cfg: FrontendConfig, log: (m: string) => void): Promise<FrontendHandle> {
   const { host, port } = splitAddr(cfg.addr);
   const server = createServer();
@@ -80,6 +111,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
 
   const hub = createDeliverHub();
   const progress = createProgressHub();
+  const terminal = createTerminalHub();
   const timers = createTimerStore();
   const approvals = createApprovalStore();
   const trust: TrustConfig = { boundAddr: addr, trustedHosts: cfg.trustedHosts };
@@ -114,12 +146,35 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
         timers: { current: timers.current, on: timers.on },
         approvals: { current: approvals.list, on: approvals.on, remove: approvals.remove },
         approval: cfg.approval,
+        files: cfg.files ?? 'files',
+        images: cfg.images ?? 'images',
+        uploadMaxBytes: cfg.uploadMaxBytes ?? 20 << 20,
+        shell: cfg.shell ?? 'shell',
+        terminal: { recent: terminal.recent, on: terminal.on },
         trust,
       },
       log,
     ),
   );
-  const wss: WebSocketServer = attachJumpEndpoint(server, '/ws', cfg.name, log, hub.publish, timers.apply, approvals.apply, (p) => { progress.publish(p); return true; }, trust);
+  const wss: WebSocketServer = attachJumpEndpoint(
+    server,
+    '/ws',
+    cfg.name,
+    log,
+    hub.publish,
+    timers.apply,
+    approvals.apply,
+    (p) => {
+      progress.publish(p);
+      return true;
+    },
+    (u) => {
+      terminal.publish(u);
+      if (u.final) recordTerminal(link, cfg.memory, u, log);
+      return true;
+    },
+    trust,
+  );
   link.start();
 
   // 冷启动兜一次：门户重启后 timer 不会主动重推在计时器，这里拉一次 list 补上。

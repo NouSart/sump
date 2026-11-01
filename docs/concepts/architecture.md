@@ -48,7 +48,7 @@ SUMP 是「服务的互联网」：每个服务是独立进程、独立数据库
 | batch | Go | 批处理：一次声明 N 项工作 + 并发度 + 唤醒时机；暂停可恢复、停止是终态；目标动作须显式声明 `Batchable` |
 | mcp | Go | 双向协议翻译：显式映射导出获准的原生能力、导入外部 MCP 工具；只登记自身，不自动传播下属能力 |
 | qq | Go | 把主人私聊消息（图先存 images）打成 `user_message` 发给 reasoner；实现 deliver 回发 |
-| frontend | TS | 用户交互门户（与 qq 同类）＋ 设置面板：提供 `deliver`（推给浏览器），自己跳 `user_message`；浏览器 HTTP JSON + SSE；单用户 + Host/Origin 栅栏 |
+| frontend | TS | 用户交互门户（与 qq 同类）＋ 设置面板：提供 `deliver`（推给浏览器）、`report_result`（终端命令的结果）；自己跳 `user_message`（转给 reasoner）、`files.save` / `images.save`（用户上传的附件）、`shell.run`（终端命令，仍走审批）；浏览器 HTTP JSON + SSE；单用户 + Host/Origin 栅栏 |
 | embedding | Python | 文本 → 向量（onnxruntime + tokenizers，CLS pooling + L2 归一）；动作 `embed`；fake 后端供测试与 CI |
 
 两个 Go **库**（不是服务）：`protocol/`（协议与载荷类型）、`service/`（服务骨架：注册 / 心跳 / 名册 / 重连 / 告别 / 设置接收）。根 `tests/` 是跨服务真进程端到端，不属于任何服务。
