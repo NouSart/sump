@@ -1,0 +1,1 @@
+{"id":"nodep-memory","category":"dependency","prompt":"记住：我喜欢乌龙茶。","tags":["dependency-absent","memory"],"budget":{"max_hops":6,"max_wall_ms":20000},"expect":[{"delivered":false},{"failure_notified":true}],"script":{"default":{"name":"never","reply":{"content":"不该走到这里。"}}}}

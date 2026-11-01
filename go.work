@@ -4,6 +4,7 @@ use (
 	./approval-integration
 	./approval
 	./batch
+	./evals
 	./protocol
 	./service
 	./reasoner
