@@ -440,9 +440,12 @@ export function createRequestHandler(
 
   // resumeTask 恢复一个未完结任务：把"当前任务"顶到它（下一条用户消息就落在这个任务里）。
   // 已完结的任务会被记忆服务明确拒绝——门户不自己判断任务能不能继续。
+  // 会话归属走**写入**边界（conversationFrom）：恢复是在改那个会话的当前任务指针，
+  // 门户只该改自己的会话；QQ 那种会话的记录看得到，但"下一步落哪个任务"归那扇门自己管。
   const resumeTask = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const body = asObject(await readJSON(req)) ?? {};
     const taskId = requiredString(body, 'task_id');
+    const conversationId = conversationFrom(body.conversation_id);
     let data: { task?: unknown; messages?: unknown } | undefined;
     try {
       data = (await center.jumpTo(cfg.memory, 'task_resume', { task_id: taskId })) as {
@@ -462,8 +465,9 @@ export function createRequestHandler(
   // 门户不自己判断能不能重试——把 conversation_id 交出去，由 reasoner 回答。
   const retryRound = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const body = asObject(await readJSON(req)) ?? {};
-    const rawCid = typeof body.conversation_id === 'string' ? body.conversation_id.trim() : '';
-    const conversationId = rawCid || PORTAL_CONVERSATION_ID;
+    // 形状校验（只读那套规则）：会话号会原样进跳转。能不能重试仍由 reasoner 判定。
+    // 别的入口的会话也允许重试：失败的轮次属于那个会话，重跑后的答复仍然由那扇门自己送回。
+    const conversationId = readableConversation(body.conversation_id);
     let data: { retried?: unknown } | undefined;
     try {
       data = (await center.jumpTo(cfg.reasoner, 'retry', { conversation_id: conversationId })) as {

@@ -321,6 +321,54 @@ test('消息 / 历史 / 任务都按会话走：读能看别的入口，写只�
   // 会话号不是随便什么都行：形状不对就明确拒绝，不把奇怪的东西传下去。
   const badShape = await fetch(`http://${handle.addr}/api/history?conversation_id=${encodeURIComponent('bad id!')}`);
   assert.equal(badShape.status, 400);
+
+  // 恢复任务是在改「那个会话的当前任务指针」——属于写，只认门户自己的会话。
+  const resumeForeign = await postJSON(`http://${handle.addr}/api/tasks/resume`, {
+    task_id: 'task-7',
+    conversation_id: 'qq:group:67890',
+  });
+  assert.equal(resumeForeign.status, 400);
+  assert.match(((await resumeForeign.json()) as { error: string }).error, /不属于门户/);
+  assert.ok(
+    memory.jumps.every((j) => j.action !== 'task_resume'),
+    '被拒的恢复不该跳到记忆服务',
+  );
+  const resumeOwn = await postJSON(`http://${handle.addr}/api/tasks/resume`, {
+    task_id: 'task-8',
+    conversation_id: custom,
+  });
+  assert.equal(resumeOwn.status, 200);
+  assert.equal(memory.jumps.at(-1)?.action, 'task_resume');
+  assert.equal((memory.jumps.at(-1)?.input as { task_id: string }).task_id, 'task-8');
+});
+
+// 重试：失败的那一轮可能发生在 QQ 会话里（入口自己才是那扇门），门户只是把请求转过去；
+// 但会话号仍然要过形状校验——它会被原样放进跳转。
+test('POST /api/retry：转给 reasoner，会话号要合法', async (t) => {
+  const reasoner = await startStub((action) => {
+    assert.equal(action, 'retry');
+    return { retried: true };
+  });
+  t.after(reasoner.stop);
+  const { handle, center } = await startPortal([{ name: 'reasoner', addr: reasoner.url }]);
+  t.after(async () => {
+    await handle.close();
+    await center.stop();
+  });
+
+  const ok = await postJSON(`http://${handle.addr}/api/retry`, { conversation_id: 'qq:group:67890' });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await ok.json(), { retried: true });
+  assert.equal((reasoner.jumps.at(-1)?.input as { conversation_id: string }).conversation_id, 'qq:group:67890');
+
+  // 不带会话号 = 门户自己的默认会话（老界面）。
+  await postJSON(`http://${handle.addr}/api/retry`, {});
+  assert.equal((reasoner.jumps.at(-1)?.input as { conversation_id: string }).conversation_id, DEFAULT_CONVERSATION_ID);
+
+  const before = reasoner.jumps.length;
+  const bad = await postJSON(`http://${handle.addr}/api/retry`, { conversation_id: 'bad id!' });
+  assert.equal(bad.status, 400);
+  assert.equal(reasoner.jumps.length, before, '形状不对的会话号不该跳出去');
 });
 
 test('终端：命令发起的会话被记住，补报按该会话推送并入账', async (t) => {

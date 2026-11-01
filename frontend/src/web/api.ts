@@ -219,7 +219,8 @@ export function sendMessage(
 
 // resumeTask 恢复一个未完结任务：记忆服务把它顶成当前任务，并把这一段记录带回来。
 // 已完结的任务由记忆服务明确拒绝——门户不自己判断能不能继续。
-export async function resumeTask(taskId: string): Promise<PortalMessage[]> {
+// conversationId 一并带上：任务属于哪个会话必须由门户说明，服务端才能确认"这一步不越界"。
+export async function resumeTask(taskId: string, conversationId = ''): Promise<PortalMessage[]> {
   const r = await request<{
     task?: unknown;
     messages?: {
@@ -235,7 +236,7 @@ export async function resumeTask(taskId: string): Promise<PortalMessage[]> {
   }>('/api/tasks/resume', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ task_id: taskId }),
+    body: JSON.stringify({ task_id: taskId, conversation_id: conversationId }),
   });
   const out: PortalMessage[] = [];
   for (const m of r.messages ?? []) {

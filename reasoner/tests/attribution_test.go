@@ -194,6 +194,15 @@ func TestSilentCloseDoesNotDeliver(t *testing.T) {
 	if !strings.Contains(saved.Content, "静默") {
 		t.Fatalf("静默记录应说明没有发送: %q", saved.Content)
 	}
+
+	// 静默只影响「说不说」，不影响任务完结：判了 done 就照常落库（否则任务永远开着）。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(mem.Finished()) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if fin := mem.Finished(); len(fin) != 1 || fin[0].TaskID != "task-1" {
+		t.Fatalf("静默收尾也要把 done 落库: %+v", fin)
+	}
 }
 
 // TestSilentVoidedByNewToolCall 静默随判定一起作废：同一轮里既判了静默、又派了工具，
