@@ -534,6 +534,24 @@ button { font: inherit; }
 .composer-row { display: flex; align-items: center; gap: var(--gap-2); }
 .grow { flex: 1; }
 
+/* ---------- 附件条（上传中的文件 / 已上传的 chip / 就地错误） ---------- */
+.composer-attachments { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-2); }
+.attach-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--accent-soft); color: var(--text);
+  font-size: 12px; line-height: 1.4;
+}
+.attach-chip.is-busy { background: transparent; color: var(--text-3); }
+.attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.attach-size { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.attach-remove {
+  border: 0; background: transparent; color: var(--text-3); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 2px;
+}
+.attach-remove:hover { color: var(--danger); }
+.attach-error { color: var(--danger); font-size: 12px; }
+
 /* ---------- 通用小按钮（图标按钮：方形、圆角、留白靠 grid 居中） ---------- */
 .chip {
   display: inline-flex; align-items: center; justify-content: center;
@@ -971,6 +989,9 @@ button { font: inherit; }
 .terminal-empty { margin: 0; color: var(--text-3); font-family: var(--font-ui); font-size: var(--fs-meta); }
 .terminal-line { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .terminal-line.is-note { color: var(--text-3); }
+.terminal-line.is-err { color: var(--danger); }
+.terminal-line.is-exit { color: var(--text-3); font-size: var(--fs-meta); }
+.terminal-error { margin: 0; color: var(--danger); font-size: var(--fs-meta); }
 .terminal-prompt { color: var(--accent); }
 .terminal-form {
   display: flex; align-items: center; gap: 6px;

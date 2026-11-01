@@ -2,6 +2,7 @@
 // 服务节点：把自己注册进设置中心（心跳 / 名册）；浏览器侧：HTTP JSON + SSE。
 // 用法：node dist/server/index.js [-addr 127.0.0.1:9501] [-center ws://127.0.0.1:9000/ws] [-name frontend]
 //        [-web dist/web] [-heartbeat-ms 15000] [-reasoner reasoner] [-memory memory]
+//        [-files files] [-images images] [-shell shell] [-upload-max-bytes 20971520]
 //        [-locales locales] [-lang zh-CN] [-trusted-hosts a.example,b.example]
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +43,10 @@ function resolveFlags(argv: string[]): FrontendConfig {
     throw new Error(`非法 -heartbeat-ms: ${raw['heartbeat-ms'] ?? ''}`);
   }
   const here = dirname(fileURLToPath(import.meta.url)); // dist/server
+  const uploadMaxBytes = raw['upload-max-bytes'] === undefined ? 20 << 20 : Number(raw['upload-max-bytes']);
+  if (!Number.isFinite(uploadMaxBytes) || uploadMaxBytes <= 0) {
+    throw new Error(`非法 -upload-max-bytes: ${raw['upload-max-bytes'] ?? ''}`);
+  }
   return {
     addr: raw.addr ?? '127.0.0.1:9501',
     centerURL: raw.center ?? 'ws://127.0.0.1:9000/ws',
@@ -53,6 +58,10 @@ function resolveFlags(argv: string[]): FrontendConfig {
     localesDir: raw.locales ?? defaultLocalesDir(),
     lang: raw.lang ?? 'zh-CN',
     approval: raw.approval ?? 'approval',
+    files: raw.files ?? 'files',
+    images: raw.images ?? 'images',
+    shell: raw.shell ?? 'shell',
+    uploadMaxBytes,
     trustedHosts: (raw['trusted-hosts'] ?? '')
       .split(',')
       .map((h) => h.trim())

@@ -6,7 +6,7 @@
 import type { Server as HttpServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { RawData } from 'ws';
-import { PORTAL_CONVERSATION_ID, checkRequestTrust, parsePendingApproval, parseProgress, type DeliverMessage, type PendingApprovalItem, type ProgressUpdate, type TimerItem, type TimerState, type TrustConfig } from './portal.ts';
+import { PORTAL_CONVERSATION_ID, checkRequestTrust, parsePendingApproval, parseProgress, parseTerminalUpdate, type DeliverMessage, type PendingApprovalItem, type ProgressUpdate, type TerminalUpdate, type TimerItem, type TimerState, type TrustConfig } from './portal.ts';
 import { type Provide, type Setting, TypeJump, decodeEnvelope, encodeEnvelope, frameBytes, newResponse } from './protocol.ts';
 
 // portalProvides 是注册时上报的动作清单——名册里因此看得见门户能收 deliver、计时快照、待审命令与任务实况。
@@ -17,6 +17,9 @@ export const portalProvides: Provide[] = [
   // progress 是任务进行中的实况（思考 / 命令 / 输出）：只影响"看不看得见中间过程"，
   // 不参与任何裁决。门户声明它，reasoner 才会推；没声明的入口方（比如 QQ）不会被骚扰。
   { action: 'progress', input: '{conversation_id, seq, kind, content, meta, at}', output: '回执（已登记实况）' },
+  // report_result 是**异步补报**的落点：门户在终端里执行命令时，shell 的结果从这里回来。
+  // 不声明它，终端就只能拿到"已受理"，永远看不到输出。
+  { action: 'report_result', input: '{item_id, phase, text, final, data}', output: '回执（accepted = 是否认领）' },
 ];
 
 // portalSettings 是门户声明的设置项：**全是只读项**——门户的参数是启动参数（改它要重启），
@@ -66,6 +69,7 @@ export function attachJumpEndpoint(
   onTimers: (s: TimerState) => boolean,
   onApproval: (item: PendingApprovalItem) => void,
   onProgress: (p: ProgressUpdate) => boolean,
+  onTerminal: (u: TerminalUpdate) => boolean,
   trust: TrustConfig,
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxInboundMessageBytes });
@@ -122,6 +126,12 @@ export function attachJumpEndpoint(
       if (jp?.action === 'progress') {
         const p = parseProgress(jp.input, log);
         const accepted = p !== null ? onProgress(p) : false;
+        ws.send(encodeEnvelope(newResponse(env, name, { ok: true, data: { accepted } })));
+        return;
+      }
+      if (jp?.action === 'report_result') {
+        const u = parseTerminalUpdate(jp.input, log);
+        const accepted = u !== null ? onTerminal(u) : false;
         ws.send(encodeEnvelope(newResponse(env, name, { ok: true, data: { accepted } })));
         return;
       }

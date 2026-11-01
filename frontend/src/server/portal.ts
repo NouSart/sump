@@ -68,6 +68,7 @@ export function createProgressHub(): ProgressHub {
 }
 
 // parseProgress 校验一条实况：形状不对就丢（单条丢弃不影响整轮对话）。
+
 export function parseProgress(raw: unknown, log: (m: string) => void): ProgressUpdate | null {
   const o = raw as Record<string, unknown> | null;
   if (o === null || typeof o !== 'object') return null;
@@ -85,6 +86,86 @@ export function parseProgress(raw: unknown, log: (m: string) => void): ProgressU
     content,
     meta: typeof o.meta === 'string' ? o.meta : '',
     at: typeof o.at === 'string' ? o.at : new Date().toISOString(),
+  };
+}
+
+// ---------- 终端（shell 补报 → 门户 → 浏览器）----------
+//
+// 终端与对话并行：用户在面板里直接敲命令，门户把它交给 shell（boss=自己），
+// shell 执行完经 report_result 把结果送回来，门户原样转给浏览器。
+// 审批不绕过——shell 照样找 approval，待审项的 item_id 就是这里的 itemId。
+
+export interface TerminalUpdate {
+  /** shell 的任务 id（也是审批项 id：终端据此显示"等待审批"）。 */
+  itemId: string;
+  /** queued / approved / rejected / done / failed。 */
+  phase: string;
+  command: string;
+  /** 补报的文字说明（审批阶段用得多：为什么拒、批准了）。 */
+  text: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  error: string;
+  truncated: boolean;
+  timedOut: boolean;
+  durationMs: number;
+  /** shell 说这条是终态（approved 是过程态）。 */
+  final: boolean;
+  at: string;
+}
+
+export interface TerminalHub {
+  publish(u: TerminalUpdate): void;
+  on(fn: (u: TerminalUpdate) => void): () => void;
+  /** 最近的几条（新 SSE 连接补发用：刷新页面还能看见刚跑完的输出）。 */
+  recent: () => TerminalUpdate[];
+}
+
+export function createTerminalHub(keep = 20): TerminalHub {
+  const listeners = new Set<(u: TerminalUpdate) => void>();
+  const buf: TerminalUpdate[] = [];
+  return {
+    publish: (u) => {
+      buf.push(u);
+      if (buf.length > keep) buf.splice(0, buf.length - keep);
+      for (const fn of [...listeners]) fn(u);
+    },
+    on: (fn) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    recent: () => [...buf],
+  };
+}
+
+// parseTerminalUpdate 校验一条 shell 补报：形状不对就丢（单条丢弃不影响别的命令）。
+// data 是 ShellEventData（msgpack RawMessage 在 JS 侧是嵌套对象）。
+export function parseTerminalUpdate(raw: unknown, log: (m: string) => void): TerminalUpdate | null {
+  const o = raw as { item_id?: unknown; phase?: unknown; text?: unknown; final?: unknown; data?: unknown } | null;
+  const itemId = typeof o?.item_id === 'string' ? o.item_id : '';
+  const phase = typeof o?.phase === 'string' ? o.phase : '';
+  if (itemId === '' || phase === '') {
+    log('report_result 形状不符（缺 item_id 或 phase，丢弃）');
+    return null;
+  }
+  const data = (o?.data ?? {}) as Record<string, unknown>;
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return {
+    itemId,
+    phase,
+    command: str(data.command),
+    text: str(o?.text),
+    exitCode: num(data.exit_code),
+    stdout: str(data.stdout),
+    stderr: str(data.stderr),
+    error: str(data.error),
+    truncated: data.truncated === true,
+    timedOut: data.timed_out === true,
+    durationMs: num(data.duration_ms),
+    final: o?.final === true,
+    at: new Date().toISOString(),
   };
 }
 

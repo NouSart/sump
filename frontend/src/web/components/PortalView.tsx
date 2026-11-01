@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import type { PendingApprovalView, PortalMessage, TaskView, TimerView } from '../types';
+import type { PendingApprovalView, PortalMessage, TaskView, TerminalRunUpdate, TimerView } from '../types';
+import type { UploadResult } from '../api';
 import { ApprovalStrip } from './ApprovalStrip';
 import type { Translate } from '../i18n';
 import { IconAnswer, IconOutput, IconPaperclip, IconSend, IconSliders, IconSparkle, IconTerminal, IconUser } from './icons';
@@ -14,8 +15,14 @@ interface Props {
   approvals: PendingApprovalView[];
   onDecide: (itemId: string, decision: 'allow' | 'deny') => Promise<void>;
   error: string | null;
-  /** 发送消息；返回是否被受理（false 时输入框保草稿）。 */
-  onSend: (text: string) => Promise<boolean>;
+  /** 发送消息；返回是否被受理（false 时输入框保草稿）。附件随消息一起发出。 */
+  onSend: (text: string, attachments: UploadResult[]) => Promise<boolean>;
+  /** 上传一个文件（门户转存到 files / images）；失败抛 Error，消息即提示。 */
+  onUpload: (file: File) => Promise<UploadResult>;
+  /** 终端里执行一条命令；返回受理句柄。 */
+  onTerminal: (command: string) => Promise<{ itemId: string }>;
+  /** 终端事件（SSE 推来）：按 itemId 归到对应命令上。 */
+  terminalRuns: TerminalRunUpdate[];
   onOpenSettings: () => void;
   /** 任务清单：面板按任务分节，节头要用它的名字与状态。 */
   tasks: TaskView[];
@@ -40,6 +47,13 @@ function useTick(active: boolean): number {
     };
   }, [active]);
   return now;
+}
+
+// humanSize 把字节数写成面板上的读数（与上传上限提示同一口径）。
+function humanSize(n: number): string {
+  if (n < 1024) return `${String(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // remainingText 从共用模块取用并重导出：本组件与测试都从这里取同一个实现。
@@ -169,9 +183,14 @@ function TraceDetails({ mode, children }: { mode: WorkflowExpand; children: Reac
 }
 // PortalView 是门户的对话面：消息流铺满整个面板，输入区（含待审/计时器/报错）作为浮层压在底部——
 // 所以输入框是悬浮的，消息能滚到它背后透出来。消息只有两条来源：本地回显，与 SSE 送来的 deliver。
-export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend, onOpenSettings, tasks, workflowExpand, retryable, onRetry, t }: Props) {
+export function PortalView({ connected, messages, timers, approvals, onDecide, error, onSend, onUpload, onTerminal, terminalRuns, onOpenSettings, tasks, workflowExpand, retryable, onRetry, t }: Props) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  // 附件：上传成功的留在列表里，随下一条消息一起发出去；上传中/失败各自有态。
+  const [attachments, setAttachments] = useState<UploadResult[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   // 终端 = 放大的输入框：开关只影响这一页，退出即收起。
   const [terminalOpen, setTerminalOpen] = useState(false);
   // 输入框未聚焦时不显示「说点什么…」：占位提示只在真正要打字时出现。
@@ -217,15 +236,45 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
   const submit = async (e: { preventDefault: () => void }): Promise<void> => {
     e.preventDefault();
     const value = text.trim();
-    if (value === '' || busy) return;
+    if (busy || uploading) return;
+    if (value === '' && attachments.length === 0) return;
     setBusy(true);
     setStick(true);
     try {
-      // 只有被受理才清空：没送出去的文字要留给用户重试。
-      if (await onSend(value)) setText('');
+      // 只有被受理才清空：没送出去的文字与附件要留给用户重试。
+      if (await onSend(value, attachments)) {
+        setText('');
+        setAttachments([]);
+        setUploadError(null);
+      }
     } finally {
       setBusy(false);
     }
+  };
+
+  // pickFiles 上传选中的文件：逐个来（单个失败不牵连其它），全部结束后清空 input，
+  // 否则同一个文件选第二次不会触发 change。
+  const pickFiles = async (files: FileList | null): Promise<void> => {
+    if (files === null || files.length === 0) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      for (const file of Array.from(files)) {
+        try {
+          const saved = await onUpload(file);
+          setAttachments((prev) => [...prev, saved]);
+        } catch (err) {
+          setUploadError(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current !== null) fileInputRef.current.value = '';
+    }
+  };
+
+  const dropAttachment = (id: string): void => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
   };
 
   return (
@@ -327,8 +376,34 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
             onClose={() => {
               setTerminalOpen(false);
             }}
+            onRun={onTerminal}
+            updates={terminalRuns}
             t={t}
           />
+          {/* 附件条：上传中的文件、已上传的 chip（可删）、以及就地显示的错误。
+              放在输入框上方，跟消息一起发出去；不弹 toast——失败就停在原地，用户能重试。 */}
+          {(attachments.length > 0 || uploading || uploadError !== null) && (
+            <div className="composer-attachments" role="status">
+              {attachments.map((a) => (
+                <span key={a.id} className="attach-chip" title={`${a.kind === 'image' ? 'images' : 'files'}:${a.id}`}>
+                  <span className="attach-name">{a.filename}</span>
+                  <span className="attach-size">{humanSize(a.size)}</span>
+                  <button
+                    type="button"
+                    className="attach-remove"
+                    aria-label={`${t('ui.portal.attachRemove', '移除附件')}: ${a.filename}`}
+                    onClick={() => {
+                      dropAttachment(a.id);
+                    }}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {uploading && <span className="attach-chip is-busy">{t('ui.portal.attachUploading', '上传中…')}</span>}
+              {uploadError !== null && <span className="attach-error">{uploadError}</span>}
+            </div>
+          )}
           <textarea
             className={terminalOpen ? 'composer-input is-compact' : 'composer-input'}
             aria-label={t('ui.portal.input', '消息')}
@@ -362,9 +437,28 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
             <button type="button" className="chip" onClick={onOpenSettings} aria-label={t('ui.settings.title', '设置')} title={t('ui.settings.title', '设置')}>
               <IconSliders />
             </button>
-            <button type="button" className="chip" disabled aria-label={t('ui.portal.attach', '添加附件')} title={t('ui.portal.attachSoon', '附件上传（下一步）')}>
+            <button
+              type="button"
+              className="chip"
+              disabled={!connected || uploading}
+              aria-label={t('ui.portal.attach', '添加附件')}
+              title={t('ui.portal.attach', '添加附件')}
+              onClick={() => {
+                fileInputRef.current?.click();
+              }}
+            >
               <IconPaperclip />
             </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              aria-label={t('ui.portal.attach', '添加附件')}
+              onChange={(e) => {
+                void pickFiles(e.target.files);
+              }}
+            />
             <button
               type="button"
               className={terminalOpen ? 'chip is-on' : 'chip'}
@@ -384,7 +478,7 @@ export function PortalView({ connected, messages, timers, approvals, onDecide, e
               aria-label={t('ui.portal.send', '发送')}
               aria-busy={busy}
               title={t('ui.portal.sendHint', '发送（Enter）')}
-              disabled={!connected || busy || text.trim() === ''}
+              disabled={!connected || busy || uploading || (text.trim() === '' && attachments.length === 0)}
             >
               <IconSend />
             </button>

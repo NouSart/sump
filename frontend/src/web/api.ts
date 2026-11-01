@@ -109,12 +109,65 @@ export async function resetSetting(service: string, key: string): Promise<Servic
   return r.services ?? [];
 }
 
+/** 附件描述：/api/upload 的返回值，发送消息时原样带回。 */
+export interface UploadResult {
+  kind: 'image' | 'file';
+  id: string;
+  filename: string;
+  mime: string;
+  size: number;
+}
+
+// uploadFile 把浏览器选的文件交给门户转存（门户 → files/images，不经过模型）。
+// 用 JSON + base64：与其余接口同一条路，保住"只收 application/json"这道跨站闸。
+export async function uploadFile(file: File): Promise<UploadResult> {
+  const data = await readAsBase64(file);
+  return request<UploadResult>('/api/upload', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ filename: file.name, mime: file.type, data }),
+  });
+}
+
+// readAsBase64 读成不带 data: 前缀的标准 base64（门户只认这个形状）。
+function readAsBase64(file: File): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => { reject(new Error('读取文件失败')); };
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// runTerminalCommand 让门户把命令交给 shell（boss=门户）。返回的只是**受理回执**：
+// 执行与审批都在后台，输出经 SSE 'terminal' 事件回来（按 itemId 对应）。
+export function runTerminalCommand(command: string): Promise<{ itemId: string; phase: string }> {
+  return request<{ itemId: string; phase: string }>('/api/terminal', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ command }),
+  });
+}
+
 // sendMessage 把用户消息交给门户——只等**受理回执**，最终回答由 deliver 经 SSE 送回来。
-export function sendMessage(text: string): Promise<{ conversationId: string }> {
+export function sendMessage(text: string, attachments: UploadResult[] = []): Promise<{ conversationId: string }> {
+  const body: Record<string, unknown> = { text };
+  if (attachments.length > 0) {
+    body.attachments = attachments.map((a) => ({
+      kind: a.kind,
+      id: a.id,
+      filename: a.filename,
+      size: a.size,
+    }));
+  }
   return request<{ conversationId: string }>('/api/message', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(body),
   });
 }
 

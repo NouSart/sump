@@ -82,6 +82,23 @@ export interface RowStatus {
   error?: string;
 }
 
+// TerminalRunUpdate 是终端一条命令的运行状态（门户 SSE 'terminal' 事件）：
+// phase 走 shell 的词汇（queued / approved / rejected / done / failed），final 表示终态。
+export interface TerminalRunUpdate {
+  itemId: string;
+  phase: string;
+  command: string;
+  text: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  error: string;
+  truncated: boolean;
+  timedOut: boolean;
+  durationMs: number;
+  final: boolean;
+  at: string;
+}
 export interface ServiceSettingsView {
   service: string;
   settings?: SettingViewData[];

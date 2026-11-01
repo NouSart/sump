@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { decideApproval, fetchHistory, fetchOverview, fetchTasks, parseMeta, resetSetting, retryRound, resumeTask, sendMessage, setSetting } from './api';
+import { decideApproval, fetchHistory, fetchOverview, fetchTasks, parseMeta, resetSetting, retryRound, resumeTask, runTerminalCommand, sendMessage, setSetting, uploadFile, type UploadResult } from './api';
 import { PortalView } from './components/PortalView';
 import { MessageCards } from './components/MessageCards';
 import { buildFeed } from './messageFeed';
@@ -23,6 +23,7 @@ import type {
   ServiceSettingsView,
   SettingsEventViewData,
   TaskView,
+  TerminalRunUpdate,
   TimerView,
 } from './types';
 
@@ -88,6 +89,8 @@ export function App() {
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [timers, setTimers] = useState<TimerView[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
+  // 终端事件按到达顺序留最近 40 条：够把刚跑完的几条对上，不当地址簿用。
+  const [terminalRuns, setTerminalRuns] = useState<TerminalRunUpdate[]>([]);
   const [portalError, setPortalError] = useState<string | null>(null);
   const pendingKeysRef = useRef(new Set<string>());
   const rosterRevRef = useRef(-1);
@@ -229,6 +232,12 @@ export function App() {
     // 待审命令：approval 挂起后推来的**全量列表**（新到、已裁决、过期都在里面），直接覆盖。
     es.addEventListener('approvals', (ev) => {
       setApprovals(JSON.parse((ev as MessageEvent).data) as PendingApprovalView[]);
+    });
+    // 终端：shell 的补报（审批结果 / 执行输出 / 退出码）——只增不改，按 itemId 归到那条命令。
+    es.addEventListener('terminal', (ev) => {
+      const d = JSON.parse((ev as MessageEvent).data) as TerminalRunUpdate;
+      if (typeof d.itemId !== 'string' || typeof d.phase !== 'string') return;
+      setTerminalRuns((prev) => [...prev, d].slice(-40));
     });
     return () => es.close();
   }, []);
@@ -414,20 +423,24 @@ export function App() {
   // 返回值 = 是否被受理：未被受理时撤掉本地回显（界面不该显示一条其实没送出的消息），
   // 并把草稿留在输入框里让用户重试。
   const onSend = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (text: string, attachments: UploadResult[]): Promise<boolean> => {
       setPortalError(null);
       // 本地先回显（受理回执只说明消息已交给 reasoner，不代表已有回复）。
+      // 附件在回显里也写成同一行说明：界面上看到的就是模型看到的那句话。
+      const shown = [text, ...attachments.map((a) => `[附件] ${a.filename}（${a.kind === 'image' ? 'images' : 'files'}:${a.id}）`)]
+        .filter((s) => s !== '')
+        .join('\n\n');
       const at = new Date().toISOString();
       const echo: PortalMessage = {
         author: 'user',
-        text,
+        text: shown,
         at,
         taskId: currentTask?.id ?? '',
         id: nextLocalMessageID(),
       };
       setMessages((prev) => appendMessage(prev, echo));
       try {
-        await sendMessage(text);
+        await sendMessage(text, attachments);
       } catch (err) {
         setMessages((prev) => prev.filter((m) => m !== echo));
         setPortalError(`${t('ui.app.undelivered', '未送达：')}${(err as Error).message}`);
@@ -581,6 +594,9 @@ export function App() {
             onDecide={onDecide}
             error={portalError}
             onSend={onSend}
+            onUpload={uploadFile}
+            onTerminal={runTerminalCommand}
+            terminalRuns={terminalRuns}
             onOpenSettings={() => {
               // 每次进设置页都回门户默认页（除非之后在页内亲手点了别的服务）。
               selectedByUserRef.current = false;
