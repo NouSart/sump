@@ -392,26 +392,6 @@ WHERE item_id = ? AND status IN (?, ?) ORDER BY seq`, itemID, protocol.BatchItem
 	return out, rows.Err()
 }
 
-// ItemStatuses 返回某任务各项的状态（调度与汇总用，不含内容）。
-func (s *Store) ItemStatuses(itemID string) ([]Item, error) {
-	rows, err := s.db.Query(`SELECT seq, tag, is_key, status, error, ms FROM items WHERE item_id = ? ORDER BY seq`, itemID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []Item
-	for rows.Next() {
-		var it Item
-		var key int
-		if err := rows.Scan(&it.Seq, &it.Tag, &key, &it.Status, &it.Error, &it.MS); err != nil {
-			return nil, err
-		}
-		it.Key = key != 0
-		out = append(out, it)
-	}
-	return out, rows.Err()
-}
-
 // List 按阶段列任务（"" = 全部），新的在前。
 func (s *Store) List(phase, caller string, limit int) ([]Job, error) {
 	where := "1=1"

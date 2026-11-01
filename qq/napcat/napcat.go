@@ -300,10 +300,3 @@ func (c *Client) dropConn() {
 		}
 	}
 }
-
-// Connected 报告当前是否已连接。
-func (c *Client) Connected() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.conn != nil
-}
