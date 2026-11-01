@@ -136,6 +136,15 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "shared_forget", Input: "{session_id?, task_id?}（删共享物；不暴露给模型）", Output: "{sessions, tasks}"},
 			{Action: "conversation_open", Input: "{id, title?, entry?}（幂等建会话；不暴露给模型）", Output: "{conversation}"},
 			{Action: "conversation_archive", Input: "{id, archived}（归档 = 只读；不暴露给模型）", Output: "{conversation}"},
+			// 任务面：reasoner 与门户按名字调用这些（`task_finish` / `task_resume` 就在交付与恢复路径上）。
+			// 不声明它们的后果是"协议面看不到"：第三方按名册实现 memory 时，永远不知道要实现它们。
+			{Action: "task_current", Input: "{conversation_id}", Output: "{task?}（最近活跃的 active 任务；没有就是空）"},
+			{Action: "task_open", Input: "{conversation_id, name}", Output: "{task}"},
+			{Action: "task_finish", Input: "{task_id, name?}", Output: "{task}（status=done，之后只读）"},
+			{Action: "task_rename", Input: "{task_id, name}", Output: "{task}"},
+			{Action: "task_resume", Input: "{task_id}", Output: "{task, messages[]}（把未完结任务顶成当前，记录一并带走）"},
+			{Action: "task_list", Input: "{conversation_id, limit?}", Output: "{tasks[]}（最近活跃在前）"},
+			{Action: "forget", Input: "{id}（长期记忆条目 id）", Output: "{id}（删掉一条不再对的记忆）"},
 		},
 		Logger: logger,
 	})
