@@ -7,7 +7,19 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import type { CenterEvent, CenterLink } from './center.ts';
 import { RemoteError } from './center.ts';
-import { PORTAL_CONVERSATION_ID, checkRequestTrust, type DeliverMessage, type PendingApprovalItem, type ProgressUpdate, type TerminalUpdate, type TimerItem, type TrustConfig } from './portal.ts';
+import {
+  DEFAULT_CONVERSATION_ID,
+  PORTAL_CONVERSATION_ID,
+  checkRequestTrust,
+  isPortalConversationId,
+  newPortalConversationId,
+  type DeliverMessage,
+  type PendingApprovalItem,
+  type ProgressUpdate,
+  type TerminalUpdate,
+  type TimerItem,
+  type TrustConfig,
+} from './portal.ts';
 import type { RosterPayload, ServiceSettings, SettingsResult } from './protocol.ts';
 
 export interface ApiConfig {
@@ -47,7 +59,12 @@ export interface ApiConfig {
   /** shell 服务名：终端命令经它执行（仍走审批）。 */
   shell: string;
   /** 终端事件订阅（report_result → SSE）；recent 给新连接补发最近几条。 */
-  terminal: { recent: () => TerminalUpdate[]; on: (fn: (u: TerminalUpdate) => void) => () => void };
+  terminal: {
+    recent: () => TerminalUpdate[];
+    on: (fn: (u: TerminalUpdate) => void) => () => void;
+    /** 记下"这条命令是哪个会话发起的"：补报里没有会话 id，只能发起时记住。 */
+    rememberOwner: (itemId: string, conversationId: string) => void;
+  };
   /** 浏览器信任栅栏的放行范围。 */
   trust: TrustConfig;
 }
@@ -147,6 +164,38 @@ function requiredString(body: Record<string, unknown>, field: string): string {
   }
   return v;
 }
+
+// conversationFrom 解析请求里的会话：缺省 = 默认会话；只接受门户自己的会话。
+//
+// 这是**写入**边界，不是格式检查：门户能用 HTTP 指定 conversation_id，
+// 不设限就能借它往 qq:private:* 那类会话里塞消息（冒充别人说话）。
+function conversationFrom(raw: unknown): string {
+  const id = typeof raw === 'string' ? raw.trim() : '';
+  if (id === '') return DEFAULT_CONVERSATION_ID;
+  if (!isPortalConversationId(id)) {
+    throw new HttpError(400, `会话 ${id} 不属于门户`);
+  }
+  return id;
+}
+
+// readableConversation 解析**只读**请求里的会话：任何入口的会话都能看（缺省 = 默认会话）。
+//
+// 为什么读比写宽：QQ 里的对话本来就是这台机器的主人自己的对话，门户是他自己开着的界面——
+// 「在门户里看 QQ 里发生了什么」正是它该干的事。写仍然只限门户自己的会话：
+// 回复走哪扇门回哪扇门，门户不替 QQ 说话。
+//
+// 只做形状校验：会话号会原样进跳转，拒绝空白与控制字符，避免把奇怪的东西传下去。
+function readableConversation(raw: unknown): string {
+  const id = typeof raw === 'string' ? raw.trim() : '';
+  if (id === '') return DEFAULT_CONVERSATION_ID;
+  if (!/^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/.test(id)) {
+    throw new HttpError(400, `会话标识不合法: ${id}`);
+  }
+  return id;
+}
+
+// ConvRow 是会话列表里的一行：记忆服务给的字段原样保留，再补一个 readonly 标记。
+type ConvRow = Record<string, unknown> & { id: string; readonly: boolean };
 
 /** 上传附件的描述：浏览器上传成功后拿到，发送消息时原样带回来。 */
 interface AttachmentRef {
@@ -272,12 +321,13 @@ export function createRequestHandler(
       throw new HttpError(400, 'text 必填（或有附件）');
     }
     const text = [rawText, ...attachments.map((a) => attachmentLine(a))].filter((s) => s !== '').join('\n\n');
+    const conversationId = conversationFrom(body.conversation_id);
     try {
-      await center.jumpTo(cfg.reasoner, 'user_message', { text, conversation_id: PORTAL_CONVERSATION_ID });
+      await center.jumpTo(cfg.reasoner, 'user_message', { text, conversation_id: conversationId });
     } catch (err) {
       throw mapCenterError(err);
     }
-    sendJSON(res, 200, { ok: true, conversationId: PORTAL_CONVERSATION_ID });
+    sendJSON(res, 200, { ok: true, conversationId });
   };
 
   // upload 把浏览器选的文件转交给文件 / 图片服务。
@@ -351,6 +401,7 @@ export function createRequestHandler(
       throw new HttpError(400, '命令超过 16 KiB（shell 侧同样会拒）');
     }
     const workDir = typeof body.work_dir === 'string' ? body.work_dir.trim() : '';
+    const conversationId = conversationFrom(body.conversation_id);
     let receipt: { item_id?: unknown; phase?: unknown } | undefined;
     try {
       receipt = (await center.jumpTo(
@@ -365,22 +416,26 @@ export function createRequestHandler(
     if (itemId === '') {
       throw new HttpError(502, `${cfg.shell} 没有回 item_id（受理回执不可用）`);
     }
+    // 补报里没有会话 id：发起时记下，执行完才知道该入账到哪个会话。
+    cfg.terminal.rememberOwner(itemId, conversationId);
     sendJSON(res, 200, { itemId, phase: typeof receipt?.phase === 'string' ? receipt.phase : 'queued' });
   };
 
   // fetchHistory 把该会话最近的对话从 memory 取回来（门户启动时回填界面用）。
   // 与 user_message 同一条链路：从名册解析 memory 的地址后直连，中心不转发。
-  const fetchTasks = async (res: ServerResponse): Promise<void> => {
+  // 读是宽的：QQ 里面发生的事也要能在门户里看（见 readableConversation）。
+  const fetchTasks = async (res: ServerResponse, rawCid: unknown): Promise<void> => {
+    const conversationId = readableConversation(rawCid);
     let data: { tasks?: unknown } | undefined;
     try {
       data = (await center.jumpTo(cfg.memory, 'task_list', {
-        conversation_id: PORTAL_CONVERSATION_ID,
+        conversation_id: conversationId,
       })) as { tasks?: unknown };
     } catch (err) {
       throw mapCenterError(err);
     }
     const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
-    sendJSON(res, 200, { conversationId: PORTAL_CONVERSATION_ID, tasks });
+    sendJSON(res, 200, { conversationId, tasks });
   };
 
   // resumeTask 恢复一个未完结任务：把"当前任务"顶到它（下一条用户消息就落在这个任务里）。
@@ -421,17 +476,20 @@ export function createRequestHandler(
   };
 
   // fetchHistory 取某任务（默认当前任务）的记录：直连记忆服务，中心只当地址簿。
+  // 读是宽的（别的入口的会话也能看，见 readableConversation）——门户要能展示 QQ 里发生的事。
   const fetchHistory = async (
     res: ServerResponse,
     limit: number,
     afterSeq: number,
     taskId: string,
     all: boolean,
+    rawCid: unknown,
   ): Promise<void> => {
+    const conversationId = readableConversation(rawCid);
     let data: { messages?: unknown } | undefined;
     try {
       data = (await center.jumpTo(cfg.memory, 'history', {
-        conversation_id: PORTAL_CONVERSATION_ID,
+        conversation_id: conversationId,
         limit,
         after_seq: afterSeq,
         ...(taskId === '' ? {} : { task_id: taskId }),
@@ -441,7 +499,92 @@ export function createRequestHandler(
       throw mapCenterError(err);
     }
     const messages = Array.isArray(data?.messages) ? data.messages : [];
-    sendJSON(res, 200, { conversationId: PORTAL_CONVERSATION_ID, messages });
+    sendJSON(res, 200, { conversationId, messages });
+  };
+
+  // ---- 会话：列表 / 新建 / 改名 / 归档 ----
+  //
+  // 名字住在记忆服务（会话是它的一行），门户只翻译。列表**列所有入口的会话**：
+  // 门户 / QQ 私聊 / QQ 群都在这台机器上发生，用户在门户里就该看得见；
+  // 但只有门户自己的会话能在这里新建 / 改名 / 归档 / 发消息（见 conversationFrom）。
+  const listConversations = async (res: ServerResponse, includeArchived: boolean): Promise<void> => {
+    let data: { conversations?: unknown } | undefined;
+    try {
+      data = (await center.jumpTo(cfg.memory, 'conversation_list', {
+        limit: 50,
+        include_archived: includeArchived,
+      })) as { conversations?: unknown };
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    const list = Array.isArray(data?.conversations) ? data.conversations : [];
+    // readonly = 这扇门不归门户管：界面据此收起输入框与改名/归档按钮。
+    const conversations: ConvRow[] = list.flatMap((raw) => {
+      const c = asObject(raw);
+      const id = typeof c?.id === 'string' ? c.id : '';
+      if (id === '') return [];
+      return [{ ...c, id, readonly: !isPortalConversationId(id) }];
+    });
+    // 默认会话可能还没落库（一条消息都没发过）：补一行占位，界面才有东西可选。
+    // 它不是假数据——第一次发消息时记忆服务会用同一个 id 建行。
+    if (!conversations.some((c) => c.id === DEFAULT_CONVERSATION_ID)) {
+      conversations.push({
+        id: DEFAULT_CONVERSATION_ID,
+        title: '',
+        entry: 'web',
+        status: 'active',
+        created_at: '',
+        updated_at: '',
+        readonly: false,
+      });
+    }
+    sendJSON(res, 200, { conversations });
+  };
+
+  const createConversation = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const body = asObject(await readJSON(req)) ?? {};
+    const title = typeof body.title === 'string' ? body.title.trim().slice(0, 60) : '';
+    const id = newPortalConversationId();
+    let data: { conversation?: unknown } | undefined;
+    try {
+      data = (await center.jumpTo(cfg.memory, 'conversation_open', { id, title, entry: 'web' })) as {
+        conversation?: unknown;
+      };
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    sendJSON(res, 200, { conversation: data?.conversation ?? { id, title, entry: 'web', status: 'active' } });
+  };
+
+  const renameConversation = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const body = asObject(await readJSON(req)) ?? {};
+    const id = conversationFrom(body.conversation_id);
+    const title = typeof body.title === 'string' ? body.title.trim().slice(0, 60) : '';
+    let data: { conversation?: unknown } | undefined;
+    try {
+      data = (await center.jumpTo(cfg.memory, 'conversation_rename', { id, title })) as { conversation?: unknown };
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    sendJSON(res, 200, { conversation: data?.conversation ?? null });
+  };
+
+  const archiveConversation = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const body = asObject(await readJSON(req)) ?? {};
+    const id = conversationFrom(body.conversation_id);
+    if (id === DEFAULT_CONVERSATION_ID) {
+      throw new HttpError(400, '默认会话不能归档');
+    }
+    const archived = body.archived !== false; // 缺省 = 归档
+    let data: { conversation?: unknown } | undefined;
+    try {
+      data = (await center.jumpTo(cfg.memory, 'conversation_archive', { id, archived })) as {
+        conversation?: unknown;
+      };
+    } catch (err) {
+      throw mapCenterError(err);
+    }
+    sendJSON(res, 200, { conversation: data?.conversation ?? null });
   };
 
   // decideApproval 把用户的裁决送回 approval。裁决权在用户手里，门户只是搬运工：
@@ -660,11 +803,34 @@ export function createRequestHandler(
       const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.trunc(raw), 500) : 100;
       const rawAfter = Number(url.searchParams.get('after_seq') ?? '');
       const afterSeq = Number.isFinite(rawAfter) && rawAfter > 0 ? Math.trunc(rawAfter) : 0;
-      await fetchHistory(res, limit, afterSeq, url.searchParams.get('task_id') ?? '', url.searchParams.get('all') === '1');
+      await fetchHistory(
+        res,
+        limit,
+        afterSeq,
+        url.searchParams.get('task_id') ?? '',
+        url.searchParams.get('all') === '1',
+        url.searchParams.get('conversation_id'),
+      );
       return;
     }
     if (pathname === '/api/tasks' && req.method === 'GET') {
-      await fetchTasks(res);
+      await fetchTasks(res, url.searchParams.get('conversation_id'));
+      return;
+    }
+    if (pathname === '/api/conversations' && req.method === 'GET') {
+      await listConversations(res, url.searchParams.get('include_archived') === '1');
+      return;
+    }
+    if (pathname === '/api/conversations' && req.method === 'POST') {
+      await createConversation(req, res);
+      return;
+    }
+    if (pathname === '/api/conversations/rename' && req.method === 'POST') {
+      await renameConversation(req, res);
+      return;
+    }
+    if (pathname === '/api/conversations/archive' && req.method === 'POST') {
+      await archiveConversation(req, res);
       return;
     }
     if (pathname === '/api/tasks/resume' && req.method === 'POST') {
@@ -679,7 +845,25 @@ export function createRequestHandler(
       await decideApproval(req, res);
       return;
     }
-    if (pathname === '/api/overview' || pathname === '/api/message' || pathname === '/api/upload' || pathname === '/api/terminal' || pathname === '/api/retry' || pathname === '/api/settings/set' || pathname === '/api/settings/reset' || pathname === '/api/events' || pathname === '/api/approvals' || pathname === '/api/history' || pathname === '/api/i18n' || pathname === '/api/i18n/locales') {
+    if (
+      pathname === '/api/overview' ||
+      pathname === '/api/message' ||
+      pathname === '/api/upload' ||
+      pathname === '/api/terminal' ||
+      pathname === '/api/retry' ||
+      pathname === '/api/settings/set' ||
+      pathname === '/api/settings/reset' ||
+      pathname === '/api/events' ||
+      pathname === '/api/approvals' ||
+      pathname === '/api/history' ||
+      pathname === '/api/tasks' ||
+      pathname === '/api/tasks/resume' ||
+      pathname === '/api/conversations' ||
+      pathname === '/api/conversations/rename' ||
+      pathname === '/api/conversations/archive' ||
+      pathname === '/api/i18n' ||
+      pathname === '/api/i18n/locales'
+    ) {
       throw new HttpError(405, `方法不允许: ${req.method ?? ''}`);
     }
     if (pathname.startsWith('/api/')) {

@@ -1,5 +1,5 @@
 // 与前端服务 HTTP API 的通信（JSON 进出；失败统一抛 Error，消息即中文提示）。
-import type { Overview, PortalMessage, ServiceSettingsView, TaskView, TraceMeta } from './types';
+import type { ConversationView, Overview, PortalMessage, ServiceSettingsView, TaskView, TraceMeta } from './types';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -22,8 +22,15 @@ export function fetchOverview(): Promise<Overview> {
 
 // fetchHistory 取某个任务的记录（门户回填；真相在 memory 服务，门户不自己存）。
 // taskId 为空 = 当前任务（由记忆服务决定）。返回按 seq/落库顺序排好的完整条目（含思考与工具轨迹）。
-export async function fetchHistory(limit = 100, afterSeq = 0, taskId = '', all = false): Promise<PortalMessage[]> {
-  const q = `${afterSeq > 0 ? `&after_seq=${String(afterSeq)}` : ''}${taskId === '' ? '' : `&task_id=${encodeURIComponent(taskId)}`}${all ? '&all=1' : ''}`;
+export async function fetchHistory(
+  limit = 100,
+  afterSeq = 0,
+  taskId = '',
+  all = false,
+  conversationId = '',
+): Promise<PortalMessage[]> {
+  const cid = conversationId === '' ? '' : `&conversation_id=${encodeURIComponent(conversationId)}`;
+  const q = `${afterSeq > 0 ? `&after_seq=${String(afterSeq)}` : ''}${taskId === '' ? '' : `&task_id=${encodeURIComponent(taskId)}`}${all ? '&all=1' : ''}${cid}`;
   const r = await request<{
     messages?: {
       id?: number;
@@ -46,9 +53,44 @@ export async function fetchHistory(limit = 100, afterSeq = 0, taskId = '', all =
 
 // fetchTasks 取任务列表。面板是从上到下的会话，侧栏是它的目录：同样按时间正序，
 // 读起来才对得上（服务端给的是"最近活跃在前"，这里翻过来）。
-export async function fetchTasks(): Promise<TaskView[]> {
-  const r = await request<{ tasks?: TaskView[] }>('/api/tasks');
+export async function fetchTasks(conversationId = ''): Promise<TaskView[]> {
+  const q = conversationId === '' ? '' : `?conversation_id=${encodeURIComponent(conversationId)}`;
+  const r = await request<{ tasks?: TaskView[] }>(`/api/tasks${q}`);
   return [...(r.tasks ?? [])].sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
+
+// ---- 会话（门户的第一层）----
+
+export async function fetchConversations(includeArchived = false): Promise<ConversationView[]> {
+  const q = includeArchived ? '?include_archived=1' : '';
+  const r = await request<{ conversations?: ConversationView[] }>(`/api/conversations${q}`);
+  return r.conversations ?? [];
+}
+
+export async function createConversation(title = ''): Promise<ConversationView> {
+  const r = await request<{ conversation?: ConversationView }>('/api/conversations', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title }),
+  });
+  if (r.conversation === undefined) throw new Error('新建会话没有返回会话');
+  return r.conversation;
+}
+
+export async function renameConversation(conversationId: string, title: string): Promise<void> {
+  await request<{ conversation?: ConversationView }>('/api/conversations/rename', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ conversation_id: conversationId, title }),
+  });
+}
+
+export async function archiveConversation(conversationId: string, archived = true): Promise<void> {
+  await request<{ conversation?: ConversationView }>('/api/conversations/archive', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ conversation_id: conversationId, archived }),
+  });
 }
 
 // historyToMessage 把一条落库记录翻成界面消息：对话消息进气泡，思考/命令/输出进轨迹条目。
@@ -145,17 +187,21 @@ function readAsBase64(file: File): Promise<string> {
 
 // runTerminalCommand 让门户把命令交给 shell（boss=门户）。返回的只是**受理回执**：
 // 执行与审批都在后台，输出经 SSE 'terminal' 事件回来（按 itemId 对应）。
-export function runTerminalCommand(command: string): Promise<{ itemId: string; phase: string }> {
+export function runTerminalCommand(command: string, conversationId = ''): Promise<{ itemId: string; phase: string }> {
   return request<{ itemId: string; phase: string }>('/api/terminal', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ command }),
+    body: JSON.stringify(conversationId === '' ? { command } : { command, conversation_id: conversationId }),
   });
 }
 
 // sendMessage 把用户消息交给门户——只等**受理回执**，最终回答由 deliver 经 SSE 送回来。
-export function sendMessage(text: string, attachments: UploadResult[] = []): Promise<{ conversationId: string }> {
-  const body: Record<string, unknown> = { text };
+export function sendMessage(
+  text: string,
+  attachments: UploadResult[] = [],
+  conversationId = '',
+): Promise<{ conversationId: string }> {
+  const body: Record<string, unknown> = conversationId === '' ? { text } : { text, conversation_id: conversationId };
   if (attachments.length > 0) {
     body.attachments = attachments.map((a) => ({
       kind: a.kind,
@@ -210,10 +256,10 @@ export function decideApproval(itemId: string, decision: 'allow' | 'deny', note 
 
 // retryRound 让 reasoner 对「上一轮失败、任务还开着」的会话再跑一轮。
 // 能不能重试由 reasoner 判定（门户不猜）：被拒时会抛出带原因的错误。
-export function retryRound(): Promise<{ retried: boolean }> {
+export function retryRound(conversationId = ''): Promise<{ retried: boolean }> {
   return request<{ retried: boolean }>('/api/retry', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({}),
+    body: JSON.stringify(conversationId === '' ? {} : { conversation_id: conversationId }),
   });
 }

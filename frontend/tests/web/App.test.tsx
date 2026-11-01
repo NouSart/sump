@@ -23,6 +23,18 @@ import {
 const okOverview = (r: RosterView) =>
   overviewOf(r, [settingsOf('images', [{ key: 'max_mb', value: '1', default: '32', overridden: true }])]);
 
+// PORTAL_CONVERSATION 是门户默认会话（首屏拉到它之后才会去拉任务与记录）。
+function PORTAL_CONVERSATION() {
+  return {
+    id: 'web:private:owner',
+    title: '',
+    entry: 'web',
+    status: 'active' as const,
+    created_at: '2026-10-17T09:00:00Z',
+    updated_at: '2026-10-17T10:00:00Z',
+  };
+}
+
 // boot 安装替身并挂载 App：
 //   - setResponse 可替换 set_setting 的应答（默认成功）；
 //   - messageResponse 可替换 /api/message 的应答（默认受理）；
@@ -37,6 +49,7 @@ async function boot(
     select?: string | null;
     history?: { role: string; content: string; at: string; task_id?: string }[];
     tasks?: { id: string; name: string; status: 'active' | 'done'; updated_at: string }[];
+    conversations?: { id: string; title: string; status: 'active' | 'archived'; updated_at: string }[];
   } = {},
 ) {
   let currentRoster = rosterOf(['images', 'qq']);
@@ -45,7 +58,11 @@ async function boot(
     [{ id: 'task-1', name: '看看现在几点', status: 'active' as const, updated_at: '2026-10-17T10:00:00Z' }];
   const calls = stubFetch((url, init) => {
     if (url === '/api/overview') return jsonResponse(okOverview(currentRoster));
-    if (url === '/api/tasks') {
+    // 门户首屏先拉会话列表，再按当前会话拉任务与记录。
+    if (url === '/api/conversations') {
+      return jsonResponse({ conversations: over.conversations ?? [PORTAL_CONVERSATION()] });
+    }
+    if (url.startsWith('/api/tasks?') || url === '/api/tasks') {
       return jsonResponse({
         conversationId: 'web:private:owner',
         tasks: taskList.map((x) => ({ conversation_id: 'web:private:owner', created_at: x.updated_at, ...x })),
@@ -650,7 +667,8 @@ describe('App', () => {
     });
     stubFetch((url) => {
       if (url === '/api/overview') return jsonResponse(okOverview(rosterOf(['images', 'qq'])));
-      if (url === '/api/tasks') return jsonResponse({ conversationId: 'web:private:owner', tasks: [] });
+      if (url === '/api/conversations') return jsonResponse({ conversations: [PORTAL_CONVERSATION()] });
+      if (url.startsWith('/api/tasks')) return jsonResponse({ conversationId: 'web:private:owner', tasks: [] });
       if (url.startsWith('/api/history')) return historyResponse;
       return undefined;
     });

@@ -534,6 +534,14 @@ button { font: inherit; }
 .composer-row { display: flex; align-items: center; gap: var(--gap-2); }
 .grow { flex: 1; }
 
+/* ---------- 只读会话（别的入口，如 QQ） ---------- */
+/* 看得见记录，但话要回那扇门说：输入区整块变灰，按钮不可点，顶上给一句解释。 */
+.composer-readonly {
+  font-size: var(--fs-meta); color: var(--text-3);
+  padding: 2px 0;
+}
+.thread.conv.is-foreign .t-title { color: var(--text-2); }
+
 /* ---------- 附件条（上传中的文件 / 已上传的 chip / 就地错误） ---------- */
 .composer-attachments { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-2); }
 .attach-chip {

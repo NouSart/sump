@@ -54,6 +54,19 @@ export interface SettingsEventViewData {
   results?: SettingResultViewData[];
 }
 
+// ConversationView 是一个会话：门户侧栏的第一层。
+// status：active = 在列表中；archived = 收起了（只读，默认不列）。
+// readonly：这扇门不归门户管（如 qq:private / qq:group）——能看，不能在这里说话或改名。
+export interface ConversationView {
+  id: string;
+  title: string;
+  entry: string;
+  status: 'active' | 'archived';
+  created_at: string;
+  updated_at: string;
+  readonly?: boolean;
+}
+
 // TaskView 是一个任务（历史列表的标题就是任务名）。
 // status：active = 进行中（可继续 / 可恢复）；done = 已完结（只读）。
 export interface TaskView {
@@ -86,6 +99,8 @@ export interface RowStatus {
 // phase 走 shell 的词汇（queued / approved / rejected / done / failed），final 表示终态。
 export interface TerminalRunUpdate {
   itemId: string;
+  /** 这条命令属于哪个会话（门户在发起时记下并随事件带出）。 */
+  conversationId?: string;
   phase: string;
   command: string;
   text: string;
