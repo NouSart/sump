@@ -34,6 +34,25 @@ type Event struct {
 	SelfID      int64           `json:"self_id"`
 	RawMessage  string          `json:"raw_message"`
 	Message     json.RawMessage `json:"message"` // 段数组 或 CQ 字符串
+	// Sender 是发送者资料（OneBot 11 的 sender 对象）：昵称 / 群名片 / 群身份。
+	Sender EventSender `json:"sender"`
+}
+
+// EventSender 是消息事件里的发送者资料。
+// 群名片（card）比昵称更贴近"这个人在这个群里叫什么"，优先用它。
+type EventSender struct {
+	UserID   int64  `json:"user_id"`
+	Nickname string `json:"nickname"`
+	Card     string `json:"card"`
+	Role     string `json:"role"` // 群里的身份：owner / admin / member（私聊为空）
+}
+
+// DisplayName 返回这个发送者该被怎么称呼：群名片优先，其次昵称，最后空串（不造假名字）。
+func (ev Event) DisplayName() string {
+	if card := strings.TrimSpace(ev.Sender.Card); card != "" {
+		return card
+	}
+	return strings.TrimSpace(ev.Sender.Nickname)
 }
 
 // Segment 是一条消息段。
@@ -49,6 +68,38 @@ func ParseSegments(raw json.RawMessage) []Segment {
 		return nil
 	}
 	return segs
+}
+
+// Mentions 报告这条消息有没有点到 selfID（群里的 @）。
+//
+// 段数组里看 at 段；字符串形式（CQ 码）退化为查 `[CQ:at,qq=<selfID>]`。
+// selfID 未知（0）时一律返回 false——"不知道自己在群里叫什么"不能算被点到。
+func (ev Event) Mentions(selfID int64) bool {
+	if selfID == 0 {
+		return false
+	}
+	want := strconv.FormatInt(selfID, 10)
+	var s string
+	if json.Unmarshal(ev.Message, &s) == nil {
+		return strings.Contains(s, "[CQ:at,qq="+want+"]") || strings.Contains(s, "[CQ:at,qq="+want+",")
+	}
+	for _, seg := range ParseSegments(ev.Message) {
+		if seg.Type != "at" {
+			continue
+		}
+		// data.qq 在各实现里可能是字符串或数字；@全体成员 的 qq 是 "all"。
+		switch v := seg.Data["qq"].(type) {
+		case string:
+			if v == want {
+				return true
+			}
+		case float64:
+			if int64(v) == selfID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Text 提取纯文本（段数组：text 段拼接；字符串形式：原样返回）。
@@ -299,4 +350,40 @@ func (c *Client) dropConn() {
 		default:
 		}
 	}
+}
+
+// GroupInfo 是群资料（get_group_info 里用得上的部分）。
+//
+// 群名与成员数是**扩散面**的一部分：模型要知道"这句话多少人能看见"。
+// 取不全就留零值——宁可少一个数字，不编一个数字。
+type GroupInfo struct {
+	GroupID int64
+	Name    string
+	Members int // 成员数（0 = 未知）
+}
+
+// GroupInfo 取群资料（NapCat 的 get_group_info）。
+func (c *Client) GroupInfo(ctx context.Context, groupID int64) (GroupInfo, error) {
+	resp, err := c.Call(ctx, "get_group_info", map[string]any{"group_id": groupID, "no_cache": false})
+	if err != nil {
+		return GroupInfo{GroupID: groupID}, err
+	}
+	data, _ := resp["data"].(map[string]any)
+	info := GroupInfo{GroupID: groupID}
+	if name, _ := data["group_name"].(string); name != "" {
+		info.Name = name
+	}
+	// member_count 经 JSON 解出来是 float64；有的实现给的是字符串。
+	switch v := data["member_count"].(type) {
+	case float64:
+		info.Members = int(v)
+	case string:
+		if n, err := strconv.Atoi(v); err == nil {
+			info.Members = n
+		}
+	}
+	if info.Name == "" && info.Members == 0 {
+		return info, errors.New("get_group_info 没有返回可用的群名与成员数")
+	}
+	return info, nil
 }

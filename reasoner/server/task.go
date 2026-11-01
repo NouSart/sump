@@ -14,13 +14,9 @@ import (
 )
 
 // clampTitle 把任务名压成一行、截到 24 个字（历史列表的标题要能一眼看完）。
+// 规则本身住在协议包里（protocol.ClampTaskName）：qq 直接落库时用的是同一份。
 func clampTitle(title string) string {
-	title = strings.Join(strings.Fields(title), " ")
-	r := []rune(title)
-	if len(r) > 24 {
-		return string(r[:24]) + "…"
-	}
-	return title
+	return protocol.ClampTaskName(title)
 }
 
 // applyTaskStatus 记录模型对当前任务的判定，返回给模型的工具结果文本。
@@ -30,9 +26,10 @@ func (s *Server) applyTaskStatus(st *taskState, call llm.ToolCall) string {
 		Status string `json:"status"`
 		Title  string `json:"title"`
 		Note   string `json:"note"`
+		Silent bool   `json:"silent"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-		return "task_status 参数解析失败：需要 JSON 对象 {status: \"done\"|\"continue\", title?, note?}。这次不算判定。"
+		return "task_status 参数解析失败：需要 JSON 对象 {status: \"done\"|\"continue\", title?, note?, silent?}。这次不算判定。"
 	}
 	status := strings.TrimSpace(strings.ToLower(args.Status))
 	if status != "done" && status != "continue" {
@@ -48,6 +45,9 @@ func (s *Server) applyTaskStatus(st *taskState, call llm.ToolCall) string {
 	}
 	st.judged = true
 	st.judgedDone = done
+	// 静默 = 这一轮不发出去（群里判断不该插话时用）。它随每次判定重设：
+	// 上一轮选了静默，这一轮想说话就正常说。
+	st.judgedSilent = args.Silent
 	if title != "" {
 		st.judgedTitle = title
 		st.taskName = title
@@ -79,6 +79,10 @@ func (s *Server) applyTaskStatus(st *taskState, call llm.ToolCall) string {
 		s.logger.Printf("会话 %s：任务判定 %s（%s）—— %s", st.cid, verb, name, args.Note)
 	} else {
 		s.logger.Printf("会话 %s：任务判定 %s（%s）", st.cid, verb, name)
+	}
+	if args.Silent {
+		s.logger.Printf("会话 %s：这一轮选择静默（不发出去）", st.cid)
+		return fmt.Sprintf("已记录：任务《%s》判定为 %s；这一轮的答复不会发出去（只留在记录里）。", name, verb)
 	}
 	return fmt.Sprintf("已记录：任务《%s》判定为 %s。", name, verb)
 }

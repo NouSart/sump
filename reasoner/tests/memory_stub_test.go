@@ -25,6 +25,8 @@ type stubMemory struct {
 	recalls     int    // 收到的 recall 次数
 	reasonerURL string // resume 的投递目标（reasoner 启动后设置）
 	stores      []protocol.StorePayload
+	// recallContexts 是收到的 recall 上下文（断言"reasoner 把任务名托管过来"）。
+	recallContexts []protocol.TaskContext
 
 	task     *protocol.Task // 非空时随 resume 带回（模拟"记忆已经确定了当前任务"）
 	finished []protocol.TaskFinishPayload
@@ -118,6 +120,15 @@ func (m *stubMemory) Recalls() int {
 	return m.recalls
 }
 
+// RecallContexts 返回已收到的 recall 上下文快照（断言"任务名也托管过去了"）。
+func (m *stubMemory) RecallContexts() []protocol.TaskContext {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]protocol.TaskContext, len(m.recallContexts))
+	copy(out, m.recallContexts)
+	return out
+}
+
 // Notes 返回已收到的 note（复盘写回的经验）快照。
 func (m *stubMemory) Notes() []protocol.NotePayload {
 	m.mu.Lock()
@@ -175,6 +186,7 @@ func (m *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			m.mu.Lock()
 			m.recalls++
+			m.recallContexts = append(m.recallContexts, p.Context)
 			m.mu.Unlock()
 			// 注入固定记忆块（插在第一条 system 之后）。
 			msgs := make([]protocol.Message, 0, len(p.Context.Messages)+1)

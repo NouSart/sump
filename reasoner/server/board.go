@@ -68,7 +68,10 @@ type taskState struct {
 	judged      bool   // 本轮是否已用 task_status 判定过完成与否
 	judgedDone  bool   // 判定结果：true = 任务完成
 	judgedTitle string // 判定时顺带修正的任务名（空 = 不改）
-	judgeAsks   int    // 已经为"必须先判定"催过几次（上限 2，防死循环）
+	// judgedSilent：这一轮的答复不发出去（群里判断不该插话）。与 judgedDone 无关，
+	// 每次判定重设；派发新工具时和 judged 一起作废（新进展要重新决定说不说）。
+	judgedSilent bool
+	judgeAsks    int // 已经为"必须先判定"催过几次（上限 2，防死循环）
 }
 
 // ---------- 黑板操作 ----------
@@ -221,6 +224,7 @@ func (s *Server) dispatchToolCalls(st *taskState, resp llm.Message) {
 		if call.Function.Name != waitToolName && call.Function.Name != taskStatusToolName {
 			st.judged = false
 			st.judgedDone = false
+			st.judgedSilent = false
 			break
 		}
 	}
@@ -408,7 +412,26 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 		}
 		s.logger.Printf("会话 %s：两次催促仍未判定任务，按未完成处理并交付", st.cid)
 	}
+	silent := st.judgedSilent
 	st.mu.Unlock()
+
+	// 静默收尾：判定说了这一轮不必发出去（群里不该插话 / 没什么可说）。
+	// 不进 deliver、不关反射，但**文字要留在记录里**——门户里能看见"这一轮它想过什么"，人才能判断
+	// 静默得对不对。kind 用 reasoning（过程轨迹）而不是 assistant：它没有对任何人说过这句话。
+	if silent {
+		st.mu.Lock()
+		replaced := st.closed
+		st.mu.Unlock()
+		if replaced {
+			s.logger.Printf("会话 %s：任务已被新消息取代，静默收尾也不再记录", st.cid)
+			return
+		}
+		s.record(st.cid, st.boss, st.trace, st.taskID, kindReasoning,
+			"assistant", "（静默：这一轮没有对任何人发出去）\n"+text, nil)
+		s.boardClose(st)
+		s.logger.Printf("会话 %s：静默收尾（判定为不必发送）", st.cid)
+		return
+	}
 
 	// 交付前复查：放行到真正交付之间，任务可能已被同会话新消息取代（boardOpen 置 closed）——
 	// 取代后旧答复不再交付。

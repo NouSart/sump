@@ -120,13 +120,14 @@ func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
 // ---------- stub NapCat（模拟正向 WS 服务端） ----------
 
 type stubNapCat struct {
-	ln       net.Listener
-	srv      *http.Server
-	writeMu  sync.Mutex
-	mu       sync.Mutex
-	conn     *websocket.Conn
-	sent     []map[string]any // 收到的 action 调用
-	failSend bool             // 测试用：send_msg 一律回失败
+	ln            net.Listener
+	srv           *http.Server
+	writeMu       sync.Mutex
+	mu            sync.Mutex
+	conn          *websocket.Conn
+	sent          []map[string]any // 收到的 action 调用
+	failSend      bool             // 测试用：send_msg 一律回失败
+	failGroupInfo bool             // 测试用：get_group_info 一律失败（模拟网关不支持）
 }
 
 func startStubNapCat(t *testing.T) *stubNapCat {
@@ -171,9 +172,21 @@ func (n *stubNapCat) handleWS(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]any{"status": "ok", "retcode": 0}
 		n.mu.Lock()
 		failSend := n.failSend
+		failGroup := n.failGroupInfo
 		n.mu.Unlock()
-		if action, _ := m["action"].(string); failSend && action == "send_msg" {
+		action, _ := m["action"].(string)
+		if failSend && action == "send_msg" {
 			resp = map[string]any{"status": "failed", "retcode": 100, "message": "stub send failure"}
+		}
+		if action == "get_group_info" {
+			if failGroup {
+				resp = map[string]any{"status": "failed", "retcode": 1400, "message": "stub get_group_info failure"}
+			} else {
+				// 群名与成员数（= 消息的扩散面），qq 会把它们标进来源标注。
+				resp["data"] = map[string]any{
+					"group_id": 67890, "group_name": "测试群", "member_count": 7, "max_member_count": 200,
+				}
+			}
 		}
 		if echo, _ := m["echo"].(string); echo != "" {
 			resp["echo"] = echo
@@ -363,6 +376,15 @@ func (a *stubReasoner) count() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return len(a.reqs)
+}
+
+// snapshot 返回已收到的全部 user_message（按到达顺序，浅拷贝）。
+func (a *stubReasoner) snapshot() []reasonerRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]reasonerRequest, len(a.reqs))
+	copy(out, a.reqs)
+	return out
 }
 
 // sendDeliver 模拟链终点向 qq 交付结果。

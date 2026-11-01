@@ -1,7 +1,7 @@
 package tests
 
-// qq.deliver 的失败路径：空文本、会话标识不合法、群聊未启用、用户 id 非法、NapCat 发送失败。
-// 成功路径在 service_test.go；这些分支决定“链终点没送到”时调用方看到什么。
+// qq.deliver 的失败路径：空文本、会话标识不合法、未知会话类型、用户 id 非法、NapCat 发送失败。
+// 成功路径在 service_test.go / group_test.go；这些分支决定“链终点没送到”时调用方看到什么。
 
 import (
 	"context"
@@ -57,8 +57,9 @@ func TestDeliverRejectsBadInput(t *testing.T) {
 	}{
 		{"empty_text", "  ", "qq:private:2271917353", "text 为空"},
 		{"bad_conversation", "回复", "not-a-conversation", "无法解析会话标识"},
-		{"group_disabled", "回复", "qq:group:123456", "群聊未启用"},
+		{"unknown_kind", "回复", "qq:channel:123456", "未知会话类型"},
 		{"bad_user_id", "回复", "qq:private:abc", "会话 id 无效"},
+		{"bad_group_id", "回复", "qq:group:abc", "会话 id 无效"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

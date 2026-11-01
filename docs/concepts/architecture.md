@@ -47,7 +47,7 @@ SUMP 是「服务的互联网」：每个服务是独立进程、独立数据库
 | timer | Go | 计时器：受理「N 毫秒后唤醒我」（即时回执）→ 到点把 `report_result` 跳回调用方；按 boss 分组推倒计时 |
 | batch | Go | 批处理：一次声明 N 项工作 + 并发度 + 唤醒时机；暂停可恢复、停止是终态；目标动作须显式声明 `Batchable` |
 | mcp | Go | 双向协议翻译：显式映射导出获准的原生能力、导入外部 MCP 工具；只登记自身，不自动传播下属能力 |
-| qq | Go | 把主人私聊消息（图先存 images）打成 `user_message` 发给 reasoner；实现 deliver 回发 |
+| qq | Go | 把私聊（仅主人）与群聊消息打成 `user_message`（**带来源标注**：谁说的 / 群还是私聊 / 多少人可见 / 是否主人 / 是否被 @）发给 reasoner；群聊策略 `group.mode`（观察 / 仅@ / 判断）；不该开推理的消息自己写进记忆；实现 deliver 回发（私聊与群聊） |
 | frontend | TS | 用户交互门户（与 qq 同类）＋ 设置面板：提供 `deliver`（推给浏览器）、`report_result`（终端命令的结果）；自己跳 `user_message`（转给 reasoner）、`files.save` / `images.save`（用户上传的附件）、`shell.run`（终端命令，仍走审批）；浏览器 HTTP JSON + SSE；单用户 + Host/Origin 栅栏 |
 | embedding | Python | 文本 → 向量（onnxruntime + tokenizers，CLS pooling + L2 归一）；动作 `embed`；fake 后端供测试与 CI |
 
