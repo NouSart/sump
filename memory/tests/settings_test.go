@@ -45,17 +45,17 @@ func pushConfigure(t *testing.T, addr string, p protocol.ConfigurePayload) proto
 	return rp
 }
 
-// TestSettingsLive 验证：名片声明 10 项（5 个 recall.* 普通项 + relation 热改 + 4 个只读）；
+// TestSettingsLive 验证：名片声明 13 项（5 个 recall.* + recall.embedding + 2 个 share.* + 5 个只读）；
 // configure 合法值即时生效（recall 只带最近一条历史）；非法值与未声明键被拒且保持旧值。
 func TestSettingsLive(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
 
-	// 名片声明（按声明顺序）：5 个 recall.* 普通项 + recall.embedding 普通项 + 4 个只读项
+	// 名片声明（按声明顺序）：5 个 recall.* + recall.embedding + 2 个 share.* + 5 个只读项
 	declared := sc.DeclaredSettings("memory")
-	if len(declared) != 10 {
-		t.Fatalf("名片应声明 10 个设置项: %+v", declared)
+	if len(declared) != 13 {
+		t.Fatalf("名片应声明 13 个设置项: %+v", declared)
 	}
 	if declared[0].Key != "recall.history_limit" || declared[0].Default != "12" {
 		t.Fatalf("recall.history_limit 声明不符: %+v", declared[0])

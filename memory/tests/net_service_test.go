@@ -8,7 +8,6 @@ package tests
 
 import (
 	"testing"
-	"time"
 
 	"github.com/NouSart/sump/memory/memnet"
 	"github.com/NouSart/sump/memory/server"
@@ -19,15 +18,10 @@ import (
 // startMemoryWithNet 起一个带经验网的记忆服务（关掉中心化，让假向量的余弦直白可算）。
 func startMemoryWithNet(t *testing.T, centerURL string) *server.Server {
 	t.Helper()
-	return startMemory(t, centerURL, 12, func(cfg *server.Config, st *store.Store) {
-		net, err := memnet.Open(st.DB(), time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
+	return startMemory(t, centerURL, 12, func(cfg *server.Config, _ *store.Store) {
 		tune := memnet.DefaultTuning()
 		tune.Center = false // 假向量是二维直角坐标，中心化只会让断言难算
-		net.SetTuning(tune)
-		cfg.Net = net
+		cfg.Shared.Net.SetTuning(tune)
 	})
 }
 
@@ -167,7 +161,9 @@ func TestNetActionsServiceLevel(t *testing.T) {
 // TestNetActionsDisabled 验证没开经验网时四个动作都明确报错，而不是空转或崩。
 func TestNetActionsDisabled(t *testing.T) {
 	sc := startStubCenter(t)
-	srv := startMemory(t, sc.URL(), 12) // 不注入 Net
+	srv := startMemory(t, sc.URL(), 12, func(cfg *server.Config, _ *store.Store) {
+		cfg.Shared = nil // 连共享库都不给：四个动作必须明确报错
+	})
 	caller := startStubCaller(t, sc.URL())
 
 	for _, action := range []string{"note", "dig", "lineheads", "prune"} {

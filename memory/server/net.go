@@ -11,16 +11,33 @@ import (
 	"strings"
 	"time"
 
+	"github.com/NouSart/sump/memory/longterm"
 	"github.com/NouSart/sump/memory/memnet"
 	"github.com/NouSart/sump/protocol"
 )
+
+// net / longterm 返回共享经验库里的两张子库（未启用 = nil）。
+// 两个库文件是**边界**：这些数据跨会话共享，但会话流水不在这里。
+func (s *Server) net() *memnet.Store {
+	if s.cfg.Shared == nil {
+		return nil
+	}
+	return s.cfg.Shared.Net
+}
+
+func (s *Server) longterm() *longterm.Store {
+	if s.cfg.Shared == nil {
+		return nil
+	}
+	return s.cfg.Shared.Longterm
+}
 
 // ensureNetCentroids 给五个大类补定义向量（懒补齐，只做一次）。
 //
 // 种子向量**锚在种子句上**，永不随成员重算——所以补一次就够了；
 // 失败（embedding 还没上线）静默返回，下次调用再试。
 func (s *Server) ensureNetCentroids(ctx context.Context, env protocol.Envelope) {
-	if s.cfg.Net == nil {
+	if s.net() == nil {
 		return
 	}
 	s.netSeedMu.Lock()
@@ -31,7 +48,7 @@ func (s *Server) ensureNetCentroids(ctx context.Context, env protocol.Envelope) 
 	if now := time.Now(); now.Before(s.netSeedNext) {
 		return // 刚失败过，冷却中：别让每条经验都替一个挂掉的上游等满超时
 	}
-	pending, err := s.cfg.Net.PendingCentroids()
+	pending, err := s.net().PendingCentroids()
 	if err != nil || len(pending) == 0 {
 		if len(pending) == 0 {
 			s.netSeeded = true
@@ -54,7 +71,7 @@ func (s *Server) ensureNetCentroids(ctx context.Context, env protocol.Envelope) 
 		return
 	}
 	for i, n := range pending {
-		if err := s.cfg.Net.SetNodeCentroid(n.ID, vecs[i], model); err != nil {
+		if err := s.net().SetNodeCentroid(n.ID, vecs[i], model); err != nil {
 			s.netSeedNext = time.Now().Add(netSeedCooldown)
 			return
 		}
@@ -68,7 +85,7 @@ func (s *Server) ensureNetCentroids(ctx context.Context, env protocol.Envelope) 
 // 模型想看同一簇的其它条目/当时的过程，就自己去 dig。
 // 网不可用（没有向量 / 没有经验）时静默返回 nil：召回不因为网而失败。
 func (s *Server) experienceLines(ctx context.Context, env protocol.Envelope, query string) []string {
-	if s.cfg.Net == nil || strings.TrimSpace(query) == "" {
+	if s.net() == nil || strings.TrimSpace(query) == "" {
 		return nil
 	}
 	s.ensureNetCentroids(ctx, env)
@@ -76,7 +93,7 @@ func (s *Server) experienceLines(ctx context.Context, env protocol.Envelope, que
 	if err != nil || len(vecs) == 0 {
 		return nil
 	}
-	heads, err := s.cfg.Net.LineHeads(vecs[0], nowFunc(), 4)
+	heads, err := s.net().LineHeads(vecs[0], nowFunc(), 4)
 	if err != nil {
 		s.logger.Printf("经验线头不可用（忽略本节）: %v", err)
 		return nil
@@ -106,7 +123,7 @@ func (s *Server) actionNote(ctx context.Context, env protocol.Envelope, in proto
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
 	}
-	if s.cfg.Net == nil {
+	if s.net() == nil {
 		return nil, errors.New("经验网未启用")
 	}
 	s.ensureNetCentroids(ctx, env)
@@ -118,7 +135,7 @@ func (s *Server) actionNote(ctx context.Context, env protocol.Envelope, in proto
 	if err != nil {
 		return nil, fmt.Errorf("note: 向量化失败（不写半条经验）: %w", err)
 	}
-	res, err := s.cfg.Net.Attach(nowFunc(), memnet.AttachInput{
+	res, err := s.net().Attach(nowFunc(), memnet.AttachInput{
 		Content:        content,
 		ConversationID: p.ConversationID,
 		TaskID:         p.TaskID,
@@ -144,13 +161,13 @@ func (s *Server) actionDig(_ context.Context, _ protocol.Envelope, in protocol.J
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
 	}
-	if s.cfg.Net == nil {
+	if s.net() == nil {
 		return nil, errors.New("经验网未启用")
 	}
 	now := nowFunc()
 	switch {
 	case p.EntryID != "":
-		center, notes, total, err := s.cfg.Net.DigEntry(p.EntryID, now, p.Limit)
+		center, notes, total, err := s.net().DigEntry(p.EntryID, now, p.Limit)
 		if err != nil {
 			return nil, fmt.Errorf("dig: %w", err)
 		}
@@ -162,7 +179,7 @@ func (s *Server) actionDig(_ context.Context, _ protocol.Envelope, in protocol.J
 			Total:   total,
 		}, nil
 	case p.NodeID != "":
-		node, notes, total, err := s.cfg.Net.DigNode(p.NodeID, now, p.Limit)
+		node, notes, total, err := s.net().DigNode(p.NodeID, now, p.Limit)
 		if err != nil {
 			return nil, fmt.Errorf("dig: %w", err)
 		}
@@ -183,7 +200,7 @@ func (s *Server) actionLineHeads(ctx context.Context, env protocol.Envelope, in 
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
 	}
-	if s.cfg.Net == nil {
+	if s.net() == nil {
 		return nil, errors.New("经验网未启用")
 	}
 	s.ensureNetCentroids(ctx, env)
@@ -191,7 +208,7 @@ func (s *Server) actionLineHeads(ctx context.Context, env protocol.Envelope, in 
 	if err != nil {
 		return nil, fmt.Errorf("lineheads: 向量化失败: %w", err)
 	}
-	heads, err := s.cfg.Net.LineHeads(vecs[0], nowFunc(), p.Limit)
+	heads, err := s.net().LineHeads(vecs[0], nowFunc(), p.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("lineheads: %w", err)
 	}
@@ -212,10 +229,10 @@ func (s *Server) actionLineHeads(ctx context.Context, env protocol.Envelope, in 
 // actionNetPrune 维护：软剪枝（只标状态、只断干枯的线，不删行）。
 // 不绑时机——谁调都行（收尾后 / 定时 / 门户手动）。
 func (s *Server) actionNetPrune(_ context.Context, _ protocol.Envelope, _ protocol.JumpPayload) (any, error) {
-	if s.cfg.Net == nil {
+	if s.net() == nil {
 		return nil, errors.New("经验网未启用")
 	}
-	res, err := s.cfg.Net.Prune(nowFunc())
+	res, err := s.net().Prune(nowFunc())
 	if err != nil {
 		return nil, fmt.Errorf("prune: %w", err)
 	}

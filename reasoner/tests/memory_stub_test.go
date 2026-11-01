@@ -30,6 +30,8 @@ type stubMemory struct {
 	finished []protocol.TaskFinishPayload
 	renamed  []protocol.TaskRenamePayload
 	notes    []protocol.NotePayload // 复盘写回的经验（交付后由 reasoner 异步发来）
+	// publishes 是复盘发布到共享经验库的任务摘要（另一个库、另一条路）。
+	publishes []protocol.PublishSessionPayload
 }
 
 // startStubMemory 起一个服务名为 "memory" 的记忆替身。
@@ -60,7 +62,7 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 		Description: "记忆测试替身",
 		Provides: []protocol.Provide{
 			{Action: "recall"}, {Action: "store"}, {Action: "task_finish"},
-			{Action: "task_rename"}, {Action: "note"},
+			{Action: "task_rename"}, {Action: "note"}, {Action: "publish_session"},
 		},
 	}
 	center.mu.Unlock()
@@ -122,6 +124,15 @@ func (m *stubMemory) Notes() []protocol.NotePayload {
 	defer m.mu.Unlock()
 	out := make([]protocol.NotePayload, len(m.notes))
 	copy(out, m.notes)
+	return out
+}
+
+// Publishes 返回已收到的 publish_session（共享库的会话摘要）快照。
+func (m *stubMemory) Publishes() []protocol.PublishSessionPayload {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]protocol.PublishSessionPayload, len(m.publishes))
+	copy(out, m.publishes)
 	return out
 }
 
@@ -211,6 +222,14 @@ func (m *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
 			_ = protocol.DecodeRaw(jp.Input, &p)
 			m.mu.Lock()
 			m.notes = append(m.notes, p)
+			m.mu.Unlock()
+			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
+			c.send(resp)
+		case "publish_session":
+			var p protocol.PublishSessionPayload
+			_ = protocol.DecodeRaw(jp.Input, &p)
+			m.mu.Lock()
+			m.publishes = append(m.publishes, p)
 			m.mu.Unlock()
 			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
 			c.send(resp)

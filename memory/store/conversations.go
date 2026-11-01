@@ -114,6 +114,22 @@ func (s *Store) ConversationByID(id string) (protocol.Conversation, error) {
 	return c, err
 }
 
+// SetConversationStatus 归档 / 取消归档（归档 = 只读，默认列表不显示）。
+func (s *Store) SetConversationStatus(id string, archived bool) (protocol.Conversation, error) {
+	status := ConversationActive
+	if archived {
+		status = ConversationArchived
+	}
+	res, err := s.db.Exec(`UPDATE conversations SET status=? WHERE id=?`, status, id)
+	if err != nil {
+		return protocol.Conversation{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return protocol.Conversation{}, fmt.Errorf("会话 %q 不存在", id)
+	}
+	return s.ConversationByID(id)
+}
+
 // RenameConversation 改会话名（空串 = 清掉名字）。会话不存在时报错。
 func (s *Store) RenameConversation(id, title string) (protocol.Conversation, error) {
 	res, err := s.db.Exec(`UPDATE conversations SET title=? WHERE id=?`, title, id)

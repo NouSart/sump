@@ -73,10 +73,11 @@ func EntryLine(kind, content string) string {
 	return "- [" + kind + "] " + content
 }
 
-// BuildMemory 组装记忆文本：最近对话 + 核心记忆 + 相关记忆 + 经验线头（空节省略）。
+// BuildMemory 组装记忆文本：最近对话 + 核心记忆 + 相关记忆 + 经验线头 + 其他会话（空节省略）。
 // 核心 = priority>0 的条目（不看相关性）；相关 = bigram/语义打分命中的条目；
-// 经验 = 经验网给出的线头（一行一条：代表句 + 条数 + 来自哪个任务）。
-func BuildMemory(history []protocol.Message, core, relevant, experience []string) string {
+// 经验 = 经验网给出的线头（一行一条：代表句 + 条数 + 来自哪个任务）；
+// 其他会话 = 共享库里的会话目录摘要（**只有摘要**，读不到别人的对话）。
+func BuildMemory(history []protocol.Message, core, relevant, experience, others []string) string {
 	var sections []string
 	if text := BuildText(history); text != "" {
 		sections = append(sections, "（最近对话）\n"+text)
@@ -91,6 +92,11 @@ func BuildMemory(history []protocol.Message, core, relevant, experience []string
 		sections = append(sections, "（经验线头）\n"+
 			"以下是以前干过的同类事，每条一行；想深挖就调 memory__dig（按 id）。\n"+
 			strings.Join(experience, "\n"))
+	}
+	if len(others) > 0 {
+		sections = append(sections, "（其他会话）\n"+
+			"这些是别的会话**在做什么**的摘要；你看不到它们的对话、工具输出与文件。\n"+
+			strings.Join(others, "\n"))
 	}
 	return strings.Join(sections, "\n\n")
 }
