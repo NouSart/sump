@@ -91,7 +91,7 @@ function sendJSON(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-async function readJSON(req: IncomingMessage, limit = 64 * 1024): Promise<unknown> {
+async function readJSON(req: IncomingMessage, limit = 64 * 1024, drainLimit = 0): Promise<unknown> {
   // 只收 application/json：跨站表单 / text/plain 简单请求不带预检，
   // 浏览器会直接把请求打进来——限定 Content-Type 后跨站必须先过预检，
   // 与信任栅栏形成两道独立的闸。
@@ -101,12 +101,22 @@ async function readJSON(req: IncomingMessage, limit = 64 * 1024): Promise<unknow
   }
   const chunks: Buffer[] = [];
   let size = 0;
+  let over = false;
   for await (const chunk of req) {
     const buf = chunk as Buffer;
     size += buf.length;
-    if (size > limit) throw new HttpError(413, '请求体过大');
+    if (size > limit) {
+      // drainLimit > 0 时把超出的部分**读掉但不留**：直接挂断会让浏览器只看到
+      // "连接被重置"，看不到我们写的 413；而继续缓冲又违背上限的意义。
+      if (drainLimit > 0 && size <= drainLimit) {
+        over = true;
+        continue;
+      }
+      throw new HttpError(413, '请求体过大');
+    }
     chunks.push(buf);
   }
+  if (over) throw new HttpError(413, '请求体过大');
   if (size === 0) throw new HttpError(400, '请求体为空');
   try {
     return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
@@ -182,14 +192,13 @@ function attachmentLine(a: AttachmentRef): string {
 }
 
 // base64Size 校验 base64 并返回解码后的字节数：坏数据在这里挡住，不转给下游。
+// 正则已保证至少一个有效字符，所以解码结果必然非空（不需要再判 —— 那行是死代码）。
 function base64Size(data: string): number {
   const trimmed = data.trim();
   if (trimmed === '' || trimmed.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) {
     throw new HttpError(400, 'data 必须是标准 base64（不要带 data: 前缀）');
   }
-  const bytes = Buffer.from(trimmed, 'base64');
-  if (bytes.length === 0) throw new HttpError(400, 'data 解码后为空');
-  return bytes.length;
+  return Buffer.from(trimmed, 'base64').length;
 }
 
 function humanBytes(n: number): string {
@@ -277,8 +286,24 @@ export function createRequestHandler(
   // 图片进 images（模型能用缩略图 / 矩形窗口看局部），其余进 files（模型用 read 出正文）。
   // 服务侧的权威上限（files 100 MiB / images 32 MiB）不在这里重复实现，拒了就把它的人话转发。
   const uploadBodyLimit = Math.ceil((cfg.uploadMaxBytes * 4) / 3) + 4 * 1024;
+  // 超过门户上限时要让用户**看见** 413（而不是浏览器里的"连接被重置"）：
+  // 多读掉 32 MiB 的溢出量但不留内存，再回一句人话。
+  const uploadDrainLimit = uploadBodyLimit + (32 << 20);
   const upload = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    const body = asObject(await readJSON(req, uploadBodyLimit)) ?? {};
+    let body: Record<string, unknown>;
+    try {
+      body = asObject(await readJSON(req, uploadBodyLimit, uploadDrainLimit)) ?? {};
+    } catch (err) {
+      // 请求体先撞上限：用户看到的不能只是"请求体过大"——他要知道是自己的文件太大，
+      // 以及 base64 会把它撑大约三分之一。
+      if (err instanceof HttpError && err.status === 413) {
+        throw new HttpError(
+          413,
+          `文件太大：门户上限 ${humanBytes(cfg.uploadMaxBytes)}（base64 编码后请求体再大约 +1/3，上限 ${humanBytes(uploadBodyLimit)}）`,
+        );
+      }
+      throw err;
+    }
     const filename = sanitizeFilename(requiredString(body, 'filename'));
     const data = requiredString(body, 'data');
     const mime = typeof body.mime === 'string' ? body.mime.trim() : '';
