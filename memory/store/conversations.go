@@ -55,8 +55,11 @@ func (s *Store) touchConversation(id string) error {
 	err := s.db.QueryRow(`SELECT updated_at FROM conversations WHERE id=?`, id).Scan(&last)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
+		// 查询与插入之间可能被另一个写入方抢先建会话：用幂等插入收尾，
+		// 不能把「并发首次写同一会话」变成唯一约束错误（Record 的消息此时已经落库了）。
 		_, err = s.db.Exec(
-			`INSERT INTO conversations(id, title, entry, status, created_at, updated_at) VALUES(?,?,?,?,?,?)`,
+			`INSERT INTO conversations(id, title, entry, status, created_at, updated_at) VALUES(?,?,?,?,?,?)
+			 ON CONFLICT(id) DO NOTHING`,
 			id, "", "", ConversationActive, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
 		)
 		return err

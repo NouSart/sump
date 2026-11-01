@@ -8,7 +8,10 @@ package store
 
 import (
 	"bytes"
+	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -159,5 +162,70 @@ func TestSaveRemovesOrphanWhenInsertFails(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("落库失败后不该留下二进制文件，实际 %v", entries)
+	}
+}
+
+// 并发写必须各自落成独立文件：同一个 filename 存 N 次，不能只剩最后一份。
+// 同时钉住 SQLite 单写者配置——连接池一旦放开，并发 INSERT 会在这里暴露。
+func TestConcurrentSavesKeepEveryFile(t *testing.T) {
+	s := openTemp(t)
+
+	const n = 32
+	ids := make([]string, n)
+	bodies := make([][]byte, n)
+	errCh := make(chan string, n)
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			bodies[i] = []byte(fmt.Sprintf("并发文件-%02d", i))
+			id, err := s.Save(bodies[i], "同名.txt", "text/plain")
+			if err != nil {
+				errCh <- fmt.Sprintf("第 %d 个 Save 失败: %v", i, err)
+				return
+			}
+			ids[i] = id
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for msg := range errCh {
+		t.Fatal(msg)
+	}
+
+	if got := s.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("SQLite 连接池应为 1（单写者），实际 %d", got)
+	}
+
+	seen := make(map[string]bool, n)
+	for i, id := range ids {
+		if id == "" {
+			t.Fatalf("第 %d 个 Save 没有返回 id", i)
+		}
+		if seen[id] {
+			t.Fatalf("第 %d 个 Save 返回了重复 id %q", i, id)
+		}
+		seen[id] = true
+
+		got, meta, err := s.Load(id)
+		if err != nil {
+			t.Fatalf("Load(%q) 失败: %v", id, err)
+		}
+		if !bytes.Equal(got, bodies[i]) {
+			t.Fatalf("文件 %d 被别的写入覆盖: 想要 %q，实际 %q", i, bodies[i], got)
+		}
+		if meta.Size != int64(len(bodies[i])) {
+			t.Fatalf("文件 %d 尺寸不符: 想要 %d，实际 %d", i, len(bodies[i]), meta.Size)
+		}
+	}
+
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != n {
+		t.Fatalf("并发保存后应有 %d 个二进制文件，实际 %d 个", n, len(entries))
 	}
 }
