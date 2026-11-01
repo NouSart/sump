@@ -53,11 +53,12 @@ func (s *Server) loadDoc(id, action string) (docmodel.Document, store.Meta, erro
 // toDocNode 把节点树转成线上形态（逐层递归；P0 的树只有 body→tbl→tr→tc→p 这几层）。
 func toDocNode(n docmodel.Node) protocol.DocNode {
 	out := protocol.DocNode{
-		ID:        n.ID.String(),
-		Type:      string(n.Type),
-		Text:      n.Text,
-		Level:     n.Level,
-		Truncated: n.Truncated,
+		ID:          n.ID.String(),
+		Type:        string(n.Type),
+		Text:        n.Text,
+		Level:       n.Level,
+		Truncated:   n.Truncated,
+		ExactAnchor: n.ExactAnchor,
 	}
 	if len(n.Children) > 0 {
 		out.Children = make([]protocol.DocNode, 0, len(n.Children))
@@ -88,15 +89,16 @@ func (s *Server) actionDocOutline(ctx context.Context, _ protocol.Envelope, in p
 	}
 	s.logger.Printf("已列出文档结构 %s（%s, %d 个顶层节点, %d 字）", p.ID, meta.Filename, len(nodes), outline.Stats.Chars)
 	return protocol.DocOutlineResult{
-		ID:        p.ID,
-		DocKind:   outline.Kind.String(),
-		Digest:    doc.Digest(),
-		Nodes:     nodes,
-		NodeCount: outline.Stats.Nodes,
-		Chars:     outline.Stats.Chars,
-		Tables:    outline.Stats.Tables,
-		Parts:     outline.Stats.Parts,
-		Warnings:  outline.Warnings,
+		ID:          p.ID,
+		DocKind:     outline.Kind.String(),
+		Digest:      doc.Digest(),
+		ExactDigest: doc.ExactDigest(),
+		Nodes:       nodes,
+		NodeCount:   outline.Stats.Nodes,
+		Chars:       outline.Stats.Chars,
+		Tables:      outline.Stats.Tables,
+		Parts:       outline.Stats.Parts,
+		Warnings:    outline.Warnings,
 	}, nil
 }
 
@@ -119,13 +121,14 @@ func (s *Server) actionDocReadRange(ctx context.Context, _ protocol.Envelope, in
 		return nil, fmt.Errorf("read_range: 读取 %s 失败: %w", meta.Filename, err)
 	}
 	return protocol.DocReadResult{
-		ID:      p.ID,
-		DocKind: doc.Kind().String(),
-		Digest:  doc.Digest(),
-		Node:    chunk.Node.String(),
-		Text:    chunk.Text,
-		Total:   chunk.Total,
-		Next:    chunk.Next,
+		ID:          p.ID,
+		DocKind:     doc.Kind().String(),
+		Digest:      doc.Digest(),
+		ExactDigest: doc.ExactDigest(),
+		Node:        chunk.Node.String(),
+		Text:        chunk.Text,
+		Total:       chunk.Total,
+		Next:        chunk.Next,
 	}, nil
 }
 
@@ -154,14 +157,20 @@ func (s *Server) actionDocFind(ctx context.Context, _ protocol.Envelope, in prot
 	out := make([]protocol.DocMatch, 0, len(matches))
 	for _, m := range matches {
 		out = append(out, protocol.DocMatch{
-			Node:    m.Node.String(),
-			Run:     m.Run,
-			Start:   m.Start,
-			End:     m.End,
-			Context: m.Context,
+			Node:        m.Node.String(),
+			Run:         m.Run,
+			Start:       m.Start,
+			End:         m.End,
+			Context:     m.Context,
+			ExactAnchor: m.ExactAnchor,
 		})
 	}
-	return protocol.DocFindResult{ID: p.ID, Digest: doc.Digest(), Matches: out}, nil
+	return protocol.DocFindResult{
+		ID:          p.ID,
+		Digest:      doc.Digest(),
+		ExactDigest: doc.ExactDigest(),
+		Matches:     out,
+	}, nil
 }
 
 // actionDocPatch 按节点地址改文档（LLM 工具，就地修改权威副本）。
@@ -194,6 +203,9 @@ func (s *Server) actionDocPatch(ctx context.Context, _ protocol.Envelope, in pro
 	if p.Anchor != "" && p.Anchor != doc.Digest() {
 		return nil, fmt.Errorf("%w（当前 digest 是 %s）", docmodel.ErrStale, doc.Digest())
 	}
+	if p.ExactAnchor != "" && p.ExactAnchor != doc.ExactDigest() {
+		return nil, fmt.Errorf("%w（当前 exact_digest 是 %s）", docmodel.ErrStale, doc.ExactDigest())
+	}
 	res, err := doc.Patch(ctx, ops)
 	if err != nil {
 		return nil, fmt.Errorf("patch: 改 %s 失败: %w", meta.Filename, err)
@@ -212,11 +224,12 @@ func (s *Server) actionDocPatch(ctx context.Context, _ protocol.Envelope, in pro
 	}
 	s.logger.Printf("已按节点编辑 docx %s（%s, %d 条操作）", p.ID, meta.Filename, res.Applied)
 	return protocol.DocPatchResult{
-		ID:       p.ID,
-		Applied:  res.Applied,
-		Digest:   doc.Digest(),
-		Diff:     diff,
-		Warnings: res.Warnings,
+		ID:          p.ID,
+		Applied:     res.Applied,
+		Digest:      doc.Digest(),
+		ExactDigest: doc.ExactDigest(),
+		Diff:        diff,
+		Warnings:    res.Warnings,
 	}, nil
 }
 
@@ -229,10 +242,11 @@ func toDocPatchOp(op protocol.DocPatchOp) (docmodel.PatchOp, error) {
 		return docmodel.PatchOp{}, errors.New("node 必填")
 	}
 	out := docmodel.PatchOp{
-		Op:     docmodel.Op(op.Op),
-		Node:   docmodel.NodeID(op.Node),
-		Text:   op.Text,
-		Anchor: op.Anchor,
+		Op:          docmodel.Op(op.Op),
+		Node:        docmodel.NodeID(op.Node),
+		Text:        op.Text,
+		Anchor:      op.Anchor,
+		ExactAnchor: op.ExactAnchor,
 	}
 	if op.Range != nil {
 		out.Range = &docmodel.TextRange{Start: op.Range.Start, End: op.Range.End}

@@ -186,5 +186,5 @@ MCP 异步导入由绑定配置 `async: true` 固定声明 `Provide.Async`。先
 
 异步调用方在派发前登记待回执，补报必须以来源服务、trace、item_id 共同关联。早到缓冲有界，确定终态仅交付一次。MCP 对外的 `sump://jobs/{job_id}` 观察资源归 HTTP 认证主体所有，不依赖传输会话；它是模块自己的临时记录，不是原生任务表或 MCP Tasks。
 
-文档链字段的取值约定（`files` 的 `outline` / `read_range` / `find` / `patch` / `verify`）：`node` 是结构树上的节点地址（如 `body/p12`、`body/tbl1/r2/c1/p1`），`run` 是命中起点所在的 run 地址；`start` / `end` 都是 rune 偏移、左闭右开；`digest` 是整篇可见文本的规范化指纹，可当乐观锁用——`patch` 的 `anchor` 与 `verify` 的 `digest` 都拿它比对，对不上就拒绝而不是猜；`next` 非 0 表示还有下一块，续读时原样当 `offset` 传回（整数地址，服务端不存游标）；`doc_kind` 是文档类型（当前只有 `docx`，其余格式明确报错而不是猜）。动作语义与限制见 [files/README.md](../../files/README.md)。
+文档链字段的取值约定（`files` 的 `outline` / `read_range` / `find` / `patch` / `verify`）：`node` 是结构树上的节点地址（如 `body/p12`、`body/tbl1/r2/c1/p1`），`run` 是命中起点所在的 run 地址；`start` / `end` 都是 rune 偏移、左闭右开；`digest` 是整篇可见文本的规范化指纹（折叠空白），可当乐观锁用——`patch` 的 `anchor` 与 `verify` 的 `digest` 都拿它比对，对不上就拒绝而不是猜；`exact_digest` / `exact_anchor` 是不折叠空白的原始文本指纹，带 `range` 的编辑用它，空白一变（旧 rune 坐标可能已失效）就拒绝；`next` 非 0 表示还有下一块，续读时原样当 `offset` 传回（整数地址，服务端不存游标）；`doc_kind` 是文档类型（当前只有 `docx`，其余格式明确报错而不是猜）。动作语义与限制见 [files/README.md](../../files/README.md)。
 

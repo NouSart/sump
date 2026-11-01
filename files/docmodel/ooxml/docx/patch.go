@@ -31,6 +31,10 @@ func (d *Document) Patch(ctx context.Context, ops []docmodel.PatchOp) (docmodel.
 			return docmodel.PatchResult{}, fmt.Errorf("%w（%s 的当前指纹是 %s）",
 				docmodel.ErrStale, p.id, docmodel.Fingerprint(p.text))
 		}
+		if op.ExactAnchor != "" && docmodel.ExactFingerprint(p.text) != op.ExactAnchor {
+			return docmodel.PatchResult{}, fmt.Errorf("%w（%s 的当前精确指纹是 %s）",
+				docmodel.ErrStale, p.id, docmodel.ExactFingerprint(p.text))
+		}
 		rs := []rune(p.text)
 		before, _ := preview(p.text, previewRunes)
 

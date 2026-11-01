@@ -36,6 +36,12 @@ func (d *Document) Digest() string {
 	return hex.EncodeToString(sum[:])
 }
 
+// ExactDigest 是未折叠空白的整篇文本指纹；用于带 range 的乐观锁。
+func (d *Document) ExactDigest() string {
+	sum := sha256.Sum256([]byte(d.visibleText()))
+	return hex.EncodeToString(sum[:])
+}
+
 // Text 返回整篇可见文本（段落以单个换行分隔）。
 //
 // 与 `read` 的正文提取（`files/server/word.go`）用**同一个口径**：段落之间都是一个 `\n`，
@@ -85,11 +91,12 @@ func (d *Document) Outline(ctx context.Context, depth int) (docmodel.Outline, er
 func (d *Document) paraNode(p *para) (docmodel.Node, int) {
 	text, truncated := preview(p.text, previewRunes)
 	return docmodel.Node{
-		ID:        p.id,
-		Type:      docmodel.NodeParagraph,
-		Text:      text,
-		Level:     p.level,
-		Truncated: truncated,
+		ID:          p.id,
+		Type:        docmodel.NodeParagraph,
+		Text:        text,
+		Level:       p.level,
+		Truncated:   truncated,
+		ExactAnchor: docmodel.ExactFingerprint(p.text),
 	}, 1
 }
 
@@ -198,11 +205,12 @@ func (d *Document) Find(ctx context.Context, q docmodel.Query) ([]docmodel.Match
 // matchAt 组装一处命中（含所属 run 地址与上下文）。
 func (d *Document) matchAt(p *para, rs []rune, start, end int) docmodel.Match {
 	return docmodel.Match{
-		Node:    p.id,
-		Run:     p.runIDAt(start).String(),
-		Start:   start,
-		End:     end,
-		Context: contextWindow(rs, start, end),
+		Node:        p.id,
+		Run:         p.runIDAt(start).String(),
+		Start:       start,
+		End:         end,
+		Context:     contextWindow(rs, start, end),
+		ExactAnchor: docmodel.ExactFingerprint(p.text),
 	}
 }
 

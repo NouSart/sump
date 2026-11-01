@@ -15,10 +15,10 @@ SUMP v2 的文件库：独立 SQLite 元数据 + 二进制目录，支持保存�
 | `edit_word` | `{id, operations:[{op, old, new}]}` | `{id, replaced}` | LLM 工具；仅编辑 `.docx` 正文；v0 仅 `op="replace"` |
 | `edit_ppt` | `{id, operations:[{op, old, new}]}` | `{id, replaced}` | LLM 工具；仅编辑 `.pptx` 幻灯片文本；v0 仅 `op="replace"` |
 | `edit_pdf` | `{id, operations:[{op, pages?, degrees?, properties?}]}` | `{id, applied}` | LLM 工具；仅编辑 `.pdf`；v0 支持 `set_info`/`rotate`/`delete_pages`/`keep_pages` |
-| `outline` | `{id, depth?}` | `{id, doc_kind, digest, nodes, node_count, chars, tables, parts, warnings}` | LLM 工具；文档结构树（段落 / 表格逐层展开）+ 整篇指纹 `digest` |
-| `read_range` | `{id, node?, offset?, limit?}` | `{id, doc_kind, digest, node, text, total, next}` | LLM 工具；按节点分页读，`node` 空 = 整篇，`next` 非 0 表示还有下一块 |
-| `find` | `{id, text, node?, regex?, limit?}` | `{id, digest, matches:[{node, run, start, end, context}]}` | LLM 工具；只回命中位置（节点地址 + rune 区间 + 上下文），不改文档 |
-| `patch` | `{id, anchor?, operations:[{op, node, range?, text?, anchor?}]}` | `{id, applied, digest, diff, warnings}` | LLM 工具；按节点地址就地改 `.docx`；`op` = `replace_text`/`delete_node`，整批原子 |
+| `outline` | `{id, depth?}` | `{id, doc_kind, digest, exact_digest, nodes, node_count, chars, tables, parts, warnings}` | LLM 工具；文档结构树（段落 / 表格逐层展开）+ 规范化指纹 `digest` 与原始指纹 `exact_digest` |
+| `read_range` | `{id, node?, offset?, limit?}` | `{id, doc_kind, digest, exact_digest, node, text, total, next}` | LLM 工具；按节点分页读，`node` 空 = 整篇，`next` 非 0 表示还有下一块 |
+| `find` | `{id, text, node?, regex?, limit?}` | `{id, digest, exact_digest, matches:[{node, run, start, end, context, exact_anchor}]}` | LLM 工具；只回命中位置（节点地址 + rune 区间 + 上下文），不改文档 |
+| `patch` | `{id, anchor?, exact_anchor?, operations:[{op, node, range?, text?, anchor?, exact_anchor?}]}` | `{id, applied, digest, exact_digest, diff, warnings}` | LLM 工具；按节点地址就地改 `.docx`；`op` = `replace_text`/`delete_node`，整批原子 |
 | `verify` | `{id, digest?, contains?, not_contains?}` | `{id, ok, digest, failures}` | LLM 工具；改完自查（指纹 + 片段核对），不通过也只是回事实不报错 |
 
 ## 限制
@@ -33,7 +33,8 @@ SUMP v2 的文件库：独立 SQLite 元数据 + 二进制目录，支持保存�
 - PDF 读取按页提取纯文本，页数受上限封顶；加密 PDF 明确拒绝；扫描件（图片型，无文本层）读取报错引导，不做 OCR。
 - `outline`/`read_range`/`find`/`patch`/`verify` v0 只接 `.docx`（其它格式会明确报"仅支持按节点编辑 .docx"）。节点地址形如 `body/p3`、`body/tbl1/r2/c1/p1`；写到 run 一级（`body/p3/r2`）会归到所在段落。文本框内的段落是 `body/p3/p1`、内容控件里的段落是 `body/sdt1/p1`——它们和正文段落走同一份投影，`read` 看得见的文字都有节点地址。
 - `patch` 的 `replace_text` 只在受影响 run 内改字（第一处写新文本、后续只删旧字），**不新建 run**，因此不会丢字符样式；`delete_node` 只清空段落文字、保留 `<w:p>`（样式 / 编号还在）。换行写成 `<w:br/>`、制表写成 `<w:tab/>`，不落裸控制字符。
-- `patch` 是整批原子的：任意一条失败（节点不存在、区间越界、`anchor` 对不上整篇指纹、未知 `op`）就整批拒绝，库里的字节不变；全部成功才回写一次。
+- `patch` 是整批原子的：任意一条失败（节点不存在、区间越界、`anchor` / `exact_anchor` 对不上、未知 `op`）就整批拒绝，库里的字节不变；全部成功才回写一次。
+- `anchor` / `digest` 会折叠空白，适合“文字没变”的乐观锁；带 `range` 的编辑应使用 `exact_anchor` / `exact_digest`（不折叠空白）。精确锚点对不上时整批拒绝，避免空白变化后旧 rune 坐标改到别处。
 - `verify` 的 `digest` 是整篇可见文本的规范化指纹，可直接拿 `outline`/`find`/`patch` 返回值当"版本号"做乐观锁。
 
 ## 运行
