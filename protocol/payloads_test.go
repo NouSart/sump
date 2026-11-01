@@ -327,8 +327,11 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 		{"fileSaveResult", FileSaveResult{ID: "01J", Filename: "a.pdf", Mime: "application/pdf", Size: 123}, &FileSaveResult{}},
 		{"fileFetch", FileFetchPayload{ID: "01J"}, &FileFetchPayload{}},
 		{"fileFetchResult", FileFetchResult{ID: "01J", Filename: "a.pdf", Mime: "application/pdf", Data: "AA==", Size: 1}, &FileFetchResult{}},
-		{"fileRead", FileReadPayload{ID: "01J"}, &FileReadPayload{}},
-		{"fileReadResult", FileReadResult{ID: "01J", Filename: "a.md", Text: "内容", Truncated: true}, &FileReadResult{}},
+		{"fileRead", FileReadPayload{ID: "01J", Offset: 10, Limit: 20}, &FileReadPayload{}},
+		{"fileReadResult", FileReadResult{
+			ID: "01J", Filename: "a.md", Text: "内容", Truncated: true,
+			Total: 30, Next: 20, Warnings: []string{"工作表损坏"},
+		}, &FileReadResult{}},
 		{"fileWrite", FileWritePayload{ID: "01J", Sheet: "Sheet1", Edits: []FileWriteEdit{{Cell: "A1", Value: "姓名"}, {Cell: "B2", Value: "30"}}}, &FileWritePayload{}},
 		{"fileWriteResult", FileWriteResult{ID: "01J", Sheet: "Sheet1", Updated: 2}, &FileWriteResult{}},
 		{"fileWordEdit", FileWordEditPayload{ID: "01J", Operations: []WordEditOperation{{Op: "replace", Old: "旧", New: "新"}}}, &FileWordEditPayload{}},
@@ -337,6 +340,29 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 		{"filePptEditResult", FilePptEditResult{ID: "01J", Replaced: 1}, &FilePptEditResult{}},
 		{"filePdfEdit", FilePdfEditPayload{ID: "01J", Operations: []PdfEditOperation{{Op: "rotate", Pages: "1-3", Degrees: 90}, {Op: "set_info", Properties: map[string]string{"title": "标题"}}}}, &FilePdfEditPayload{}},
 		{"filePdfEditResult", FilePdfEditResult{ID: "01J", Applied: 2}, &FilePdfEditResult{}},
+		{"docOutline", DocOutlineResult{
+			ID: "01J", DocKind: "docx", Digest: "d1", ExactDigest: "e1",
+			Nodes: []DocNode{{ID: "body/p1", Type: "paragraph", Text: "原文", ExactAnchor: "a1"}},
+		}, &DocOutlineResult{}},
+		{"docRead", DocReadResult{
+			ID: "01J", DocKind: "docx", Digest: "d1", ExactDigest: "e1",
+			Node: "body/p1", Text: "原文", Total: 2,
+		}, &DocReadResult{}},
+		{"docFind", DocFindResult{
+			ID: "01J", Digest: "d1", ExactDigest: "e1",
+			Matches: []DocMatch{{Node: "body/p1", Run: "body/p1/r1", Start: 0, End: 2, Context: "原文", ExactAnchor: "a1"}},
+		}, &DocFindResult{}},
+		{"docPatch", DocPatchPayload{
+			ID: "01J", Anchor: "d1", ExactAnchor: "e1",
+			Operations: []DocPatchOp{{
+				Op: "replace_text", Node: "body/p1", Range: &DocRange{Start: 0, End: 2},
+				Text: "新文", Anchor: "a1", ExactAnchor: "e1",
+			}},
+		}, &DocPatchPayload{}},
+		{"docPatchResult", DocPatchResult{
+			ID: "01J", Applied: 1, Digest: "d2", ExactDigest: "e2",
+			Diff: []DocDiff{{Op: "replace_text", Node: "body/p1", Before: "原文", After: "新文"}},
+		}, &DocPatchResult{}},
 		{"save", ImageSavePayload{URL: "http://x/i.png", Mime: "image/png"}, &ImageSavePayload{}},
 		{"saveResult", ImageSaveResult{ID: "01J", Mime: "image/png", Size: 123}, &ImageSaveResult{}},
 		{"fetch", ImageFetchPayload{ID: "01J"}, &ImageFetchPayload{}},
