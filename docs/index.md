@@ -22,6 +22,7 @@
 | 查历史（旧设计、进度、验收快照） | [archive/](archive/) |
 | 查实验结论（LLM 判官 vs 规则等） | [../experiments/](../experiments/) |
 | 评测 harness 本身（不是模型） | [../evals/README.md](../testing/evals/README.md) |
+| 打一个可分发的包（win-x64） | [../automation/README.md](../automation/README.md) |
 
 ## 每篇的定位
 

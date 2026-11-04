@@ -33,7 +33,7 @@
 
 ## 技术待决（从 SPEC / DESIGN 迁入，别丢）
 
-- [ ] **`automation/`** — 打包与发版（生成应用包、版本号、Release）；目录尚未建，等第一个脚本落地
+- [ ] **`automation/`** — 已有 `package.ps1`（出一份 win-x64 构建包）；还差交叉编译（linux / darwin）、版本号与 CHANGELOG 生成、GitHub Release 上传
 - [ ] **`deploy/`** — 部署物（systemd / Docker / 服务器脚本）；目录尚未建，等第一个部署目标确定
 - [ ] **`examples/`** — 最小可跑服务，用来验证 roadmap 的「外部开发者一天内接入」；目录尚未建
 - [ ] **连接时长自适应** — 现在是全短连接；热保留 / 冷回落的阈值与公式未定（实现前不声明设置项）

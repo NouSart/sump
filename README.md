@@ -34,6 +34,7 @@ testing/      只用来验证，不进发布物
   ├─ evals/                     评测器（含异变测试）
   └─ approval-integration/      审批与 shell 的集成测试
 experiments/  探索性代码（judgeexp），随时可删
+automation/   打包与发版（package.ps1：一条命令出 win-x64 zip）
 scripts/      起停与体检脚本（run-local / reload-sump / serve / check-frontend）
 docs/         文档
 third_party/  第三方代码（附 LICENSE 与来源说明）
