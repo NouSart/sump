@@ -1,4 +1,6 @@
 # 构建产物
+# 打包产物（automation/package.ps1 输出）
+dist/
 *.exe
 bin/
 command-runtime/
@@ -16,12 +18,12 @@ data/
 *.db
 
 # 前端服务（Node）：依赖与构建产物不入库
-frontend/node_modules/
-frontend/dist/
-frontend/design/specimen-assets/
+src/frontend/node_modules/
+src/frontend/dist/
+src/frontend/design/specimen-assets/
 
 # embedding 服务（Python）：虚拟环境 / 缓存 / 构建元数据不入库
-embedding/.venv/
+src/embedding/.venv/
 __pycache__/
 *.pyc
 .pytest_cache/

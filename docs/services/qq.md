@@ -59,10 +59,10 @@
 cd qq; go test ./... -count=1
 ```
 
-- `tests/group_test.go`：来源标注字段、三档策略、群 `deliver`、群资料缓存、自己消息不回灌。
-- `tests/titles_test.go`：会话标题（群名 / 昵称兜底 / 群名未知不起名 / 只起一次 / 失败不重试 / 不挡消息）。
-- `tests/quiet_store_test.go`：只记录落库失败要有信号（累计计数 + `report`）。
-- 跨服务真进程链路见根目录 `tests/qq_e2e_test.go`、`tests/qq_group_e2e_test.go`、`tests/file_e2e_test.go`。
+- `src/qq/tests/group_test.go`：来源标注字段、三档策略、群 `deliver`、群资料缓存、自己消息不回灌。
+- `src/qq/tests/titles_test.go`：会话标题（群名 / 昵称兜底 / 群名未知不起名 / 只起一次 / 失败不重试 / 不挡消息）。
+- `src/qq/tests/quiet_store_test.go`：只记录落库失败要有信号（累计计数 + `report`）。
+- 跨服务真进程链路见根目录 `src/qq/tests/qq_e2e_test.go`、`src/qq/tests/qq_group_e2e_test.go`、`src/qq/tests/file_e2e_test.go`。
 
 ## 已知限制
 

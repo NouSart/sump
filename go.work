@@ -1,20 +1,20 @@
 go 1.26.0
 
 use (
-	./approval-integration
-	./approval
-	./batch
-	./evals
-	./protocol
-	./service
-	./reasoner
-	./memory
-	./images
-	./files
-	./qq
-	./shell
-	./timer
-	./mcp
-	./settings-center
-	./tests
+	./src/approval
+	./src/batch
+	./src/files
+	./src/images
+	./src/mcp
+	./src/memory
+	./src/protocol
+	./src/qq
+	./src/reasoner
+	./src/service
+	./src/settings-center
+	./src/shell
+	./src/timer
+	./testing/approval-integration
+	./testing/evals
+	./testing/tests
 )

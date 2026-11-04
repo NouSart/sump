@@ -48,6 +48,6 @@
 cd images; go test ./... -count=1
 ```
 
-- `tests/store_test.go`：两张图互不覆盖（固定文件名会让第二张顶掉第一张，而 `Load` 照旧成功）。
-- `tests/service_test.go` / `settings_test.go`：动作面、错误路径、`max_mb` 热改。
-- 跨服务链路（qq 收图 → 模型看图）见根目录 `tests/qq_e2e_test.go`。
+- `src/images/tests/store_test.go`：两张图互不覆盖（固定文件名会让第二张顶掉第一张，而 `Load` 照旧成功）。
+- `src/images/tests/service_test.go` / `settings_test.go`：动作面、错误路径、`max_mb` 热改。
+- 跨服务链路（qq 收图 → 模型看图）见根目录 `src/images/tests/qq_e2e_test.go`。

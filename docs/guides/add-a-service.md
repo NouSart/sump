@@ -6,7 +6,7 @@
 
 ## 1. 最短路径
 
-1. 建目录 `<服务名>/`，`main.go`（或任意语言入口）+ `tests/`
+1. 在 `src/` 下建目录 `<服务名>/`，`main.go`（或任意语言入口）+ `tests/`
 2. 从启动参数拿三要素：`-name` / `-addr` / `-center`
 3. 向中心 `register`，名片里写清 `provides` 与 `settings`
 4. 收 `jump` → 按 `action` 分派 → 回 `response`
@@ -17,7 +17,7 @@
 9. 只暴露能力类动作（`tool: true`），管理 / 调试动作不要暴露
 10. 需要长耗时 → 用 `async: true` + `report_result` 补报，不要让调用方等
 
-Go 服务直接用 `service/` 骨架（注册 / 心跳 / 名册 / 重连 / 告别 / 设置接收都现成），只写业务动作。**其他语言照此实现即可**：`protocol/` 与 `service/` 是 Go 侧的便利库，不是准入条件。
+Go 服务直接用 `src/service/` 骨架（注册 / 心跳 / 名册 / 重连 / 告别 / 设置接收都现成），只写业务动作。**其他语言照此实现即可**：`src/protocol/` 与 `src/service/` 是 Go 侧的便利库，不是准入条件。
 
 ## 2. 名片：`provides` 与 `settings`
 
@@ -39,7 +39,7 @@ Go 服务直接用 `service/` 骨架（注册 / 心跳 / 名册 / 重连 / 告�
 }
 ```
 
-- `provides[].input/output` 是**给人看的宽松描述**，不是 JSON Schema。精确字段形状由协议包里的载荷类型定义（`protocol/payloads.go`）。
+- `provides[].input/output` 是**给人看的宽松描述**，不是 JSON Schema。精确字段形状由协议包里的载荷类型定义（`src/protocol/payloads.go`）。
 - 名片字段名（`action` / `input` / `output` / `tool` / `async` / `batchable`）跨语言一致，见 [命名基线](../concepts/protocol.md)。
 
 ### 2.1 设置项的人话元数据（全部可选）
@@ -99,7 +99,7 @@ Go 服务直接用 `service/` 骨架（注册 / 心跳 / 名册 / 重连 / 告�
 ## 6. 测试要求
 
 - 服务自带 `tests/`：起真实服务 + 真实 WS，覆盖自己的动作（含错误路径）。
-- 根 `tests/`：跨服务**真进程**端到端（新增链路时补一条）。
+- `testing/tests/`：跨服务**真进程**端到端（新增链路时补一条）。
 - 测试**不得依赖外网**：用假 LLM（OpenAI 兼容替身）/ 假对端；真模型只在显式开关下跑冒烟。
 - 测试里构造消息建议**手写字段**（当「只读规范的第三方」），而不是复用生产结构体——这样契约漂移会立刻被测试抓住。
 

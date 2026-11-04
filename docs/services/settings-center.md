@@ -27,8 +27,8 @@
 骨架注册的通用设置动作也由它应答：`list_settings` / `set_setting` / `reset_setting` / `report_setting` /
 `configure`（`configure` 是中心 → 服务的下发方向）。
 
-> 中心**不走** `service` 骨架的 `Handle`，自己实现动作分发——`tests/provides_gate_test.go` 对这类模块
-> 用弱检查（声明过的动作名必须在源码里出现），见 `tests/provides_gate_test.go` 的 `ownDispatcher`。
+> 中心**不走** `service` 骨架的 `Handle`，自己实现动作分发——`src/settings-center/tests/provides_gate_test.go` 对这类模块
+> 用弱检查（声明过的动作名必须在源码里出现），见 `src/settings-center/tests/provides_gate_test.go` 的 `ownDispatcher`。
 
 ## 设置项
 
@@ -54,5 +54,5 @@
 cd settings-center; go test ./... -count=1
 ```
 
-`tests/` 里覆盖：注册与名册广播、设置项增删改与下发、秘密项不回显、离线扫描与兜底心跳、
-`report` 消费挂点。跨服务拉起顺序见根目录 `tests/e2e_test.go`。
+`src/settings-center/tests/` 里覆盖：注册与名册广播、设置项增删改与下发、秘密项不回显、离线扫描与兜底心跳、
+`report` 消费挂点。跨服务拉起顺序见根目录 `src/settings-center/tests/e2e_test.go`。

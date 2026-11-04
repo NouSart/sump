@@ -10,7 +10,7 @@
 2. **独立存储**：只读写自己的库与目录；**不得**直接访问其他服务的库表或文件。派生数据（缓存 / 向量 / 索引）必须可丢弃、可重建——**权威数据只有一份**，且在它的归属服务里。
 3. **只经网络访问**：按地址点对点直连，不经过任何中转。
 4. **不驻留链状态**：跨步状态原则上随消息携带。唯一例外是 reasoner 的**任务窗口黑板**——进行中任务的最新消息链与在跑工具表留在进程内（窗口 = 任务在跑期，交付 / 被取代即释放，不落盘、不跨重启）。
-5. **语言自由**：任何语言都可实现。`protocol/`（Go 包）只是**参考实现之一**，不是规范本身。
+5. **语言自由**：任何语言都可实现。`src/protocol/`（Go 包）只是**参考实现之一**，不是规范本身。
 
 > 判断一个改动是否合规的最快问法：**它需要别的服务配合修改吗？** 需要，就是设计走偏了。
 
@@ -75,7 +75,7 @@
 `recall` `resume` `store`（记忆往返）/ `save` `fetch`（图片 / 文件链）/ `report_result`（异步受理的补报）。
 
 这些是**协议级词汇**：即便某个服务提供了同名动作，也**不作为 LLM 工具**暴露。
-另有**骨架保留动作** `configure`（设置下发专用，由 `service/` 骨架统一承接，同样不进 `provides`、不作 LLM 工具）。
+另有**骨架保留动作** `configure`（设置下发专用，由 `src/service/` 骨架统一承接，同样不进 `provides`、不作 LLM 工具）。
 
 ### 5.2 服务自定义动作
 
@@ -136,7 +136,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 - **完全启动（记忆往返）**：任务入口先 `recall` 把上下文托管给记忆服务；**只有收到 `from=memory` 的 `resume`** 才调用 LLM API。任务内的各轮由黑板延续——不再重复经记忆（上下文已在线程里）。
 - **工具结果入账**：结果到达 → 注入黑板 → 按通知模式唤醒下一轮（`each` 逐条 / `batch` 攒批）。**工具参数的数字一律按整数归一**（LLM 的 JSON 数字是 float64，直接进 msgpack 会让服务侧的整数字段解码失败）。
 - **发出即完**：一步 = 收到 → 处理 → 发出下一跳 → 结束；没有长挂起的链（`wait` 是唯一的阻塞点）。
-- **用户附注（`notes`）**：入口服务把「用户在界面上直接做的操作」以 `notes` 块随下一跳投递——与用户说的话在数据层分开，reasoner 渲染成前缀块。交给 `batch` 的 `user_hold` 的 `Notes` **不再重复**放进消息的 `notes`；被停手时未开始的项已作废、**不会自动重跑**，附注必须写明这一点，否则模型会以为任务还完整。规则见 [batch/README.md](../../batch/README.md)。
+- **用户附注（`notes`）**：入口服务把「用户在界面上直接做的操作」以 `notes` 块随下一跳投递——与用户说的话在数据层分开，reasoner 渲染成前缀块。交给 `batch` 的 `user_hold` 的 `Notes` **不再重复**放进消息的 `notes`；被停手时未开始的项已作废、**不会自动重跑**，附注必须写明这一点，否则模型会以为任务还完整。规则见 [batch/README.md](../../src/batch/README.md)。
 - **来源标注（`user_message.sender`）**：入口服务把「谁说的、在哪说的、多少人看得见」作为**结构化事实**随消息带上（`channel` / 发送者 id 与名字 / 群 id 与群名 / `group_size` = 扩散面 / `owner` / `mentioned`）。渲染成正文标签的实现在协议包里只有一份（`protocol.Sender.Label()`），所以**记忆里存的、模型看到的**是同一句话：
 
   ```text
@@ -155,7 +155,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 - 信封 `v` 是协议版本（当前 `1`）。
 - **动作只增不改**：已有动作的语义与载荷字段只做加法；删改 = 破坏性变更。
 - **未知字段必须忽略**（解码时不得因多字段报错）；**未知动作必须回 `{ok: false, error}`**，不得静默丢弃。
-- 【待定】`protocol/` 是否对外发布版本（当前为仓库内本地模块，`v0.0.0` + `replace`）。
+- 【待定】`src/protocol/` 是否对外发布版本（当前为仓库内本地模块，`v0.0.0` + `replace`）。
 
 ## 9. 命名基线（防漂移）
 
@@ -166,7 +166,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 | 消息类型（`type`） | 裸名词；请求 / 响应 / 事件方向固定（事件型只由中心广播） | `register` `response` `roster` `jump` `heartbeat`；事件：`roster` `settings` |
 | 动作（`jump.action`） | 小写下划线、动词_名词；保留动作见 §5.1 | `ping` `roster` `report` `list_settings` `set_setting` `reset_setting` `report_setting` `embed` `run` `report_result` `approval_request` `approval_pending` `approval_decide` `approval_list` `capabilities`；骨架保留：`configure`；timer：`sleep` `cancel` `list`；memory：`remember` `forget` `note` `dig` `lineheads` `prune` `publish_session` `shared_sessions` `shared_forget` `conversation_open` `conversation_archive`；files：`save` `fetch` `read` `write` `edit_word` `edit_ppt` `edit_pdf` `outline` `read_range` `find` `patch` `verify` |
 | 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms`；设置项三类标记：`secret` `readonly` `set`；服务自报：`actual` `reported`；用户消息：`images` `files` `notes`（附注不是用户说的话）；上下文消息：`image_ids` `file_ids`；batch：`on_error`（`continue` 默认 / `stop`）`kind`（`once` / `resident`）`wake`；文件链：`filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated` `operations` `op` `old` `new` `replaced` `pages` `degrees` `properties` `applied`（`patch` 也用它）；文档链：`doc_kind` `digest` `depth` `node` `nodes` `node_count` `chars` `tables` `parts` `warnings` `offset` `limit` `total` `next` `regex` `matches` `run` `start` `end` `context` `range` `anchor` `exact_anchor` `exact_digest` `diff` `before` `after` `contains` `not_contains` `failures`；节点字段：`type` `level` `children`；embedding：`texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms`；timer：`ms` `note` `fire_at` `seq` `timers` `caller` `status`；共享经验库（跨会话只放提炼物）：`session_id` `task_id` `title` `goal` `outcome` `capabilities` `private` `sessions` `archived` `exclude` |
-| 审批载荷字段 | snake_case；结构由 `protocol/approval.go` 定义 | `schema_version` `plan` `decision` `decision_id` `plan_digest` `policy_version` `reason_code` `valid_for_ms` `llm_feedback` `summary` `unknowns` `rule_ids`；补报新增 `approval`；第二层：`requested_by` `created_ms` `expires_ms` `note` |
+| 审批载荷字段 | snake_case；结构由 `src/protocol/approval.go` 定义 | `schema_version` `plan` `decision` `decision_id` `plan_digest` `policy_version` `reason_code` `valid_for_ms` `llm_feedback` `summary` `unknowns` `rule_ids`；补报新增 `approval`；第二层：`requested_by` `created_ms` `expires_ms` `note` |
 | exec 域执行描述字段 | 当前 `plan` 是命令域专用结构；每个字段只保留一个语义 | `version` `command` `work_dir` `shell_path` `args` `dialect` `platform` `profile` `timeout_ms` `max_output_bytes`；`dialect` 只表示 shell 方言，`profile` 只表示执行环境约定 |
 | 域判别字段（将来） | 新增第二个执行域时定义独立字段；当前协议尚未发送，不复用 `dialect` | 建议 `kind`，取值如 `exec` / `fs` / `http`；其他域各自声明执行字段组，裁决包、摘要绑定、有效期、fail-closed 共用 |
 | 审批枚举 | 取值由 approval 服务定义，见 [approval.md](approval.md) | `decision`：`allow` / `deny` / `review`；`reason_code`：`RULE_ALLOW` `POLICY_DENY` `DYNAMIC_BEHAVIOR` `NO_MATCHING_RULE` `PARSE_ERROR` `UNSUPPORTED_DIALECT` `CONTEXT_UNKNOWN` `RUNTIME_MISMATCH` `LIMIT_EXCEEDED`，第二层用户裁决：`USER_APPROVED` `USER_DENIED` |
@@ -180,11 +180,11 @@ MCP 设置键补充：`http.token` 与 `remote.<id>.token`（秘密）、`http.a
 
 MCP 导入动作的 `provides[].batchable` 为 `false`；导入授权不包含 batch 代理执行授权。batch 对此返回 `BATCH_NOT_BATCHABLE`，直接调用及其并发不受影响。
 
-MCP 同步导入结果：`phase` 为 `completed` / `failed`，`is_error` 表示远端工具是否明确失败，`content` 保留 MCP 内容块，`structured_content` 保留已校验的结构化结果；工具明确失败仍是已成功翻译的响应，`response.ok=true`。传输或契约失败使用 `response.ok=false`，不可据此认定远端没有执行。详见 [mcp/README.md](../../mcp/README.md)。
+MCP 同步导入结果：`phase` 为 `completed` / `failed`，`is_error` 表示远端工具是否明确失败，`content` 保留 MCP 内容块，`structured_content` 保留已校验的结构化结果；工具明确失败仍是已成功翻译的响应，`response.ok=true`。传输或契约失败使用 `response.ok=false`，不可据此认定远端没有执行。详见 [mcp/README.md](../../src/mcp/README.md)。
 
 MCP 异步导入由绑定配置 `async: true` 固定声明 `Provide.Async`。先返回 `{item_id, phase:"accepted"}`，再沿原来源、trace、boss 发送现有 `report_result`；`text` 是有界可读投影，`data` 保留翻译结果，`final: true` 表示本地观察结束。派发后失去结果时 `phase=outcome_unknown`，不能解释为操作未执行或已停止。`cancel_import` 输入仅 `item_id`，校验原调用服务身份；返回 `status=observation_cancelled/unknown` 和 `remote_outcome=unknown`，只取消本地等待。失败数据可带 `execution_outcome=not_submitted/unknown`，不新增信封字段或全局调度状态。
 
 异步调用方在派发前登记待回执，补报必须以来源服务、trace、item_id 共同关联。早到缓冲有界，确定终态仅交付一次。MCP 对外的 `sump://jobs/{job_id}` 观察资源归 HTTP 认证主体所有，不依赖传输会话；它是模块自己的临时记录，不是原生任务表或 MCP Tasks。
 
-文档链字段的取值约定（`files` 的 `outline` / `read_range` / `find` / `patch` / `verify`）：`node` 是结构树上的节点地址（如 `body/p12`、`body/tbl1/r2/c1/p1`），`run` 是命中起点所在的 run 地址；`start` / `end` 都是 rune 偏移、左闭右开；`digest` 是整篇可见文本的规范化指纹（折叠空白），可当乐观锁用——`patch` 的 `anchor` 与 `verify` 的 `digest` 都拿它比对，对不上就拒绝而不是猜；`exact_digest` / `exact_anchor` 是不折叠空白的原始文本指纹，带 `range` 的编辑用它，空白一变（旧 rune 坐标可能已失效）就拒绝；`next` 非 0 表示还有下一块，续读时原样当 `offset` 传回（整数地址，服务端不存游标）；`doc_kind` 是文档类型（当前只有 `docx`，其余格式明确报错而不是猜）。动作语义与限制见 [files/README.md](../../files/README.md)。
+文档链字段的取值约定（`files` 的 `outline` / `read_range` / `find` / `patch` / `verify`）：`node` 是结构树上的节点地址（如 `body/p12`、`body/tbl1/r2/c1/p1`），`run` 是命中起点所在的 run 地址；`start` / `end` 都是 rune 偏移、左闭右开；`digest` 是整篇可见文本的规范化指纹（折叠空白），可当乐观锁用——`patch` 的 `anchor` 与 `verify` 的 `digest` 都拿它比对，对不上就拒绝而不是猜；`exact_digest` / `exact_anchor` 是不折叠空白的原始文本指纹，带 `range` 的编辑用它，空白一变（旧 rune 坐标可能已失效）就拒绝；`next` 非 0 表示还有下一块，续读时原样当 `offset` 传回（整数地址，服务端不存游标）；`doc_kind` 是文档类型（当前只有 `docx`，其余格式明确报错而不是猜）。动作语义与限制见 [files/README.md](../../src/files/README.md)。
 

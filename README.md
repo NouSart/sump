@@ -19,6 +19,30 @@ SUMP 是「服务的互联网」式智能体系统：每个能力是**独立进�
 
 全部文档见 [docs/index.md](./docs/index.md)。
 
+## 目录结构
+
+一级目录按「这批东西为什么存在」分，不按语言分：
+
+```text
+src/          要跑、要发布的东西
+  ├─ 11 个服务（approval / batch / files / images / mcp / memory / qq /
+  │              reasoner / settings-center / shell / timer）
+  ├─ protocol/  service/        两个 Go 库（不是服务）
+  └─ frontend/  embedding/      门户（TS）与向量服务（Python）
+testing/      只用来验证，不进发布物
+  ├─ tests/                     跨服务真进程 e2e
+  ├─ evals/                     评测器（含异变测试）
+  └─ approval-integration/      审批与 shell 的集成测试
+experiments/  探索性代码（judgeexp），随时可删
+automation/   打包与发版（package.ps1：一条命令出 win-x64 zip）
+scripts/      起停与体检脚本（run-local / reload-sump / serve / check-frontend）
+docs/         文档
+third_party/  第三方代码（附 LICENSE 与来源说明）
+go.work       把 src/ 与 testing/ 下的 16 个模块串成一个工作区
+```
+
+`data/` 与 `logs/` 是运行期产物，不入库。
+
 ## 现在能用它做什么
 
 - **门户对话**：回复按 Markdown 渲染，思考 / 终端命令 / 终端输出画成步骤时间线；侧栏是「会话 → 任务」目录；设置页按服务分页、每项按类型出控件

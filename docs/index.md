@@ -15,13 +15,14 @@
 | 理解一次对话怎么流动、状态落在哪 | [concepts/agent-loop.md](concepts/agent-loop.md) |
 | 知道现在做到哪、下一步该证明什么 | [concepts/roadmap.md](concepts/roadmap.md) |
 | 把 MCP 接到远程 / 先做接入检查 | [guides/mcp-connect.md](guides/mcp-connect.md) |
-| 查某个服务的动作与设置项 | 服务页：[services/](services/)（images / qq / reasoner / settings-center / approval）；其余看服务目录的 README：[batch](../batch/README.md) / [embedding](../embedding/README.md) / [files](../files/README.md) / [frontend](../frontend/README.md) / [mcp](../mcp/README.md) / [memnet](../memory/memnet/README.md) / [shell](../shell/README.md) / [timer](../timer/README.md) |
+| 查某个服务的动作与设置项 | 服务页：[services/](services/)（images / qq / reasoner / settings-center / approval）；其余看服务目录的 README：[batch](../src/batch/README.md) / [embedding](../src/embedding/README.md) / [files](../src/files/README.md) / [frontend](../src/frontend/README.md) / [mcp](../src/mcp/README.md) / [memnet](../src/memory/memnet/README.md) / [shell](../src/shell/README.md) / [timer](../src/timer/README.md) |
 | 交 PR、跑测试、看提交规矩 | [../CONTRIBUTING.md](../CONTRIBUTING.md) |
 | 我是 AI 代理，先看红线 | [../AGENTS.md](../AGENTS.md) |
 | 接手团队待办 | [../TODO.md](../TODO.md) |
 | 查历史（旧设计、进度、验收快照） | [archive/](archive/) |
 | 查实验结论（LLM 判官 vs 规则等） | [../experiments/](../experiments/) |
-| 评测 harness 本身（不是模型） | [../evals/README.md](../evals/README.md) |
+| 评测 harness 本身（不是模型） | [../evals/README.md](../testing/evals/README.md) |
+| 打一个可分发的包（win-x64） | [../automation/README.md](../automation/README.md) |
 
 ## 每篇的定位
 
@@ -39,7 +40,7 @@
 | [archive/v1-to-v2.md](archive/v1-to-v2.md) | 想追溯取舍的人 | 历史，勿据此开发 | 2026-10-30 |
 | [archive/progress-log.md](archive/progress-log.md) | 想查批次进度的人 | 历史 | 2026-10-30 |
 | [archive/mcp-acceptance-2026-10.md](archive/mcp-acceptance-2026-10.md) | 想查验收范围的人 | 历史快照 | 2026-10-30 |
-| [../evals/README.md](../evals/README.md) | 想给编排层打分的人 | 有效（首版，含已知红项） | 2026-11-01 |
+| [../evals/README.md](../testing/evals/README.md) | 想给编排层打分的人 | 有效（首版，含已知红项） | 2026-11-01 |
 
 ## 文档的规矩
 
@@ -47,4 +48,4 @@
 2. **每篇开头四行**：读者 / 读完能做 / 状态 / 最后校验日期。
 3. **承诺必须有测试或验收脚本**，否则只能写进 [TODO.md](../TODO.md)。
 4. **不建空文档**：没有实现就不写「怎么做」，只写「未做」。
-5. 链接与目录一致性由 `tests/docs_test.go` 守着：`cd tests; go test -run 'TestDocs' ./...`
+5. 链接与目录一致性由 `testing/tests/docs_test.go` 守着：`cd testing/tests; go test -run 'TestDocs' ./...`

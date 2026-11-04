@@ -14,8 +14,8 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 )
 
-replace github.com/NouSart/sump/protocol => ../../protocol
+replace github.com/NouSart/sump/protocol => ../../src/protocol
 
-replace github.com/NouSart/sump/service => ../../service
+replace github.com/NouSart/sump/service => ../../src/service
 
-replace github.com/NouSart/sump/approval => ../../approval
+replace github.com/NouSart/sump/approval => ../../src/approval

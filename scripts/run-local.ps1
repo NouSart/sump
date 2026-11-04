@@ -111,7 +111,7 @@ try {
 }
 
 Write-Host '[2/9] 构建 frontend（首次会自动 npm install）...' -ForegroundColor Cyan
-$frontendDir = Join-Path $root 'frontend'
+$frontendDir = Join-Path $root 'src' 'frontend'
 if (-not (Test-Path (Join-Path $frontendDir 'node_modules'))) {
     Push-Location $frontendDir
     try {
@@ -209,7 +209,7 @@ if ($null -ne $rebuildWhy) {
 $dataDir = Join-Path $root 'data'
 
 Write-Host '[3/9] 准备 embedding（venv + 依赖 + 模型检测）...' -ForegroundColor Cyan
-$embeddingDir = Join-Path $root 'embedding'
+$embeddingDir = Join-Path $root 'src' 'embedding'
 $embVenv = Join-Path $embeddingDir '.venv'
 $embPython = Join-Path $embVenv 'Scripts\python.exe'
 if (-not (Test-Path $embPython)) {
