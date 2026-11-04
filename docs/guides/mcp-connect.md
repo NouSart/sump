@@ -2,7 +2,7 @@
 
 > **读者**：要把 MCP 从本机搬到跨设备、或接一个外部 MCP Server 的人 ｜ **读完能做**：配好 HTTPS 入口、信任私有 CA、在不执行工具的前提下验证契约 ｜ **最后校验**：2026-10-30
 
-服务本身的职责、配置项与契约见 [mcp/README.md](../../mcp/README.md)。
+服务本身的职责、配置项与契约见 [mcp/README.md](../../src/mcp/README.md)。
 
 ## 1. 入口 HTTPS
 

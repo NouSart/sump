@@ -51,7 +51,7 @@ SUMP 是「服务的互联网」：每个服务是独立进程、独立数据库
 | frontend | TS | 用户交互门户（与 qq 同类）＋ 设置面板：提供 `deliver`（推给浏览器）、`report_result`（终端命令的结果）；自己跳 `user_message`（转给 reasoner）、`files.save` / `images.save`（用户上传的附件）、`shell.run`（终端命令，仍走审批）；浏览器 HTTP JSON + SSE；单用户 + Host/Origin 栅栏 |
 | embedding | Python | 文本 → 向量（onnxruntime + tokenizers，CLS pooling + L2 归一）；动作 `embed`；fake 后端供测试与 CI |
 
-两个 Go **库**（不是服务）：`protocol/`（协议与载荷类型）、`service/`（服务骨架：注册 / 心跳 / 名册 / 重连 / 告别 / 设置接收）。根 `tests/` 是跨服务真进程端到端，不属于任何服务。
+两个 Go **库**（不是服务）：`src/protocol/`（协议与载荷类型）、`src/service/`（服务骨架：注册 / 心跳 / 名册 / 重连 / 告别 / 设置接收）。`testing/tests/` 是跨服务真进程端到端，不属于任何服务。
 
 端口一览见 [../quickstart.md](../quickstart.md)。
 

@@ -34,17 +34,17 @@ SUMP 是「服务的互联网」式智能体系统：每个能力是一个**独�
 ```powershell
 .\scripts\run-local.ps1                 # 起全栈（门户 http://127.0.0.1:9501/）
 .\scripts\reload-sump.ps1 -DryRun       # 改完代码：先看会杀掉谁，再去掉 -DryRun 重载
-cd <模块>; go test ./... -count=1       # 单模块测试
-cd tests; go test ./... -count=1        # 跨服务真进程端到端（约 20 秒）
-gofmt -l .                              # 提交前必须无输出
+cd src/<模块>; go test ./... -count=1       # 单模块测试
+cd testing/tests; go test ./... -count=1        # 跨服务真进程端到端（约 20 秒）
+gofmt -l (git ls-files '*.go')                              # 提交前必须无输出
 ```
 
-改动 `frontend` 另跑 `cd frontend; npm test`；改动 `embedding` 另跑 `cd embedding; .\.venv\Scripts\python.exe -m pytest tests -q`。完整环境要求与自检清单见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+改动 `frontend` 另跑 `cd src/frontend; npm test`；改动 `embedding` 另跑 `cd src/embedding; .\.venv\Scripts\python.exe -m pytest tests -q`。完整环境要求与自检清单见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 改代码的规矩
 
 - 小步提交：一个提交只做一件事；信息用「类型: 中文描述」（`feat:` / `fix:` / `docs:` / `refactor:` / `test:` / `chore:`）。
-- 协议变更（`protocol/`）、新动作、新消息类型：**先商量再动手**，且只做加法。
+- 协议变更（`src/protocol/`）、新动作、新消息类型：**先商量再动手**，且只做加法。
 - 不顺手重构：改动范围收敛在目标内；发现无关问题提 issue，别顺路改。
 - Go 以 `gofmt` 为准；注释与文档用中文；错误信息指明对象、可读。
 

@@ -2,7 +2,7 @@
 
 > **读者**：要改审批规则、接入 shell、或排查「命令为什么没执行」的人 ｜ **读完能做**：读懂一份裁决包、加一条规则、判断边界在哪 ｜ **状态**：第一层已实现，第二层已实现，解释与富通知未实现 ｜ **最后校验**：2026-10-30
 
-公共类型的权威定义在 `protocol/approval.go`；服务实现在 [approval/](../../approval)。
+公共类型的权威定义在 `src/protocol/approval.go`；服务实现在 [approval/](../../src/approval)。
 
 ## 1. 它解决什么
 
@@ -103,11 +103,11 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 
 ## 7. 规则与方言扩展
 
-默认规则在 `approval/policy/default.json`：规则包定义版本、禁止命令名、允许命令名与静态参数数量上限；**禁止规则优先**。规则可以在 `approval/policy/default.json` 或启动 `-policy` 指定的文件里维护，运行时也可下发 `approval.policy.json`；**改内嵌默认文件后必须重新构建**，而中心已有的覆盖值不会自动被新默认替换。别名只接受显式列入配置的名称。命令名不是自然语言敏感词，不翻译用户内容，也不按语言封禁字面参数。
+默认规则在 `src/approval/policy/default.json`：规则包定义版本、禁止命令名、允许命令名与静态参数数量上限；**禁止规则优先**。规则可以在 `approval/policy/default.json` 或启动 `-policy` 指定的文件里维护，运行时也可下发 `approval.policy.json`；**改内嵌默认文件后必须重新构建**，而中心已有的覆盖值不会自动被新默认替换。别名只接受显式列入配置的名称。命令名不是自然语言敏感词，不翻译用户内容，也不按语言封禁字面参数。
 
 首版只批准完整结构中的**单一静态命令**（PowerShell AST 与 bash 词元都必须全是字面量）。对参数带路径、写文件、网络访问、外部程序等业务，应增加相应事实提取与专门参数规则，而不是简单扩大命令名前缀允许范围。
 
-- **新增 shell 方言（仍属 exec 域）**：实现 Parser，并同时定义执行 profile、路径身份和正反例测试；不能只改 `dialect` 字符串就套用 PowerShell 结果。当前已支持 `powershell` 与 `bash`；`bash` 方言族覆盖 bash / sh / dash / zsh / ksh（shell 传解释器名），只读白名单与边界见 [shell/README.md](../../shell/README.md)。
+- **新增 shell 方言（仍属 exec 域）**：实现 Parser，并同时定义执行 profile、路径身份和正反例测试；不能只改 `dialect` 字符串就套用 PowerShell 结果。当前已支持 `powershell` 与 `bash`；`bash` 方言族覆盖 bash / sh / dash / zsh / ksh（shell 传解释器名），只读白名单与边界见 [shell/README.md](../../src/shell/README.md)。
 - **新增执行域（如 fs / http / 后台任务）**：先定义独立域判别字段（建议 `kind`），不让 `dialect` 兼任域名。各域声明自己的执行字段组、上下文校验、事实提取器和规则段；事实提取器注册在 approval 侧，**不能接受调用方自报「安全」结论**。裁决包、摘要绑定、有效期和 fail-closed 原则共用。当前 `plan` 的字段全部属于 exec 域；域判别字段只约定了扩展方向，尚未发送。
 
 ## 8. 第二层：用户裁决
@@ -141,7 +141,7 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 
 ## 10. 未实现
 
-「命令解释与富通知」还没有实现，**也没有预留端口**：原先 `approval/review` 包里那四个接口
+「命令解释与富通知」还没有实现，**也没有预留端口**：原先 `src/approval/review` 包里那四个接口
 （请求解释 / 初次通知 / 接收解释 / 回传界面）全仓无人 import，留着只是一个看起来像边界的空壳，
 已删除。需要时按当时的真实需求重新设计，而不是先摆一个占位接口。
 

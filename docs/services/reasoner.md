@@ -63,9 +63,9 @@
 cd reasoner; go test ./... -count=1
 ```
 
-- `server/task_test.go`：`task_status` 判定（done / continue / 非法值 / 已关闭任务 / 标题截断）。
-- `server/board_close_test.go`：收尾门禁四个分支（在跑工具 → 拒绝且停车；快照过期 → 拒绝不停车；
+- `src/reasoner/server/task_test.go`：`task_status` 判定（done / continue / 非法值 / 已关闭任务 / 标题截断）。
+- `src/reasoner/server/board_close_test.go`：收尾门禁四个分支（在跑工具 → 拒绝且停车；快照过期 → 拒绝不停车；
   没判定 → 催两次；没任务 → 不设门禁）。
-- `tests/attribution_test.go`：来源标注进正文 / 落库 / 模型上下文，任务名不带标签；静默三路。
-- `tests/judge_commit_test.go`：判定只在收尾落库（被判废的 done 不落库）。
-- 其余：`tests/async*`（异步受理与补报）、`tests/chain_test.go`（多轮推进）、`tests/round_failure_test.go`（失败与重试）。
+- `src/reasoner/tests/attribution_test.go`：来源标注进正文 / 落库 / 模型上下文，任务名不带标签；静默三路。
+- `src/reasoner/tests/judge_commit_test.go`：判定只在收尾落库（被判废的 done 不落库）。
+- 其余：`src/reasoner/tests/async*`（异步受理与补报）、`src/reasoner/tests/chain_test.go`（多轮推进）、`src/reasoner/tests/round_failure_test.go`（失败与重试）。

@@ -32,7 +32,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root        = Split-Path -Parent $PSScriptRoot
-$frontendDir = Join-Path $root 'frontend'
+$frontendDir = Join-Path $root 'src' 'frontend'
 $tool        = Join-Path $frontendDir 'scripts\build-stamp.mjs'
 
 # node 的输出是 UTF-8：不先把控制台解码改过来，中文会变成乱码。

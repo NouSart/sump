@@ -50,7 +50,7 @@ cd approval; go test ./... -count=1
 cd approval-integration; go test ./... -count=1
 ```
 
-- `tests/`：规则判定、档位、拒绝名单优先、第二层排队与过期、`capabilities`。
+- `src/approval/tests/`：规则判定、档位、拒绝名单优先、第二层排队与过期、`capabilities`。
 - `approval-integration`：与**真 shell** 的集成（裁决 → 执行 → 补报全链）。
 
 ## 已知限制

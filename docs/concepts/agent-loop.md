@@ -99,7 +99,7 @@ QQ 这类多人入口，模型必须能分辨「主人在私聊里说的」和�
 
 会话记录是**流水**（按时间、给人看）；经验网是**联想**（按语义、给模型用）。两者永不混用：历史记录页只读流水的表，经验网只给 recall 与 `dig`。
 
-实现是一个**独立 Go 包** `memory/memnet`：零依赖本仓库其他包、只吃一个 `*sql.DB`，表与阈值都是它自己的——将来整块搬走即成独立仓库 / 独立服务。细则见 [memory/memnet/README.md](../../memory/memnet/README.md)。
+实现是一个**独立 Go 包** `src/memory/memnet`：零依赖本仓库其他包、只吃一个 `*sql.DB`，表与阈值都是它自己的——将来整块搬走即成独立仓库 / 独立服务。细则见 [memory/memnet/README.md](../../src/memory/memnet/README.md)。
 
 | 动作（jump 到 `memory`） | 输入 | 输出 |
 | --- | --- | --- |
