@@ -3,6 +3,7 @@
 // 与 Go 侧 service/ 骨架同语义（本服务是 TS，等价实现其中这一个子集）。
 import WebSocket, { type RawData } from 'ws';
 import type { Envelope, Provide, RegisterPayload, ResponsePayloadView, RosterPayload, Setting, SettingsEventView } from './protocol.ts';
+import { SPv2RemoteError, SPv2UnavailableError, dialSPv2Once, spv2Addr } from './spv2.ts';
 import {
   TypeHeartbeat,
   TypeJump,
@@ -27,6 +28,8 @@ export interface CenterOptions {
   settings: Setting[];
   heartbeatMS: number;
   log: (msg: string) => void;
+  /** 是否优先走 SPv2.1 /spv2；默认读 SUMP_SPV2=1，测试可显式关闭。 */
+  spv2?: boolean;
 }
 
 export type CenterEvent =
@@ -117,9 +120,11 @@ export class CenterLink {
   private rosterValue: RosterPayload | null = null;
   /** 最近一次成功注册的连接：它断开说明对端是健康的，重连用基础间隔而不是继续退避。 */
   private registeredWS: WebSocket | null = null;
+  private readonly spv2Enabled: boolean;
 
   constructor(opts: CenterOptions) {
     this.opts = opts;
+    this.spv2Enabled = opts.spv2 ?? process.env.SUMP_SPV2 === '1';
   }
 
   start(): void {
@@ -180,6 +185,19 @@ export class CenterLink {
   async jumpTo(to: string, action: string, input?: unknown, timeoutMS: number = callTimeoutDefault): Promise<unknown> {
     const card = this.rosterValue?.services?.find((c) => c.name === to);
     if (!card || !card.addr) throw new Error(`未知目标服务: ${to}（不在名册里）`);
+    if (this.spv2Enabled) {
+      try {
+        return await dialSPv2Once(spv2Addr(card.addr), this.opts.name, card.name, action, input, timeoutMS);
+      } catch (err) {
+        if (err instanceof SPv2UnavailableError) {
+          this.opts.log(`SPv2 目标 ${card.addr} 不可达，回退 v1`);
+        } else if (err instanceof SPv2RemoteError) {
+          throw new RemoteError(err.message);
+        } else {
+          throw err;
+        }
+      }
+    }
     const body: Record<string, unknown> = { action };
     if (input !== undefined) body.input = input;
     const env = newEnvelope(TypeJump, this.opts.name, card.name, '', body, this.opts.name);
