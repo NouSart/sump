@@ -10,8 +10,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // Config 是服务启动配置（引导只靠它：自己的名字/地址 + 设置中心地址）。
@@ -39,6 +42,9 @@ type Config struct {
 	// SecretFile 是秘密项（HandleSecret）的本地持久化文件路径。
 	// 留空 = <name> 的默认路径（data/<name>-secret.json）；传 "-" 表示只放内存不落盘。
 	SecretFile string
+	// SPV2 为真时启用 SPv2.1 传输桥：入站额外暴露 /spv2，出站优先走目标 /spv2。
+	// 也可用环境变量 SUMP_SPV2=1 打开；默认关闭，保持现有 v1 测试行为。
+	SPV2 bool
 }
 
 // Handler 处理一次跳转动作，返回的数据会作为响应 payload 的 data。
@@ -67,6 +73,10 @@ type Service struct {
 	roster     map[string]protocol.ServiceCard
 	selfURL    string
 	center     *protocol.Client // 当前中心连接（nil = 未连接）
+	spv2On     bool             // SPv2.1 传输桥是否启用
+	spv2Srv    *spv2.Server     // /spv2 服务端（nil = 未启用）
+	spv2PeerMu sync.Mutex       // peer /spv2 能力缓存锁
+	spv2Peers  map[string]bool  // addr -> 是否支持 /spv2
 	closed     bool             // Shutdown 后为真（阻止继续重连）
 	started    bool             // Start 后为真（阻止再声明设置项）
 	regs       int64            // 注册成功次数（日志用）
@@ -98,9 +108,12 @@ func New(cfg Config) *Service {
 	if cfg.SecretFile == "" {
 		cfg.SecretFile = filepath.Join("data", cfg.Name+"-secret.json")
 	}
+	spv2On := cfg.SPV2 || os.Getenv("SUMP_SPV2") == "1"
 	s := &Service{
 		cfg:            cfg,
 		logger:         cfg.Logger,
+		spv2On:         spv2On,
+		spv2Peers:      map[string]bool{},
 		actions:        map[string]Handler{},
 		settingIndex:   map[string]int{},
 		settingValues:  map[string]string{},
@@ -154,6 +167,13 @@ func (s *Service) Start(ctx context.Context) error {
 	// 秘密项先落地：它们不在中心那边（中心没有值可下发），服务得自己带起来。
 	s.loadSecrets()
 
+	if s.spv2On {
+		if err := s.buildSPv2(); err != nil {
+			lifeCancel()
+			return fmt.Errorf("构建 SPv2 服务卡失败: %w", err)
+		}
+	}
+
 	ln, err := net.Listen("tcp", s.cfg.Listen)
 	if err != nil {
 		lifeCancel()
@@ -163,6 +183,9 @@ func (s *Service) Start(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
+	if s.spv2Srv != nil {
+		mux.Handle("/spv2", s.spv2Srv.Handler())
+	}
 	s.httpSrv = &http.Server{Handler: mux}
 	go func() {
 		if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -170,6 +193,9 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}()
 	s.logger.Printf("%s 监听 %s", s.cfg.Name, s.selfURL)
+	if s.spv2Srv != nil {
+		s.logger.Printf("%s SPv2.1 传输桥已启用: %s/spv2", s.cfg.Name, strings.TrimSuffix(s.selfURL, "/ws"))
+	}
 	// 内部 WS 不做身份认证：信封里的 from 是发送方自称的字段，只在敏感动作上比对
 	// （见 docs/concepts/protocol.md 的「信任边界」）。这条日志是部署前提的显式回声——
 	// 把端口暴露到不可信网络之前，看到它的那个人应该先停一下。
@@ -569,6 +595,18 @@ func (s *Service) Call(ctx context.Context, to, action string, payload any, trac
 	raw, err := encodeInput(payload)
 	if err != nil {
 		return nil, err
+	}
+
+	if s.spv2On {
+		data, err := s.callSPv2(ctx, name, addr, action, raw, trace)
+		if err == nil {
+			return data, nil
+		}
+		var de *spv2DialError
+		if !errors.As(err, &de) {
+			return nil, err
+		}
+		s.logger.Printf("SPv2 目标 %s 不可达，回退 v1: %v", addr, err)
 	}
 
 	var lastErr error

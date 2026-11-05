@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/NouSart/sump/protocol v0.0.0
+	github.com/NouSart/sump/spv2 v0.0.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 )
@@ -14,3 +15,5 @@ require (
 )
 
 replace github.com/NouSart/sump/protocol => ../protocol
+
+replace github.com/NouSart/sump/spv2 => ../spv2
