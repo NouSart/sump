@@ -31,6 +31,8 @@ export class StubCenter {
   registerError = '';
   /** 设成 true 时拒绝 /spv2 升级：用来验证原生拨号失败会回退 v1。 */
   rejectSPv2 = false;
+  /** /spv2 握手尝试次数（用于证明"先试原生再回退"）。 */
+  spv2Attempts = 0;
   /** 设成非空时对原生 register call 回 SPv2 error：用来验证注册失败会回退 v1。 */
   spv2RegisterError = '';
 
@@ -44,7 +46,11 @@ export class StubCenter {
       port: 0,
       host: '127.0.0.1',
       // 模拟"只有 v1 /ws 的旧中心"：/spv2 直接 401，让客户端立刻回退。
-      verifyClient: (info) => !(this.rejectSPv2 && (info.req.url ?? '').startsWith('/spv2')),
+      verifyClient: (info) => {
+        const isSpv2 = (info.req.url ?? '').startsWith('/spv2');
+        if (isSpv2) this.spv2Attempts++;
+        return !(this.rejectSPv2 && isSpv2);
+      },
     });
     this.wss = wss;
     wss.on('connection', (ws) => {
