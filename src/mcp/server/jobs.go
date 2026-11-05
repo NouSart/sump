@@ -204,14 +204,14 @@ func (j *Jobs) BindReceipt(id, itemID string) error {
 // Before a receipt, bounded early reports wait for its exact item ID. If the
 // receipt was lost, unknown observations may bind the first valid report using
 // that unique trace. This relies on SUMP's trusted internal routing boundary.
-func (j *Jobs) Report(env protocol.Envelope, p protocol.AsyncResultPayload) (bool, error) {
+func (j *Jobs) Report(trace, from string, p protocol.AsyncResultPayload) (bool, error) {
 	j.mu.Lock()
 	var releases []func()
 	defer j.unlockAndRelease(&releases)
 	now := j.cfg.Now()
 	j.sweepLocked(now, &releases)
-	e := j.byTrace[env.Trace]
-	if e == nil || e.snapshot.Service != env.From || e.snapshot.Final {
+	e := j.byTrace[trace]
+	if e == nil || e.snapshot.Service != from || e.snapshot.Final {
 		return false, nil
 	}
 	if e.snapshot.ItemID != "" && e.snapshot.ItemID != p.ItemID {
