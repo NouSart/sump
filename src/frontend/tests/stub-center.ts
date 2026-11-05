@@ -29,6 +29,10 @@ export class StubCenter {
   setError = '';
   /** 设成非空时 register 一律回错误：用来验证"连不上会长退避"而不是死循环刷屏。 */
   registerError = '';
+  /** 设成 true 时拒绝 /spv2 升级：用来验证原生拨号失败会回退 v1。 */
+  rejectSPv2 = false;
+  /** 设成非空时对原生 register call 回 SPv2 error：用来验证注册失败会回退 v1。 */
+  spv2RegisterError = '';
 
   private wss: WebSocketServer | null = null;
   private readonly conns = new Set<WebSocket>();
@@ -36,7 +40,12 @@ export class StubCenter {
   private url = '';
 
   async start(): Promise<string> {
-    const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    const wss = new WebSocketServer({
+      port: 0,
+      host: '127.0.0.1',
+      // 模拟"只有 v1 /ws 的旧中心"：/spv2 直接 401，让客户端立刻回退。
+      verifyClient: (info) => !(this.rejectSPv2 && (info.req.url ?? '').startsWith('/spv2')),
+    });
     this.wss = wss;
     wss.on('connection', (ws) => {
       this.conns.add(ws);
@@ -94,6 +103,25 @@ export class StubCenter {
 
   private onMessage(ws: WebSocket, bytes: Uint8Array): void {
     const env = decode(bytes) as unknown as WireEnvelope;
+    // 原生 register 是 SPv2 call；按配置回一条 SPv2 error reply（v1 的 register 不受影响）。
+    if (this.spv2RegisterError !== '' && env.type === 'call') {
+      const f = env as unknown as { id?: string; work?: string; from?: Record<string, unknown> };
+      ws.send(
+        encode({
+          v: 'spv2.1',
+          id: `spv2-${++this.seq}`,
+          type: 'reply',
+          work: f.work ?? '',
+          from: { kind: 'service', id: 'settings-center' },
+          to: f.from ?? { kind: 'service', id: '' },
+          reply_to: f.id ?? '',
+          status: 'error',
+          content_type: 'application/msgpack',
+          error: { code: 'invalid_argument', message: this.spv2RegisterError, retryable: false },
+        }),
+      );
+      return;
+    }
     switch (env.type) {
       case 'register': {
         const reg = (env.payload as Record<string, unknown> | undefined) ?? {};
