@@ -176,20 +176,26 @@ func asyncPayloadSize(p protocol.AsyncResultPayload) int {
 }
 
 func (s *Server) actionReportResult(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	if len(in.Input) > asyncReportBytes {
+	return s.reportResult(env.From, env.To, env.Trace, in.Input)
+}
+
+// reportResult 是补报的共享实现：source + trace + item_id 共同关联一笔在途受理。
+// v1 的 from/to/trace 取自信封，原生分别取 Frame.From.ID / Frame.To.ID / Frame.Work。
+func (s *Server) reportResult(from, to, trace string, body []byte) (any, error) {
+	if len(body) > asyncReportBytes {
 		return nil, errors.New("report_result: 载荷超限")
 	}
 	var p protocol.AsyncResultPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if p.ItemID == "" || len(p.ItemID) > 512 || len(p.Phase) > 128 {
 		return nil, errors.New("report_result: item_id 或 phase 无效")
 	}
-	if env.From == "" || env.Trace == "" || env.To != s.cfg.Name {
+	if from == "" || trace == "" || to != s.cfg.Name {
 		return nil, errors.New("report_result: 来源、trace 或目标无效")
 	}
-	k := asyncKey{env.From, env.Trace, p.ItemID}
+	k := asyncKey{from, trace, p.ItemID}
 	s.asyncMu.Lock()
 	s.sweepAsyncLocked(time.Now())
 	j := s.asyncJobs[k]

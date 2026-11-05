@@ -508,17 +508,23 @@ func (s *Server) notifyRoundFailure(st *taskState, cause error) {
 //
 // 只认门户：重试是对用户意图的重放，不该让任意服务替用户按下这个按钮。
 func (s *Server) actionRetry(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.retry(env.From, in.Input)
+}
+
+// retry 让来源为门户的调用对“上一轮失败、任务还开着”的会话再跑一轮。
+// v1 从信封取 from，原生取 Frame.From.ID；来源不符时回 permissionError。
+func (s *Server) retry(from string, body []byte) (any, error) {
 	var allowed bool
 	if s.retryFrom != nil {
-		allowed = s.retryFrom(env.From) // 测试注入：名册在 service 包里，测试拿不到 setter
+		allowed = s.retryFrom(from) // 测试注入：名册在 service 包里，测试拿不到 setter
 	} else {
-		allowed = isPortalFrom(env.From, s.Roster())
+		allowed = isPortalFrom(from, s.Roster())
 	}
 	if !allowed {
-		return nil, fmt.Errorf("retry: 只有门户（frontend / qq）可以触发重试，收到来自 %q 的请求", env.From)
+		return nil, &permissionError{msg: fmt.Sprintf("retry: 只有门户（frontend / qq）可以触发重试，收到来自 %q 的请求", from)}
 	}
 	var p protocol.RetryPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, fmt.Errorf("retry: 载荷无效: %w", err)
 	}
 	cid := strings.TrimSpace(p.ConversationID)
@@ -621,8 +627,13 @@ type stepPayload struct {
 
 // actionStep 承接自跳：把黑板上的任务推进到下一轮。
 func (s *Server) actionStep(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.step(in.Input)
+}
+
+// step 承接自跳的共享实现：把黑板上的任务推进到下一轮（没有进行中的任务就忽略）。
+func (s *Server) step(body []byte) (any, error) {
 	var p stepPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	cid := p.ConversationID
