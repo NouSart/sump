@@ -162,6 +162,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("result", s.actionResult)
 	s.Handle("list", s.actionList)
 	s.Handle("control", s.actionControl)
+	s.registerNativeMethods()
 	return s
 }
 

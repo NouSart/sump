@@ -132,6 +132,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("find", s.actionDocFind)
 	s.Handle("patch", s.actionDocPatch)
 	s.Handle("verify", s.actionDocVerify)
+	// 原生 SPv2.1 method：与上面同名 v1 action 共用业务函数，/spv2 不再合成 v1 信封。
+	s.registerNativeMethods()
 	// 只读项：启动参数带起来的（换它要重启）。db/dir 是存储身份——运行中换库/换目录
 	// 意味着一批在途读写换个落点，不做（与 images 同口径）。
 	s.HandleReadOnly("db", cfg.DBPath)
@@ -173,8 +175,13 @@ func expandError(err error) error {
 
 // actionSave 保存一个文件：URL 或 base64 二选一，filename 必填。
 func (s *Server) actionSave(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.save(in.Input)
+}
+
+// save 是 save 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
+func (s *Server) save(body []byte) (any, error) {
 	var p protocol.FileSavePayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	var data []byte
@@ -225,8 +232,13 @@ func (s *Server) actionSave(_ context.Context, _ protocol.Envelope, in protocol.
 
 // actionFetch 把文件转成 base64 发回调用方（凭牌取全量）。
 func (s *Server) actionFetch(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.fetch(in.Input)
+}
+
+// fetch 是 fetch 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
+func (s *Server) fetch(body []byte) (any, error) {
 	var p protocol.FileFetchPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if p.ID == "" {
@@ -249,8 +261,13 @@ func (s *Server) actionFetch(_ context.Context, _ protocol.Envelope, in protocol
 // 文本类直接读取；.xlsx 逐 sheet 转 TSV；.docx 提取正文段落；.xls/.doc 与其余二进制明确拒绝。
 // 截断阈值 = read_max_chars（截断置 truncated——“没给全”必须显式告知模型）。
 func (s *Server) actionRead(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.read(in.Input)
+}
+
+// read 是 read 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
+func (s *Server) read(body []byte) (any, error) {
 	var p protocol.FileReadPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if p.ID == "" {
@@ -392,8 +409,13 @@ func (s *Server) readPdf(id string, meta store.Meta, offset, limit int) (any, er
 // 校验链：id 存在 → 必须 .xlsx → sheet 存在（报错附可用表清单）→ 坐标全量预检 → 写回库。
 // 全局写锁串行化 read-modify-write，防并发改同一文件丢更新。
 func (s *Server) actionWrite(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.write(in.Input)
+}
+
+// write 是 write 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
+func (s *Server) write(body []byte) (any, error) {
 	var p protocol.FileWritePayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if p.ID == "" {
@@ -432,8 +454,13 @@ func (s *Server) actionWrite(_ context.Context, _ protocol.Envelope, in protocol
 // actionEditWord 编辑 .docx 正文（LLM 工具，就地修改权威副本）。
 // 校验链：id 存在 → 必须 .docx → operations 非空 → 预检查所有 old 存在 → 写回库。
 func (s *Server) actionEditWord(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.editWord(in.Input)
+}
+
+// editWord 是 edit_word 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
+func (s *Server) editWord(body []byte) (any, error) {
 	var p protocol.FileWordEditPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if p.ID == "" {
@@ -469,8 +496,13 @@ func (s *Server) actionEditWord(_ context.Context, _ protocol.Envelope, in proto
 // actionEditPpt 编辑 .pptx 幻灯片文本（LLM 工具，就地修改权威副本）。
 // 校验链：id 存在 → 必须 .pptx → operations 非空 → 预检查所有 old 存在 → 写回库。
 func (s *Server) actionEditPpt(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.editPpt(in.Input)
+}
+
+// editPpt 是 edit_ppt 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
+func (s *Server) editPpt(body []byte) (any, error) {
 	var p protocol.FilePptEditPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if p.ID == "" {
@@ -506,8 +538,13 @@ func (s *Server) actionEditPpt(_ context.Context, _ protocol.Envelope, in protoc
 // actionEditPdf 编辑 .pdf（LLM 工具，就地修改权威副本）。
 // 校验链：id 存在 → 必须 .pdf → operations 非空 → 依次应用（原子）→ 写回库。
 func (s *Server) actionEditPdf(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.editPdf(in.Input)
+}
+
+// editPdf 是 edit_pdf 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
+func (s *Server) editPdf(body []byte) (any, error) {
 	var p protocol.FilePdfEditPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if p.ID == "" {

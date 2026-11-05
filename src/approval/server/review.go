@@ -87,7 +87,7 @@ func (s *Server) pendingSnapshot() []protocol.PendingApproval {
 // awaitUserDecision 把一条 review 命令挂起，推到门户等用户裁决。
 // 返回的裁决要么是 allow（用户批准），要么是 deny（用户拒绝）；
 // 超时 / 门户不在 / 队列满 时原样返回 review（调用方按"未通过"处理，不执行）。
-func (s *Server) awaitUserDecision(ctx context.Context, env protocol.Envelope, result protocol.CommandApprovalResult, req protocol.CommandApprovalRequest) (protocol.CommandApprovalResult, error) {
+func (s *Server) awaitUserDecision(ctx context.Context, caller, trace, boss string, result protocol.CommandApprovalResult, req protocol.CommandApprovalRequest) (protocol.CommandApprovalResult, error) {
 	portal := s.portalNow()
 	if !s.portalReady() {
 		result.Feedback.Summary += "（门户不在线，无人裁决，本次未执行）"
@@ -96,7 +96,7 @@ func (s *Server) awaitUserDecision(ctx context.Context, env protocol.Envelope, r
 	ttl := s.pendingTTLNow()
 	now := time.Now()
 	info := protocol.PendingApproval{
-		ItemID: req.ItemID, Command: req.Plan.Command, WorkDir: req.Plan.WorkDir, RequestedBy: env.From,
+		ItemID: req.ItemID, Command: req.Plan.Command, WorkDir: req.Plan.WorkDir, RequestedBy: caller,
 		ReasonCode: result.ReasonCode, Summary: result.Feedback.Summary,
 		Unknowns: result.Feedback.Unknowns, RuleIDs: result.Feedback.RuleIDs,
 		CreatedMS: now.UnixMilli(), ExpiresMS: now.Add(ttl).UnixMilli(),
@@ -109,7 +109,7 @@ func (s *Server) awaitUserDecision(ctx context.Context, env protocol.Envelope, r
 	defer s.dropPending(req.ItemID)
 
 	// 推送不等待回执：门户慢/挂都不影响这条审批继续等，也不影响别的审批。
-	s.Fire(portal, protocol.ApprovalPendingAction, info, env.Trace, env.Boss)
+	s.Fire(portal, protocol.ApprovalPendingAction, info, trace, boss)
 	s.logger.Printf("待审 %s 已推送门户 %s（%s；TTL %s）", req.ItemID, portal, result.ReasonCode, ttl)
 
 	timer := time.NewTimer(ttl)
@@ -149,14 +149,19 @@ func (s *Server) awaitUserDecision(ctx context.Context, env protocol.Envelope, r
 	return result, nil
 }
 
+// actionDecide 是 v1 入口：只把信封里的来源交给共享实现。
+func (s *Server) actionDecide(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.decide(env.From, in.Input)
+}
+
 // decide 承接用户在门户上的裁决。只接受门户发来的——裁决权不外包给任意服务。
-func (s *Server) decide(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+func (s *Server) decide(from string, body []byte) (any, error) {
 	portal := s.portalNow()
-	if portal == "" || env.From != portal {
-		return nil, fmt.Errorf("approval_decide: 只有门户（%s）可以裁决，收到来自 %q 的请求", portal, env.From)
+	if portal == "" || from != portal {
+		return nil, fmt.Errorf("approval_decide: 只有门户（%s）可以裁决，收到来自 %q 的请求", portal, from)
 	}
 	var d protocol.ApprovalDecision
-	if err := protocol.DecodeRaw(in.Input, &d); err != nil {
+	if err := protocol.DecodeRaw(body, &d); err != nil {
 		return nil, errors.New("approval_decide: 载荷无效")
 	}
 	if d.ItemID == "" || len(d.ItemID) > 128 {
@@ -180,10 +185,15 @@ func (s *Server) decide(_ context.Context, env protocol.Envelope, in protocol.Ju
 	}
 }
 
+// actionList 是 v1 入口：只把信封里的来源交给共享实现。
+func (s *Server) actionList(_ context.Context, env protocol.Envelope, _ protocol.JumpPayload) (any, error) {
+	return s.list(env.From)
+}
+
 // list 返回当前待审项（门户重启后据此恢复列表）。
-func (s *Server) list(_ context.Context, env protocol.Envelope, _ protocol.JumpPayload) (any, error) {
+func (s *Server) list(from string) (any, error) {
 	portal := s.portalNow()
-	if portal == "" || env.From != portal {
+	if portal == "" || from != portal {
 		return nil, fmt.Errorf("approval_list: 只有门户（%s）可以拉取待审项", portal)
 	}
 	return protocol.PendingApprovalList{Items: s.pendingSnapshot()}, nil

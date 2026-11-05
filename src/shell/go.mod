@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/NouSart/sump/protocol v0.0.0
 	github.com/NouSart/sump/service v0.0.0
+	github.com/NouSart/sump/spv2 v0.0.0
 	github.com/gorilla/websocket v1.5.3
 	golang.org/x/text v0.43.0
 )
@@ -18,3 +19,5 @@ require (
 replace github.com/NouSart/sump/protocol => ../protocol
 
 replace github.com/NouSart/sump/service => ../service
+
+replace github.com/NouSart/sump/spv2 => ../spv2

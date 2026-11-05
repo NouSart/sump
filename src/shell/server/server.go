@@ -31,6 +31,7 @@ import (
 
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
 )
 
 // 默认值（引导值；可被设置中心的覆盖值改写）。
@@ -257,6 +258,27 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Unit("ms"))
 
 	s.Handle("run", s.actionRun)
+	// /spv2 原生 method：同一业务实体（s.run），body 直接是 ShellRunPayload，
+	// 元数据取自帧（work = 链路 id，from.id = 调用方/结果归属）。
+	s.HandleNative(spv2.Method{
+		Name: "run", Tool: true, LongRunning: true,
+		Description: "命令执行：受理即回执（审批后立刻执行），结果由 report_result 补报送达",
+		Input: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command":  map[string]any{"type": "string", "description": "要执行的命令行（交给服务的 shell 解释）"},
+				"work_dir": map[string]any{"type": "string", "description": "工作目录（须在服务根目录内，可省略）"},
+			},
+			"required": []any{"command"},
+		},
+		Output: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"item_id": map[string]any{"type": "string", "description": "受理句柄（补报原样带回）"},
+				"phase":   map[string]any{"type": "string", "description": "阶段：queued"},
+			},
+		},
+	}, s.nativeRun)
 	return s
 }
 
@@ -274,19 +296,36 @@ func (s *Server) RunningCount() int {
 
 // ---------- 受理 ----------
 
-// actionRun 受理一条命令：立即回执（不等审批、不等执行，后续由 report_result 补报）。
+// actionRun 是 v1（/ws 的 JumpPayload）兼容边缘：只把信封里的元数据交给共享实现。
+func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.run(env.From, env.Trace, env.Boss, in.Input)
+}
+
+// nativeRun 是 /spv2 的原生入口：body 直接就是 ShellRunPayload，元数据取自帧
+// （from.id = 调用方、work = 链路 id），不合成 v1 的 JumpPayload / Envelope。
+// 帧没有 boss 字段：结果归属按 from 记（与 timer 的约定一致）。
+func (s *Server) nativeRun(_ context.Context, call *spv2.Call) error {
+	out, err := s.run(call.Frame.From.ID, call.Frame.Work, call.Frame.From.ID, call.Frame.Body)
+	if err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+	}
+	return call.Reply(out)
+}
+
+// run 受理一条命令：立即回执（不等审批、不等执行，后续由 report_result 补报）。
+// 这是业务实体：v1 边缘（actionRun）与原生 method（nativeRun）都只调它，不各写一遍。
 //
 // 同步拒绝的只有两类：请求本身不合法（命令为空 / 工作目录越界），以及**同时在跑的命令已达上限**。
 // 后者是熔断不是调度：满了就明确告诉你"这次没执行"，绝不返回"已排队"这种要你干等的回执。
 //
 // 并行还是串行由调用方决定（一次派发几条）。服务不维护窗口、不排队、不做顺序承诺——
 // 那是调度，属于调用方；执行器只负责执行。要串行就等上一条的补报再发下一条。
-func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	if len(in.Input) > 64<<10 {
+func (s *Server) run(caller, trace, boss string, body []byte) (any, error) {
+	if len(body) > 64<<10 {
 		return nil, errors.New("run: 请求超过 64 KiB")
 	}
 	var p protocol.ShellRunPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(p.Command) == "" {
@@ -311,9 +350,9 @@ func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol
 	}
 	j := &job{
 		item:          protocol.NewID(),
-		caller:        env.From,
-		trace:         env.Trace,
-		boss:          env.Boss,
+		caller:        caller,
+		trace:         trace,
+		boss:          boss,
 		command:       p.Command,
 		workDir:       dir,
 		progressReady: make(chan struct{}),
