@@ -5,6 +5,8 @@ package spv2
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -281,5 +283,73 @@ func TestServerInvalidFramesFailFast(t *testing.T) {
 		if resp.Type != TypeReply || resp.Status != StatusError {
 			t.Fatalf("case %d: reply = %+v, want error reply", i, resp)
 		}
+	}
+}
+
+func TestServerRejectsNonWebSocket(t *testing.T) {
+	card := wsTestCard(wsTestMethod("x"))
+	srv, _ := wsStartServer(t, card)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("non-websocket status = %d, want 400", rec.Code)
+	}
+}
+
+func TestServerMaxBodyEventDropped(t *testing.T) {
+	card := wsTestCard(wsTestMethod("evt"))
+	card.Limits.MaxBody = 4
+	srv, url := wsStartServer(t, card)
+	var called atomic.Bool
+	srv.Handle("evt", func(context.Context, *Call) error {
+		called.Store(true)
+		return nil
+	})
+	c := wsDialClient(t, url)
+	ev, err := NewEvent("w", ServiceRef(wsTestService), ServiceRef(wsTestService), "evt", []byte("12345"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Send(ev); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		if gaugeValue(srv.Metrics().Snapshot(), "sump_dropped_total", "") == 0 && called.Load() {
+			t.Fatal("oversized event reached handler")
+		}
+		if counterValue(srv.Metrics().Snapshot(), "sump_dropped_total", "") > 0 || called.Load() {
+			if called.Load() {
+				t.Fatal("oversized event reached handler")
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("oversized event was not counted as dropped")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestServerStreamErrorTerminal(t *testing.T) {
+	m := wsTestMethod("stream")
+	m.Streaming = true
+	srv, url := wsStartServer(t, wsTestCard(m))
+	srv.Handle("stream", func(_ context.Context, c *Call) error {
+		return c.SendStreamError("s1", 1, ErrCode(CodeInternal, "boom", false, nil))
+	})
+	c := wsDialClient(t, url)
+	ctx := timeoutCtx(t)
+	ch, err := c.Stream(ctx, wsCall(t, AgentRef("client"), "stream", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Frame
+	for f := range ch {
+		got = f
+	}
+	if got.Status != StatusError || got.Error == nil || got.Error.Code != CodeInternal {
+		t.Fatalf("terminal stream = %+v", got)
 	}
 }
