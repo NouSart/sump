@@ -247,6 +247,21 @@ def new_call(*, work: str, from_: Ref, to: Ref, method: str, body: object = None
     )
 
 
+def new_event(*, work: str, from_: Ref, to: Ref, method: str, body: object = None) -> Frame:
+    """构造 event 帧（心跳 / 名册等单向事件；与 Go 侧 NewEvent 对齐）。"""
+    return Frame(
+        v=PROTOCOL_VERSION,
+        id=new_id(),
+        type=TYPE_EVENT,
+        work=work,
+        from_=from_,
+        to=to,
+        method=method,
+        content_type=CONTENT_TYPE_MSGPACK,
+        body=encode_body(body),
+    )
+
+
 def new_reply(call: Frame, from_: Ref, body: object) -> Frame:
     """成功 reply：沿用 work / 调用方引用，reply_to 配对 call.id。"""
     return Frame(

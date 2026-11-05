@@ -1,0 +1,355 @@
+package spv2
+
+// 变异测试暴露的边界：最大 body 的等号/零值、handler 不回复、幂等错误缓存、inflight gauge 回收。
+// 这些用例只补断言，不改业务语义。
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+func timeoutCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+func TestServerMaxBodyBoundary(t *testing.T) {
+	cases := []struct {
+		name    string
+		maxBody int64
+		body    string
+		wantErr bool
+	}{
+		{name: "equal", maxBody: 4, body: "1234"},
+		{name: "over", maxBody: 4, body: "12345", wantErr: true},
+		{name: "zero_unlimited", maxBody: 0, body: "12345"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			card := wsTestCard(wsTestMethod("echo"))
+			card.Limits.MaxBody = tc.maxBody
+			srv, url := wsStartServer(t, card)
+			srv.Handle("echo", func(_ context.Context, c *Call) error { return c.Reply("ok") })
+			c := wsDialClient(t, url)
+			f, err := NewCall("w1", HumanRef("p"), ServiceRef(wsTestService), "echo", []byte(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.ContentType = ContentTypeBinary
+			_, err = c.Call(timeoutCtx(t), f)
+			if tc.wantErr {
+				if !IsCode(err, CodeResourceExhausted) {
+					t.Fatalf("err = %v, want resource_exhausted", err)
+				}
+			} else if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
+func TestServerHandlerDidNotReply(t *testing.T) {
+	card := wsTestCard(wsTestMethod("silent"))
+	srv, url := wsStartServer(t, card)
+	srv.Handle("silent", func(context.Context, *Call) error { return nil })
+	c := wsDialClient(t, url)
+	f, err := NewCall("w1", HumanRef("p"), ServiceRef(wsTestService), "silent", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Call(timeoutCtx(t), f)
+	if !IsCode(err, CodeInternal) || !strings.Contains(err.Error(), "handler did not reply") {
+		t.Fatalf("err = %v, want internal handler did not reply", err)
+	}
+}
+
+func TestServerIdempotentErrorReplyCached(t *testing.T) {
+	card := wsTestCard(wsTestMethod("idem"))
+	card.Methods[0].Idempotent = true
+	srv, url := wsStartServer(t, card, WithIdempotency(NewIdempotencyCache(time.Hour)))
+	var calls atomic.Int32
+	srv.Handle("idem", func(_ context.Context, c *Call) error {
+		calls.Add(1)
+		return c.ReplyError(CodeInvalidArgument, "bad", false, nil)
+	})
+	c := wsDialClient(t, url)
+	for i := 0; i < 2; i++ {
+		f, err := NewCall("w1", HumanRef("p"), ServiceRef(wsTestService), "idem", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.IdempotencyKey = "same"
+		if _, err := c.Call(timeoutCtx(t), f); !IsCode(err, CodeInvalidArgument) {
+			t.Fatalf("call %d err = %v, want invalid_argument", i, err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler calls = %d, want 1 (second should hit cache)", got)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var badCode, okCode float64
+		for _, m := range srv.Metrics().Snapshot() {
+			if m.Name != "sump_requests_total" || m.Labels["method"] != "idem" {
+				continue
+			}
+			switch m.Labels["code"] {
+			case CodeInvalidArgument:
+				badCode = m.Value
+			case StatusOK:
+				okCode = m.Value
+			}
+		}
+		if badCode >= 2 && okCode == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("metrics invalid_argument=%v ok=%v, want 2 and 0", badCode, okCode)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestServerUnknownAndFailedEventMetrics(t *testing.T) {
+	card := wsTestCard(wsTestMethod("ok"))
+	srv, url := wsStartServer(t, card)
+	srv.Handle("boom", func(context.Context, *Call) error { return context.DeadlineExceeded })
+	c := wsDialClient(t, url)
+
+	unknown, err := NewEvent("w1", ServiceRef(wsTestService), ServiceRef(wsTestService), "unknown", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Send(unknown); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := NewEvent("w1", ServiceRef(wsTestService), ServiceRef(wsTestService), "boom", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Send(failed); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ms := srv.Metrics().Snapshot()
+		if counterValue(ms, "sump_unknown_event_total", "unknown") >= 1 && counterValue(ms, "sump_event_errors_total", "boom") >= 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("event metrics missing: unknown=%v failed=%v", counterValue(ms, "sump_unknown_event_total", "unknown"), counterValue(ms, "sump_event_errors_total", "boom"))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func counterValue(ms []Metric, name, method string) float64 {
+	for _, m := range ms {
+		if m.Name == name && m.Labels["method"] == method {
+			return m.Value
+		}
+	}
+	return 0
+}
+
+func TestServerInflightGaugeReclaimed(t *testing.T) {
+	card := wsTestCard(wsTestMethod("slow"))
+	srv, url := wsStartServer(t, card)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv.Handle("slow", func(_ context.Context, c *Call) error {
+		entered <- struct{}{}
+		<-release
+		return c.Reply("ok")
+	})
+	c := wsDialClient(t, url)
+	f, err := NewCall("w1", HumanRef("p"), ServiceRef(wsTestService), "slow", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Call(timeoutCtx(t), f)
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not start")
+	}
+	if got := gaugeValue(srv.Metrics().Snapshot(), "sump_inflight_requests", "slow"); got != 1 {
+		t.Fatalf("inflight while running = %v, want 1", got)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if got := gaugeValue(srv.Metrics().Snapshot(), "sump_inflight_requests", "slow"); got == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("inflight not reclaimed: %v", gaugeValue(srv.Metrics().Snapshot(), "sump_inflight_requests", "slow"))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func gaugeValue(ms []Metric, name, method string) float64 {
+	for _, m := range ms {
+		if m.Name == name && m.Labels["method"] == method {
+			return m.Value
+		}
+	}
+	return 0
+}
+
+func TestServerHelloValidation(t *testing.T) {
+	card := wsTestCard(wsTestMethod("x"))
+	_, url := wsStartServer(t, card)
+	c := wsDialClient(t, url)
+	cases := []any{
+		HelloRequest{Protocol: "spv2.0"},
+		[]byte("bad"),
+	}
+	for _, body := range cases {
+		f, err := NewCall("w-hello", HumanRef("p"), ServiceRef(wsTestService), "hello", body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Call(timeoutCtx(t), f); !IsCode(err, CodeInvalidArgument) {
+			t.Fatalf("hello %T err = %v, want invalid_argument", body, err)
+		}
+	}
+}
+
+func TestServerMaxMessageBytesCloses(t *testing.T) {
+	card := wsTestCard(wsTestMethod("echo"))
+	srv, url := wsStartServer(t, card, WithMaxMessageBytes(64))
+	srv.Handle("echo", func(_ context.Context, c *Call) error { return c.Reply("ok") })
+	c := wsDialClient(t, url)
+	f, err := NewCall("w-big", HumanRef("p"), ServiceRef(wsTestService), "echo", strings.Repeat("x", 256))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Call(timeoutCtx(t), f); err == nil {
+		t.Fatal("oversized frame should close the server connection")
+	}
+}
+
+func TestServerInvalidFramesFailFast(t *testing.T) {
+	card := wsTestCard(wsTestMethod("echo"))
+	card.Limits.MaxBody = 4
+	_, url := wsStartServer(t, card)
+	ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	cases := []Frame{
+		{V: ProtocolVersion, ID: "bad-method", Type: TypeCall, Work: "w", From: HumanRef("p"), To: ServiceRef(wsTestService)},
+		{V: ProtocolVersion, ID: "bad-to", Type: TypeCall, Work: "w", From: HumanRef("p"), To: ServiceRef("other"), Method: "echo"},
+		{V: ProtocolVersion, ID: "bad-body", Type: TypeCall, Work: "w", From: HumanRef("p"), To: ServiceRef(wsTestService), Method: "echo", Body: []byte("12345")},
+	}
+	for i, f := range cases {
+		data, err := Marshal(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ws.WriteMessage(websocket.BinaryMessage, data); err != nil {
+			t.Fatal(err)
+		}
+		if err := ws.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		_, respData, err := ws.ReadMessage()
+		if err != nil {
+			t.Fatalf("case %d: no error reply: %v", i, err)
+		}
+		resp, err := Unmarshal(respData)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Type != TypeReply || resp.Status != StatusError {
+			t.Fatalf("case %d: reply = %+v, want error reply", i, resp)
+		}
+	}
+}
+
+func TestServerRejectsNonWebSocket(t *testing.T) {
+	card := wsTestCard(wsTestMethod("x"))
+	srv, _ := wsStartServer(t, card)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("non-websocket status = %d, want 400", rec.Code)
+	}
+}
+
+func TestServerMaxBodyEventDropped(t *testing.T) {
+	card := wsTestCard(wsTestMethod("evt"))
+	card.Limits.MaxBody = 4
+	srv, url := wsStartServer(t, card)
+	var called atomic.Bool
+	srv.Handle("evt", func(context.Context, *Call) error {
+		called.Store(true)
+		return nil
+	})
+	c := wsDialClient(t, url)
+	ev, err := NewEvent("w", ServiceRef(wsTestService), ServiceRef(wsTestService), "evt", []byte("12345"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Send(ev); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		if gaugeValue(srv.Metrics().Snapshot(), "sump_dropped_total", "") == 0 && called.Load() {
+			t.Fatal("oversized event reached handler")
+		}
+		if counterValue(srv.Metrics().Snapshot(), "sump_dropped_total", "") > 0 || called.Load() {
+			if called.Load() {
+				t.Fatal("oversized event reached handler")
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("oversized event was not counted as dropped")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestServerStreamErrorTerminal(t *testing.T) {
+	m := wsTestMethod("stream")
+	m.Streaming = true
+	srv, url := wsStartServer(t, wsTestCard(m))
+	srv.Handle("stream", func(_ context.Context, c *Call) error {
+		return c.SendStreamError("s1", 1, ErrCode(CodeInternal, "boom", false, nil))
+	})
+	c := wsDialClient(t, url)
+	ctx := timeoutCtx(t)
+	ch, err := c.Stream(ctx, wsCall(t, AgentRef("client"), "stream", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Frame
+	for f := range ch {
+		got = f
+	}
+	if got.Status != StatusError || got.Error == nil || got.Error.Code != CodeInternal {
+		t.Fatalf("terminal stream = %+v", got)
+	}
+}
