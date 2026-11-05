@@ -175,8 +175,13 @@ func toSharedViews(sessions []shared.Session, digestChars int) []protocol.Shared
 
 // actionPublishSession 写一条任务摘要（复盘在交付后调用；不暴露给模型）。
 func (s *Server) actionPublishSession(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.publishSession(in.Input)
+}
+
+// publishSession 写一条任务摘要（v1 / SPv2 共用；不暴露给模型）。
+func (s *Server) publishSession(body []byte) (any, error) {
 	var p protocol.PublishSessionPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if s.cfg.Shared == nil {
@@ -205,8 +210,13 @@ func (s *Server) actionPublishSession(_ context.Context, _ protocol.Envelope, in
 
 // actionSharedSessions 按需再取一次会话目录（自动注入只有几条，模型想多看时才用）。
 func (s *Server) actionSharedSessions(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.sharedSessions(in.Input)
+}
+
+// sharedSessions 按需再取一次会话目录（v1 / SPv2 共用）。
+func (s *Server) sharedSessions(body []byte) (any, error) {
 	var p protocol.SharedSessionsPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if s.cfg.Shared == nil {
@@ -226,8 +236,13 @@ func (s *Server) actionSharedSessions(_ context.Context, _ protocol.Envelope, in
 
 // actionSharedForget 删共享物（维护 / 门户删改用；不暴露给模型）。
 func (s *Server) actionSharedForget(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.sharedForget(in.Input)
+}
+
+// sharedForget 删共享物（v1 / SPv2 共用）。
+func (s *Server) sharedForget(body []byte) (any, error) {
 	var p protocol.SharedForgetPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if s.cfg.Shared == nil {
@@ -242,8 +257,13 @@ func (s *Server) actionSharedForget(_ context.Context, _ protocol.Envelope, in p
 
 // actionConversationOpen 幂等建会话（多会话用：门户新建一条空会话就能立刻列出来）。
 func (s *Server) actionConversationOpen(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.conversationOpen(in.Input)
+}
+
+// conversationOpen 幂等建会话（v1 / SPv2 共用）。
+func (s *Server) conversationOpen(body []byte) (any, error) {
 	var p protocol.ConversationOpenPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	id := strings.TrimSpace(p.ID)
@@ -266,8 +286,13 @@ func (s *Server) actionConversationOpen(_ context.Context, _ protocol.Envelope, 
 
 // actionConversationArchive 归档 / 取消归档（归档 = 只读，不进默认列表）。
 func (s *Server) actionConversationArchive(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.conversationArchive(in.Input)
+}
+
+// conversationArchive 归档 / 取消归档（v1 / SPv2 共用）。
+func (s *Server) conversationArchive(body []byte) (any, error) {
 	var p protocol.ConversationArchivePayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	c, err := s.cfg.Store.SetConversationStatus(p.ID, p.Archived)
