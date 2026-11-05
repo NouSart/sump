@@ -33,6 +33,24 @@ func TestEnsureWorkIdempotent(t *testing.T) {
 	}
 }
 
+func TestEnsureWorkFillsPartialLease(t *testing.T) {
+	s := NewMemStore()
+	ctx := context.Background()
+	w := testWork()
+	w.Lease = Lease{MaxToolCalls: 5}
+	got, err := s.EnsureWork(ctx, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Lease.MaxToolCalls != 5 || got.Lease.MaxTokens != 100000 || got.Lease.DeadlineAt == "" {
+		t.Fatalf("lease = %+v", got.Lease)
+	}
+	rem, _ := s.Remaining(ctx, "w1")
+	if rem.ToolCalls != 5 || rem.Tokens != 100000 {
+		t.Fatalf("remaining = %+v", rem)
+	}
+}
+
 func TestLeaseChargeRelease(t *testing.T) {
 	s := NewMemStore()
 	ctx := context.Background()
@@ -55,6 +73,40 @@ func TestLeaseChargeRelease(t *testing.T) {
 	}
 	if _, err := s.Charge(ctx, "w1", Charge{Tokens: 1 << 30}); err == nil {
 		t.Fatal("expected lease exhausted")
+	}
+}
+
+func TestRenewAddsBudget(t *testing.T) {
+	s := NewMemStore()
+	ctx := context.Background()
+	if _, err := s.EnsureWork(ctx, testWork()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Charge(ctx, "w1", Charge{ToolCalls: 10}); err != nil {
+		t.Fatal(err)
+	}
+	l := DefaultLease(time.Now())
+	l.MaxToolCalls = 60
+	l.DeadlineAt = time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	w, err := s.Renew(ctx, "w1", l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Lease.MaxToolCalls != 60 {
+		t.Fatalf("lease = %+v", w.Lease)
+	}
+	rem, _ := s.Remaining(ctx, "w1")
+	if rem.ToolCalls != 50 {
+		t.Fatalf("remaining = %+v", rem)
+	}
+	if err := s.UpdateStatus(ctx, "w1", WorkRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, "w1", WorkDone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Renew(ctx, "w1", l); err == nil {
+		t.Fatal("terminal work must not renew")
 	}
 }
 
@@ -108,6 +160,9 @@ func TestDoneRejectsPendingMessage(t *testing.T) {
 	s := NewMemStore()
 	ctx := context.Background()
 	if _, err := s.EnsureWork(ctx, testWork()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, "w1", WorkRunning); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.PostMessage(ctx, QueuedMessage{WorkID: "w1", From: AgentRef("A"), To: AgentRef("B"), Method: "message"}); err != nil {

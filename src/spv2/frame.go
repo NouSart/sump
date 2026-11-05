@@ -208,6 +208,22 @@ func NewStreamFrame(call Frame, from Ref, streamID string, seq int64, end bool, 
 	return f, f.Validate()
 }
 
+// NewErrorStreamFrame 构造一个错误终态的流式块。
+func NewErrorStreamFrame(call Frame, from Ref, streamID string, seq int64, e *Error) (Frame, error) {
+	if e == nil {
+		e = ErrCode(CodeInternal, "stream error", false, nil)
+	}
+	f := Frame{
+		V: ProtocolVersion, ID: NewID(), Type: TypeStream,
+		Work: call.Work, From: from, To: call.From, ReplyTo: call.ID,
+		ContentType: call.ContentType,
+		Stream:      &Stream{ID: streamID, Seq: seq, End: true},
+		Status:      StatusError, Error: e,
+	}
+	f.Normalize()
+	return f, f.Validate()
+}
+
 // DeadlineFromLease 解析 lease 的 deadline。
 func DeadlineFromLease(l Lease) (time.Time, bool) {
 	if l.DeadlineAt == "" {

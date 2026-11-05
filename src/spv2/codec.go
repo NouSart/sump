@@ -34,9 +34,33 @@ func EncodeBody(v any) ([]byte, error) {
 	return msgpack.Marshal(v)
 }
 
-// DecodeBody 解码 body 到 dst。
+// DecodeBody 按 content_type 解码 body 到 dst。
 func (f Frame) DecodeBody(dst any) error {
-	return DecodeBody(f.Body, dst)
+	switch f.ContentType {
+	case "", ContentTypeMsgPack:
+		return DecodeBody(f.Body, dst)
+	case ContentTypeJSON:
+		if len(f.Body) == 0 || dst == nil {
+			return nil
+		}
+		return json.Unmarshal(f.Body, dst)
+	case ContentTypeText:
+		s, ok := dst.(*string)
+		if !ok {
+			return ErrCode(CodeInvalidArgument, "text body 只能解码到 *string", false, nil)
+		}
+		*s = string(f.Body)
+		return nil
+	case ContentTypeBinary:
+		b, ok := dst.(*[]byte)
+		if !ok {
+			return ErrCode(CodeInvalidArgument, "binary body 只能解码到 *[]byte", false, nil)
+		}
+		*b = append([]byte(nil), f.Body...)
+		return nil
+	default:
+		return ErrCode(CodeInvalidArgument, "不支持的 content_type: "+f.ContentType, false, nil)
+	}
 }
 
 // DecodeBody 解码 bytes 到 dst。

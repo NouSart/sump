@@ -18,6 +18,7 @@ type ServerOptions struct {
 	ActionTimeout   time.Duration
 	MaxInflight     int
 	Metrics         *Registry
+	Idempotency     *IdempotencyCache
 }
 
 // ServerOption 修改 ServerOptions。
@@ -36,12 +37,18 @@ func WithMetrics(r *Registry) ServerOption {
 	return func(o *ServerOptions) { o.Metrics = r }
 }
 
+// WithIdempotency 启用幂等缓存。
+func WithIdempotency(c *IdempotencyCache) ServerOption {
+	return func(o *ServerOptions) { o.Idempotency = c }
+}
+
 // Server 是一个 SPv2.1 服务端。
 type Server struct {
 	card     Card
 	handlers map[string]Handler
 	opts     ServerOptions
 	metrics  *Registry
+	idem     *IdempotencyCache
 	sem      chan struct{}
 	upgrader websocket.Upgrader
 	started  time.Time
@@ -60,7 +67,7 @@ func NewServer(card Card, opts ...ServerOption) (*Server, error) {
 		o.Metrics = NewRegistry()
 	}
 	s := &Server{
-		card: card, handlers: map[string]Handler{}, opts: o, metrics: o.Metrics,
+		card: card, handlers: map[string]Handler{}, opts: o, metrics: o.Metrics, idem: o.Idempotency,
 		sem: make(chan struct{}, o.MaxInflight), started: time.Now(),
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
 	}
@@ -137,23 +144,47 @@ func (s *Server) dispatch(c *conn, f Frame) {
 			s.runCall(c, f, h)
 		}()
 	case TypeEvent:
-		if h, ok := s.handlers[f.Method]; ok {
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), s.opts.ActionTimeout)
-				defer cancel()
-				call := &Call{Frame: f, srv: s, conn: c}
-				_ = h(ctx, call)
-			}()
+		h, ok := s.handlers[f.Method]
+		if !ok {
+			s.metrics.Counter("sump_unknown_event_total", "Unknown events", map[string]string{"method": f.Method}, 1)
+			return
 		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), s.opts.ActionTimeout)
+			defer cancel()
+			call := &Call{Frame: f, srv: s, conn: c}
+			if err := h(ctx, call); err != nil {
+				s.metrics.Counter("sump_event_errors_total", "Event handler errors", map[string]string{"method": f.Method}, 1)
+			}
+		}()
 	}
 }
 
 func (s *Server) runCall(c *conn, f Frame, h Handler) {
 	start := time.Now()
+	idemKey := ""
+	if s.idem != nil && f.IdempotencyKey != "" {
+		if m, ok := s.card.Method(f.Method); ok && m.Idempotent {
+			idemKey = idemKeyOf(f)
+			if cached, ok := s.idem.get(idemKey); ok {
+				cached.ID = NewID()
+				cached.ReplyTo = f.ID
+				cached.To = f.From
+				_ = c.send(cached)
+				code := StatusOK
+				if cached.Status == StatusError {
+					code = StatusError
+				}
+				s.metrics.Counter("sump_requests_total", "Total requests", map[string]string{"method": f.Method, "code": code}, 1)
+				s.metrics.Observe("sump_request_duration_seconds", "Request latency", "s", map[string]string{"method": f.Method}, time.Since(start).Seconds())
+				return
+			}
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.opts.ActionTimeout)
 	defer cancel()
-	call := &Call{Frame: f, srv: s, conn: c}
-	s.metrics.Gauge("sump_inflight_requests", "In-flight requests", map[string]string{"method": f.Method}, 1)
+	call := &Call{Frame: f, srv: s, conn: c, idemKey: idemKey}
+	s.metrics.AddGauge("sump_inflight_requests", "In-flight requests", map[string]string{"method": f.Method}, 1)
 	err := h(ctx, call)
 	if err != nil && !call.Replied() {
 		_ = call.ReplyError(codeOf(err), err.Error(), retryableOf(err), detailsOf(err))
@@ -161,7 +192,7 @@ func (s *Server) runCall(c *conn, f Frame, h Handler) {
 	if !call.Replied() {
 		_ = call.ReplyError(CodeInternal, "handler did not reply", false, nil)
 	}
-	s.metrics.Gauge("sump_inflight_requests", "In-flight requests", map[string]string{"method": f.Method}, 0)
+	s.metrics.AddGauge("sump_inflight_requests", "In-flight requests", map[string]string{"method": f.Method}, -1)
 	code := StatusOK
 	if call.lastError != nil {
 		code = call.lastError.Code
@@ -227,6 +258,7 @@ type Call struct {
 	mu        sync.Mutex
 	replied   bool
 	lastError *Error
+	idemKey   string
 }
 
 // Replied 是否已经回应。
@@ -249,7 +281,11 @@ func (c *Call) Reply(body any) error {
 	}
 	c.replied = true
 	c.mu.Unlock()
-	return c.conn.send(f)
+	err = c.conn.send(f)
+	if err == nil && c.idemKey != "" && c.srv.idem != nil {
+		c.srv.idem.put(c.idemKey, f)
+	}
+	return err
 }
 
 // ReplyError 发送失败响应。
@@ -263,7 +299,11 @@ func (c *Call) ReplyError(code, msg string, retryable bool, details map[string]a
 	c.replied = true
 	c.lastError = f.Error
 	c.mu.Unlock()
-	return c.conn.send(f)
+	err := c.conn.send(f)
+	if err == nil && c.idemKey != "" && c.srv.idem != nil {
+		c.srv.idem.put(c.idemKey, f)
+	}
+	return err
 }
 
 // SendEvent 向调用方发事件。
@@ -289,6 +329,19 @@ func (c *Call) SendStream(streamID string, seq int64, end bool, body any, status
 		}
 		c.mu.Unlock()
 	}
+	return c.conn.send(f)
+}
+
+// SendStreamError 发送错误终态的流式块。
+func (c *Call) SendStreamError(streamID string, seq int64, e *Error) error {
+	f, err := NewErrorStreamFrame(c.Frame, c.srv.card.Actor, streamID, seq, e)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.replied = true
+	c.lastError = e
+	c.mu.Unlock()
 	return c.conn.send(f)
 }
 

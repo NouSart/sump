@@ -18,6 +18,14 @@ func validToKind(k string) bool {
 	return false
 }
 
+func validReplyToKind(k string) bool {
+	switch k {
+	case "human", "agent", "service", "system":
+		return true
+	}
+	return false
+}
+
 // Validate 校验帧的结构与语义。
 func (f Frame) Validate() error {
 	if f.V != ProtocolVersion {
@@ -34,10 +42,19 @@ func (f Frame) Validate() error {
 	if f.Work == "" {
 		return ErrCode(CodeInvalidArgument, "work 必填", false, nil)
 	}
+	switch f.ContentType {
+	case "", ContentTypeMsgPack, ContentTypeJSON, ContentTypeText, ContentTypeBinary:
+	default:
+		return ErrCode(CodeInvalidArgument, "不支持的 content_type: "+f.ContentType, false, nil)
+	}
 	if !validFromKind(f.From.Kind) || f.From.ID == "" {
 		return ErrCode(CodeInvalidArgument, "from 非法", false, nil)
 	}
-	if !validToKind(f.To.Kind) || f.To.ID == "" {
+	if f.Type == TypeReply || f.Type == TypeStream {
+		if !validReplyToKind(f.To.Kind) || f.To.ID == "" {
+			return ErrCode(CodeInvalidArgument, "reply/stream 的 to 必须是调用方", false, nil)
+		}
+	} else if !validToKind(f.To.Kind) || f.To.ID == "" {
 		return ErrCode(CodeInvalidArgument, "to 非法", false, nil)
 	}
 	if f.To.Kind == "capability" {
@@ -51,7 +68,13 @@ func (f Frame) Validate() error {
 		if f.Method == "" {
 			return ErrCode(CodeInvalidArgument, "call.method 必填", false, nil)
 		}
+		if f.ReplyTo != "" || f.Status != "" || f.Error != nil || f.Stream != nil {
+			return ErrCode(CodeInvalidArgument, "call 不得带 reply_to/status/error/stream", false, nil)
+		}
 	case TypeReply:
+		if f.Method != "" || f.Stream != nil {
+			return ErrCode(CodeInvalidArgument, "reply 不得带 method/stream", false, nil)
+		}
 		if f.ReplyTo == "" {
 			return ErrCode(CodeInvalidArgument, "reply.reply_to 必填", false, nil)
 		}
@@ -68,7 +91,13 @@ func (f Frame) Validate() error {
 		if f.Method == "" {
 			return ErrCode(CodeInvalidArgument, "event.method 必填", false, nil)
 		}
+		if f.ReplyTo != "" || f.Status != "" || f.Error != nil || f.Stream != nil {
+			return ErrCode(CodeInvalidArgument, "event 不得带 reply_to/status/error/stream", false, nil)
+		}
 	case TypeStream:
+		if f.Method != "" {
+			return ErrCode(CodeInvalidArgument, "stream 不得带 method", false, nil)
+		}
 		if f.ReplyTo == "" || f.Stream == nil {
 			return ErrCode(CodeInvalidArgument, "stream 必须带 reply_to 与 stream", false, nil)
 		}
@@ -78,6 +107,9 @@ func (f Frame) Validate() error {
 		if f.Stream.End {
 			if f.Status != StatusOK && f.Status != StatusError {
 				return ErrCode(CodeInvalidArgument, "stream.end 必须带 status", false, nil)
+			}
+			if f.Status == StatusError && f.Error == nil {
+				return ErrCode(CodeInvalidArgument, "error stream.end 必须带 error", false, nil)
 			}
 		} else if f.Status != "" || f.Error != nil {
 			return ErrCode(CodeInvalidArgument, "非终态 stream 不得带 status/error", false, nil)
@@ -93,11 +125,12 @@ func validateAuthority(from Ref) error {
 			return ErrCode(CodeInvalidArgument, "human authority 只能是 owner/none", false, nil)
 		}
 	case "agent":
-		if from.Authority != AuthorityNone && from.Authority != AuthorityDelegated {
-			return ErrCode(CodePermissionDenied, "agent authority 只能是 none/delegated", false, nil)
-		}
-		if from.Authority == AuthorityDelegated {
+		switch from.Authority {
+		case AuthorityNone, AuthorityRuntime:
+		case AuthorityDelegated:
 			return ErrCode(CodeNotSupported, "delegated 在 v2.1 未设计", false, nil)
+		default:
+			return ErrCode(CodePermissionDenied, "agent authority 只能是 none/runtime/delegated", false, nil)
 		}
 	case "service", "system":
 		if from.Authority != AuthorityNone {

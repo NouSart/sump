@@ -79,6 +79,14 @@ func (r *Registry) Counter(name, help string, labels map[string]string, delta fl
 	s.metric.Value += delta
 }
 
+// AddGauge 增减当前值。
+func (r *Registry) AddGauge(name, help string, labels map[string]string, delta float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := r.get(name, "gauge", help, "", labels)
+	s.metric.Value += delta
+}
+
 // Gauge 设置当前值。
 func (r *Registry) Gauge(name, help string, labels map[string]string, value float64) {
 	r.mu.Lock()

@@ -331,7 +331,7 @@ open ──▶ running ──▶ waiting ──▶ running ──▶ done
 
 | 状态 | 含义 | 允许转移 |
 |---|---|---|
-| `open` | 已创建，未开始 | `running` / `cancelled` |
+| `open` | 已创建，未开始 | `running` / `cancelled` / `stalled` |
 | `running` | 执行中 | `waiting` / `done` / `failed` / `cancelled` / `stalled` |
 | `waiting` | 等 participant / 工具 / 人类 | `running` / `cancelled` / `stalled` / `orphaned` |
 | `stalled` | 无进展 / wait 环 / 乒乓 / lease 耗尽 | `running`（renew/resume）/ `cancelled` |
@@ -796,7 +796,7 @@ pending ──claim──▶ claimed ──ack──▶ delivered
 
 - **v2.1 信任边界**：可信内网；`from` 是自称；没有认证。不要把端口暴露到不可信网络。
 - **authority 只来自 work 角色或 capability**；不来自消息正文。
-- **agent 永远 `authority=none`**；不能授权工具、不能代替用户审批。
+- **agent 的 message 永远 `authority=none`**；只有 work.agent 执行 deliver / cancel / renew 时使用 `authority=runtime`，接收方必须按 work 行校验；runtime 不能用于 message，也不能授权工具或代替用户审批。
 - **participant 永远不能 `deliver`**。
 - **capability**：v2.1 只留字段；未实现前 `authority=delegated` 一律 `not_supported`。
 - **审批**：请求带 `work` / `from` / `authority`；人类看到“谁让谁跑的”；agent 不能批量预授权。

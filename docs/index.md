@@ -9,7 +9,7 @@
 | 先知道这是什么 | [../README.md](../README.md) |
 | 在本机把它跑起来 | [quickstart.md](quickstart.md) |
 | 写一个自己的服务 / 接入一个能力 | [guides/add-a-service.md](guides/add-a-service.md) |
-| 改协议、加动作、判断改动是否合规 | [concepts/protocol.md](concepts/protocol.md) |
+| 改协议、加动作、判断改动是否合规 | [concepts/protocol.md](concepts/protocol.md)；下一代草案 [concepts/spv2.md](concepts/spv2.md) |
 | 改审批规则、查「命令为什么没执行」 | [concepts/approval.md](concepts/approval.md) |
 | 理解架构为什么长这样 | [concepts/architecture.md](concepts/architecture.md) |
 | 理解一次对话怎么流动、状态落在哪 | [concepts/agent-loop.md](concepts/agent-loop.md) |
@@ -32,6 +32,7 @@
 | [concepts/architecture.md](concepts/architecture.md) | 想理解设计的人 | 有效 | 2026-10-30 |
 | [concepts/agent-loop.md](concepts/agent-loop.md) | 改 reasoner / memory 的人 | 有效 | 2026-10-30 |
 | [concepts/protocol.md](concepts/protocol.md) | 写服务 / 改协议的人 | 有效（`v: 1`） | 2026-10-30 |
+| [concepts/spv2.md](concepts/spv2.md) | 要评审 / 实现 SPv2.1 的人 | 草案 v0.1 | 2026-11-05 |
 | [concepts/approval.md](concepts/approval.md) | 改审批规则的人 | 有效（解释与富通知未实现） | 2026-10-30 |
 | [concepts/roadmap.md](concepts/roadmap.md) | 想知道边界与顺序的人 | 有效 | 2026-10-30 |
 | [guides/add-a-service.md](guides/add-a-service.md) | 加新服务的人 | 有效 | 2026-10-30 |

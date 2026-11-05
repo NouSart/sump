@@ -53,6 +53,7 @@ type WorkStore interface {
 	GetWork(ctx context.Context, id string) (Work, error)
 	UpdateStatus(ctx context.Context, id, status string) error
 	AddParticipant(ctx context.Context, workID string, p Participant) error
+	Renew(ctx context.Context, workID string, lease Lease) (Work, error)
 	Charge(ctx context.Context, workID string, c Charge) (Remaining, error)
 	Release(ctx context.Context, workID string, c Charge) error
 	Remaining(ctx context.Context, workID string) (Remaining, error)
@@ -124,11 +125,31 @@ func ensureDefaults(w *Work, now time.Time) {
 		w.CreatedAt = now.UTC().Format(time.RFC3339)
 	}
 	w.UpdatedAt = now.UTC().Format(time.RFC3339)
-	if w.Lease.DeadlineAt == "" {
-		w.Lease = DefaultLease(now)
-	}
+	fillLeaseDefaults(&w.Lease, now)
 	if w.Class == "" {
 		w.Class = ClassRequest
+	}
+}
+
+func fillLeaseDefaults(l *Lease, now time.Time) {
+	def := DefaultLease(now)
+	if l.DeadlineAt == "" {
+		l.DeadlineAt = def.DeadlineAt
+	}
+	if l.MaxToolCalls <= 0 {
+		l.MaxToolCalls = def.MaxToolCalls
+	}
+	if l.MaxTokens <= 0 {
+		l.MaxTokens = def.MaxTokens
+	}
+	if l.MaxApprovals <= 0 {
+		l.MaxApprovals = def.MaxApprovals
+	}
+	if l.MaxChildren <= 0 {
+		l.MaxChildren = def.MaxChildren
+	}
+	if l.MaxDepth <= 0 {
+		l.MaxDepth = def.MaxDepth
 	}
 }
 
@@ -228,6 +249,44 @@ func (s *MemStore) AddParticipant(_ context.Context, workID string, p Participan
 	rec.work.Participants = append(rec.work.Participants, p)
 	rec.work.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	return nil
+}
+
+// Renew 续租：只增加预算/延后 deadline，不减少已用余额。
+func (s *MemStore) Renew(_ context.Context, workID string, lease Lease) (Work, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.works[workID]
+	if !ok {
+		return Work{}, ErrWorkNotFound
+	}
+	if IsTerminal(rec.work.Status) {
+		return Work{}, ErrCode(CodeConflict, "终态 work 不能续租", false, nil)
+	}
+	if lease.DeadlineAt != "" {
+		old, _ := time.Parse(time.RFC3339, rec.work.Lease.DeadlineAt)
+		nw, err := time.Parse(time.RFC3339, lease.DeadlineAt)
+		if err != nil {
+			return Work{}, ErrCode(CodeInvalidArgument, "lease.deadline_at 不是 RFC3339", false, nil)
+		}
+		if nw.After(old) {
+			rec.work.Lease.DeadlineAt = lease.DeadlineAt
+			rec.remaining.DeadlineAt = lease.DeadlineAt
+		}
+	}
+	add := func(oldMax, newMax, remaining int) (int, int) {
+		if newMax > oldMax {
+			remaining += newMax - oldMax
+			oldMax = newMax
+		}
+		return oldMax, remaining
+	}
+	rec.work.Lease.MaxToolCalls, rec.remaining.ToolCalls = add(rec.work.Lease.MaxToolCalls, lease.MaxToolCalls, rec.remaining.ToolCalls)
+	rec.work.Lease.MaxTokens, rec.remaining.Tokens = add(rec.work.Lease.MaxTokens, lease.MaxTokens, rec.remaining.Tokens)
+	rec.work.Lease.MaxApprovals, rec.remaining.Approvals = add(rec.work.Lease.MaxApprovals, lease.MaxApprovals, rec.remaining.Approvals)
+	rec.work.Lease.MaxChildren, rec.remaining.Children = add(rec.work.Lease.MaxChildren, lease.MaxChildren, rec.remaining.Children)
+	rec.work.Lease.MaxDepth, rec.remaining.Depth = add(rec.work.Lease.MaxDepth, lease.MaxDepth, rec.remaining.Depth)
+	rec.work.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	return copyWork(rec.work), nil
 }
 
 // Charge 原子扣减租约。
