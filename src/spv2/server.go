@@ -182,6 +182,9 @@ func (s *Server) runCall(c *conn, f Frame, h Handler) {
 				code := StatusOK
 				if cached.Status == StatusError {
 					code = StatusError
+					if cached.Error != nil && cached.Error.Code != "" {
+						code = cached.Error.Code
+					}
 				}
 				s.metrics.Counter("sump_requests_total", "Total requests", map[string]string{"method": f.Method, "code": code}, 1)
 				s.metrics.Observe("sump_request_duration_seconds", "Request latency", "s", map[string]string{"method": f.Method}, time.Since(start).Seconds())
