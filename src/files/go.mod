@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/NouSart/sump/protocol v0.0.0
 	github.com/NouSart/sump/service v0.0.0
+	github.com/NouSart/sump/spv2 v0.0.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
 	github.com/pdfcpu/pdfcpu v0.16.2
@@ -44,3 +45,5 @@ require (
 replace github.com/NouSart/sump/protocol => ../protocol
 
 replace github.com/NouSart/sump/service => ../service
+
+replace github.com/NouSart/sump/spv2 => ../spv2
