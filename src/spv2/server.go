@@ -126,6 +126,14 @@ func (s *Server) dispatch(c *conn, f Frame) {
 		}
 		return
 	}
+	if max := s.card.Limits.MaxBody; max > 0 && int64(len(f.Body)) > max {
+		if f.Type == TypeCall {
+			_ = c.send(NewErrorReply(f, s.card.Actor, CodeResourceExhausted, "body 超过 max_body", false, nil))
+		} else {
+			s.metrics.Counter("sump_dropped_total", "Dropped frames", map[string]string{"reason": "max_body"}, 1)
+		}
+		return
+	}
 	switch f.Type {
 	case TypeCall:
 		h, ok := s.handlers[f.Method]

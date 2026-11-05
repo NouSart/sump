@@ -159,7 +159,7 @@ if err := client.CallDecode(ctx, call, &out); err != nil {
 - 已落地：帧/卡片/校验、call/reply/event/stream、WS client/server、hello/health/metrics、HTTP `/healthz` `/readyz` `/metrics`、`MemStore`（work/lease/queue/sweep/renew）、可选幂等缓存、v1 adapter、`ref/` 参考链路。
 - SQLite：`sqlitestore.go` 有 `SQLiteStore` / `NewSQLiteStore` 和 `sqlitestore_test.go`，测试已通过；但参考链路与默认测试仍用 `MemStore`，生产 memory 尚未接入，不把参考实现当成迁移完成。
 - 未接入：生产 reasoner/memory/frontend 迁移、auth/tenant/capability、spawn/cross-owner、v1 适配器之外的服务改造；`cancel` 只在 `ref/memory` 有 handler，`renew` 只有 Store 方法，生产 method 未接。
-- 测试缺口：没有 reconnect/heartbeat、stream 缺口/重复、并发竞态（`-race`）测试。
+- 测试缺口：没有 reconnect/heartbeat、stream 缺口/重复、专门的并发压测；`go test -race` 已通过。
 - 迁移顺序：frontend → reasoner → memory → tools；先接适配器跑通一条链，再按顺序替换；v3 触发条件见 [spec §19](../../docs/concepts/spv2.md#19-实现顺序与-v3-触发)。
 
 ## 运行与测试
