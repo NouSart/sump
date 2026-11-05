@@ -94,15 +94,17 @@ func (a *asyncImports) Close(ctx context.Context) error {
 	}
 }
 
-func (s *Server) handleAsyncImport(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	if env.From == "" || env.Trace == "" || ctx.Err() != nil {
+// asyncImport 是 v1 action 与 /spv2 原生 method 共用的异步受理实现。
+// caller/trace/boss 是路由字段，body 是原始 MessagePack，不合成信封。
+func (s *Server) asyncImport(ctx context.Context, action string, body []byte, caller, trace, boss string) (any, error) {
+	if caller == "" || trace == "" || ctx.Err() != nil {
 		return nil, errors.New("MCP_IMPORT_REJECTED: live caller and trace required; remote tool not submitted")
 	}
-	principal := "sump:" + env.From
+	principal := "sump:" + caller
 	if err := s.acquire(principal, nil); err != nil {
 		return nil, err
 	}
-	prepared, err := s.imports.Prepare(in)
+	prepared, err := s.imports.PrepareBody(action, body)
 	if err != nil {
 		s.release(principal)
 		return nil, err
@@ -111,7 +113,7 @@ func (s *Server) handleAsyncImport(ctx context.Context, env protocol.Envelope, i
 	// instead follow service lifetime and the configured async observation limit.
 	workCtx, cancel := context.WithTimeout(s.lifetime, s.cfg.AsyncTimeout)
 	id := protocol.NewID()
-	if ctx.Err() != nil || !s.asyncImports.add(id, env.From, cancel) {
+	if ctx.Err() != nil || !s.asyncImports.add(id, caller, cancel) {
 		cancel()
 		prepared.Close()
 		s.release(principal)
@@ -129,7 +131,7 @@ func (s *Server) handleAsyncImport(ctx context.Context, env protocol.Envelope, i
 		// acknowledgment never triggers replay of the remote business operation.
 		deliveryCtx, stop := context.WithTimeout(context.Background(), s.cfg.DeliveryTimeout)
 		defer stop()
-		ack, err := s.svc.Call(deliveryCtx, env.From, "report_result", report, env.Trace, env.Boss)
+		ack, err := s.svc.Call(deliveryCtx, caller, "report_result", report, trace, boss)
 		if err != nil || importDeliveryUnconfirmed(ack) {
 			s.svc.Report("fire", fmt.Sprintf("MCP result delivery unconfirmed: item_id=%s phase=%s; remote operation not replayed", id, report.Phase))
 		}
@@ -157,21 +159,27 @@ func importDeliveryUnconfirmed(raw []byte) bool {
 	return fields["status"] == "ignored" || fields["accepted"] == false || fields["received"] == false
 }
 
+// handleCancelImport 是 v1 action 的薄包装。
 func (s *Server) handleCancelImport(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	if len(in.Input) > 256 {
+	return s.cancelImport(in.Input, env.From)
+}
+
+// cancelImport 与 /spv2 原生 method 共用：body 是原始 MessagePack。
+func (s *Server) cancelImport(body []byte, caller string) (any, error) {
+	if len(body) > 256 {
 		return nil, errors.New("cancel_import input exceeds byte limit")
 	}
-	value, err := decodeJobData(in.Input)
+	value, err := decodeJobData(body)
 	fields, valid := value.(map[string]any)
 	if err != nil || !valid || len(fields) != 1 {
 		return nil, errors.New("cancel_import requires only item_id")
 	}
 	id, ok := fields["item_id"].(string)
-	if !ok || boundedText("item_id", id, 128, true) != nil || env.From == "" {
+	if !ok || boundedText("item_id", id, 128, true) != nil || caller == "" {
 		return nil, errors.New("cancel_import requires a valid item_id and caller")
 	}
 	status := "unknown"
-	if s.asyncImports.cancelOwned(id, env.From) {
+	if s.asyncImports.cancelOwned(id, caller) {
 		status = "observation_cancelled"
 	}
 	return map[string]any{"item_id": id, "status": status, "remote_outcome": "unknown"}, nil

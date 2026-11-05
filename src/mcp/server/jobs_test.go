@@ -27,7 +27,7 @@ func reserveTestJob(t *testing.T, jobs *Jobs, trace string, release func()) stri
 
 func reportTestJob(t *testing.T, jobs *Jobs, trace, item, phase string, final bool) bool {
 	t.Helper()
-	ok, err := jobs.Report(protocol.Envelope{From: "timer", Trace: trace}, protocol.AsyncResultPayload{ItemID: item, Phase: phase, Text: phase, Final: final})
+	ok, err := jobs.Report(trace, "timer", protocol.AsyncResultPayload{ItemID: item, Phase: phase, Text: phase, Final: final})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,8 +62,8 @@ func TestJobsOwnershipAndReportCorrelation(t *testing.T) {
 	if err := jobs.BindReceipt(id, "item-a"); err != nil {
 		t.Fatal(err)
 	}
-	for _, env := range []protocol.Envelope{{From: "foreign", Trace: "trace-a"}, {From: "timer", Trace: "other"}} {
-		if ok, err := jobs.Report(env, protocol.AsyncResultPayload{ItemID: "item-a", Phase: "done", Final: true}); ok || err != nil {
+	for _, report := range [][2]string{{"foreign", "trace-a"}, {"timer", "other"}} {
+		if ok, err := jobs.Report(report[1], report[0], protocol.AsyncResultPayload{ItemID: "item-a", Phase: "done", Final: true}); ok || err != nil {
 			t.Fatalf("foreign report accepted: %v %v", ok, err)
 		}
 	}
@@ -177,7 +177,7 @@ func TestJobsSnapshotDataAndNativeHandlePrivacy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := jobs.Report(protocol.Envelope{From: "timer", Trace: "data"}, protocol.AsyncResultPayload{ItemID: "private-native-handle", Phase: "done", Data: raw, Final: true}); !ok || err != nil {
+	if ok, err := jobs.Report("data", "timer", protocol.AsyncResultPayload{ItemID: "private-native-handle", Phase: "done", Data: raw, Final: true}); !ok || err != nil {
 		t.Fatalf("data report: %v %v", ok, err)
 	}
 	for i := range raw {
@@ -247,7 +247,7 @@ func TestJobsEarlyAndByteBudgetsAreAtomic(t *testing.T) {
 	id := reserveTestJob(t, jobs, "early-budget", nil)
 	reportTestJob(t, jobs, "early-budget", "item", "working", false)
 	before := jobs.bytes
-	if ok, err := jobs.Report(protocol.Envelope{From: "timer", Trace: "early-budget"}, protocol.AsyncResultPayload{ItemID: "item", Phase: "done", Final: true}); ok || !errors.Is(err, ErrJobResultLimit) {
+	if ok, err := jobs.Report("early-budget", "timer", protocol.AsyncResultPayload{ItemID: "item", Phase: "done", Final: true}); ok || !errors.Is(err, ErrJobResultLimit) {
 		t.Fatalf("early count limit bypassed: %v %v", ok, err)
 	}
 	if jobs.bytes != before {
@@ -262,7 +262,7 @@ func TestJobsEarlyAndByteBudgetsAreAtomic(t *testing.T) {
 	jobs.mu.Lock()
 	jobs.cfg.MaxTotalBytes = jobs.bytes
 	jobs.mu.Unlock()
-	if ok, err := jobs.Report(protocol.Envelope{From: "timer", Trace: "early-budget"}, protocol.AsyncResultPayload{ItemID: "item", Phase: "done", Text: strings.Repeat("x", 2000), Final: true}); ok || !errors.Is(err, ErrJobResultLimit) {
+	if ok, err := jobs.Report("early-budget", "timer", protocol.AsyncResultPayload{ItemID: "item", Phase: "done", Text: strings.Repeat("x", 2000), Final: true}); ok || !errors.Is(err, ErrJobResultLimit) {
 		t.Fatalf("aggregate byte limit bypassed: %v %v", ok, err)
 	}
 	if s := readTestJob(t, jobs, id); s.Phase != "working" || s.Final {
@@ -312,7 +312,7 @@ func TestJobsConcurrentFinalAndCancellation(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			if n%2 == 0 {
-				_, err := jobs.Report(protocol.Envelope{From: "timer", Trace: "race"}, protocol.AsyncResultPayload{ItemID: "item", Phase: "done", Final: true})
+				_, err := jobs.Report("race", "timer", protocol.AsyncResultPayload{ItemID: "item", Phase: "done", Final: true})
 				if err != nil {
 					t.Error(err)
 				}
