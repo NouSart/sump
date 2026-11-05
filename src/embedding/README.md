@@ -54,7 +54,7 @@ Copy-Item 'D:\agent\SUMP\1\data\models\models--Qdrant--bge-small-zh-v1.5\snapsho
 ## 结构
 
 - `sump_embedding/protocol.py`：协议层（信封 + MessagePack）——键名与 Go `protocol/` 对齐，`tests/test_protocol.py` 用 Go 产出字节锚定；
-- `sump_embedding/center.py`：中心连接（注册 / 心跳 / 断线自愈 / 名册广播；首次注册失败即退出——引导错误立刻可见）；
+- `sump_embedding/center.py`：中心连接（注册 / 心跳 / 断线自愈 / 名册广播；`SUMP_SPV2=1` 时优先原生 `/spv2`：register call、heartbeat event、roster/settings event，接入失败自动回退 v1；首次注册失败即退出——引导错误立刻可见）；
 - `sump_embedding/spv2.py`：SPv2.1 帧编解码（msgpack map / bin body）与原生 `/spv2` 端点（call 分派、reply、hello/health；不伪造 metrics）；
 - `sump_embedding/server.py`：v1 `/ws` 端点（jump 分派 / 未知动作回错 / 慢动作并发）——兼容边缘；
 - `sump_embedding/backends.py`：fake（确定性特征哈希，测试与 CI）/ onnx（onnxruntime + tokenizers，CLS pooling + L2 归一）；
