@@ -35,6 +35,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# SPv2.1：所有基于 service 骨架的 Go 服务同时启用 /spv2 传输桥；
+# 非 Go 服务（frontend/embedding）仍走 v1，由 Service.Call 自动回退。
+$env:SUMP_SPV2 = '1'
+
 $approvalRuntime = Get-Command pwsh -ErrorAction SilentlyContinue
 if (-not $approvalRuntime) { $approvalRuntime = Get-Command powershell -ErrorAction SilentlyContinue }
 if (-not $approvalRuntime) { throw '命令审批需要 PowerShell' }
