@@ -35,8 +35,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# SPv2.1：所有基于 service 骨架的 Go 服务同时启用 /spv2 传输桥；
-# 非 Go 服务（frontend/embedding）仍走 v1，由 Service.Call 自动回退。
+# SPv2.1：Go 服务启用 /spv2 传输桥；frontend 出站优先 /spv2、入站也提供 /spv2；
+# embedding / settings-center 仍走 v1（由调用方自动回退）。
 $env:SUMP_SPV2 = '1'
 
 $approvalRuntime = Get-Command pwsh -ErrorAction SilentlyContinue
