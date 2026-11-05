@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { WebSocketServer } from 'ws';
 import { decode, encode } from '@msgpack/msgpack';
 import {
   SPv2RemoteError,
   SPv2UnavailableError,
+  createSPv2WSS,
   dialSPv2Once,
   encodeFrame,
   decodeFrame,
@@ -112,4 +115,43 @@ test('dialSPv2Once 连接失败抛 SPv2UnavailableError', async () => {
     dialSPv2Once('ws://127.0.0.1:1', 'frontend', 'peer', 'echo', undefined, 500),
     (err: unknown) => err instanceof SPv2UnavailableError,
   );
+});
+
+test('createSPv2WSS 处理 deliver 并回执', async () => {
+  let delivered: { conversationId: string; text: string } | null = null;
+  const wss = createSPv2WSS(
+    'frontend',
+    () => {},
+    {
+      onDeliver: (m) => {
+        delivered = { conversationId: m.conversationId, text: m.text };
+      },
+      onTimers: () => true,
+      onApproval: () => {},
+      onProgress: () => true,
+      onTerminal: () => true,
+    },
+  );
+  const server = createServer();
+  server.on('upgrade', (req, socket, head) => {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const out = await dialSPv2Once(
+      `ws://127.0.0.1:${port}`,
+      'reasoner',
+      'frontend',
+      'deliver',
+      { text: 'hi', conversation_id: 'web:private:owner' },
+      2000,
+    );
+    assert.deepEqual(out, { delivered: true });
+    assert.deepEqual(delivered, { conversationId: 'web:private:owner', text: 'hi' });
+  } finally {
+    for (const ws of wss.clients) ws.terminate();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
