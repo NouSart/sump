@@ -31,6 +31,10 @@ func (s *Server) pushAttemptSPv2(service string, card protocol.ServiceCard, item
 			continue
 		}
 		if _, err := c.Call(ctx, call); err != nil {
+			if spv2.IsCode(err, spv2.CodeNotFound) {
+				// 目标有 /spv2 但没实现 configure：回退整套 v1 下发，避免把"方法不支持"记成设置失败。
+				return nil, false, nil
+			}
 			if errors.Is(err, spv2.ErrConnClosed) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				remaining = append(remaining, i)
 				lastErr = err
