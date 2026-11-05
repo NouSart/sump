@@ -71,6 +71,7 @@ export function attachJumpEndpoint(
   onProgress: (p: ProgressUpdate) => boolean,
   onTerminal: (u: TerminalUpdate) => boolean,
   trust: TrustConfig,
+  spv2?: { path: string; wss: WebSocketServer },
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxInboundMessageBytes });
 
@@ -141,7 +142,9 @@ export function attachJumpEndpoint(
 
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    if (url.pathname !== path) {
+    const isV1 = url.pathname === path;
+    const isSpv2 = spv2 !== undefined && url.pathname === spv2.path;
+    if (!isV1 && !isSpv2) {
       socket.destroy();
       return;
     }
@@ -153,7 +156,13 @@ export function attachJumpEndpoint(
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => handleConn(ws));
+    if (isV1) {
+      wss.handleUpgrade(req, socket, head, (ws) => handleConn(ws));
+    } else {
+      spv2!.wss.handleUpgrade(req, socket, head, (ws) => {
+        spv2!.wss.emit('connection', ws, req);
+      });
+    }
   });
 
   return wss;

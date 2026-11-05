@@ -1,8 +1,22 @@
 // SPv2.1 客户端：只覆盖 frontend 出站所需的最小 call/reply。
 // 线上形状与 src/spv2（Go 参考实现）逐字段对齐：header 是 msgpack map，body 是 bin。
 import { decode, encode } from '@msgpack/msgpack';
-import WebSocket from 'ws';
+import WebSocket, { WebSocketServer, type RawData } from 'ws';
 import { frameBytes, newID } from './protocol.ts';
+import {
+  PORTAL_CONVERSATION_ID,
+  checkRequestTrust,
+  parsePendingApproval,
+  parseProgress,
+  parseTerminalUpdate,
+  type DeliverMessage,
+  type PendingApprovalItem,
+  type ProgressUpdate,
+  type TerminalUpdate,
+  type TimerState,
+  type TrustConfig,
+} from './portal.ts';
+import { parseTimerItems } from './service.ts';
 
 export const SPv2Version = 'spv2.1';
 const maxSPv2MessageBytes = 8 << 20;
@@ -185,4 +199,100 @@ export function dialSPv2Once(
       finish(() => reject(opened ? new Error(`SPv2 连接在响应前关闭: ${addr}`) : new SPv2UnavailableError('连接失败')));
     });
   });
+}
+
+export interface SPv2PortalHandlers {
+  onDeliver: (m: DeliverMessage) => void;
+  onTimers: (s: TimerState) => boolean;
+  onApproval: (item: PendingApprovalItem) => void;
+  onProgress: (p: ProgressUpdate) => boolean;
+  onTerminal: (u: TerminalUpdate) => boolean;
+}
+
+// createSPv2WSS 生成 /spv2 的端口；upgrade 路由由 attachJumpEndpoint 统一处理，
+// 避免同一 HTTP server 上两个 upgrade 监听互相抢/互相 destroy。
+export function createSPv2WSS(name: string, log: (m: string) => void, handlers: SPv2PortalHandlers): WebSocketServer {
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
+  wss.on('connection', (ws: WebSocket) => {
+    ws.on('error', (err: Error) => {
+      log(`SPv2 WS 连接出错（即将关闭）: ${err.message}`);
+    });
+    ws.on('message', (data: RawData) => {
+      let frame: Frame;
+      try {
+        frame = decodeFrame(frameBytes(data));
+      } catch {
+        log('SPv2 端点上收到坏帧（丢弃）');
+        return;
+      }
+      if (frame.type !== 'call') return;
+      const input = frame.body && frame.body.length > 0 ? (decode(frame.body) as Record<string, unknown>) : {};
+      const method = frame.method ?? '';
+      const reply = (status: 'ok' | 'error', body?: unknown, error?: { code: string; message: string; retryable: boolean }): void => {
+        const out: Frame = {
+          v: SPv2Version,
+          id: newID(),
+          type: 'reply',
+          work: frame.work,
+          from: { kind: 'service', id: name },
+          to: frame.from,
+          reply_to: frame.id,
+          status,
+        };
+        if (body !== undefined) out.body = encode(body);
+        if (error !== undefined) out.error = error;
+        ws.send(encodeFrame(out));
+      };
+
+      if (method === 'deliver') {
+        const text = typeof input.text === 'string' ? input.text : '';
+        if (text === '') {
+          reply('error', undefined, { code: 'invalid_argument', message: 'deliver 需要非空 text', retryable: false });
+          return;
+        }
+        const conversationId =
+          typeof input.conversation_id === 'string' && input.conversation_id !== ''
+            ? input.conversation_id
+            : PORTAL_CONVERSATION_ID;
+        const taskId = typeof input.task_id === 'string' ? input.task_id : '';
+        handlers.onDeliver({ text, conversationId, taskId, at: new Date().toISOString() });
+        reply('ok', { delivered: true });
+        return;
+      }
+      if (method === 'timer_state') {
+        const accepted = handlers.onTimers({
+          boss: typeof input.boss === 'string' ? input.boss : '',
+          seq: typeof input.seq === 'number' ? input.seq : 0,
+          items: parseTimerItems(input.timers, log),
+        });
+        reply('ok', { accepted });
+        return;
+      }
+      if (method === 'approval_pending') {
+        const item = parsePendingApproval(input, log);
+        if (item !== null) handlers.onApproval(item);
+        reply('ok', { accepted: item !== null });
+        return;
+      }
+      if (method === 'progress') {
+        const p = parseProgress(input, log);
+        const accepted = p !== null ? handlers.onProgress(p) : false;
+        reply('ok', { accepted });
+        return;
+      }
+      if (method === 'report_result') {
+        const u = parseTerminalUpdate(input, log);
+        const accepted = u !== null ? handlers.onTerminal(u) : false;
+        reply('ok', { accepted });
+        return;
+      }
+      reply('error', undefined, { code: 'not_found', message: `unknown method: ${method}`, retryable: false });
+    });
+  });
+  return wss;
+}
+
+// checkSPv2Trust 与 v1 /ws 共用同一道信任栅栏。
+export function checkSPv2Trust(reqHost: string | undefined, reqOrigin: string | undefined, trust: TrustConfig): string | null {
+  return checkRequestTrust(reqHost, reqOrigin, trust);
 }
