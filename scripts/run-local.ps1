@@ -35,6 +35,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# SPv2.1：Go 服务启用 /spv2 传输桥；frontend 出站优先 /spv2、入站也提供 /spv2；
+# embedding / settings-center 仍走 v1（由调用方自动回退）。
+$env:SUMP_SPV2 = '1'
+
 $approvalRuntime = Get-Command pwsh -ErrorAction SilentlyContinue
 if (-not $approvalRuntime) { $approvalRuntime = Get-Command powershell -ErrorAction SilentlyContinue }
 if (-not $approvalRuntime) { throw '命令审批需要 PowerShell' }
