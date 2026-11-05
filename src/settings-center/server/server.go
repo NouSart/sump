@@ -540,6 +540,9 @@ func (s *Server) pushAttempt(service string, items []protocol.SettingView, idxs 
 	if !ok {
 		return idxs, errors.New("服务不在名册（可能已离线）")
 	}
+	if remaining, handled, err := s.pushAttemptSPv2(service, card, items, idxs, results); handled {
+		return remaining, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	c, err := protocol.DialContext(ctx, card.Addr, nil)

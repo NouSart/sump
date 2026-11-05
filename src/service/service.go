@@ -70,20 +70,21 @@ type Service struct {
 	announceSeq    int64      // 设置回传（AnnounceSetting）的单调序号（settingsMu 保护）
 	applyMu        sync.Mutex // 应用串行化：多个下发不并发进回调
 
-	mu         sync.Mutex
-	roster     map[string]protocol.ServiceCard
-	selfURL    string
-	center     *protocol.Client // 当前中心连接（nil = 未连接）
-	spv2On     bool             // SPv2.1 传输桥是否启用
-	spv2Srv    *spv2.Server     // /spv2 服务端（nil = 未启用）
-	spv2PeerMu sync.Mutex       // peer /spv2 能力缓存锁
-	spv2Peers  map[string]bool  // addr -> 是否支持 /spv2
-	closed     bool             // Shutdown 后为真（阻止继续重连）
-	started    bool             // Start 后为真（阻止再声明设置项）
-	regs       int64            // 注册成功次数（日志用）
-	lifeCtx    context.Context  // Start 创建、Shutdown 取消；后台循环据此退出
-	lifeCancel context.CancelFunc
-	bg         sync.WaitGroup // 生命周期后台循环（只含可取消、可快速退出的）
+	mu           sync.Mutex
+	roster       map[string]protocol.ServiceCard
+	selfURL      string
+	center       *protocol.Client // 当前 v1 中心连接（nil = 未连接）
+	centerNative *spv2.Client     // 当前 SPv2 中心连接（nil = 未连接）
+	spv2On       bool             // SPv2.1 传输桥是否启用
+	spv2Srv      *spv2.Server     // /spv2 服务端（nil = 未启用）
+	spv2PeerMu   sync.Mutex       // peer /spv2 能力缓存锁
+	spv2Peers    map[string]bool  // addr -> 是否支持 /spv2
+	closed       bool             // Shutdown 后为真（阻止继续重连）
+	started      bool             // Start 后为真（阻止再声明设置项）
+	regs         int64            // 注册成功次数（日志用）
+	lifeCtx      context.Context  // Start 创建、Shutdown 取消；后台循环据此退出
+	lifeCancel   context.CancelFunc
+	bg           sync.WaitGroup // 生命周期后台循环（只含可取消、可快速退出的）
 
 	repMu       sync.Mutex     // 错误上报退避锁
 	repThrottle reportThrottle // 错误上报防刷（见 report.go）
@@ -296,6 +297,8 @@ func (s *Service) Shutdown() {
 	s.closed = true
 	c := s.center
 	s.center = nil
+	n := s.centerNative
+	s.centerNative = nil
 	cancel := s.lifeCancel
 	s.mu.Unlock()
 
@@ -319,6 +322,21 @@ func (s *Service) Shutdown() {
 		}
 		_ = c.Close()
 	}
+	if n != nil {
+		if ev, err := spv2.NewEvent(spv2.NewID(), spv2.ServiceRef(s.cfg.Name), spv2.ServiceRef("settings-center"), "heartbeat",
+			protocol.HeartbeatPayload{Status: "bye"}); err == nil {
+			sent := make(chan struct{})
+			go func() {
+				_ = n.Send(ev)
+				close(sent)
+			}()
+			select {
+			case <-sent:
+			case <-time.After(time.Second):
+			}
+		}
+		_ = n.Close()
+	}
 	if s.httpSrv != nil {
 		_ = s.httpSrv.Close()
 	}
@@ -329,6 +347,13 @@ func (s *Service) Shutdown() {
 
 // connectAndRegister 建立一条中心连接、注册并启动心跳。
 func (s *Service) connectAndRegister(ctx context.Context) error {
+	if s.spv2On {
+		if err := s.connectAndRegisterSPv2(ctx); err == nil {
+			return nil
+		} else {
+			s.logger.Printf("%s SPv2 注册失败，回退 v1: %v", s.cfg.Name, err)
+		}
+	}
 	c, err := protocol.DialContextWithOptions(ctx, s.cfg.Center, s.onCenterEvent, protocol.DialOptions{MaxMessageBytes: s.cfg.MaxMessageBytes})
 	if err != nil {
 		return err
@@ -407,12 +432,13 @@ func (s *Service) watchCenter(ctx context.Context) {
 		s.mu.Lock()
 		closed := s.closed
 		c := s.center
+		n := s.centerNative
 		s.mu.Unlock()
 		if closed || ctx.Err() != nil {
 			return
 		}
 
-		if c == nil {
+		if c == nil && n == nil {
 			if err := s.connectAndRegister(ctx); err != nil {
 				if ctx.Err() != nil || s.isClosed() {
 					return
@@ -433,15 +459,24 @@ func (s *Service) watchCenter(ctx context.Context) {
 			continue
 		}
 
+		var done <-chan struct{}
+		if c != nil {
+			done = c.Done()
+		} else {
+			done = n.Done()
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-c.Done():
+		case <-done:
 			// 连接断开：清空后快速重连（首试 1s，不做长退避）。
 			// Shutdown 也会关连接；先看 closed，避免"关闭后还打一行重连日志再等 1s"。
 			s.mu.Lock()
 			if s.center == c {
 				s.center = nil
+			}
+			if s.centerNative == n {
+				s.centerNative = nil
 			}
 			closed := s.closed
 			s.mu.Unlock()
