@@ -9,7 +9,16 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
+
+func timeoutCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
 
 func TestServerMaxBodyBoundary(t *testing.T) {
 	cases := []struct {
@@ -34,7 +43,7 @@ func TestServerMaxBodyBoundary(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.ContentType = ContentTypeBinary
-			_, err = c.Call(context.Background(), f)
+			_, err = c.Call(timeoutCtx(t), f)
 			if tc.wantErr {
 				if !IsCode(err, CodeResourceExhausted) {
 					t.Fatalf("err = %v, want resource_exhausted", err)
@@ -55,7 +64,7 @@ func TestServerHandlerDidNotReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = c.Call(context.Background(), f)
+	_, err = c.Call(timeoutCtx(t), f)
 	if !IsCode(err, CodeInternal) || !strings.Contains(err.Error(), "handler did not reply") {
 		t.Fatalf("err = %v, want internal handler did not reply", err)
 	}
@@ -77,7 +86,7 @@ func TestServerIdempotentErrorReplyCached(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.IdempotencyKey = "same"
-		if _, err := c.Call(context.Background(), f); !IsCode(err, CodeInvalidArgument) {
+		if _, err := c.Call(timeoutCtx(t), f); !IsCode(err, CodeInvalidArgument) {
 			t.Fatalf("call %d err = %v, want invalid_argument", i, err)
 		}
 	}
@@ -167,7 +176,7 @@ func TestServerInflightGaugeReclaimed(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := c.Call(context.Background(), f)
+		_, err := c.Call(timeoutCtx(t), f)
 		done <- err
 	}()
 	select {
@@ -216,7 +225,7 @@ func TestServerHelloValidation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.Call(context.Background(), f); !IsCode(err, CodeInvalidArgument) {
+		if _, err := c.Call(timeoutCtx(t), f); !IsCode(err, CodeInvalidArgument) {
 			t.Fatalf("hello %T err = %v, want invalid_argument", body, err)
 		}
 	}
@@ -231,7 +240,46 @@ func TestServerMaxMessageBytesCloses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Call(context.Background(), f); err == nil {
+	if _, err := c.Call(timeoutCtx(t), f); err == nil {
 		t.Fatal("oversized frame should close the server connection")
+	}
+}
+
+func TestServerInvalidFramesFailFast(t *testing.T) {
+	card := wsTestCard(wsTestMethod("echo"))
+	card.Limits.MaxBody = 4
+	_, url := wsStartServer(t, card)
+	ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	cases := []Frame{
+		{V: ProtocolVersion, ID: "bad-method", Type: TypeCall, Work: "w", From: HumanRef("p"), To: ServiceRef(wsTestService)},
+		{V: ProtocolVersion, ID: "bad-to", Type: TypeCall, Work: "w", From: HumanRef("p"), To: ServiceRef("other"), Method: "echo"},
+		{V: ProtocolVersion, ID: "bad-body", Type: TypeCall, Work: "w", From: HumanRef("p"), To: ServiceRef(wsTestService), Method: "echo", Body: []byte("12345")},
+	}
+	for i, f := range cases {
+		data, err := Marshal(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ws.WriteMessage(websocket.BinaryMessage, data); err != nil {
+			t.Fatal(err)
+		}
+		if err := ws.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		_, respData, err := ws.ReadMessage()
+		if err != nil {
+			t.Fatalf("case %d: no error reply: %v", i, err)
+		}
+		resp, err := Unmarshal(respData)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Type != TypeReply || resp.Status != StatusError {
+			t.Fatalf("case %d: reply = %+v, want error reply", i, resp)
+		}
 	}
 }
