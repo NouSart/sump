@@ -99,10 +99,18 @@ func tagOf(q queued) string {
 	return fmt.Sprintf("#%d", q.seq+1)
 }
 
-// actionRun 受理一批：校验 → 预留槽位 → 落库 → 立即回执 → 后台开跑。
-func (s *Server) actionRun(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+// actionRun 是 v1 兼容边缘：只从信封取归属与链路，业务逻辑在 run。
+func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.run(env.From, env.Boss, env.Trace, in.Input)
+}
+
+// run 受理一批：校验 → 预留槽位 → 落库 → 立即回执 → 后台开跑。
+//
+// caller/boss/trace 是任务的归属与链路（v1 来自信封，原生 SPv2 来自 call.Frame）；
+// body 是 BatchRunPayload。v1 边缘与原生入口都只调它，不各写一份校验。
+func (s *Server) run(caller, boss, trace string, body []byte) (any, error) {
 	var p protocol.BatchRunPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if len(p.Items) == 0 {
@@ -181,7 +189,7 @@ func (s *Server) actionRun(ctx context.Context, env protocol.Envelope, in protoc
 	id := protocol.NewID()
 	job := &runningJob{
 		id: id, service: service, action: action,
-		caller: env.From, boss: env.Boss, trace: env.Trace,
+		caller: caller, boss: boss, trace: trace,
 		kind:     kindOf(p.Kind),
 		wakeMode: wakeMode, onError: onError, timeout: timeout,
 		concurrency: conc, reserved: conc,
@@ -192,7 +200,7 @@ func (s *Server) actionRun(ctx context.Context, env protocol.Envelope, in protoc
 		job.items = append(job.items, queued{seq: i, key: it.Key, tag: it.Tag, input: it.Input})
 	}
 
-	if err := s.store.CreateJob(id, service, action, env.From, env.Boss, env.Trace, job.kind,
+	if err := s.store.CreateJob(id, service, action, caller, boss, trace, job.kind,
 		store.Policy{
 			Concurrency: conc,
 			TimeoutMS:   int(timeout / time.Millisecond),

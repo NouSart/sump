@@ -20,6 +20,7 @@ import (
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/qq/napcat"
 	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
 )
 
 // Config 是 qq 服务的启动配置。
@@ -198,6 +199,22 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Hint("观察=群消息只进上下文不回答；仅@=被点到才回答，其余只记录；判断=每条都进上下文，说不说由智能体自己判断"),
 		service.As("enum", GroupObserve, GroupMention, GroupJudge))
 	s.Handle("deliver", s.actionDeliver)
+	// 原生 SPv2.1 method：deliver 是链终点的 boss 约定动作（不是 LLM 工具、不异步），
+	// tool / long_running 与 Provides 的声明保持一致。
+	s.HandleNative(spv2.Method{
+		Name: "deliver", Tool: false, LongRunning: false,
+		Description: "把任务结果发回 QQ 会话（私聊或群聊）",
+		Input: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"text":            map[string]any{"type": "string"},
+				"conversation_id": map[string]any{"type": "string"},
+				"task_id":         map[string]any{"type": "string"},
+			},
+			"required": []any{"text", "conversation_id"},
+		},
+		Output: map[string]any{"type": "object"},
+	}, s.nativeDeliver)
 	s.napcat = napcat.New(napcat.Config{
 		URL:       cfg.NapCatURL,
 		Token:     cfg.NapCatToken,
@@ -329,10 +346,24 @@ func (s *Server) Start(ctx context.Context) error {
 
 // ---------- 动作 ----------
 
-// actionDeliver 是 boss 约定动作：把任务结果发回原 QQ 会话（私聊或群聊）。
+// actionDeliver 是 boss 约定动作在 v1 兼容边缘的薄 wrapper：只把 input 交给共享实现。
 func (s *Server) actionDeliver(ctx context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.deliver(ctx, in.Input)
+}
+
+// nativeDeliver 是 /spv2 的原生入口：直接解 body，不经过 v1 JumpPayload / 合成 Envelope。
+func (s *Server) nativeDeliver(ctx context.Context, call *spv2.Call) error {
+	out, err := s.deliver(ctx, call.Frame.Body)
+	if err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+	}
+	return call.Reply(out)
+}
+
+// deliver 是 v1 action 与原生 method 共用的业务实现：把任务结果发回原 QQ 会话。
+func (s *Server) deliver(ctx context.Context, body []byte) (any, error) {
 	var p protocol.DeliverPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(p.Text) == "" {

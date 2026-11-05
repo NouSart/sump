@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -138,7 +139,8 @@ func compileImports(remotes []RemoteConfig, configs []ImportConfig) (map[string]
 		targets[r.ID] = remoteTarget{config: r, slots: make(chan struct{}, 4)}
 	}
 	tools := make(map[string]importedTool, len(configs))
-	reserved := map[string]bool{"configure": true, "report_result": true, "cancel_import": true, "user_message": true, "step": true, "deliver": true, "recall": true, "store": true, "resume": true, "save": true, "fetch": true, "echo": true, "debug_jump": true, "ping": true, "roster": true, "report": true, "list_settings": true, "set_setting": true, "reset_setting": true, "report_setting": true, "capabilities": true}
+	// hello/health/metrics 是 SPv2 服务端内建 method；同名 import 会覆盖握手/健康检查。
+	reserved := map[string]bool{"configure": true, "report_result": true, "cancel_import": true, "user_message": true, "step": true, "deliver": true, "recall": true, "store": true, "resume": true, "save": true, "fetch": true, "echo": true, "debug_jump": true, "ping": true, "roster": true, "report": true, "list_settings": true, "set_setting": true, "reset_setting": true, "report_setting": true, "capabilities": true, "hello": true, "health": true, "metrics": true}
 	for _, c := range configs {
 		if !importName.MatchString(c.Action) || reserved[c.Action] {
 			return nil, nil, fmt.Errorf("invalid or reserved import action %q", c.Action)
@@ -275,8 +277,46 @@ func (i *Imports) Provides() []protocol.Provide {
 	return out
 }
 
+// NativeMethods 返回与动态 provides 一一对应的 SPv2.1 method 声明。
+// Tool/LongRunning 直接映射 provide 的 Tool/Async；Input/Output 取自审查过的
+// import 契约，缺失或不是 object 时退回 object，保证卡片与工具声明始终可读。
+func (i *Imports) NativeMethods() []spv2.Method {
+	provides := i.Provides()
+	out := make([]spv2.Method, 0, len(provides))
+	for _, provide := range provides {
+		tool := i.tools[provide.Action]
+		out = append(out, spv2.Method{
+			Name:        provide.Action,
+			Tool:        provide.Tool,
+			LongRunning: provide.Async,
+			Description: tool.config.Description,
+			Input:       importMethodSchema(tool.config.InputSchema),
+			Output:      importMethodSchema(tool.config.OutputSchema),
+		})
+	}
+	return out
+}
+
+func importMethodSchema(raw json.RawMessage) map[string]any {
+	fallback := map[string]any{"type": "object"}
+	if len(raw) == 0 {
+		return fallback
+	}
+	var schema map[string]any
+	if json.Unmarshal(raw, &schema) != nil || len(schema) == 0 || schema["type"] != "object" {
+		return fallback
+	}
+	return schema
+}
+
+// Handle 是 v1 action 的薄包装，保留 /ws 兼容边缘。
 func (i *Imports) Handle(ctx context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	call, err := i.Prepare(in)
+	return i.HandleBody(ctx, in.Action, in.Input)
+}
+
+// HandleBody 是 v1 与 /spv2 共用的业务实现：body 就是调用方发来的 MessagePack。
+func (i *Imports) HandleBody(ctx context.Context, action string, body []byte) (any, error) {
+	call, err := i.PrepareBody(action, body)
 	if err != nil {
 		return nil, err
 	}
@@ -313,17 +353,23 @@ func (p *preparedImport) Close() {
 	})
 }
 
+// Prepare 是 v1 action 的薄包装，body 语义与 /spv2 原生调用一致。
 func (i *Imports) Prepare(in protocol.JumpPayload) (*preparedImport, error) {
-	tool, ok := i.tools[in.Action]
+	return i.PrepareBody(in.Action, in.Input)
+}
+
+// PrepareBody 只接收方法名与原始 MessagePack body，不依赖 v1 JumpPayload。
+func (i *Imports) PrepareBody(action string, body []byte) (*preparedImport, error) {
+	tool, ok := i.tools[action]
 	if !ok || i.closed.Load() {
 		return nil, errors.New("MCP_IMPORT_REJECTED: action unavailable; remote tool not submitted")
 	}
-	if len(in.Input) > i.maxBytes {
+	if len(body) > i.maxBytes {
 		return nil, errors.New("MCP_INVALID_INPUT: input exceeds byte limit; remote tool not submitted")
 	}
 	// Share the bounded JSON-shaped MessagePack decoder used by observations;
 	// container length headers are checked before any slice/map allocation.
-	arguments, err := decodeJobData(in.Input)
+	arguments, err := decodeJobData(body)
 	if err != nil {
 		return nil, errors.New("MCP_INVALID_INPUT: expected one MessagePack object; remote tool not submitted")
 	}

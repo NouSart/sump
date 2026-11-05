@@ -320,20 +320,26 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 // 记忆服务的 resume（from=memory）回来时才真正调用 LLM API（完全启动）。
 // taskName 随上下文托管：store 与 recall 是两条并发路径（Fire 不保证先后），
 // 谁先建任务都不该把来源标注当成任务名。
-func (s *Server) startMemoryRound(env protocol.Envelope, conversationID, taskName string, messages []llm.Message) {
+func (s *Server) startMemoryRound(boss, trace, conversationID, taskName string, messages []llm.Message) {
 	s.Fire(s.memoryName(), "recall", protocol.RecallPayload{Context: protocol.TaskContext{
 		ConversationID: conversationID,
 		Messages:       messages,
-		Boss:           env.Boss,
+		Boss:           boss,
 		TaskName:       taskName,
-	}}, env.Trace, s.cfg.Name)
+	}}, trace, s.cfg.Name)
 }
 
 // actionUserMessage 是链的入口：boss 发来用户消息。
 // 半启动：把任务上下文托管给记忆服务（recall）——收到来自记忆的 resume 才完全启动。
 func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.userMessage(env.Boss, env.Trace, env.From, in.Input)
+}
+
+// userMessage 是链入口的共享实现：boss 是结果归属方，trace 是链路 id，
+// from 是入口服务（交付失败时的另一条回家路）。原生入口三者都取自帧头。
+func (s *Server) userMessage(boss, trace, from string, body []byte) (any, error) {
 	var p protocol.UserMessagePayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(p.Text) == "" && len(p.Images) == 0 {
@@ -347,17 +353,16 @@ func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in 
 	// 来源标注在**入口处渲染一次**，之后记忆、模型上下文、门户看到的是同一句话——
 	// 召回历史时标注也还在，模型不会把上一轮群里陌生人的话当成主人的指令。
 	// 标注与正文同一行：任务名取第一行，不能取到标签。
-	body := withSender(p.Sender, p.Text)
+	text := withSender(p.Sender, p.Text)
 	taskName := taskNameOf(p.Text, p.Images, p.Files)
 
 	// 记一条用户消息（尽力送达；幂等与去重在记忆服务侧处理）。
 	// 任务名显式给：正文可能带着来源标注前缀，记忆侧从第一行推会推出一串标签。
 	// 结构化来源与附件 id 一并落库：与 qq「只记录」路径同一个形状（protocol.MessageMeta）。
-	s.recordTask(cid, "", env.Trace, "", "user", "user", body, protocol.MessageMeta(p.Sender, p.Images, p.Files), taskName)
+	s.recordTask(cid, "", trace, "", "user", "user", text, protocol.MessageMeta(p.Sender, p.Images, p.Files), taskName)
 
 	// 用户说话了：解除停手，并把附注拼成前缀块（用户的话与系统附注在数据层是分开的）。
 	s.clearHold(cid)
-	text := body
 	if notes := s.mergedNotes(cid, p.Notes); len(notes) > 0 {
 		text = renderNotes(notes) + "\n" + text
 	}
@@ -367,8 +372,8 @@ func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in 
 		{Role: "user", Content: text, ImageIDs: p.Images},
 	}
 	// 记下入口：交付失败时往它补一条（boss 认错了/丢了的时候，入口是唯一还能回声的地方）。
-	s.noteEntry(cid, env.From)
-	s.startMemoryRound(env, cid, taskName, messages)
+	s.noteEntry(cid, from)
+	s.startMemoryRound(boss, trace, cid, taskName, messages)
 	return map[string]any{"status": "accepted"}, nil
 }
 
@@ -403,22 +408,28 @@ func taskNameOf(text string, images, files []string) string {
 // actionResume 是完全启动的唯一入口：仅接受来自记忆服务的 resume。
 // 记忆组装好的上下文到达后，开启任务（黑板）并立即受理——推理在后台推进（见 board.go）。
 func (s *Server) actionResume(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.resume(env.From, env.Boss, env.Trace, in.Input)
+}
+
+// resume 是完全启动的共享实现。from 是调用方（必须记忆服务），defaultBoss 是
+// 上下文里没带原 boss 时的兜底（v1 取信封 boss，原生取 Frame.From.ID）。
+func (s *Server) resume(from, defaultBoss, trace string, body []byte) (any, error) {
 	mem := s.memoryName()
-	if env.From != mem {
-		return nil, fmt.Errorf("resume 仅接受来自记忆服务（%s）的调用，拒绝来源 %q", mem, env.From)
+	if from != mem {
+		return nil, &permissionError{msg: fmt.Sprintf("resume 仅接受来自记忆服务（%s）的调用，拒绝来源 %q", mem, from)}
 	}
 	var p protocol.ResumePayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	tc := p.Context
 	if len(tc.Messages) == 0 {
 		return nil, errors.New("resume: 上下文为空")
 	}
-	// 该跳信封 boss 是 llm 自身（记忆为 llm 工作）；任务原 boss 随上下文恢复。
+	// 任务原 boss 随上下文恢复；上下文没带时用调用来源兜底。
 	boss := tc.Boss
 	if boss == "" {
-		boss = env.Boss
+		boss = defaultBoss
 	}
 	cid := tc.ConversationID
 	if cid == "" {
@@ -432,7 +443,7 @@ func (s *Server) actionResume(_ context.Context, env protocol.Envelope, in proto
 	if taskID != "" {
 		tc.Messages = append(tc.Messages[:1:1], append([]llm.Message{{Role: "system", Content: taskPrompt(taskName, taskID)}}, tc.Messages[1:]...)...)
 	}
-	st := s.boardOpen(cid, boss, env.Trace, taskID, taskName, tc.Messages)
+	st := s.boardOpen(cid, boss, trace, taskID, taskName, tc.Messages)
 	s.boardKick(st)
 	return map[string]any{"status": "accepted"}, nil
 }

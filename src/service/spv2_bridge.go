@@ -11,6 +11,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,9 +37,25 @@ func (s *Service) buildSPv2() error {
 	for _, p := range s.cfg.Provides {
 		provides[p.Action] = p
 	}
-	methods := make([]spv2.Method, 0, len(s.actions)+3)
+	methods := make([]spv2.Method, 0, len(s.actions)+len(s.native)+3)
 	seen := map[string]bool{}
+	nativeNames := make([]string, 0, len(s.native))
+	for name := range s.native {
+		nativeNames = append(nativeNames, name)
+	}
+	sort.Strings(nativeNames)
+	for _, name := range nativeNames {
+		m := s.native[name].Method
+		if m.TimeoutMS == 0 {
+			m.TimeoutMS = s.cfg.ActionTimeout.Milliseconds()
+		}
+		methods = append(methods, m)
+		seen[name] = true
+	}
 	for action := range s.actions {
+		if seen[action] {
+			continue
+		}
 		p := provides[action]
 		desc := p.Input
 		if p.Output != "" {
@@ -75,7 +92,7 @@ func (s *Service) buildSPv2() error {
 		Protocol:      spv2.ProtocolVersion,
 		Name:          s.cfg.Name,
 		Actor:         spv2.ServiceRef(s.cfg.Name),
-		Version:       "spv2-bridge/0.1",
+		Version:       "spv2-native/0.1",
 		Description:   s.cfg.Description,
 		Capabilities:  []string{"msgpack", "json"},
 		Methods:       methods,
@@ -86,7 +103,13 @@ func (s *Service) buildSPv2() error {
 	if err != nil {
 		return err
 	}
+	for _, name := range nativeNames {
+		srv.Handle(name, spv2.Handler(s.native[name].Handler))
+	}
 	for action := range s.actions {
+		if _, ok := s.native[action]; ok {
+			continue
+		}
 		action := action
 		h := s.actions[action]
 		srv.Handle(action, func(ctx context.Context, call *spv2.Call) error {

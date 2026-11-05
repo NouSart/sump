@@ -9,7 +9,12 @@ import (
 	"github.com/NouSart/sump/protocol"
 )
 
-// actionControl 暂停 / 恢复 / 停止。
+// actionControl 是 v1 兼容边缘；业务逻辑在 control。
+func (s *Server) actionControl(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.control(in.Input)
+}
+
+// control 暂停 / 恢复 / 停止。
 //
 // 语义（见 batch/README.md 的「暂停 ≠ 停止」）：
 //   - pause  可恢复：未开始的项保持 pending，在飞的项跑完；
@@ -18,9 +23,9 @@ import (
 //
 // 对已结束的任务操作返回 affected=0，不报错（幂等）；只有任务不存在或已过期才报
 // BATCH_JOB_UNKNOWN。
-func (s *Server) actionControl(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+func (s *Server) control(body []byte) (any, error) {
 	var p protocol.BatchControlPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	op := strings.ToLower(strings.TrimSpace(p.Op))
