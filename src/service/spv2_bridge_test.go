@@ -120,3 +120,41 @@ func TestSPv2BridgeOutboundAndFallback(t *testing.T) {
 		t.Fatalf("fallback out = %q", out)
 	}
 }
+
+func TestSPv2NativeHandler(t *testing.T) {
+	peer := New(Config{Name: "peer", SPV2: true, SecretFile: "-", Provides: bridgePeerCard("peer")})
+	peer.HandleNative(spv2.Method{
+		Name: "native_echo", Tool: true,
+		Input:  map[string]any{"type": "object", "properties": map[string]any{"text": map[string]any{"type": "string"}}},
+		Output: map[string]any{"type": "object"},
+	}, func(_ context.Context, call *spv2.Call) error {
+		var in struct {
+			Text string `msgpack:"text"`
+		}
+		if err := call.Frame.DecodeBody(&in); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		return call.Reply(map[string]string{"text": in.Text + "!"})
+	})
+	if err := peer.buildSPv2(); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(peer.spv2Srv.Handler())
+	defer ts.Close()
+	c, err := spv2.Dial(context.Background(), "ws"+strings.TrimPrefix(ts.URL, "http"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	f, err := spv2.NewCall("w1", spv2.ServiceRef("caller"), spv2.ServiceRef("peer"), "native_echo", map[string]string{"text": "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]string
+	if err := c.CallDecode(context.Background(), f, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["text"] != "hi!" {
+		t.Fatalf("out = %+v", out)
+	}
+}

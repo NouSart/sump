@@ -56,6 +56,7 @@ type Service struct {
 	logger *log.Logger
 
 	actions map[string]Handler
+	native  map[string]NativeMethod
 
 	settingsMu    sync.Mutex        // 设置声明与生效值
 	settings      []settingEntry    // 已声明的设置项（按声明顺序）
@@ -115,6 +116,7 @@ func New(cfg Config) *Service {
 		spv2On:         spv2On,
 		spv2Peers:      map[string]bool{},
 		actions:        map[string]Handler{},
+		native:         map[string]NativeMethod{},
 		settingIndex:   map[string]int{},
 		settingValues:  map[string]string{},
 		secrets:        map[string]string{},
@@ -133,6 +135,37 @@ func (s *Service) Handle(action string, fn Handler) {
 		return
 	}
 	s.actions[action] = fn
+}
+
+// NativeHandler 是原生 SPv2.1 method：直接读 call.Frame.Body，自己 Reply/ReplyError。
+type NativeHandler func(ctx context.Context, call *spv2.Call) error
+
+// NativeMethod 把一个原生 handler 与其服务卡声明绑在一起。
+type NativeMethod struct {
+	Method  spv2.Method
+	Handler NativeHandler
+}
+
+// HandleNative 注册原生 SPv2.1 method。同名 v1 action 仍保留给 /ws 兼容边缘；
+// /spv2 优先用原生 handler，不再合成 protocol.JumpPayload。
+func (s *Service) HandleNative(m spv2.Method, h NativeHandler) {
+	if m.Name == "" || h == nil {
+		s.logger.Printf("忽略非法原生 method 注册: name=%q", m.Name)
+		return
+	}
+	if m.Version == 0 {
+		m.Version = 1
+	}
+	if m.Shape == "" {
+		m.Shape = spv2.ShapeCall
+	}
+	if m.Input == nil {
+		m.Input = genericSchema()
+	}
+	if m.Output == nil {
+		m.Output = genericSchema()
+	}
+	s.native[m.Name] = NativeMethod{Method: m, Handler: h}
 }
 
 // WsURL 返回自己的对外地址（Start 成功后有效）。

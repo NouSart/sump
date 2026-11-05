@@ -25,6 +25,7 @@ import (
 
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
 )
 
 // Config 是 timer 的启动配置（引导只靠它：自己的名字/地址 + 设置中心地址 + 两条护栏 + 门户）。
@@ -176,6 +177,35 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("sleep", s.actionSleep)
 	s.Handle("cancel", s.actionCancel)
 	s.Handle("list", s.actionList)
+	s.HandleNative(spv2.Method{
+		Name: "sleep", Tool: true, LongRunning: true,
+		Description: "计时器：N 毫秒后唤醒调用方",
+		Input: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"ms":   map[string]any{"type": "integer"},
+				"note": map[string]any{"type": "string"},
+			},
+			"required": []any{"ms"},
+		},
+		Output: map[string]any{"type": "object"},
+	}, s.nativeSleep)
+	s.HandleNative(spv2.Method{
+		Name: "cancel", Tool: true,
+		Description: "撤销尚未到点的计时",
+		Input: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"item_id": map[string]any{"type": "string"}},
+			"required":   []any{"item_id"},
+		},
+		Output: map[string]any{"type": "object"},
+	}, s.nativeCancel)
+	s.HandleNative(spv2.Method{
+		Name:        "list",
+		Description: "列出当前在计时器（门户冷启动用）",
+		Input:       map[string]any{"type": "object"},
+		Output:      map[string]any{"type": "object"},
+	}, s.nativeList)
 	// 门户服务名：热改（空 = 不推快照；改名后下一次状态变化就推给新门户）。
 	s.HandleSetting("portal", cfg.Portal, func(v string) error {
 		s.setPortalName(strings.TrimSpace(v))
@@ -248,8 +278,21 @@ func (s *Server) StopAll() {
 
 // actionSleep 受理一次计时：立即回执，到点由 report_result 补报（处理函数里不等待）。
 func (s *Server) actionSleep(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.sleep(env.From, env.Trace, env.Boss, in.Input)
+}
+
+// nativeSleep 是 /spv2 的原生入口：直接解 body，不经过 v1 JumpPayload。
+func (s *Server) nativeSleep(_ context.Context, call *spv2.Call) error {
+	out, err := s.sleep(call.Frame.From.ID, call.Frame.Work, call.Frame.From.ID, call.Frame.Body)
+	if err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+	}
+	return call.Reply(out)
+}
+
+func (s *Server) sleep(caller, trace, boss string, body []byte) (any, error) {
 	var req protocol.TimerSleepPayload
-	if err := protocol.DecodeRaw(in.Input, &req); err != nil {
+	if err := protocol.DecodeRaw(body, &req); err != nil {
 		return nil, err
 	}
 	if req.MS < minDuration.Milliseconds() {
@@ -262,9 +305,9 @@ func (s *Server) actionSleep(_ context.Context, env protocol.Envelope, in protoc
 
 	t := &timing{
 		item:   protocol.NewID(),
-		caller: env.From,
-		trace:  env.Trace,
-		boss:   env.Boss,
+		caller: caller,
+		trace:  trace,
+		boss:   boss,
 		ms:     req.MS,
 		note:   note,
 		fireAt: time.Now().Add(time.Duration(req.MS) * time.Millisecond),
@@ -285,7 +328,7 @@ func (s *Server) actionSleep(_ context.Context, env protocol.Envelope, in protoc
 	}
 
 	s.logger.Printf("受理计时 %s（来自 %s，boss=%s）：%dms 后到点%s", t.item, t.caller, t.boss, req.MS, tripped(clipped))
-	s.pushPortalState(env.Trace)
+	s.pushPortalState(trace)
 	return protocol.TimerSleepResult{
 		ItemID: t.item,
 		Phase:  "queued",
@@ -296,8 +339,21 @@ func (s *Server) actionSleep(_ context.Context, env protocol.Envelope, in protoc
 // actionCancel 撤销一次已受理、尚未到点的计时；撤销即发一条 final 补报，
 // 免得调用方那边的在途记账一直挂着（它靠 final 释放）。
 func (s *Server) actionCancel(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.cancel(in.Input)
+}
+
+// nativeCancel 是 /spv2 的原生入口。
+func (s *Server) nativeCancel(_ context.Context, call *spv2.Call) error {
+	out, err := s.cancel(call.Frame.Body)
+	if err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+	}
+	return call.Reply(out)
+}
+
+func (s *Server) cancel(body []byte) (any, error) {
 	var req protocol.TimerCancelPayload
-	if err := protocol.DecodeRaw(in.Input, &req); err != nil {
+	if err := protocol.DecodeRaw(body, &req); err != nil {
 		return nil, err
 	}
 	if req.ItemID == "" {
@@ -343,6 +399,19 @@ func (s *Server) fire(item string) {
 
 // actionList 回报当前在计时器（门户冷启动时拉一次；之后的变动由 pushPortalState 主动推）。
 func (s *Server) actionList(_ context.Context, _ protocol.Envelope, _ protocol.JumpPayload) (any, error) {
+	return s.list()
+}
+
+// nativeList 是 /spv2 的原生入口。
+func (s *Server) nativeList(_ context.Context, call *spv2.Call) error {
+	out, err := s.list()
+	if err != nil {
+		return call.ReplyError(spv2.CodeInternal, err.Error(), false, nil)
+	}
+	return call.Reply(out)
+}
+
+func (s *Server) list() (any, error) {
 	s.mu.Lock()
 	items := make([]protocol.TimerItem, 0, len(s.pending))
 	for _, t := range s.pending {
