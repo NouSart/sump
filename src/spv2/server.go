@@ -353,6 +353,9 @@ func (c *Call) SendStreamError(streamID string, seq int64, e *Error) error {
 	return c.conn.send(f)
 }
 
+// Close 关闭底层连接（设置中心等长连接管理用）。
+func (c *Call) Close() error { return c.conn.Close() }
+
 // WorkID 返回 work id。
 func (c *Call) WorkID() string { return c.Frame.Work }
 

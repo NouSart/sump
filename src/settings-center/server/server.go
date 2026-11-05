@@ -17,6 +17,7 @@ import (
 
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/settings-center/hub"
+	"github.com/NouSart/sump/spv2"
 )
 
 // 设置中心自身的设置项（一切皆服务：中心也声明并应用自己的设置；本地应用，不经网络）。
@@ -44,6 +45,7 @@ type Server struct {
 	hub      *hub.Hub
 	settings *hub.Settings
 	httpSrv  *http.Server
+	spv2Srv  *spv2.Server
 	ln       net.Listener
 	logger   *log.Logger
 
@@ -118,8 +120,15 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 		}
 		logger.Printf("设置生效（启动）: %s.%s = %q", selfServiceName, it.Key, it.Value)
 	}
+	native, err := newNativeServer(s)
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	s.spv2Srv = native
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.Handle("/spv2", s.spv2Srv.Handler())
 	s.httpSrv = &http.Server{Handler: mux}
 	go func() {
 		if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
