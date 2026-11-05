@@ -333,11 +333,9 @@ func (c *Call) SendStream(streamID string, seq int64, end bool, body any, status
 		return err
 	}
 	if end {
+		// 终态错误流走 SendStreamError；NewStreamFrame 不允许 status=error 且无 error。
 		c.mu.Lock()
 		c.replied = true
-		if f.Status == StatusError {
-			c.lastError = f.Error
-		}
 		c.mu.Unlock()
 	}
 	return c.conn.send(f)
