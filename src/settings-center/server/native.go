@@ -89,7 +89,13 @@ func (s *Server) nativeRegister(_ context.Context, call *spv2.Call) error {
 	} else {
 		s.logger.Printf("原生重连: %s（名片无变化）", reg.Name)
 	}
-	if declChanged {
+	if len(reg.Settings) > 0 {
+		if items := s.settings.PushItems(reg.Name); len(items) > 0 {
+			go s.pushSettings(reg.Name, items, "register")
+		} else if declChanged {
+			s.broadcastSettings(protocol.SettingsEventPayload{Cause: "register", Service: reg.Name})
+		}
+	} else if declChanged {
 		s.broadcastSettings(protocol.SettingsEventPayload{Cause: "register", Service: reg.Name})
 	}
 	return nil
