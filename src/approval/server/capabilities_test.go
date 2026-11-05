@@ -20,7 +20,7 @@ import (
 func TestCapabilitiesReportsDialectsAndReviewState(t *testing.T) {
 	s := newTierServer(t)
 
-	out, err := s.capabilities(context.Background(), protocol.Envelope{}, protocol.JumpPayload{})
+	out, err := s.actionCapabilities(context.Background(), protocol.Envelope{}, protocol.JumpPayload{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestCapabilitiesReportsDialectsAndReviewState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err = withPortal.capabilities(context.Background(), protocol.Envelope{}, protocol.JumpPayload{})
+	out, err = withPortal.actionCapabilities(context.Background(), protocol.Envelope{}, protocol.JumpPayload{})
 	if err != nil {
 		t.Fatal(err)
 	}
