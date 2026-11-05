@@ -1,13 +1,14 @@
 // CenterLink 行为测试：注册字段 / 名册广播 / 心跳 / 调用 / 断线自愈。
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CenterLink } from '../src/server/center.ts';
+import { CenterLink, RemoteError } from '../src/server/center.ts';
 import { StubCenter } from './stub-center.ts';
+import { StubNativeCenter } from './stub-native-center.ts';
 import { waitFor } from './util.ts';
 
 const silent = (): void => {};
 
-function makeLink(url: string, heartbeatMS = 30): CenterLink {
+function makeLink(url: string, heartbeatMS = 30, spv2 = false): CenterLink {
   return new CenterLink({
     name: 'frontend',
     centerURL: url,
@@ -17,6 +18,7 @@ function makeLink(url: string, heartbeatMS = 30): CenterLink {
     settings: [],
     heartbeatMS,
     log: silent,
+    spv2,
   });
 }
 
@@ -67,6 +69,137 @@ test('注册 → 名册 → 心跳 → 调用', async (t) => {
   const lastJump = stub.jumps.at(-1);
   assert.equal(lastJump?.action, 'list_settings');
   assert.equal(lastJump?.from, 'frontend');
+});
+
+test('SPv2 原生：注册 → roster/settings 事件 → 心跳 → 调用', async (t) => {
+  const stub = new StubNativeCenter();
+  const url = await stub.start();
+  const link = new CenterLink({
+    name: 'frontend',
+    title: '门户',
+    centerURL: url,
+    selfURL: 'ws://127.0.0.1:1/ws',
+    description: '测试面板',
+    provides: [{ action: 'user_message' }],
+    settings: [{ key: 'center', default: 'ws://127.0.0.1:9000/ws' }],
+    heartbeatMS: 30,
+    log: silent,
+    spv2: true,
+  });
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, '原生注册');
+
+  // register 是 SPv2 call，body 与 v1 RegisterPayload 同形。
+  assert.equal(stub.registrations.length, 1);
+  const reg = stub.registrations[0] ?? {};
+  assert.equal(reg.name, 'frontend');
+  assert.equal(reg.title, '门户');
+  assert.equal(reg.addr, 'ws://127.0.0.1:1/ws');
+  assert.equal(reg.description, '测试面板');
+  assert.deepEqual(reg.provides, [{ action: 'user_message' }]);
+  assert.deepEqual(reg.settings, [{ key: 'center', default: 'ws://127.0.0.1:9000/ws' }]);
+  assert.equal(reg.heartbeat_ms, 30);
+  assert.equal(stub.calls[0]?.method, 'register');
+  assert.equal(stub.calls[0]?.from, 'frontend');
+  assert.deepEqual(link.roster, { services: [], revision: 1 });
+
+  const events: string[] = [];
+  const settings: unknown[] = [];
+  link.on((e) => {
+    events.push(e.kind);
+    if (e.kind === 'settings') settings.push(e.event);
+  });
+
+  stub.broadcastRoster({
+    services: [
+      { name: 'svc-a', addr: 'ws://127.0.0.1:2/ws' },
+      { name: 'svc-b', addr: 'ws://127.0.0.1:3/ws' },
+    ],
+    revision: 2,
+  });
+  await waitFor(() => link.roster?.revision === 2, 3000, '原生 roster 事件');
+  assert.equal(link.roster?.services.length, 2);
+  assert.ok(events.includes('roster'));
+
+  stub.broadcastSettings({
+    cause: 'register',
+    service: 'svc-a',
+    results: [{ key: 'tool.notify_mode', value: 'each', ok: true }],
+  });
+  await waitFor(() => settings.length === 1, 3000, '原生 settings 事件');
+  const ev = settings[0] as { cause?: string; service?: string; results?: { key?: string; value?: string; ok?: boolean }[] };
+  assert.equal(ev.cause, 'register');
+  assert.equal(ev.service, 'svc-a');
+  assert.equal(ev.results?.[0]?.key, 'tool.notify_mode');
+  assert.equal(ev.results?.[0]?.value, 'each');
+  assert.equal(ev.results?.[0]?.ok, true);
+
+  // heartbeat 是 SPv2 event（不是 v1 信封）。
+  await waitFor(() => stub.heartbeats >= 2, 3000, '原生心跳事件');
+  const hb = stub.heartbeatBodies.at(-1) as { status?: string } | undefined;
+  assert.equal(hb?.status, 'ok');
+
+  // 控制面调用也走原生 call，而不是在 /spv2 连接上发 v1 jump。
+  stub.settingsReply = {
+    services: [{ service: 'svc-a', settings: [{ key: 'k', value: 'v', default: 'd', overridden: false }] }],
+  };
+  const data = (await link.call('list_settings', {})) as { services: { service: string }[] };
+  assert.equal(data.services[0]?.service, 'svc-a');
+  assert.equal(stub.calls.at(-1)?.method, 'list_settings');
+});
+
+test('SPv2 原生断开后自动重连并重注册', async (t) => {
+  const stub = new StubNativeCenter();
+  const url = await stub.start();
+  const link = makeLink(url, 30, true);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => stub.registrations.length === 1, 3000, '首次原生注册');
+  await waitFor(() => link.connected, 2000, '连接建立');
+
+  stub.closeConnections();
+  await waitFor(() => !link.connected, 2000, '断开');
+  await waitFor(() => stub.registrations.length === 2, 4000, '原生重连重注册');
+  await waitFor(() => link.connected, 2000, '连接标记恢复');
+});
+
+test('SPv2 拨号失败：回退 v1 注册并心跳', async (t) => {
+  const stub = new StubCenter();
+  stub.rejectSPv2 = true;
+  const url = await stub.start();
+  const link = makeLink(url, 30, true);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, 'v1 回退注册');
+  assert.equal(stub.registrations.length, 1);
+  assert.equal(stub.registrations[0]?.name, 'frontend');
+  await waitFor(() => stub.heartbeats >= 2, 3000, 'v1 心跳');
+});
+
+test('SPv2 注册被拒：回退 v1 注册', async (t) => {
+  const stub = new StubCenter();
+  stub.spv2RegisterError = '原生注册被拒';
+  const url = await stub.start();
+  const link = makeLink(url, 30, true);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, 'v1 回退注册');
+  assert.equal(stub.registrations.length, 1);
+  assert.equal(stub.registrations[0]?.name, 'frontend');
+  await waitFor(() => stub.heartbeats >= 2, 3000, 'v1 心跳');
 });
 
 test('未连接 / 中心下线：调用立即失败', async (t) => {
@@ -169,4 +302,120 @@ test('settings 事件：中心广播的发放结果转成事件', async (t) => {
   assert.equal(ev.results?.[0]?.key, 'tool.notify_mode');
   assert.equal(ev.results?.[0]?.value, 'each');
   assert.equal(ev.results?.[0]?.ok, true);
+});
+
+test('SPv2 环境变量默认开启原生控制面', async (t) => {
+  const prev = process.env.SUMP_SPV2;
+  process.env.SUMP_SPV2 = '1';
+  t.after(() => {
+    if (prev === undefined) delete process.env.SUMP_SPV2;
+    else process.env.SUMP_SPV2 = prev;
+  });
+  const stub = new StubNativeCenter();
+  const url = await stub.start();
+  const link = new CenterLink({
+    name: 'frontend',
+    centerURL: url,
+    selfURL: 'ws://127.0.0.1:1/ws',
+    description: '测试面板',
+    provides: [],
+    settings: [],
+    heartbeatMS: 30,
+    log: silent,
+  });
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, '环境变量启用原生注册');
+  assert.equal(stub.registrations.length, 1);
+  assert.equal(stub.calls[0]?.method, 'register');
+});
+
+test('jumpTo 原生成功并走 /spv2', async (t) => {
+  const stub = new StubNativeCenter();
+  const url = await stub.start();
+  const link = makeLink(url, 30, true);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, '原生连接');
+  stub.roster = { services: [{ name: 'target', addr: url }], revision: 2 };
+  stub.broadcastRoster();
+  await waitFor(() => link.roster?.services.length === 1, 3000, '目标名册');
+  stub.settingsReply = { services: [{ service: 'target', settings: [] }] };
+  const data = (await link.jumpTo('target', 'list_settings', {})) as { services: { service: string }[] };
+  assert.equal(data.services[0]?.service, 'target');
+  assert.equal(stub.calls.at(-1)?.method, 'list_settings');
+});
+
+test('jumpTo 原生错误映射为 RemoteError', async (t) => {
+  const stub = new StubNativeCenter();
+  const url = await stub.start();
+  const link = makeLink(url, 30, true);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, '原生连接');
+  stub.roster = { services: [{ name: 'target', addr: url }], revision: 2 };
+  stub.broadcastRoster();
+  await waitFor(() => link.roster?.services.length === 1, 3000, '目标名册');
+  await assert.rejects(
+    () => link.jumpTo('target', 'set_setting', {}),
+    (err: unknown) => err instanceof RemoteError,
+  );
+});
+
+test('jumpTo 原生不可达时回退 v1', async (t) => {
+  const stub = new StubCenter();
+  stub.rejectSPv2 = true;
+  const url = await stub.start();
+  const link = makeLink(url, 30, true);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, 'v1 回退连接');
+  stub.roster = { services: [{ name: 'target', addr: url }], revision: 2 };
+  stub.broadcastRoster();
+  await waitFor(() => link.roster?.services.length === 1, 3000, '目标名册');
+  stub.settingsReply = { services: [{ service: 'target', settings: [] }] };
+  await link.jumpTo('target', 'list_settings', {});
+  assert.ok(stub.spv2Attempts > 0, '应先尝试 /spv2');
+  assert.equal(stub.jumps.at(-1)?.action, 'list_settings');
+});
+
+test('jumpTo 缺目标名片时明确拒绝', async (t) => {
+  const stub = new StubCenter();
+  const url = await stub.start();
+  const link = makeLink(url, 30, false);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, '连接');
+  await assert.rejects(() => link.jumpTo('missing', 'x'), /未知目标服务/);
+});
+
+test('call 原生远端错误映射为 RemoteError', async (t) => {
+  const stub = new StubNativeCenter();
+  const url = await stub.start();
+  const link = makeLink(url, 30, true);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, '原生连接');
+  await assert.rejects(
+    () => link.call('set_setting', {}),
+    (err: unknown) => err instanceof RemoteError,
+  );
 });

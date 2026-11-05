@@ -33,6 +33,17 @@ func genericSchema() map[string]any {
 
 // buildSPv2 根据已注册 actions 与服务声明生成 SPv2 服务端。
 func (s *Service) buildSPv2() error {
+	// configure 是骨架保留的设置下发方法；原生 /spv2 也直接解 body，不合成 v1。
+	if _, ok := s.native["configure"]; !ok {
+		s.native["configure"] = NativeMethod{
+			Method: spv2.Method{
+				Name: "configure", Shape: spv2.ShapeCall, Version: 1,
+				Input: genericSchema(), Output: genericSchema(),
+				Description: "应用设置中心下发的单个设置项",
+			},
+			Handler: s.nativeConfigure,
+		}
+	}
 	provides := map[string]protocol.Provide{}
 	for _, p := range s.cfg.Provides {
 		provides[p.Action] = p
