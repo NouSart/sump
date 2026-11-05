@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 const (
@@ -66,7 +67,24 @@ func (s *Service) Report(kind, message string) {
 
 	s.mu.Lock()
 	c := s.center
+	n := s.centerNative
 	s.mu.Unlock()
+	if n != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			frame, ferr := spv2.NewCall(spv2.NewID(), spv2.ServiceRef(s.cfg.Name), spv2.ServiceRef("settings-center"), "report",
+				protocol.ReportPayload{Kind: kind, Message: message})
+			if ferr != nil {
+				s.logger.Printf("上报未送达: %v（[%s] %s）", ferr, kind, message)
+				return
+			}
+			if _, err := n.Call(ctx, frame); err != nil {
+				s.logger.Printf("上报未送达: %v（[%s] %s）", err, kind, message)
+			}
+		}()
+		return
+	}
 	if c == nil {
 		s.logger.Printf("上报未送达（未连接中心，丢弃）: [%s] %s", kind, message)
 		return
