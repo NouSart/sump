@@ -66,12 +66,16 @@ func TestServiceRegistersOverNativeCenter(t *testing.T) {
 	if _, err := cc.Call(ctx, set); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case got := <-applied:
-		if got != "hello" {
-			t.Fatalf("applied = %q", got)
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case got := <-applied:
+			if got == "hello" {
+				return
+			}
+			// 注册时的默认值下发先到；继续等这次 set_setting 的 hello。
+		case <-deadline:
+			t.Fatal("没有收到原生 configure")
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("没有收到原生 configure")
 	}
 }
