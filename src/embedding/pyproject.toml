@@ -21,6 +21,7 @@ onnx = [
 ]
 dev = [
     "pytest>=8",
+    "coverage>=7",
 ]
 
 [tool.setuptools.packages.find]

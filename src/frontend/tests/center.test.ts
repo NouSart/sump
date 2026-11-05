@@ -1,7 +1,7 @@
 // CenterLink 行为测试：注册字段 / 名册广播 / 心跳 / 调用 / 断线自愈。
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CenterLink } from '../src/server/center.ts';
+import { CenterLink, RemoteError } from '../src/server/center.ts';
 import { StubCenter } from './stub-center.ts';
 import { StubNativeCenter } from './stub-native-center.ts';
 import { waitFor } from './util.ts';
@@ -302,4 +302,120 @@ test('settings 事件：中心广播的发放结果转成事件', async (t) => {
   assert.equal(ev.results?.[0]?.key, 'tool.notify_mode');
   assert.equal(ev.results?.[0]?.value, 'each');
   assert.equal(ev.results?.[0]?.ok, true);
+});
+
+test('SPv2 环境变量默认开启原生控制面', async (t) => {
+  const prev = process.env.SUMP_SPV2;
+  process.env.SUMP_SPV2 = '1';
+  t.after(() => {
+    if (prev === undefined) delete process.env.SUMP_SPV2;
+    else process.env.SUMP_SPV2 = prev;
+  });
+  const stub = new StubNativeCenter();
+  const url = await stub.start();
+  const link = new CenterLink({
+    name: 'frontend',
+    centerURL: url,
+    selfURL: 'ws://127.0.0.1:1/ws',
+    description: '测试面板',
+    provides: [],
+    settings: [],
+    heartbeatMS: 30,
+    log: silent,
+  });
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, '环境变量启用原生注册');
+  assert.equal(stub.registrations.length, 1);
+  assert.equal(stub.calls[0]?.method, 'register');
+});
+
+test('jumpTo 原生成功并走 /spv2', async (t) => {
+  const stub = new StubNativeCenter();
+  const url = await stub.start();
+  const link = makeLink(url, 30, true);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, '原生连接');
+  stub.roster = { services: [{ name: 'target', addr: url }], revision: 2 };
+  stub.broadcastRoster();
+  await waitFor(() => link.roster?.services.length === 1, 3000, '目标名册');
+  stub.settingsReply = { services: [{ service: 'target', settings: [] }] };
+  const data = (await link.jumpTo('target', 'list_settings', {})) as { services: { service: string }[] };
+  assert.equal(data.services[0]?.service, 'target');
+  assert.equal(stub.calls.at(-1)?.method, 'list_settings');
+});
+
+test('jumpTo 原生错误映射为 RemoteError', async (t) => {
+  const stub = new StubNativeCenter();
+  const url = await stub.start();
+  const link = makeLink(url, 30, true);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, '原生连接');
+  stub.roster = { services: [{ name: 'target', addr: url }], revision: 2 };
+  stub.broadcastRoster();
+  await waitFor(() => link.roster?.services.length === 1, 3000, '目标名册');
+  await assert.rejects(
+    () => link.jumpTo('target', 'set_setting', {}),
+    (err: unknown) => err instanceof RemoteError,
+  );
+});
+
+test('jumpTo 原生不可达时回退 v1', async (t) => {
+  const stub = new StubCenter();
+  stub.rejectSPv2 = true;
+  const url = await stub.start();
+  const link = makeLink(url, 30, true);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, 'v1 回退连接');
+  stub.roster = { services: [{ name: 'target', addr: url }], revision: 2 };
+  stub.broadcastRoster();
+  await waitFor(() => link.roster?.services.length === 1, 3000, '目标名册');
+  stub.settingsReply = { services: [{ service: 'target', settings: [] }] };
+  await link.jumpTo('target', 'list_settings', {});
+  assert.ok(stub.spv2Attempts > 0, '应先尝试 /spv2');
+  assert.equal(stub.jumps.at(-1)?.action, 'list_settings');
+});
+
+test('jumpTo 缺目标名片时明确拒绝', async (t) => {
+  const stub = new StubCenter();
+  const url = await stub.start();
+  const link = makeLink(url, 30, false);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, '连接');
+  await assert.rejects(() => link.jumpTo('missing', 'x'), /未知目标服务/);
+});
+
+test('call 原生远端错误映射为 RemoteError', async (t) => {
+  const stub = new StubNativeCenter();
+  const url = await stub.start();
+  const link = makeLink(url, 30, true);
+  t.after(async () => {
+    link.stop();
+    await stub.stop();
+  });
+  link.start();
+  await waitFor(() => link.connected, 3000, '原生连接');
+  await assert.rejects(
+    () => link.call('set_setting', {}),
+    (err: unknown) => err instanceof RemoteError,
+  );
 });
