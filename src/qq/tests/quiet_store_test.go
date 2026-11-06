@@ -8,9 +8,9 @@ package tests
 
 import (
 	"bytes"
+	"context"
 	"io"
-	"net"
-	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -18,51 +18,31 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // startBrokenMemory 起一个"存不进去"的记忆替身：store 一律回失败。
 func startBrokenMemory(t *testing.T, center *stubCenter) *stubMemory {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	sm := &stubMemory{}
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "memory", Actor: spv2.ServiceRef("memory"),
+		Version: "stub/1", Methods: []spv2.Method{{Name: "store", Shape: spv2.ShapeCall}},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sm := &stubMemory{ln: ln}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		ws, err := wsUpgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		c := &stubConn{ws: ws}
-		defer ws.Close()
-		for {
-			_, data, err := ws.ReadMessage()
-			if err != nil {
-				return
-			}
-			env, err := protocol.Unmarshal(data)
-			if err != nil || env.Type != protocol.TypeJump {
-				continue
-			}
-			var jp protocol.JumpPayload
-			if err := env.DecodePayload(&jp); err != nil {
-				continue
-			}
-			sm.mu.Lock()
-			sm.stores = append(sm.stores, memoryStore{})
-			sm.mu.Unlock()
-			resp, _ := protocol.NewResponse(env, "memory", protocol.ResponsePayload{OK: false, Error: "记忆库写不进去"})
-			c.send(resp)
-		}
+	sm.srv = srv
+	srv.Handle("store", func(_ context.Context, call *spv2.Call) error {
+		sm.mu.Lock()
+		sm.stores = append(sm.stores, memoryStore{})
+		sm.mu.Unlock()
+		return call.ReplyError(spv2.CodeInternal, "记忆库写不进去", false, nil)
 	})
-	sm.srv = &http.Server{Handler: mux}
-	go func() { _ = sm.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = sm.srv.Close() })
-
-	center.mu.Lock()
-	center.cards["memory"] = protocol.ServiceCard{Name: "memory", Addr: sm.URL(), Description: "坏掉的记忆替身"}
-	center.mu.Unlock()
+	sm.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(sm.http.Close)
+	registerService(t, center, "memory", sm.URL())
 	return sm
 }
 

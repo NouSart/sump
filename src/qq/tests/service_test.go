@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,85 +25,66 @@ import (
 
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/qq/server"
+	"github.com/NouSart/sump/spv2"
 )
 
-// ---------- 设置中心替身 ----------
-
-type stubConn struct {
-	ws *websocket.Conn
-	mu sync.Mutex
-}
-
-func (c *stubConn) send(env protocol.Envelope) {
-	data, err := protocol.Marshal(env)
-	if err != nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.ws.WriteMessage(websocket.BinaryMessage, data)
-}
+// ---------- 设置中心替身（SPv2：注册是 call、名册是 event）----------
 
 type stubCenter struct {
-	ln    net.Listener
-	srv   *http.Server
+	srv  *spv2.Server
+	http *httptest.Server
+
 	mu    sync.Mutex
 	cards map[string]protocol.ServiceCard
+	calls map[string]*spv2.Call
 }
-
-var wsUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
 func startStubCenter(t *testing.T) *stubCenter {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "settings-center", Actor: spv2.ServiceRef("settings-center"),
+		Version: "stub/1", Methods: []spv2.Method{
+			{Name: "register", Shape: spv2.ShapeCall},
+			{Name: "list_settings", Shape: spv2.ShapeCall},
+		},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sc := &stubCenter{ln: ln, cards: map[string]protocol.ServiceCard{}}
-	sc.cards["stub-center"] = protocol.ServiceCard{Name: "stub-center", Addr: sc.URL()}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", sc.handleWS)
-	sc.srv = &http.Server{Handler: mux}
-	go func() { _ = sc.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = sc.srv.Close() })
+	sc := &stubCenter{
+		srv: srv, cards: map[string]protocol.ServiceCard{},
+		calls: map[string]*spv2.Call{},
+	}
+	srv.Handle("register", sc.handleRegister)
+	srv.Handle("list_settings", func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(protocol.SettingsResult{})
+	})
+	sc.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(sc.http.Close)
+	sc.cards["settings-center"] = protocol.ServiceCard{Name: "settings-center", Addr: sc.URL(), Description: "设置中心替身"}
 	return sc
 }
 
-func (sc *stubCenter) URL() string { return "ws://" + sc.ln.Addr().String() + "/ws" }
+func (sc *stubCenter) URL() string {
+	return "ws" + strings.TrimPrefix(sc.http.URL, "http") + "/spv2"
+}
 
-func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := wsUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
+func (sc *stubCenter) handleRegister(_ context.Context, call *spv2.Call) error {
+	var reg protocol.RegisterPayload
+	if err := call.Frame.DecodeBody(&reg); err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		switch env.Type {
-		case protocol.TypeRegister:
-			var reg protocol.RegisterPayload
-			if err := env.DecodePayload(&reg); err != nil {
-				continue
-			}
-			sc.mu.Lock()
-			sc.cards[reg.Name] = reg.Card()
-			roster := sc.snapshotLocked()
-			sc.mu.Unlock()
-			respData, _ := protocol.EncodePayload(roster)
-			resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true, Data: respData})
-			cc := &stubConn{ws: ws}
-			cc.send(resp)
-		case protocol.TypeHeartbeat:
-			// 忽略
-		}
+	sc.mu.Lock()
+	sc.cards[reg.Name] = reg.Card()
+	sc.calls[reg.Name] = call
+	roster := sc.snapshotLocked()
+	sc.mu.Unlock()
+	if err := call.Reply(roster); err != nil {
+		return err
 	}
+	sc.broadcast(roster)
+	return nil
 }
 
 func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
@@ -118,7 +100,42 @@ func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
 	return protocol.RosterPayload{Services: services, Revision: 1}
 }
 
-// ---------- stub NapCat（模拟正向 WS 服务端） ----------
+func (sc *stubCenter) broadcast(roster protocol.RosterPayload) {
+	sc.mu.Lock()
+	targets := make([]*spv2.Call, 0, len(sc.calls))
+	for _, call := range sc.calls {
+		targets = append(targets, call)
+	}
+	sc.mu.Unlock()
+	for _, call := range targets {
+		_ = call.SendEvent("roster", roster)
+	}
+}
+
+// registerService 用一个原生 call 把替身登记进名册（地址就是替身自己的 /spv2）。
+func registerService(t *testing.T, sc *stubCenter, name, addr string) {
+	t.Helper()
+	c, err := spv2.Dial(context.Background(), sc.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	call, err := spv2.NewCall("w-reg-"+name, spv2.ServiceRef(name), spv2.ServiceRef("settings-center"), "register",
+		protocol.RegisterPayload{Name: name, Addr: addr, Description: name + " 替身"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var roster protocol.RosterPayload
+	if err := c.CallDecode(ctx, call, &roster); err != nil {
+		t.Fatalf("%s 注册失败: %v", name, err)
+	}
+}
+
+// ---------- stub NapCat（模拟正向 WS 服务端；OneBot 自己的协议，不是 SUMP）----------
+
+var wsUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
 type stubNapCat struct {
 	ln            net.Listener
@@ -289,71 +306,46 @@ func privateFileEvent(uid int64, text, url, name string) map[string]any {
 
 type reasonerRequest struct {
 	From    string
-	Boss    string
+	Boss    string // 原生帧没有单独的 boss：来源即结果归属（入口服务把 from 设成自己）
 	Payload map[string]any
 }
 
 type stubReasoner struct {
-	ln   net.Listener
-	srv  *http.Server
+	srv  *spv2.Server
+	http *httptest.Server
 	mu   sync.Mutex
 	reqs []reasonerRequest
 }
 
 func startStubReasoner(t *testing.T, center *stubCenter) *stubReasoner {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	a := &stubReasoner{}
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "reasoner", Actor: spv2.ServiceRef("reasoner"),
+		Version: "stub/1", Methods: []spv2.Method{{Name: "user_message", Shape: spv2.ShapeCall}},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &stubReasoner{ln: ln}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", a.handleWS)
-	a.srv = &http.Server{Handler: mux}
-	go func() { _ = a.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = a.srv.Close() })
-
-	center.mu.Lock()
-	center.cards["reasoner"] = protocol.ServiceCard{Name: "reasoner", Addr: a.URL(), Description: "llm 测试替身"}
-	center.mu.Unlock()
+	a.srv = srv
+	srv.Handle("user_message", func(_ context.Context, call *spv2.Call) error {
+		var payload map[string]any
+		_ = call.Frame.DecodeBody(&payload)
+		from := call.Frame.From.ID
+		a.mu.Lock()
+		a.reqs = append(a.reqs, reasonerRequest{From: from, Boss: from, Payload: payload})
+		a.mu.Unlock()
+		return call.Reply(map[string]any{"ok": true})
+	})
+	a.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(a.http.Close)
+	registerService(t, center, "reasoner", a.URL())
 	return a
 }
 
-func (a *stubReasoner) URL() string { return "ws://" + a.ln.Addr().String() + "/ws" }
-
-func (a *stubReasoner) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := wsUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	c := &stubConn{ws: ws}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		if env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action == "user_message" {
-			var payload map[string]any
-			_ = protocol.DecodeRaw(jp.Input, &payload)
-			a.mu.Lock()
-			a.reqs = append(a.reqs, reasonerRequest{From: env.From, Boss: env.Boss, Payload: payload})
-			a.mu.Unlock()
-			resp, _ := protocol.NewResponse(env, "reasoner", protocol.ResponsePayload{OK: true})
-			c.send(resp)
-		}
-	}
+func (a *stubReasoner) URL() string {
+	return "ws" + strings.TrimPrefix(a.http.URL, "http") + "/spv2"
 }
 
 func (a *stubReasoner) waitRequest(t *testing.T, timeout time.Duration) reasonerRequest {
@@ -388,103 +380,65 @@ func (a *stubReasoner) snapshot() []reasonerRequest {
 	return out
 }
 
-// sendDeliver 模拟链终点向 qq 交付结果。
+// sendDeliver 模拟链终点向 qq 交付结果（原生 deliver；原生帧里来源即结果归属）。
 func (a *stubReasoner) sendDeliver(t *testing.T, qqURL, text, cid string) {
 	t.Helper()
-	raw, err := protocol.EncodePayload(protocol.DeliverPayload{Text: text, ConversationID: cid})
-	if err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err := protocol.Dial(qqURL, nil)
+	c, err := spv2.Dial(ctx, qqURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "reasoner", "qq", "trace-deliver", protocol.JumpPayload{Action: "deliver", Input: raw})
+	call, err := spv2.NewCall("trace-deliver", spv2.ServiceRef("reasoner"), spv2.ServiceRef("qq"), "deliver",
+		protocol.DeliverPayload{Text: text, ConversationID: cid})
 	if err != nil {
 		t.Fatal(err)
 	}
-	env.Boss = "qq"
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	if !rp.OK {
-		t.Fatalf("deliver 被拒: %s", rp.Error)
+	if _, err := c.Call(ctx, call); err != nil {
+		t.Fatalf("deliver 被拒: %v", err)
 	}
 }
 
 // ---------- stub images ----------
 
 type stubImages struct {
-	ln    net.Listener
-	srv   *http.Server
+	srv   *spv2.Server
+	http  *httptest.Server
 	mu    sync.Mutex
 	saves []string
 }
 
 func startStubImages(t *testing.T, center *stubCenter) *stubImages {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	im := &stubImages{}
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "images", Actor: spv2.ServiceRef("images"),
+		Version: "stub/1", Methods: []spv2.Method{{Name: "save", Shape: spv2.ShapeCall}},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	im := &stubImages{ln: ln}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", im.handleWS)
-	im.srv = &http.Server{Handler: mux}
-	go func() { _ = im.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = im.srv.Close() })
-
-	center.mu.Lock()
-	center.cards["images"] = protocol.ServiceCard{Name: "images", Addr: im.URL(), Description: "图片测试替身"}
-	center.mu.Unlock()
-	return im
-}
-
-func (im *stubImages) URL() string { return "ws://" + im.ln.Addr().String() + "/ws" }
-
-func (im *stubImages) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := wsUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	c := &stubConn{ws: ws}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		if env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action != "save" {
-			continue
-		}
+	im.srv = srv
+	srv.Handle("save", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.ImageSavePayload
-		_ = protocol.DecodeRaw(jp.Input, &p)
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
 		im.mu.Lock()
 		im.saves = append(im.saves, p.URL)
 		im.mu.Unlock()
-		result, _ := protocol.EncodePayload(protocol.ImageSaveResult{ID: "img-1", Mime: "image/png", Size: 3})
-		resp, _ := protocol.NewResponse(env, "images", protocol.ResponsePayload{OK: true, Data: result})
-		c.send(resp)
-	}
+		return call.Reply(protocol.ImageSaveResult{ID: "img-1", Mime: "image/png", Size: 3})
+	})
+	im.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(im.http.Close)
+	registerService(t, center, "images", im.URL())
+	return im
+}
+
+func (im *stubImages) URL() string {
+	return "ws" + strings.TrimPrefix(im.http.URL, "http") + "/spv2"
 }
 
 func (im *stubImages) waitSave(t *testing.T, timeout time.Duration) string {
@@ -512,8 +466,8 @@ type fileSave struct {
 }
 
 type stubFiles struct {
-	ln    net.Listener
-	srv   *http.Server
+	srv   *spv2.Server
+	http  *httptest.Server
 	mu    sync.Mutex
 	saves []fileSave
 }
@@ -525,60 +479,34 @@ func startStubFiles(t *testing.T, center *stubCenter) *stubFiles {
 // startStubFilesNamed 同上，但可指定注册名（测 files 设置项热改用）。
 func startStubFilesNamed(t *testing.T, center *stubCenter, name string) *stubFiles {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	sf := &stubFiles{}
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: name, Actor: spv2.ServiceRef(name),
+		Version: "stub/1", Methods: []spv2.Method{{Name: "save", Shape: spv2.ShapeCall}},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sf := &stubFiles{ln: ln}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", sf.handleWS)
-	sf.srv = &http.Server{Handler: mux}
-	go func() { _ = sf.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = sf.srv.Close() })
-
-	center.mu.Lock()
-	center.cards[name] = protocol.ServiceCard{Name: name, Addr: sf.URL(), Description: "文件测试替身"}
-	center.mu.Unlock()
-	return sf
-}
-
-func (sf *stubFiles) URL() string { return "ws://" + sf.ln.Addr().String() + "/ws" }
-
-func (sf *stubFiles) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := wsUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	c := &stubConn{ws: ws}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		if env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action != "save" {
-			continue
-		}
+	sf.srv = srv
+	srv.Handle("save", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.FileSavePayload
-		_ = protocol.DecodeRaw(jp.Input, &p)
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
 		sf.mu.Lock()
 		sf.saves = append(sf.saves, fileSave{URL: p.URL, Filename: p.Filename})
 		sf.mu.Unlock()
-		result, _ := protocol.EncodePayload(protocol.FileSaveResult{ID: "file-1", Filename: p.Filename, Mime: "text/markdown", Size: 3})
-		resp, _ := protocol.NewResponse(env, "files", protocol.ResponsePayload{OK: true, Data: result})
-		c.send(resp)
-	}
+		return call.Reply(protocol.FileSaveResult{ID: "file-1", Filename: p.Filename, Mime: "text/markdown", Size: 3})
+	})
+	sf.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(sf.http.Close)
+	registerService(t, center, name, sf.URL())
+	return sf
+}
+
+func (sf *stubFiles) URL() string {
+	return "ws" + strings.TrimPrefix(sf.http.URL, "http") + "/spv2"
 }
 
 // savesLen 返回已收到的 save 条数（并发安全）。

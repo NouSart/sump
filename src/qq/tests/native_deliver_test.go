@@ -4,7 +4,6 @@ package tests
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +16,6 @@ import (
 //   - body 直接解成 DeliverPayload，成功回执并发到 NapCat；
 //   - 空 text 走业务校验，按 invalid_argument 拒绝。
 func TestNativeDeliver(t *testing.T) {
-	t.Setenv("SUMP_SPV2", "1")
 	sc := startStubCenter(t)
 	nc := startStubNapCat(t)
 	qq := startQQ(t, sc, nc, "2271917353")
@@ -25,7 +23,7 @@ func TestNativeDeliver(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	c, err := spv2.Dial(ctx, strings.TrimSuffix(qq.WsURL(), "/ws")+"/spv2")
+	c, err := spv2.Dial(ctx, qq.WsURL())
 	if err != nil {
 		t.Fatalf("连接 /spv2 失败: %v", err)
 	}

@@ -8,36 +8,33 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
+// outcome 把一次原生 call 摊平成测试关心的两件事：成功与否 / 错误文本。
+type outcome struct {
+	OK    bool
+	Error string
+}
+
 // pushConfigure 以设置中心身份向服务地址推送一条 configure（单键）并取回执。
-func pushConfigure(t *testing.T, addr string, p protocol.ConfigurePayload) protocol.ResponsePayload {
+func pushConfigure(t *testing.T, addr string, p protocol.ConfigurePayload) outcome {
 	t.Helper()
-	raw, err := protocol.EncodePayload(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c, err := protocol.Dial(addr, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := spv2.Dial(ctx, addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "settings-center", "qq", "trace-cfg",
-		protocol.JumpPayload{Action: "configure", Input: raw})
+	call, err := spv2.NewCall(protocol.NewID(), spv2.ServiceRef("settings-center"), spv2.ServiceRef("qq"), "configure", p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := c.Call(ctx, call); err != nil {
+		return outcome{Error: err.Error()}
 	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	return rp
+	return outcome{OK: true}
 }
 
 // TestSettingsOwnerLive 验证：放宽（新主人可用）与收紧（旧授权立即失效）都即时生效；

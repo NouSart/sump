@@ -10,37 +10,28 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
-func deliverOnce(t *testing.T, qqURL, text, conversationID string) protocol.ResponsePayload {
+// deliverOnce 向 qq 发一次原生 deliver：成功即 OK，被拒则带回错误文本。
+func deliverOnce(t *testing.T, qqURL, text, conversationID string) outcome {
 	t.Helper()
-	raw, err := protocol.EncodePayload(protocol.DeliverPayload{Text: text, ConversationID: conversationID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "reasoner", "qq", "trace-deliver", protocol.JumpPayload{
-		Action: "deliver",
-		Input:  raw,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	c, err := protocol.Dial(qqURL, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := spv2.Dial(ctx, qqURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := c.Call(ctx, env)
+	call, err := spv2.NewCall("trace-deliver", spv2.ServiceRef("reasoner"), spv2.ServiceRef("qq"), "deliver",
+		protocol.DeliverPayload{Text: text, ConversationID: conversationID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
+	if _, err := c.Call(ctx, call); err != nil {
+		return outcome{Error: err.Error()}
 	}
-	return rp
+	return outcome{OK: true}
 }
 
 func TestDeliverRejectsBadInput(t *testing.T) {

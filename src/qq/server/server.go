@@ -198,7 +198,6 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}, service.Label("群聊策略"),
 		service.Hint("观察=群消息只进上下文不回答；仅@=被点到才回答，其余只记录；判断=每条都进上下文，说不说由智能体自己判断"),
 		service.As("enum", GroupObserve, GroupMention, GroupJudge))
-	s.Handle("deliver", s.actionDeliver)
 	// 原生 SPv2.1 method：deliver 是链终点的 boss 约定动作（不是 LLM 工具、不异步），
 	// tool / long_running 与 Provides 的声明保持一致。
 	s.HandleNative(spv2.Method{
@@ -346,12 +345,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 // ---------- 动作 ----------
 
-// actionDeliver 是 boss 约定动作在 v1 兼容边缘的薄 wrapper：只把 input 交给共享实现。
-func (s *Server) actionDeliver(ctx context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.deliver(ctx, in.Input)
-}
-
-// nativeDeliver 是 /spv2 的原生入口：直接解 body，不经过 v1 JumpPayload / 合成 Envelope。
+// nativeDeliver 是 deliver 的原生入口：body 直接就是 DeliverPayload。
 func (s *Server) nativeDeliver(ctx context.Context, call *spv2.Call) error {
 	out, err := s.deliver(ctx, call.Frame.Body)
 	if err != nil {
@@ -360,7 +354,7 @@ func (s *Server) nativeDeliver(ctx context.Context, call *spv2.Call) error {
 	return call.Reply(out)
 }
 
-// deliver 是 v1 action 与原生 method 共用的业务实现：把任务结果发回原 QQ 会话。
+// deliver 是 deliver 动作的业务实现：把任务结果发回原 QQ 会话。
 func (s *Server) deliver(ctx context.Context, body []byte) (any, error) {
 	var p protocol.DeliverPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
