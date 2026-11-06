@@ -11,17 +11,19 @@ import (
 )
 
 const (
-	sampleWin   = `D:\srv\app\data\x.db`
-	samplePosix = `/srv/app/logs/app.log`
-	sampleURL   = `ws://127.0.0.1:3000`
-	sampleToken = `sk-abcdefgh12345678`
-	sampleEmail = `someone@example.com`
-	samplePhone = `13812345678`
+	sampleWin    = `D:\srv\app\data\x.db`
+	sampleWinFwd = `C:/Windows/x`
+	samplePosix  = `/srv/app/logs/app.log`
+	sampleURL    = `ws://127.0.0.1:3000`
+	sampleToken  = `sk-abcdefgh12345678`
+	sampleEmail  = `someone@example.com`
+	samplePhone  = `13812345678`
 )
 
 func TestTextMasksEveryShape(t *testing.T) {
 	cases := []struct{ name, in, wantContain, wantAbsence string }{
 		{"Windows 路径", "打开 " + sampleWin + " 看看", "[路径]", sampleWin},
+		{"Windows 路径（正斜杠）", `脚本里 open('C:/Windows/x','w') 这样写`, "[路径]", sampleWinFwd},
 		{"UNC 路径", `看 \\fileserver\share\a.txt`, "[路径]", `\\fileserver\share`},
 		{"POSIX 路径", "日志在 " + samplePosix + " 里", "[路径]", samplePosix},
 		{"ws 链接", "默认地址 " + sampleURL, "[链接]", sampleURL},
@@ -76,14 +78,15 @@ func TestTextIsIdempotent(t *testing.T) {
 // 或洗完永远不收敛（误报）——前一种正是这次事故要防的自欺。
 func TestDetectAgreesWithText(t *testing.T) {
 	dirty := map[string]string{
-		"Windows 路径": "打开 " + sampleWin,
-		"UNC 路径":     `看 \\fileserver\share\a.txt`,
-		"POSIX 路径":   "日志在 " + samplePosix,
-		"链接":         "默认地址 " + sampleURL,
-		"密钥形状":       "key 是 " + sampleToken,
-		"Bearer":     "header Bearer abc.def-ghi",
-		"邮箱":         "发到 " + sampleEmail,
-		"手机号":        "打 " + samplePhone + " 找他",
+		"Windows 路径":      "打开 " + sampleWin,
+		"Windows 路径（正斜杠）": `脚本里 open('C:/Windows/x','w') 这样写`,
+		"UNC 路径":          `看 \\fileserver\share\a.txt`,
+		"POSIX 路径":        "日志在 " + samplePosix,
+		"链接":              "默认地址 " + sampleURL,
+		"密钥形状":            "key 是 " + sampleToken,
+		"Bearer":          "header Bearer abc.def-ghi",
+		"邮箱":              "发到 " + sampleEmail,
+		"手机号":             "打 " + samplePhone + " 找他",
 	}
 	for name, in := range dirty {
 		if Detect(in) == "" {

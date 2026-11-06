@@ -38,6 +38,7 @@ func mustOpaque(t *testing.T, raw string) string {
 const (
 	fakeQQ       = "987654321"
 	fakeWinPath  = `D:\srv\app\data\x.db`
+	fakeWinFwd   = `C:/Windows/x` // 库里 rowid 80 的原句形状：open('C:/Windows/x','w')
 	fakePosix    = `/srv/app/logs/app.log`
 	fakeURL      = `ws://127.0.0.1:3000`
 	fakeToken    = `sk-abcdefgh12345678`
@@ -49,7 +50,7 @@ const (
 
 // leaky 是"绝不能进共享库"的样本值清单：断言直接盯原值，不盯形状，
 // 因为掩码后留下的 "[路径]" 这类标记本身就该在场。
-var leaky = []string{fakeQQ, fakeWinPath, fakePosix, fakeURL, fakeToken, fakePhone, fakeEmail}
+var leaky = []string{fakeQQ, fakeWinPath, fakeWinFwd, fakePosix, fakeURL, fakeToken, fakePhone, fakeEmail}
 
 // assertNoLeak 断言一批文本里不含任何一个样本原值。
 func assertNoLeak(t *testing.T, what string, texts ...string) {
@@ -168,7 +169,8 @@ func TestRedlineNotePathMasksContent(t *testing.T) {
 	s := openTest(t)
 	seedNetDirections(t, s.Net)
 	res, err := s.Net.Attach(time.Now(), memnet.AttachInput{
-		Content:        `NapCat 默认地址 ` + fakeURL + `，令牌 ` + fakeToken,
+		Content: `NapCat 默认地址 ` + fakeURL + `，令牌 ` + fakeToken +
+			`；脚本里 open('` + fakeWinFwd + `','w') 这样写`,
 		ConversationID: fakeCIDPlain,
 		TaskID:         "t1",
 		Source:         "reasoner",
@@ -185,7 +187,8 @@ func TestRedlineNotePathMasksContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoLeak(t, "mem_entries", content, cid, tid, source)
-	if !strings.Contains(content, "[链接]") || !strings.Contains(content, "[已隐去]") {
+	if !strings.Contains(content, "[链接]") || !strings.Contains(content, "[已隐去]") ||
+		!strings.Contains(content, "[路径]") {
 		t.Errorf("正文该被掩码，实际 = %q", content)
 	}
 	if want := mustOpaque(t, fakeCIDPlain); cid != want {
@@ -232,7 +235,8 @@ func TestRedlineMigrationMasksLegacyRows(t *testing.T) {
 		`INSERT INTO mem_entries(id, content, conversation_id, task_id, source, durability, hits, status,
 		   last_hit_at, created_at, embedding, embedding_model)
 		 VALUES('e-leak', ?, ?, ?, 'reasoner', 'durable', 1, 'active', '2026-10-19T20:00:00Z', '2026-10-19T20:00:00Z', ?, 'fake')`,
-		`工作目录是 `+fakeWinPath+`，仿真终端下显示为 `+fakePosix, fakeCIDPlain, fakeTaskID,
+		`工作目录是 `+fakeWinPath+`，仿真终端下显示为 `+fakePosix+
+			`；脚本里 open('`+fakeWinFwd+`','w') 这样写`, fakeCIDPlain, fakeTaskID,
 		[]byte{0, 0, 128, 63, 0, 0, 128, 63},
 	); err != nil {
 		t.Fatal(err)

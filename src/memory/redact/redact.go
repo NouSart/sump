@@ -20,8 +20,14 @@ import (
 )
 
 var (
-	reURL     = regexp.MustCompile(`(?i)\b(?:https?|ftp|wss?)://[^\s"'<>）)，。]+`)
-	reWinPath = regexp.MustCompile(`(?i)\b[A-Z]:\\[^\s"'<>，。；]*`)
+	reURL = regexp.MustCompile(`(?i)\b(?:https?|ftp|wss?)://[^\s"'<>）)，。]+`)
+	// reWinPath 两种分隔符都认。只认反斜杠是 2026-11-06 实测出来的漏：
+	// 共享库里 `mem_entries` rowid 80 那句 `open('C:/Windows/x','w')` 原样躺着。
+	// 正斜杠形态不是罕见拼写——Git Bash 与 filepath.ToSlash 在 Windows 上产出的就是它。
+	// 顺序上不用担心与链接抢：Text 先跑 reURL，`http://…` / `ws://…` 整段已被换成
+	// `[链接]`，到这里只剩 `C:/` 这种真盘符开头；宁可过掩也不漏（见下方判别器的取舍）。
+	// 全库校准：加正斜杠前这一条命中 0 行（反斜杠形态早被洗掉了），加后命中 1 行。
+	reWinPath = regexp.MustCompile(`(?i)\b[A-Z]:[\\/](?:[^\s"'<>，。；]*)`)
 	reUNCPath = regexp.MustCompile(`\\\\[^\s"'<>，。；]+`)
 	// POSIX 绝对路径：至少两段，避免把 and/or 这类词当路径。
 	rePosix   = regexp.MustCompile(`(^|[\s（(])(?:~|\.{1,2})?(?:/[A-Za-z0-9._-]+){2,}/?`)
