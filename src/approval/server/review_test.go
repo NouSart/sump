@@ -96,7 +96,7 @@ func TestReviewApproveUnblocksCaller(t *testing.T) {
 	}
 	done := make(chan out, 1)
 	go func() {
-		v, err := s.approve(ctx, "shell", "", "", reviewRequest(exe, "item-approve"))
+		v, err := s.approve(ctx, "shell", "", reviewRequest(exe, "item-approve"))
 		if err != nil {
 			done <- out{err: err}
 			return
@@ -151,7 +151,7 @@ func TestReviewDenyUnblocksCaller(t *testing.T) {
 	s, exe := newReviewServer(t, nil)
 	done := make(chan protocol.CommandApprovalResult, 1)
 	go func() {
-		v, err := s.approve(context.Background(), "shell", "", "", reviewRequest(exe, "item-deny"))
+		v, err := s.approve(context.Background(), "shell", "", reviewRequest(exe, "item-deny"))
 		if err == nil {
 			done <- v.(protocol.CommandApprovalResult)
 		}
@@ -174,7 +174,7 @@ func TestReviewDenyUnblocksCaller(t *testing.T) {
 func TestReviewDecideOnlyFromPortal(t *testing.T) {
 	s, exe := newReviewServer(t, nil)
 	go func() {
-		_, _ = s.approve(context.Background(), "shell", "", "", reviewRequest(exe, "item-guard"))
+		_, _ = s.approve(context.Background(), "shell", "", reviewRequest(exe, "item-guard"))
 	}()
 	waitPending(t, s, "item-guard")
 	if _, err := s.decide("shell", decidePayload(t, "item-guard", protocol.DecisionAllow)); err == nil ||
@@ -193,7 +193,7 @@ func TestReviewDecideOnlyFromPortal(t *testing.T) {
 func TestReviewTimeoutStaysReview(t *testing.T) {
 	s, exe := newReviewServer(t, func(c *Config) { c.ReviewTTL = 80 * time.Millisecond })
 	start := time.Now()
-	v, err := s.approve(context.Background(), "shell", "", "", reviewRequest(exe, "item-timeout"))
+	v, err := s.approve(context.Background(), "shell", "", reviewRequest(exe, "item-timeout"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,10 +213,10 @@ func TestReviewTimeoutStaysReview(t *testing.T) {
 func TestReviewQueueFullFailsClosed(t *testing.T) {
 	s, exe := newReviewServer(t, func(c *Config) { c.MaxPending = 1 })
 	go func() {
-		_, _ = s.approve(context.Background(), "shell", "", "", reviewRequest(exe, "item-1"))
+		_, _ = s.approve(context.Background(), "shell", "", reviewRequest(exe, "item-1"))
 	}()
 	waitPending(t, s, "item-1")
-	v, err := s.approve(context.Background(), "shell", "", "", reviewRequest(exe, "item-2"))
+	v, err := s.approve(context.Background(), "shell", "", reviewRequest(exe, "item-2"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestReviewPortalOfflineFailsClosed(t *testing.T) {
 	s, exe := newReviewServer(t, nil)
 	s.portalReady = func() bool { return false }
 	start := time.Now()
-	v, err := s.approve(context.Background(), "shell", "", "", reviewRequest(exe, "item-offline"))
+	v, err := s.approve(context.Background(), "shell", "", reviewRequest(exe, "item-offline"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,13 +269,13 @@ func TestReviewDoesNotBlockOtherApprovals(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = s.approve(context.Background(), "shell", "", "", reviewRequest(exe, "item-hang"))
+		_, _ = s.approve(context.Background(), "shell", "", reviewRequest(exe, "item-hang"))
 	}()
 	waitPending(t, s, "item-hang")
 
 	// 挂起还在，白名单命令必须立刻拿到 allow。
 	start := time.Now()
-	v, err := s.approve(context.Background(), "shell", "", "", requestForAllow(t, exe))
+	v, err := s.approve(context.Background(), "shell", "", requestForAllow(t, exe))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -25,7 +25,7 @@ func (s *Server) callAsyncTool(ctx context.Context, owner string, b Binding, inp
 	callCtx, cancel := context.WithTimeout(ctx, s.cfg.CallTimeout)
 	stop := context.AfterFunc(s.lifetime, cancel)
 	defer func() { stop(); cancel() }()
-	raw, err := s.svc.Call(callCtx, b.Service, b.Action, input, trace, "mcp")
+	raw, err := s.svc.Call(callCtx, b.Service, b.Action, input, trace)
 	if err != nil {
 		// Service.Call does not replay after sending. Preserve this observation
 		// so a late report can still establish the outcome after receipt loss.
@@ -122,7 +122,7 @@ func (s *Server) cancelTimer(ctx context.Context, owner string, b Binding, id st
 	callCtx, cancel := context.WithTimeout(ctx, min(s.cfg.CallTimeout, 5*time.Second))
 	stop := context.AfterFunc(s.lifetime, cancel)
 	defer func() { stop(); cancel() }()
-	raw, err := s.svc.Call(callCtx, "timer", "cancel", protocol.TimerCancelPayload{ItemID: target.ItemID}, target.Trace, "mcp")
+	raw, err := s.svc.Call(callCtx, "timer", "cancel", protocol.TimerCancelPayload{ItemID: target.ItemID}, target.Trace)
 	if err != nil {
 		return s.failure("unknown", "cancellation not confirmed; native timer may continue")
 	}

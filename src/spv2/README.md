@@ -46,9 +46,9 @@
 
 说清楚现状，免得被当成 bug 去「修」：
 
-- 出站 `Service.Call(ctx, to, action, payload, trace, boss)` 与 `Fire` 把 **trace 当作帧头 `work`**（trace 为空时现场生成一个 ULID）——SPv2.1 里 work 是唯一的工作名词，骨架没有第二个 id 可放。
+- 出站 `Service.Call(ctx, to, action, payload, trace)` 与 `Fire` 把 **trace 当作帧头 `work`**（trace 为空时现场生成一个 ULID）——SPv2.1 里 work 是唯一的工作名词，骨架没有第二个 id 可放。
 - 帧头 **`from` 是发起这一跳的服务自己**（逐跳自定）：跨服务看到的调用方身份来自 `from`，不是任何入参。
-- **`boss` 不上线**：SPv2.1 帧头没有 `boss` 字段，`callSPv2` 也从不读它。生产链路在载荷里另带 boss，所以这是遗留参数、不是数据丢失。要彻底去掉它得改每个服务的签名，那属于协议讨论（AGENTS.md「协议变更先商量」），本轮不动；`src/service/spv2_trace_work_test.go` 把上面三条钉成了断言（含「整帧上线后线上不出现 boss」）。
+- **没有 `boss` 这个概念**：SPv2.1 帧头没有 `boss` 字段，结果归属就是 `from`；因此骨架 API 也不收 boss 参数（历史上 `Call` / `Fire` 各带一个、`callSPv2` 从不读它，已删）。仍在用 boss 的地方都是服务自己的数据（batch 的库列、timer 推门户的分组键、memory 的 `TaskContext.boss`），与骨架签名无关。`src/service/spv2_trace_work_test.go` 把上面三条钉成了断言（含「整帧上线后线上不出现 boss」）。
 
 ### Card 与 Method
 

@@ -85,7 +85,7 @@ func TestCallOutbound(t *testing.T) {
 	caller.setRoster(protocol.RosterPayload{Services: []protocol.ServiceCard{{
 		Name: "peer", Addr: "ws" + strings.TrimPrefix(ts.URL, "http") + "/spv2",
 	}}})
-	raw, err := caller.Call(context.Background(), "peer", "echo", "hi", "w1", "boss")
+	raw, err := caller.Call(context.Background(), "peer", "echo", "hi", "w1")
 	if err != nil {
 		t.Fatal(err)
 	}

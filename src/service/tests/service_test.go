@@ -295,7 +295,7 @@ func TestErrorReport(t *testing.T) {
 	t.Cleanup(s.Shutdown)
 
 	// Fire 到未知服务 → "未送达" → 骨架自动上报。
-	s.Fire("no-such-svc", "act", map[string]any{"x": 1}, "", "")
+	s.Fire("no-such-svc", "act", map[string]any{"x": 1}, "")
 	got := sc.waitReports(t, 1, 5*time.Second)
 	if got[0].From != "svc-r" || got[0].P.Kind != "fire" || !strings.Contains(got[0].P.Message, "no-such-svc") {
 		t.Fatalf("上报内容不符: %+v", got[0])

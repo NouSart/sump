@@ -87,7 +87,6 @@ type job struct {
 	item          string // 受理句柄（补报原样带回）
 	caller        string // 受理时的调用方（补报目标）
 	trace         string // 链路 id（原样沿用）
-	boss          string // 受理时的 boss（原样沿用）
 	command       string
 	workDir       string
 	plan          *protocol.ExecutionPlan
@@ -299,7 +298,7 @@ func (s *Server) RunningCount() int {
 // （from.id = 调用方、work = 链路 id）。
 // 帧没有 boss 字段：结果归属按 from 记（与 timer 的约定一致）。
 func (s *Server) nativeRun(_ context.Context, call *spv2.Call) error {
-	out, err := s.run(call.Frame.From.ID, call.Frame.Work, call.Frame.From.ID, call.Frame.Body)
+	out, err := s.run(call.Frame.From.ID, call.Frame.Work, call.Frame.Body)
 	if err != nil {
 		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
@@ -314,7 +313,7 @@ func (s *Server) nativeRun(_ context.Context, call *spv2.Call) error {
 //
 // 并行还是串行由调用方决定（一次派发几条）。服务不维护窗口、不排队、不做顺序承诺——
 // 那是调度，属于调用方；执行器只负责执行。要串行就等上一条的补报再发下一条。
-func (s *Server) run(caller, trace, boss string, body []byte) (any, error) {
+func (s *Server) run(caller, trace string, body []byte) (any, error) {
 	if len(body) > 64<<10 {
 		return nil, errors.New("run: 请求超过 64 KiB")
 	}
@@ -346,7 +345,6 @@ func (s *Server) run(caller, trace, boss string, body []byte) (any, error) {
 		item:          protocol.NewID(),
 		caller:        caller,
 		trace:         trace,
-		boss:          boss,
 		command:       p.Command,
 		workDir:       dir,
 		progressReady: make(chan struct{}),
@@ -486,7 +484,7 @@ func (s *Server) report(j *job, phase, text string, data protocol.ShellEventData
 func (s *Server) deliverReport(ctx context.Context, j *job, p protocol.AsyncResultPayload) error {
 	delay := 50 * time.Millisecond
 	for {
-		raw, err := s.Call(ctx, j.caller, "report_result", p, j.trace, j.boss)
+		raw, err := s.Call(ctx, j.caller, "report_result", p, j.trace)
 		if err != nil {
 			return err
 		}

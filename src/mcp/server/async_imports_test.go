@@ -47,7 +47,7 @@ func asyncImportGateway(t *testing.T, endpoint string, cfg Config) (*Server, <-c
 
 func submitAsyncImport(s *Server, ctx context.Context, key any) (importReceipt, error) {
 	raw, _ := protocol.EncodePayload(map[string]any{"key": key})
-	result, err := s.importCall(ctx, "remote_lookup", raw, "reasoner", "shared-trace", "portal")
+	result, err := s.importCall(ctx, "remote_lookup", raw, "reasoner", "shared-trace")
 	if err != nil {
 		return importReceipt{}, err
 	}

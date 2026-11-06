@@ -87,7 +87,7 @@ func (s *Server) pendingSnapshot() []protocol.PendingApproval {
 // awaitUserDecision 把一条 review 命令挂起，推到门户等用户裁决。
 // 返回的裁决要么是 allow（用户批准），要么是 deny（用户拒绝）；
 // 超时 / 门户不在 / 队列满 时原样返回 review（调用方按"未通过"处理，不执行）。
-func (s *Server) awaitUserDecision(ctx context.Context, caller, trace, boss string, result protocol.CommandApprovalResult, req protocol.CommandApprovalRequest) (protocol.CommandApprovalResult, error) {
+func (s *Server) awaitUserDecision(ctx context.Context, caller, trace string, result protocol.CommandApprovalResult, req protocol.CommandApprovalRequest) (protocol.CommandApprovalResult, error) {
 	portal := s.portalNow()
 	if !s.portalReady() {
 		result.Feedback.Summary += "（门户不在线，无人裁决，本次未执行）"
@@ -109,7 +109,7 @@ func (s *Server) awaitUserDecision(ctx context.Context, caller, trace, boss stri
 	defer s.dropPending(req.ItemID)
 
 	// 推送不等待回执：门户慢/挂都不影响这条审批继续等，也不影响别的审批。
-	s.Fire(portal, protocol.ApprovalPendingAction, info, trace, boss)
+	s.Fire(portal, protocol.ApprovalPendingAction, info, trace)
 	s.logger.Printf("待审 %s 已推送门户 %s（%s；TTL %s）", req.ItemID, portal, result.ReasonCode, ttl)
 
 	timer := time.NewTimer(ttl)

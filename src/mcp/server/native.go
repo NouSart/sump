@@ -49,7 +49,7 @@ func (s *Server) registerNativeMethods() {
 // nativeImport 返回某个动态 provide 的原生 handler；method 已在注册时绑定。
 func (s *Server) nativeImport(action string) func(context.Context, *spv2.Call) error {
 	return func(ctx context.Context, call *spv2.Call) error {
-		out, err := s.importCall(ctx, action, call.Frame.Body, call.Frame.From.ID, call.Frame.Work, call.Frame.From.ID)
+		out, err := s.importCall(ctx, action, call.Frame.Body, call.Frame.From.ID, call.Frame.Work)
 		if err != nil {
 			code, retryable := nativeImportError(err)
 			return call.ReplyError(code, err.Error(), retryable, nil)

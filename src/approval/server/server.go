@@ -137,7 +137,7 @@ func (s *Server) capabilities() map[string]any {
 }
 
 // approve 是 approval_request 的业务实现，原生 SPv2 method 直接调它。
-func (s *Server) approve(ctx context.Context, caller, trace, boss string, body []byte) (out any, err error) {
+func (s *Server) approve(ctx context.Context, caller, trace string, body []byte) (out any, err error) {
 	// handler 级限制不等于传输层大帧限制；部署边界保持为可信本地服务。
 	if len(body) > 64<<10 {
 		return nil, errors.New("审批载荷超过 64 KiB")
@@ -180,7 +180,7 @@ func (s *Server) approve(ctx context.Context, caller, trace, boss string, body [
 	s.accepted.Add(1)
 	release()
 	if result.Decision == protocol.DecisionReview {
-		return s.awaitUserDecision(ctx, caller, trace, boss, result, req)
+		return s.awaitUserDecision(ctx, caller, trace, result, req)
 	}
 	return result, nil
 }

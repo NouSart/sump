@@ -423,7 +423,7 @@ func (s *Server) debugJump(ctx context.Context, trace string, body []byte) (any,
 	if req.To == "" || req.Action == "" {
 		return nil, errors.New("debug_jump: to 与 action 必填")
 	}
-	data, err := s.Call(ctx, req.To, req.Action, req.Input, trace, "")
+	data, err := s.Call(ctx, req.To, req.Action, req.Input, trace)
 	if err != nil {
 		return nil, err
 	}

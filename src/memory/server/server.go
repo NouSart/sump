@@ -749,7 +749,7 @@ func (s *Server) embedTexts(ctx context.Context, trace string, texts []string, q
 	}
 	cctx, cancel := context.WithTimeout(ctx, embedTimeout)
 	defer cancel()
-	data, err := s.Call(cctx, name, "embed", protocol.EmbedPayload{Texts: texts, Query: query}, trace, s.cfg.Name)
+	data, err := s.Call(cctx, name, "embed", protocol.EmbedPayload{Texts: texts, Query: query}, trace)
 	if err != nil {
 		return nil, "", err
 	}
@@ -780,6 +780,6 @@ func (s *Server) fireResume(from, trace string, payload any) error {
 	if _, _, err := s.Resolve(from); err != nil {
 		return err
 	}
-	s.Fire(from, "resume", payload, trace, from)
+	s.Fire(from, "resume", payload, trace)
 	return nil
 }

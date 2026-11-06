@@ -219,7 +219,7 @@ func (s *Service) AnnounceSetting(key string) {
 		s.logger.Printf("AnnounceSetting 忽略：未声明的设置项 %s", key)
 		return
 	}
-	s.Fire("settings-center", "report_setting", p, "", "")
+	s.Fire("settings-center", "report_setting", p, "")
 }
 
 // declarations 返回名片用的设置声明（按声明顺序）。
@@ -382,7 +382,7 @@ func (s *Service) refreshSettings(ctx context.Context) {
 	}
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	data, err := s.Call(cctx, "settings-center", "list_settings", protocol.SettingsListPayload{Service: s.cfg.Name}, s.cfg.Name, "")
+	data, err := s.Call(cctx, "settings-center", "list_settings", protocol.SettingsListPayload{Service: s.cfg.Name}, s.cfg.Name)
 	if err != nil {
 		if cctx.Err() != nil || s.isClosed() {
 			return

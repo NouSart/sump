@@ -298,8 +298,9 @@ func (s *Service) setRoster(r protocol.RosterPayload) {
 // ---------- 出站：跳转调用 ----------
 
 // Call 访问目标服务：发一跳并等响应（短连接）。to 支持 "self" 与服务名（查名册）。
+// 结果归属由帧头 from 逐跳自定（骨架在 spv2_bridge 里填本服务名），不是调用方的参数。
 // 送达后的失败不重试——可能已被处理，重试需要幂等键（待定）。
-func (s *Service) Call(ctx context.Context, to, action string, payload any, trace, boss string) (msgpack.RawMessage, error) {
+func (s *Service) Call(ctx context.Context, to, action string, payload any, trace string) (msgpack.RawMessage, error) {
 	name, addr, err := s.Resolve(to)
 	if err != nil {
 		return nil, err
@@ -313,7 +314,7 @@ func (s *Service) Call(ctx context.Context, to, action string, payload any, trac
 
 // Fire 后台发起一跳（发出即完；完成与否仅记日志）。
 // 失败时向设置中心上报一条（kind=fire）——链路跳转未送达属于值得集中可见的错误。
-func (s *Service) Fire(to, action string, payload any, trace, boss string) {
+func (s *Service) Fire(to, action string, payload any, trace string) {
 	s.mu.Lock()
 	base := s.lifeCtx
 	closed := s.closed
@@ -327,7 +328,7 @@ func (s *Service) Fire(to, action string, payload any, trace, boss string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(base, 60*time.Second)
 		defer cancel()
-		if _, err := s.Call(ctx, to, action, payload, trace, boss); err != nil {
+		if _, err := s.Call(ctx, to, action, payload, trace); err != nil {
 			if ctx.Err() != nil || s.isClosed() {
 				return // 关闭导致的中断不是"未送达"，也不该在 Shutdown 之后写日志
 			}

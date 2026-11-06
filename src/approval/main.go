@@ -160,7 +160,7 @@ func send(parent context.Context, args []string) error {
 		return err
 	}
 	defer c.Shutdown()
-	raw, err := c.Call(ctx, "shell", "run", protocol.ShellRunPayload{Command: *command, WorkDir: *dir}, protocol.NewID(), name)
+	raw, err := c.Call(ctx, "shell", "run", protocol.ShellRunPayload{Command: *command, WorkDir: *dir}, protocol.NewID())
 	if err != nil {
 		return err
 	}

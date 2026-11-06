@@ -27,7 +27,7 @@ func (s *Server) approveJob(ctx context.Context, j *job, svc string) error {
 	}
 	j.plan, j.environment = &plan, env
 	req := protocol.CommandApprovalRequest{Version: 1, ItemID: j.item, Plan: plan}
-	raw, err := s.Call(ctx, svc, protocol.ApprovalAction, req, j.trace, j.boss)
+	raw, err := s.Call(ctx, svc, protocol.ApprovalAction, req, j.trace)
 	if err != nil {
 		return fmt.Errorf("审批服务未返回有效结果: %w", err)
 	}

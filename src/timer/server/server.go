@@ -431,11 +431,11 @@ func (s *Server) pushPortalState(trace string) {
 	s.mu.Unlock()
 
 	for boss, items := range groups {
-		s.Fire(portal, "timer_state", protocol.TimerStatePayload{Boss: boss, Seq: seq, Timers: items}, trace, boss)
+		s.Fire(portal, "timer_state", protocol.TimerStatePayload{Boss: boss, Seq: seq, Timers: items}, trace)
 	}
 	for boss := range prev {
 		if !cur[boss] {
-			s.Fire(portal, "timer_state", protocol.TimerStatePayload{Boss: boss, Seq: seq}, trace, boss)
+			s.Fire(portal, "timer_state", protocol.TimerStatePayload{Boss: boss, Seq: seq}, trace)
 		}
 	}
 }
@@ -462,7 +462,7 @@ func (s *Server) report(t *timing, phase, text string, final bool) {
 		Phase:  phase,
 		Text:   text,
 		Final:  final,
-	}, t.trace, t.boss)
+	}, t.trace)
 }
 
 // wakeText 是到点补报注入调用方的那句话——调用方的模型看到的就是它。

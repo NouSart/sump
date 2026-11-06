@@ -145,12 +145,12 @@ func (s *Server) boardKick(st *taskState) {
 // fireStep 自跳推进下一轮（发出即完；信纸只带会话号）。
 func (s *Server) fireStep(st *taskState) {
 	st.mu.Lock()
-	cid, trace, boss, closed := st.cid, st.trace, st.boss, st.closed
+	cid, trace, closed := st.cid, st.trace, st.closed
 	st.mu.Unlock()
 	if closed {
 		return
 	}
-	s.Fire("self", "step", stepPayload{ConversationID: cid}, trace, boss)
+	s.Fire("self", "step", stepPayload{ConversationID: cid}, trace)
 }
 
 // ---------- 轮次 ----------
@@ -467,7 +467,7 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 
 	s.Fire(s.memoryName(), "store", protocol.StorePayload{
 		ConversationID: st.cid, Boss: st.boss, Role: "assistant", Content: text, Kind: "assistant", Seq: s.nextSeq(), TaskID: st.taskID,
-	}, st.trace, s.cfg.Name)
+	}, st.trace)
 	// 答复已经送达：这一轮的判定在这里落库（done → 完结；否则只改名）。
 	// 交付失败时不会走到这里——任务保持进行中，下一次事件/重试再说。
 	s.commitJudgement(st, st.trace)
@@ -499,7 +499,7 @@ func (s *Server) notifyRoundFailure(st *taskState, cause error) {
 	text := fmt.Sprintf("⚠️ 本轮推理失败：%v\n任务还开着（没有关闭）：可以点「重试」再跑一次，或直接发新消息。", cause)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := s.Call(ctx, boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: cid, TaskID: taskID}, trace, ""); err != nil {
+	if _, err := s.Call(ctx, boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: cid, TaskID: taskID}, trace); err != nil {
 		s.logger.Printf("会话 %s：失败说明没能送达 boss(%s): %v", cid, boss, err)
 	}
 }
@@ -571,7 +571,7 @@ func (s *Server) deliverToBoss(st *taskState, text string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := s.Call(ctx, st.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: st.cid, TaskID: st.taskID}, st.trace, ""); err != nil {
+	if _, err := s.Call(ctx, st.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: st.cid, TaskID: st.taskID}, st.trace); err != nil {
 		return fmt.Errorf("交付 boss(%s) 失败: %w", st.boss, err)
 	}
 	return nil

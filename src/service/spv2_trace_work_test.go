@@ -4,10 +4,9 @@ package service
 //
 //   - 传出去的 trace 变成帧头的 work：work 是 SPv2.1 唯一的工作名词，骨架没有第二个 id 可放。
 //   - 「结果归属」逐跳自定，靠的是帧头 from（本服务的名字），不是调用方传的参数。
-//   - Call / Fire 的 boss 参数**不上线**：SPv2.1 帧头没有 boss 字段，
-//     callSPv2 也从不看它。生产代码在载荷里另带 boss，所以这不是丢数据，
-//     而是遗留参数——留着它需要改所有服务，那属于协议讨论，不在本轮范围。
-//     这里断言的是「线上确实没有它」，将来要清掉时也有测试可对照。
+//   - Call / Fire 没有 boss 参数：SPv2.1 帧头根本没有 boss 字段，callSPv2 也从不看它。
+//     这个参数曾经挂在骨架 API 上（纯遗留），已经删掉；下面仍然断言「线上确实没有它」，
+//     这样将来谁想把它加回来（无论加进 API 还是加进帧）都会先撞到这条测试。
 //
 // 对照的旧用例 TestCallOutbound 只断言了返回字符串，对端 handler 甚至没看帧头，
 // 所以 work/from 在这条链路上丢了也不会变红——下面两条把它补齐。
@@ -74,7 +73,7 @@ func TestBridgeTraceArrivesAsWork(t *testing.T) {
 		{Name: "peer", Addr: peerURL + "/spv2"},
 	}})
 
-	raw, err := caller.Call(context.Background(), "peer", "echo", "hi", "trace-77", "boss")
+	raw, err := caller.Call(context.Background(), "peer", "echo", "hi", "trace-77")
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -101,7 +100,7 @@ func TestBridgeTraceArrivesAsWork(t *testing.T) {
 		t.Fatalf("to = %+v, want service/peer", f.To)
 	}
 
-	// boss 是遗留参数：整帧上线后，键名与值里都不该出现它。
+	// boss 从来不是这一跳的入参：帧是骨架自己拼的，归属由 from 决定（见 callSPv2）。
 	wire, err := spv2.Marshal(f)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -121,7 +120,7 @@ func TestBridgeEmptyTraceGetsGeneratedWork(t *testing.T) {
 		{Name: "peer", Addr: peerURL + "/spv2"},
 	}})
 
-	if _, err := caller.Call(context.Background(), "peer", "echo", "hi", "", "boss"); err != nil {
+	if _, err := caller.Call(context.Background(), "peer", "echo", "hi", ""); err != nil {
 		t.Fatalf("空 trace 的这一跳失败: %v", err)
 	}
 	f := recvFrame(t, frames)
@@ -146,7 +145,7 @@ func TestBridgeWorkSurvivesMultiHop(t *testing.T) {
 	mid.HandleNative(spv2.Method{Name: "forward", Tool: true},
 		func(ctx context.Context, call *spv2.Call) error {
 			// 下一跳的 trace 用**收到的 work**：work 就是链路上唯一的工作名词。
-			_, err := mid.Call(ctx, "sink", "echo", "hop2", call.Frame.Work, "boss")
+			_, err := mid.Call(ctx, "sink", "echo", "hop2", call.Frame.Work)
 			if err != nil {
 				return call.ReplyError(spv2.CodeInternal, err.Error(), false, nil)
 			}
@@ -163,7 +162,7 @@ func TestBridgeWorkSurvivesMultiHop(t *testing.T) {
 	caller.setRoster(protocol.RosterPayload{Services: []protocol.ServiceCard{
 		{Name: "mid", Addr: "ws" + strings.TrimPrefix(midTS.URL, "http") + "/spv2"},
 	}})
-	if _, err := caller.Call(context.Background(), "mid", "forward", "go", "trace-chain", "boss"); err != nil {
+	if _, err := caller.Call(context.Background(), "mid", "forward", "go", "trace-chain"); err != nil {
 		t.Fatalf("第一跳失败: %v", err)
 	}
 

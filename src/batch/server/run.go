@@ -404,7 +404,7 @@ func (s *Server) runItem(j *runningJob, q queued) {
 	ctx, cancel := context.WithTimeout(base, j.timeout)
 	defer cancel()
 	start := time.Now()
-	raw, err := s.Call(ctx, j.service, j.action, q.input, j.trace, j.boss)
+	raw, err := s.Call(ctx, j.service, j.action, q.input, j.trace)
 	ms := time.Since(start).Milliseconds()
 
 	// 服务关闭导致的中断：不记失败、不落终态——留给下次启动的恢复流程
@@ -504,7 +504,7 @@ func (s *Server) pushProgress(j *runningJob, kind, text string, _ time.Time) {
 		Text:   text,
 		Final:  false,
 	}
-	s.Fire(j.caller, "report_result", payload, j.trace, j.boss)
+	s.Fire(j.caller, "report_result", payload, j.trace)
 	s.logger.Printf("任务 %s：推送 %s 进展", j.id, kind)
 }
 
@@ -558,7 +558,7 @@ func (s *Server) finishJob(j *runningJob) {
 		Phase:  phase,
 		Text:   summary,
 		Final:  true,
-	}, j.trace, j.boss)
+	}, j.trace)
 	s.logger.Printf("任务 %s 结束：%s（成功 %d / 失败 %d / 跳过 %d）", j.id, phase, snapshot.ok, snapshot.failed, snapshot.skipped)
 }
 

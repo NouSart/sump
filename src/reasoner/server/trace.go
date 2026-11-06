@@ -90,12 +90,12 @@ func (s *Server) recordNamed(cid, boss, trace, taskID, kind, role, content strin
 	s.Fire(s.memoryName(), "store", protocol.StorePayload{
 		ConversationID: cid, TaskID: taskID, Boss: boss, Role: role, Content: clamped, Kind: kind, Meta: metaJSON, Seq: seq,
 		TaskName: taskName,
-	}, trace, s.cfg.Name)
+	}, trace)
 	if s.bossWantsProgress(boss) {
 		s.Fire(boss, "progress", protocol.ProgressPayload{
 			ConversationID: cid, TaskID: taskID, Seq: seq, Kind: kind, Content: clamped, Meta: metaJSON,
 			At: time.Now().Format(time.RFC3339Nano),
-		}, trace, "")
+		}, trace)
 	}
 }
 

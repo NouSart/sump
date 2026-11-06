@@ -71,7 +71,7 @@ func TestBashReadOnlyAutoApprovedAndPathBoundary(t *testing.T) {
 		{"write_command", "touch should-not-exist.txt", "review", "rejected"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			raw, err := c.Call(f.ctx, "shell", "run", protocol.ShellRunPayload{Command: tc.command}, "", "observer")
+			raw, err := c.Call(f.ctx, "shell", "run", protocol.ShellRunPayload{Command: tc.command}, "")
 			if err != nil {
 				t.Fatal(err)
 			}

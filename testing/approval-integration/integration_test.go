@@ -119,7 +119,7 @@ func (f *fixture) startPortal(t *testing.T, decide func(item protocol.PendingApp
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_, err := p.Call(ctx, "approval", protocol.ApprovalDecideAction,
-					protocol.ApprovalDecision{ItemID: item.ItemID, Decision: decision, Note: note}, "", "")
+					protocol.ApprovalDecision{ItemID: item.ItemID, Decision: decision, Note: note}, "")
 				cancel()
 				if err != nil {
 					t.Logf("门户裁决送达失败: %v", err)
@@ -170,7 +170,7 @@ func TestTerminalApprovalAndFeedback(t *testing.T) {
 	} {
 		t.Run(tc.decision, func(t *testing.T) {
 			start := time.Now()
-			raw, err := c.Call(f.ctx, "shell", "run", protocol.ShellRunPayload{Command: tc.command}, "trace-check", "observer")
+			raw, err := c.Call(f.ctx, "shell", "run", protocol.ShellRunPayload{Command: tc.command}, "trace-check")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -235,7 +235,7 @@ func TestParserFaultReportedToRealCenter(t *testing.T) {
 	f.approval(t, brokenParser{f.exe})
 	c := f.client(t, "tester")
 	f.start(t, c)
-	if _, err := c.Call(f.ctx, "approval", protocol.ApprovalAction, f.req("Get-Date"), "trace", "tester"); err == nil {
+	if _, err := c.Call(f.ctx, "approval", protocol.ApprovalAction, f.req("Get-Date"), "trace"); err == nil {
 		t.Fatal("component failure approved")
 	}
 	for {
@@ -269,7 +269,7 @@ func TestMissingApprovalFailsClosedAndEarlyFeedbackRetries(t *testing.T) {
 		return call.Reply(map[string]string{"status": "accepted"})
 	})
 	f.start(t, c)
-	if _, err := c.Call(f.ctx, "shell", "run", protocol.ShellRunPayload{Command: "Write-Output should-not-run"}, "trace", "late-observer"); err != nil {
+	if _, err := c.Call(f.ctx, "shell", "run", protocol.ShellRunPayload{Command: "Write-Output should-not-run"}, "trace"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -341,7 +341,7 @@ func TestRealReasonerReceivesApprovalAndExecutionFeedback(t *testing.T) {
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
-	_, err := memory.Call(f.ctx, "reasoner", "resume", protocol.ResumePayload{Context: protocol.TaskContext{ConversationID: "approval-fixture", Boss: "user-service-stub", Messages: []protocol.Message{{Role: "user", Content: "运行示例命令"}}}}, "trace-llm", "reasoner")
+	_, err := memory.Call(f.ctx, "reasoner", "resume", protocol.ResumePayload{Context: protocol.TaskContext{ConversationID: "approval-fixture", Boss: "user-service-stub", Messages: []protocol.Message{{Role: "user", Content: "运行示例命令"}}}}, "trace-llm")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +411,7 @@ func TestUserReviewSecondLayer(t *testing.T) {
 			}
 
 			// Get-Process 不在白名单 → 第一层 review → 第二层挂起等门户。
-			raw, err := c.Call(f.ctx, "shell", "run", protocol.ShellRunPayload{Command: "Get-Process"}, "trace-review", "observer")
+			raw, err := c.Call(f.ctx, "shell", "run", protocol.ShellRunPayload{Command: "Get-Process"}, "trace-review")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -543,7 +543,7 @@ func TestLLMReviewChain(t *testing.T) {
 	if _, err := memory.Call(f.ctx, "reasoner", "resume", protocol.ResumePayload{Context: protocol.TaskContext{
 		ConversationID: "llm-review", Boss: "user-service-stub",
 		Messages: []protocol.Message{{Role: "user", Content: "看看现在有哪些进程"}},
-	}}, "trace-llm-review", "reasoner"); err != nil {
+	}}, "trace-llm-review"); err != nil {
 		t.Fatal(err)
 	}
 

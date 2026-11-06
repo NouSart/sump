@@ -222,7 +222,7 @@ func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCa
 		}
 		defer s.abandonAsync(pending)
 	}
-	data, err := s.Call(ctx, svc, action, rawIn, st.trace, st.boss)
+	data, err := s.Call(ctx, svc, action, rawIn, st.trace)
 	if err != nil {
 		return "", err // 无回执不代表远端未执行；不重放工具调用。
 	}
@@ -294,7 +294,7 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 			defer wg.Done()
 			// fetch_full：用户刚发的图要原图内联（模型看到的就是用户看到的）。
 			// 走 fetch 会拿到缩略图——那是给模型「主动查看」用的；fetch_full 不在工具列表里。
-			data, err := s.Call(ctx, images, "fetch_full", protocol.ImageFetchPayload{ID: id}, trace, "")
+			data, err := s.Call(ctx, images, "fetch_full", protocol.ImageFetchPayload{ID: id}, trace)
 			if err != nil {
 				s.logger.Printf("取图 %s 失败: %v", id, err)
 				return
@@ -326,7 +326,7 @@ func (s *Server) startMemoryRound(boss, trace, conversationID, taskName string, 
 		Messages:       messages,
 		Boss:           boss,
 		TaskName:       taskName,
-	}}, trace, s.cfg.Name)
+	}}, trace)
 }
 
 // userMessage 是链入口的共享实现：boss 是结果归属方（SPv2 的帧头 from），trace 是链路 id。

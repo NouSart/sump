@@ -95,8 +95,8 @@ func (a *asyncImports) Close(ctx context.Context) error {
 }
 
 // asyncImport 是 /spv2 原生 import method 的异步受理实现。
-// caller/trace/boss 是路由字段，body 是原始 MessagePack，不合成信封。
-func (s *Server) asyncImport(ctx context.Context, action string, body []byte, caller, trace, boss string) (any, error) {
+// caller/trace 是路由字段（结果归属就是 caller，SPv2 帧里没有 boss 可传），body 是原始 MessagePack，不合成信封。
+func (s *Server) asyncImport(ctx context.Context, action string, body []byte, caller, trace string) (any, error) {
 	if caller == "" || trace == "" || ctx.Err() != nil {
 		return nil, errors.New("MCP_IMPORT_REJECTED: live caller and trace required; remote tool not submitted")
 	}
@@ -131,7 +131,7 @@ func (s *Server) asyncImport(ctx context.Context, action string, body []byte, ca
 		// acknowledgment never triggers replay of the remote business operation.
 		deliveryCtx, stop := context.WithTimeout(context.Background(), s.cfg.DeliveryTimeout)
 		defer stop()
-		ack, err := s.svc.Call(deliveryCtx, caller, "report_result", report, trace, boss)
+		ack, err := s.svc.Call(deliveryCtx, caller, "report_result", report, trace)
 		if err != nil || importDeliveryUnconfirmed(ack) {
 			s.svc.Report("fire", fmt.Sprintf("MCP result delivery unconfirmed: item_id=%s phase=%s; remote operation not replayed", id, report.Phase))
 		}

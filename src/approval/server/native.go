@@ -142,8 +142,8 @@ func (s *Server) registerNativeMethods() {
 
 // nativeApprove 是 /spv2 的原生入口：直接解 body，不经过 v1 JumpPayload。
 func (s *Server) nativeApprove(ctx context.Context, call *spv2.Call) error {
-	// SPv2 帧里没有 boss 字段；沿用调用方 id，与 timer 的原生入口同口径。
-	out, err := s.approve(ctx, call.Frame.From.ID, call.Frame.Work, call.Frame.From.ID, call.Frame.Body)
+	// SPv2 帧没有 boss 字段：结果归属就是帧头 from，所以调用方就是 from.id（与 timer 的原生入口同口径）。
+	out, err := s.approve(ctx, call.Frame.From.ID, call.Frame.Work, call.Frame.Body)
 	if err != nil {
 		return call.ReplyError(nativeErrorCode(err), err.Error(), false, nil)
 	}

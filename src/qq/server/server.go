@@ -553,7 +553,7 @@ func (s *Server) collect(ev napcat.Event) (string, []string, []string) {
 func (s *Server) saveImage(url string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	data, err := s.Call(ctx, s.imagesName(), "save", protocol.ImageSavePayload{URL: url}, protocol.NewID(), s.cfg.Name)
+	data, err := s.Call(ctx, s.imagesName(), "save", protocol.ImageSavePayload{URL: url}, protocol.NewID())
 	if err != nil {
 		return "", err
 	}
@@ -572,7 +572,7 @@ func (s *Server) saveFile(fr napcat.FileRef) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	data, err := s.Call(ctx, s.filesName(), "save", protocol.FileSavePayload{URL: fr.URL, Filename: name}, protocol.NewID(), s.cfg.Name)
+	data, err := s.Call(ctx, s.filesName(), "save", protocol.FileSavePayload{URL: fr.URL, Filename: name}, protocol.NewID())
 	if err != nil {
 		return "", err
 	}
@@ -595,7 +595,7 @@ func appendLine(text, line string) string {
 func (s *Server) callReasoner(action string, payload any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	_, err := s.Call(ctx, s.reasonerName(), action, payload, protocol.NewID(), s.cfg.Name)
+	_, err := s.Call(ctx, s.reasonerName(), action, payload, protocol.NewID())
 	return err
 }
 
@@ -622,7 +622,7 @@ func (s *Server) titleConversation(cid, title string) {
 	_, err := s.Call(ctx, s.memoryName(), "conversation_open", protocol.ConversationOpenPayload{
 		ID:    cid,
 		Title: title,
-	}, protocol.NewID(), s.cfg.Name)
+	}, protocol.NewID())
 	if err != nil {
 		s.logger.Printf("会话 %s：起名（%s）失败: %v", cid, title, err)
 	}
@@ -710,7 +710,7 @@ func (s *Server) storeQuietly(cid string, sender *protocol.Sender, text string, 
 		Content:        content,
 		Meta:           string(meta),
 		TaskName:       taskNameOf(text, ids, fileIDs),
-	}, protocol.NewID(), s.cfg.Name)
+	}, protocol.NewID())
 	if err != nil {
 		// 这条消息就此从上下文里消失了——只写一行日志的话，没人知道"少了多少条"。
 		// 记一个累计数（日志里能看出规模），并沿既有的 report 通道上报中心（与"跳转未送达"同一处可见）。

@@ -124,7 +124,7 @@ func TestMaxMessageBytesOutboundCall(t *testing.T) {
 			s.setRoster(protocol.RosterPayload{Services: []protocol.ServiceCard{{Name: "peer", Addr: nativeURL(server)}}})
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			raw, err := s.Call(ctx, "peer", "read", nil, "", "caller")
+			raw, err := s.Call(ctx, "peer", "read", nil, "")
 			if tc.reject {
 				if !errors.Is(err, spv2.ErrConnClosed) {
 					t.Fatalf("oversized response: got %v, want ErrConnClosed", err)
