@@ -7,7 +7,9 @@ package shared
 //
 // 安全约定：
 //   - 幂等：靠 shared_meta 的标记，只搬一次；
-//   - 不删数据：旧表只**改名**为 legacy_*，字节还在；
+//   - 不删数据：旧表只**改名**为 legacy_*，字节还在（旧库是会话私有的，不碰红线）；
+//   - 搬进来的每一格都过写入边界（见 redactLegacyCell）：旧库写于红线之前，
+//     正文里的路径 / 链接 / 密钥形状和 conversation_id 里的真实账号不得原样落地；
 //   - 失败不动旧表：拷贝在事务里，任何一步失败就整体回滚，服务照常启动（共享库留空）。
 
 import (
@@ -16,6 +18,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/NouSart/sump/memory/redact"
 )
 
 const migrateKey = "migrated_from_memory_db"
@@ -145,12 +149,46 @@ func copyTable(tx *sql.Tx, src *sql.DB, table string, expected []string) (int, e
 		if err := rows.Scan(ptrs...); err != nil {
 			return n, err
 		}
+		for i, c := range cols {
+			vals[i] = redactLegacyCell(c, vals[i])
+		}
 		if _, err := stmt.Exec(vals...); err != nil {
 			return n, err
 		}
 		n++
 	}
 	return n, rows.Err()
+}
+
+// redactLegacyCell 是迁移路上的写入边界：旧库里没人管过的列，搬进来时统一收口。
+//
+// 这一路必须自己收口，不能指望上游：旧 memory.db 的 memories / mem_entries 是在
+// 红线立起来之前写的，正文里有绝对路径、链接、密钥形状，conversation_id 里有真实账号。
+// 逐行 INSERT 绕过 Add / Attach，等于给泄露开了一条不走守卫的后门。
+//
+// 待遇与新写入相同（正文掩码、会话 id 摘要、标识列只留不透明形状），
+// 唯一区别是不合规的标识**置空而不是报错**：历史数据里没有"调用方"可以接收错误，
+// 而丢一个分组值远好过丢一条经验，更远好过把账号搬进共享库。
+// 主键 / 外键类列（id / entry_id / node_id）不动：它们是生成的不透明 id，
+// 改坏只会把经验网的图剪断。
+func redactLegacyCell(col string, v any) any {
+	s, ok := v.(string)
+	if !ok {
+		return v // NULL、数字、BLOB 原样过
+	}
+	switch col {
+	case "content", "title", "goal", "outcome", "anchor":
+		return redact.Text(s)
+	case "conversation_id":
+		return redact.MustSessionID(s)
+	case "task_id", "source":
+		if clean, err := redact.RefID(s, col); err == nil {
+			return clean
+		}
+		return ""
+	default:
+		return s
+	}
 }
 
 // renameLegacy 把旧表改名（幂等：上一次已经改过就直接丢掉残留的旧表）。

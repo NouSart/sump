@@ -1,7 +1,8 @@
 // 经验网的接缝：把 memnet 包接进记忆服务的动作表与 recall。
 //
-// 边界：这里只做"取向量 / 拼文本"的事——网的形状、阈值、遗忘全在 memnet 包里，
-// 那一块不 import 本仓库任何包，将来能整块搬走（独立仓库 / 独立服务）。
+// 边界：这里只做"取向量 / 拼文本"的事——网的形状、阈值、遗忘全在 memnet 包里。
+// memnet 只依赖标准库和 redact 叶子包（脱敏与标识收口的唯一规则源），
+// 两块一起搬走就能整块独立成服务。
 package server
 
 import (
@@ -13,6 +14,7 @@ import (
 
 	"github.com/NouSart/sump/memory/longterm"
 	"github.com/NouSart/sump/memory/memnet"
+	"github.com/NouSart/sump/memory/redact"
 	"github.com/NouSart/sump/protocol"
 )
 
@@ -127,7 +129,9 @@ func (s *Server) note(ctx context.Context, body []byte, meta callMeta) (any, err
 		return nil, errors.New("经验网未启用")
 	}
 	s.ensureNetCentroids(ctx, meta.trace)
-	content := strings.TrimSpace(p.Content)
+	// 先按写入边界脱敏，再拿这份文本去算向量：向量的权威定义是"库里那行字"，
+	// 否则当场算的向量对应原文、补齐时算的向量对应脱敏文，同一条经验两套坐标。
+	content := redact.Text(p.Content)
 	if content == "" {
 		return nil, errors.New("note: content 必填")
 	}

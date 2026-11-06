@@ -1,7 +1,13 @@
 // Package memnet 是"经验网"：给模型抓线头的记忆结构。
 //
-// 独立包：只依赖标准库与一个 *sql.DB（谁的库都行），不 import 本仓库其他包。
-// 抽出来是为了将来能整块搬走（独立仓库 / 独立服务）——表、阈值、动作都是它自己的。
+// 独立包：只依赖标准库与本仓库的 redact 叶子包（脱敏规则，同样只依赖标准库），
+// 不 import 本仓库其他包。
+// 抽出来是为了将来能整块搬走（独立仓库 / 独立服务）——表、阈值、动作都是它自己的；
+// 搬走时把 redact 一起搬，它没有别的依赖。
+//
+// 为什么写入要在这里收口而不是在调用方：这张表就是共享库（生产里只有 shared.Open
+// 建出实例），AGENTS.md 的红线是「靠表结构和载荷保证，不靠调用方自觉」。
+// 写在调用方 = 下一个调用方忘了就破线；写在 Attach = 想破线得先改这里。
 //
 // 一句话：**树只有一层（类型），"枝"是读取时现算的。**
 //
@@ -33,6 +39,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/NouSart/sump/memory/redact"
 )
 
 // Store 是一张经验网。它有自己的一组表（mem_nodes / mem_entries / mem_links），
@@ -333,13 +341,27 @@ func (s *Store) Nodes() ([]Node, error) {
 
 // Attach 写一条经验：先查近重复（同一件事只留一条，加命中次数），
 // 否则按向量挂到大类上（argmax 必挂，其余够近的加挂）。
+//
+// 写入边界强制：正文脱敏、conversation_id 收成「入口 + 摘要」、task_id / source
+// 只允许不透明 id 形状。经验网是共享库，note 的入参来自复盘（模型输出），
+// 不在这里收口就没有别处会收口。
 func (s *Store) Attach(now time.Time, in AttachInput, vec []float32, model string) (AttachResult, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	content := strings.TrimSpace(in.Content)
+	content := redact.Text(in.Content)
 	if content == "" {
 		return AttachResult{}, errors.New("经验内容为空")
 	}
+	cid, err := redact.SessionID(in.ConversationID)
+	if err != nil {
+		return AttachResult{}, fmt.Errorf("mem_entries.conversation_id: %w", err)
+	}
+	in.ConversationID = cid
+	tid, err := redact.RefID(in.TaskID, "mem_entries.task_id")
+	if err != nil {
+		return AttachResult{}, err
+	}
+	in.TaskID = tid
 	// 耐用度是闭集，**必须校验**：拼成 "Core" 会被原样存下，而 Stability 只认小写 "core"，
 	// 于是"不该忘的经验"会照着遗忘曲线悄悄消失，全程没有一处报错。
 	switch in.Durability {
@@ -355,6 +377,11 @@ func (s *Store) Attach(now time.Time, in AttachInput, vec []float32, model strin
 	if in.Source == "" {
 		in.Source = "agent"
 	}
+	src, err := redact.RefID(in.Source, "mem_entries.source")
+	if err != nil {
+		return AttachResult{}, err
+	}
+	in.Source = src
 	ts := now.Format(time.RFC3339Nano)
 
 	if id, ok, err := s.findNearDuplicate(vec); err != nil {

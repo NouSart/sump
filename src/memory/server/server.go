@@ -15,6 +15,7 @@ import (
 
 	"github.com/NouSart/sump/memory/compose"
 	"github.com/NouSart/sump/memory/longterm"
+	"github.com/NouSart/sump/memory/redact"
 	"github.com/NouSart/sump/memory/shared"
 	"github.com/NouSart/sump/memory/store"
 	"github.com/NouSart/sump/protocol"
@@ -538,12 +539,16 @@ func (s *Server) remember(ctx context.Context, body []byte, meta callMeta) (any,
 	if s.longterm() == nil {
 		return nil, errors.New("长期记忆未启用")
 	}
-	id, created, err := s.longterm().Add(p.Kind, p.Content, p.Priority, p.ConversationID, meta.from)
+	// 向量算的是"库里那行字"：Add 会在写入边界脱敏，这里先脱敏一次拿到同一份文本，
+	// 免得当场算的对应原文、懒补齐算的对应掩码（Text 可重复作用）。
+	content := redact.Text(p.Content)
+	id, created, err := s.longterm().Add(p.Kind, content, p.Priority, p.ConversationID, meta.from)
 	if err != nil {
 		return nil, fmt.Errorf("remember: %w", err)
 	}
 	if created {
-		if vecs, model, err := s.embedTexts(ctx, meta.trace, []string{p.Content}, false); err != nil {
+		vecs, model, err := s.embedTexts(ctx, meta.trace, []string{content}, false)
+		if err != nil {
 			s.logger.Printf("remember 向量化失败（召回时将懒补齐）: %v", err)
 		} else if err := s.longterm().SetEmbedding(id, vecs[0], model); err != nil {
 			s.logger.Printf("remember 向量落库失败（召回时将懒补齐）: %v", err)
