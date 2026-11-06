@@ -30,7 +30,7 @@ func TestCheckRemoteConfigUsesConfigurationWithoutStartingSUMP(t *testing.T) {
 	}
 	// Neither this invalid listen address nor an unavailable center may matter
 	// to a read-only outgoing check. No native service is started.
-	report, err := CheckRemoteConfig(t.Context(), Config{Listen: "invalid-listener", Center: "ws://127.0.0.1:1/ws", ConfigPath: configPath, SecretFile: secretPath, CallTimeout: time.Second})
+	report, err := CheckRemoteConfig(t.Context(), Config{Listen: "invalid-listener", Center: "ws://127.0.0.1:1/spv2", ConfigPath: configPath, SecretFile: secretPath, CallTimeout: time.Second})
 	if err != nil || !report.OK || len(report.Checks) != 1 || !report.Checks[0].OK {
 		t.Fatalf("check failed: %+v %v", report, err)
 	}
