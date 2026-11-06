@@ -329,9 +329,8 @@ func (s *Server) startMemoryRound(boss, trace, conversationID, taskName string, 
 	}}, trace, s.cfg.Name)
 }
 
-// userMessage 是链入口的共享实现：boss 是结果归属方，trace 是链路 id，
-// from 是入口服务（交付失败时的另一条回家路）。三者都取自帧头。
-func (s *Server) userMessage(boss, trace, from string, body []byte) (any, error) {
+// userMessage 是链入口的共享实现：boss 是结果归属方（SPv2 的帧头 from），trace 是链路 id。
+func (s *Server) userMessage(boss, trace string, body []byte) (any, error) {
 	var p protocol.UserMessagePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
@@ -365,8 +364,7 @@ func (s *Server) userMessage(boss, trace, from string, body []byte) (any, error)
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: text, ImageIDs: p.Images},
 	}
-	// 记下入口：交付失败时往它补一条（boss 认错了/丢了的时候，入口是唯一还能回声的地方）。
-	s.noteEntry(cid, from)
+	// SPv2 没有独立入口：结果归属方就是帧头 from，失败只能记日志（没有第二条回家路）。
 	s.startMemoryRound(boss, trace, cid, taskName, messages)
 	return map[string]any{"status": "accepted"}, nil
 }

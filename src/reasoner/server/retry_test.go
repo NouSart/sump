@@ -21,7 +21,6 @@ func newRetryServer(t *testing.T) *Server {
 		cfg:       Config{Name: "reasoner"},
 		board:     map[string]*taskState{},
 		holds:     map[string]*holdState{},
-		entries:   map[string]string{},
 		retryFrom: func(string) bool { return true },
 	}
 }

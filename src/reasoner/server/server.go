@@ -63,9 +63,6 @@ type Server struct {
 	holdMu       sync.Mutex // user hold state; see hold.go
 	holds        map[string]*holdState
 
-	entryMu sync.Mutex        // 会话入口表锁（交付失败时往哪补一条）
-	entries map[string]string // 会话 → 入口服务名（user_message 的 from）
-
 	retryFrom func(string) bool // 测试注入：retry 的来源校验（名册在 service 包里，测试拿不到 setter）
 
 	memSeq int64 // 会话记录的单调序号（atomic）：并发写（Fire 是 goroutine）也按真实先后落库
@@ -112,7 +109,6 @@ func New(cfg Config, logger *log.Logger) *Server {
 		asyncEarly:   map[asyncKey][]protocol.AsyncResultPayload{},
 		asyncDone:    map[asyncKey]time.Time{},
 		holds:        map[string]*holdState{},
-		entries:      map[string]string{},
 		notify:       cfg.NotifyMode,
 		conc:         cfg.ToolConcurrency,
 		timeout:      cfg.ToolTimeout,

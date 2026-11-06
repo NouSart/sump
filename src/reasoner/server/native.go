@@ -241,7 +241,7 @@ func (s *Server) nativeThink(ctx context.Context, call *spv2.Call) error {
 
 func (s *Server) nativeUserMessage(_ context.Context, call *spv2.Call) error {
 	// SPv2 没有 boss：from 既是入口，也是结果的归属方。
-	out, err := s.userMessage(call.Frame.From.ID, call.Frame.Work, call.Frame.From.ID, call.Frame.Body)
+	out, err := s.userMessage(call.Frame.From.ID, call.Frame.Work, call.Frame.Body)
 	if err != nil {
 		return replyNativeError(call, err)
 	}
