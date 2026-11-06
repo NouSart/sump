@@ -96,7 +96,7 @@ type HeartbeatPayload struct {
 // 派生数据一律现算（否则两处真相迟早对不上）。
 // Title 为空 = 还没起名（界面自己回退一个占位，别在库里造假名字）。
 // Entry 是入口服务名（门户 / qq / shell）：同一套记忆，进来的门不同。
-// Status：active = 可在用；archived = 收起了（只读，列表默认不显示）。
+// Status：active = 可在用；archived = 收起了（默认列表不显示；不拦写入，不是只读）。
 type Conversation struct {
 	ID        string `msgpack:"id"`
 	Title     string `msgpack:"title,omitempty"`

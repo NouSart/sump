@@ -263,7 +263,7 @@ func (s *Server) conversationOpen(body []byte) (any, error) {
 	return protocol.ConversationResult{Conversation: c}, nil
 }
 
-// conversationArchive 归档 / 取消归档（归档 = 只读，不进默认列表）。
+// conversationArchive 归档 / 取消归档（归档 = 移出默认列表，不拦写入）。
 func (s *Server) conversationArchive(body []byte) (any, error) {
 	var p protocol.ConversationArchivePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {

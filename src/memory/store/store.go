@@ -184,6 +184,11 @@ func (s *Store) DB() *sql.DB { return s.db }
 //
 // Seq 由写入方给（会话内单调）：并发写（Fire 是 goroutine）也能按真实先后排序；
 // 为 0 时退化为按落库顺序（老数据 / 不关心顺序的调用方）。
+//
+// **归档不设门槛**：这里不查 conversations.status——归档 = 移出默认列表，不是只读。
+// 改成拒写不是加个 if 那么简单：调用方（reasoner / 各入口）不看会话状态、多数还用 Fire
+// （发出即完，失败只进日志），门户又没有「取消归档」入口，拦下来就是悄悄丢历史。
+// 依据与逐条证据钉在 tests/conversations_test.go 的 TestConversationTable。
 func (s *Store) Record(conversationID, role, content, kind, meta string, seq int64, taskID string) error {
 	if kind == "" {
 		kind = kindOfRole(role)

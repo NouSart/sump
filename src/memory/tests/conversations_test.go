@@ -119,6 +119,60 @@ func TestConversationTable(t *testing.T) {
 	if !found {
 		t.Fatalf("显式要归档时应列出 c3: %+v", all)
 	}
+
+	// 归档 = 移出默认列表，**不是**只读：写仍然进得去，而且写完还是归档态。
+	// 为什么选「不拦」而不是「拒写」（这条判断钉在测试里，不写在文档里）：
+	//   - 写路径不看会话状态，而且多数调用方等不到答案：reasoner / board 用 Fire 发 store
+	//     （发出即完，失败只进日志），server 的 store 直接用调用方给的 cid（空则 "default"）
+	//     —— 当场拒写等于**悄悄丢历史**。
+	//   - 别的门会持续往同一个会话写：qq 的会话号按人 / 群固定，用户在门户里归档一个 QQ 会话，
+	//     消息照旧从 qq 进来，拦下来就是"这个会话从此记不住东西"。
+	//   - 门户界面只有「归档」没有「取消归档」（TaskList 只调 onArchiveConversation；
+	//     archived=false 只能直连 HTTP）——一旦拒写，用户没有恢复入口。
+	// 真要改成 fail-closed：先给门户加取消归档，再让写路径显式处理"已归档"这个错误。
+	if _, err := st.DB().Exec(`UPDATE conversations SET updated_at='2020-01-01T00:00:00Z' WHERE id='c3'`); err != nil {
+		t.Fatal(err)
+	}
+	// 上面的水位回拨是必要的：touchConversation 有 30 秒节流，不拨回去这条写入
+	// 就走不到刷新 updated_at 的分支，下面两条断言会白测。
+	if err := st.Append("c3", "user", "归档之后再写一句"); err != nil {
+		t.Fatalf("归档会话应仍可写入（归档只影响默认列表）: %v", err)
+	}
+	c3, err := st.ConversationByID("c3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c3.Status != store.ConversationArchived {
+		t.Fatalf("写入不该把归档会话顺带激活: %+v", c3)
+	}
+	got, err = st.ListConversations(10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range got {
+		if c.ID == "c3" {
+			t.Fatalf("写过的归档会话仍不该出现在默认列表: %+v", got)
+		}
+	}
+	msgs, err := st.Recent("c3", 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 || msgs[1].Content != "归档之后再写一句" {
+		t.Fatalf("归档会话的写入应落库可见: %+v", msgs)
+	}
+
+	// 未归档的会话照旧：写进去就是 active，默认列表里有它。
+	if err := st.Append("c4", "user", "没归档的写一句"); err != nil {
+		t.Fatalf("正常会话写入不该报错: %v", err)
+	}
+	c4, err := st.ConversationByID("c4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c4.Status != store.ConversationActive {
+		t.Fatalf("未归档会话应保持 active: %+v", c4)
+	}
 }
 
 // TestConversationTitleAndLimit 验证两件容易出错的小事：

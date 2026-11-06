@@ -55,7 +55,7 @@ export interface SettingsEventViewData {
 }
 
 // ConversationView 是一个会话：门户侧栏的第一层。
-// status：active = 在列表中；archived = 收起了（只读，默认不列）。
+// status：active = 在列表中；archived = 收起了（默认不列；服务端不拦写入，不是只读）。
 // readonly：这扇门不归门户管（如 qq:private / qq:group）——能看，不能在这里说话或改名。
 export interface ConversationView {
   id: string;

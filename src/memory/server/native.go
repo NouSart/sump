@@ -176,7 +176,7 @@ func (s *Server) registerNative() {
 	}, s.nativeConversationOpen)
 	s.HandleNative(spv2.Method{
 		Name:        "conversation_archive",
-		Description: "归档 / 取消归档会话（归档 = 只读；不暴露给模型）",
+		Description: "归档 / 取消归档会话（归档 = 不进默认列表，不拦写入；不暴露给模型）",
 		Input: objectSchema(map[string]any{
 			"id":       stringSchema(),
 			"archived": booleanSchema(),
