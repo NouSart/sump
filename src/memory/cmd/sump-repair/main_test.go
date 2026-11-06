@@ -251,6 +251,141 @@ func itoa(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
 
+// hitsOf 用第二把尺读一遍临时库：测试据此造裁定，键走的是同一条 Key() 规则，
+// 不是手编的（真实流程里人也只能从 -audit 的输出抄 key）。
+func hitsOf(t *testing.T, dbPath string) []audit.Finding {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	hits, err := audit.Scan(db, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hits
+}
+
+// entryAt 把命中登记成裁定条目，再只改位置字段（键保持命中算出来的那个）。
+// 冲突夹具必须这么造：从实测 Finding 取键，不重算摘要、不写真实凭据。
+func entryAt(f audit.Finding, rowKey int64, reason string) audit.Adjudicated {
+	a := adjudicatedFrom(f, reason)
+	a.RowKey = rowKey
+	return a
+}
+
+// adjudicatedFrom 与 audit 包里的测试助手同名同义：cmd 测试拿不到包内函数，这里重写一份。
+func adjudicatedFrom(f audit.Finding, reason string) audit.Adjudicated {
+	return audit.Adjudicated{
+		Table: f.Table, RowKey: f.RowKey, Column: f.Column, Probe: f.Probe,
+		Key: f.Key(), Runs: f.Shape.Runs, Lens: f.Shape.Lens, Ent: f.Shape.Ent, Reason: reason,
+	}
+}
+
+// 8. conflicted 单独成立：键认下了、位置对不上，novel / stale / skipped 全为 0。
+// 这条场景必须能单独杀死"删除 conflicted 失败退出"的异变——删掉之后这里返回 0。
+func TestConflictedAloneBreaksGate(t *testing.T) {
+	dbPath := scopeDB(t)
+	insertDirty(t, dbPath, "轮转后 "+fakeEntropy)
+	hits := hitsOf(t, dbPath)
+	if len(hits) != 1 {
+		t.Fatalf("夹具该恰好造出一处命中，实际 %d 处", len(hits))
+	}
+	adj := []audit.Adjudicated{entryAt(hits[0], 999999, "同一条键，行号被改过")}
+
+	code, out, errOut := runWith(t, "-audit", "-db", dbPath, "-adjudicated", adjudicatedJSON(t, adj...))
+	if code != 1 {
+		t.Fatalf("位置冲突该返回 1，实际 %d\nstdout=%s stderr=%s", code, out, errOut)
+	}
+	if !strings.Contains(out, "位置冲突 1 处") {
+		t.Errorf("计数里没有位置冲突这一类：%s", out)
+	}
+	if !strings.Contains(out, "位置冲突命中：") || !strings.Contains(out, "白名单把这条键记在") {
+		t.Errorf("没把冲突条目的两个位置都打出来（人要靠这个核对）：%s", out)
+	}
+	if !strings.Contains(out, "未裁定 0 处") || !strings.Contains(out, "过期裁定 0 处") || strings.Contains(out, "跳过 ") {
+		t.Errorf("这个场景 novel / stale / skipped 都该是 0：%s", out)
+	}
+	if !strings.Contains(errOut, "键对得上、位置对不上") {
+		t.Errorf("stderr 缺少冲突引导语：%s", errOut)
+	}
+}
+
+// 9. novel 与 stale 同时成立：两类条目、两句引导语都要出现，最后才返回 1。
+// 早退（novel 判完就 return）会把 stale 的提示吞掉——这条就是盯着这个改法。
+func TestNovelAndStaleReportedTogether(t *testing.T) {
+	dbPath := scopeDB(t)
+	dirty := insertDirty(t, dbPath, "轮转后 "+fakeEntropy)
+	// 另插一行干净的：它的 rowid 存在，但当前没有任何命中对得上那条假键 → stale。
+	clean := insertDirty(t, dbPath, "一条正常的提炼物，不带任何凭据形状")
+	adj := []audit.Adjudicated{{
+		Table: "memories", RowKey: clean, Column: "content", Probe: audit.ProbeEntropy,
+		Key: "00000000", Runs: 1, Lens: []int{9}, Reason: "行还在库里但键已对不上",
+	}}
+
+	code, out, errOut := runWith(t, "-audit", "-db", dbPath, "-adjudicated", adjudicatedJSON(t, adj...))
+	if code != 1 {
+		t.Fatalf("未裁定 + 过期该返回 1，实际 %d\nstdout=%s stderr=%s", code, out, errOut)
+	}
+	wantNew := "memories." + itoa(dirty) + ".content(高熵串"
+	if !strings.Contains(out, wantNew) {
+		t.Errorf("没打印新命中：%s", out)
+	}
+	if !strings.Contains(out, "过期裁定条目") {
+		t.Errorf("没打印过期条目：%s", out)
+	}
+	if !strings.Contains(errOut, "有未裁定的命中") || !strings.Contains(errOut, "白名单里有对不上当前库的条目") {
+		t.Errorf("两句引导语该一起出现：%s", errOut)
+	}
+}
+
+// 10. 三类同时成立：全部输出后才退出，一个都不能被另一个挡住。
+func TestAllThreeCategoriesReportedTogether(t *testing.T) {
+	dbPath := scopeDB(t)
+	clashRow := insertDirty(t, dbPath, "轮转后 "+fakeEntropy)
+	novelRow := insertDirty(t, dbPath, "联系 "+fakeDigits+" 处理")
+	// 取冲突那条的键：位置改成不存在的行号。
+	var clashKey string
+	for _, h := range hitsOf(t, dbPath) {
+		if h.RowKey == clashRow && h.Probe == audit.ProbeEntropy {
+			clashKey = h.Key()
+		}
+	}
+	if clashKey == "" {
+		t.Fatal("没造出用于冲突的命中，夹具失效")
+	}
+	adj := []audit.Adjudicated{
+		{Table: "memories", RowKey: 999999, Column: "content", Probe: audit.ProbeEntropy,
+			Key: clashKey, Runs: 1, Lens: []int{21}, Reason: "行号被改过的同键裁定"},
+		{Table: "memories", RowKey: novelRow, Column: "content", Probe: audit.ProbeEntropy,
+			Key: "00000000", Runs: 1, Lens: []int{9}, Reason: "行在库里、键对不上 → stale"},
+	}
+
+	code, out, errOut := runWith(t, "-audit", "-db", dbPath, "-adjudicated", adjudicatedJSON(t, adj...))
+	if code != 1 {
+		t.Fatalf("三类并存该返回 1，实际 %d\nstdout=%s stderr=%s", code, out, errOut)
+	}
+	for _, want := range []string{
+		"memories." + itoa(novelRow) + ".content(长数字", // novel
+		"位置冲突命中：",                                     // conflicted
+		"过期裁定条目",                                      // stale
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("输出里缺 %q：%s", want, out)
+		}
+	}
+	for _, want := range []string{"有未裁定的命中", "键对得上、位置对不上", "白名单里有对不上当前库的条目"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("stderr 缺引导语 %q：%s", want, errOut)
+		}
+	}
+	if !strings.Contains(out, "未裁定 1 处、位置冲突 1 处、过期裁定 1 处") {
+		t.Errorf("三类计数该各 1 处：%s", out)
+	}
+}
+
 // 7. -apply 路径：只在临时库上验。必须用 shared.Open 建**完整真实 schema**——
 // Scope 派生的最小表缺 repair 要读的标识列（source / conversation_id / task_id /
 // shared_sessions.entry / shared_tasks.session_id 等），拿它跑 -apply 只会撞出一个假失败，
