@@ -106,7 +106,7 @@ func TestRemoteCredentialVersionRejectsStaleCalls(t *testing.T) {
 					s, path := remoteCredentialStore(t)
 					i := newTestImports(t, front.URL, 5*time.Second, 16384, s.SettingSnapshot)
 					raw, _ := protocol.EncodePayload(map[string]any{"key": "x"})
-					p, err := i.Prepare(protocol.JumpPayload{Action: "remote_lookup", Input: raw})
+					p, err := i.PrepareBody("remote_lookup", raw)
 					if err != nil {
 						t.Fatal(err)
 					}

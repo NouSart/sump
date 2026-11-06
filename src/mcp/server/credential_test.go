@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -16,17 +17,13 @@ const rotatedGatewayToken = "rotated-gateway-token-01234567890123456789"
 func credentialJobGateway(t *testing.T) (*Server, *atomic.Int32) {
 	t.Helper()
 	var cancellations atomic.Int32
-	peer := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
-		var jump protocol.JumpPayload
-		if err := env.DecodePayload(&jump); err != nil {
-			return nil, err
-		}
-		switch jump.Action {
+	peer := newNativePeer(t, "timer", []string{"sleep", "cancel"}, func(call *spv2.Call) (any, error) {
+		switch call.Frame.Method {
 		case "sleep":
 			return protocol.TimerSleepResult{ItemID: protocol.NewID(), Phase: "queued"}, nil
 		case "cancel":
 			var input protocol.TimerCancelPayload
-			if err := protocol.DecodeRaw(jump.Input, &input); err != nil {
+			if err := call.Frame.DecodeBody(&input); err != nil {
 				return nil, err
 			}
 			cancellations.Add(1)
@@ -35,7 +32,7 @@ func credentialJobGateway(t *testing.T) (*Server, *atomic.Int32) {
 			return nil, errors.New("unexpected timer action")
 		}
 	})
-	s := startGateway(t, Config{}, []protocol.ServiceCard{timerCard(peer)}, `{"exports":["timer__sleep","timer__cancel"]}`)
+	s := startGateway(t, Config{}, []protocol.ServiceCard{timerCard(peer.URL())}, `{"exports":["timer__sleep","timer__cancel"]}`)
 	return s, &cancellations
 }
 

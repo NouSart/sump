@@ -53,7 +53,7 @@ func newTestImports(t *testing.T, endpoint string, timeout time.Duration, maxByt
 
 func callImport(i *Imports, ctx context.Context, key any) (any, error) {
 	raw, _ := protocol.EncodePayload(map[string]any{"key": key})
-	return i.Handle(ctx, protocol.Envelope{From: "reasoner", To: "mcp", Trace: "same-trace"}, protocol.JumpPayload{Action: "remote_lookup", Input: raw})
+	return i.HandleBody(ctx, "remote_lookup", raw)
 }
 
 func TestImportsSuccessfulTranslation(t *testing.T) {
@@ -98,10 +98,10 @@ func TestImportsRejectInvalidInputBeforeNetwork(t *testing.T) {
 		}
 	}
 	raw, _ := protocol.EncodePayload(map[string]any{"key": "ok", "remote": "other"})
-	if _, err := i.Handle(context.Background(), protocol.Envelope{}, protocol.JumpPayload{Action: "remote_lookup", Input: raw}); err == nil {
+	if _, err := i.HandleBody(context.Background(), "remote_lookup", raw); err == nil {
 		t.Fatal("accepted extra routing field")
 	}
-	if _, err := i.Handle(context.Background(), protocol.Envelope{}, protocol.JumpPayload{Action: "unmapped", Input: raw}); err == nil {
+	if _, err := i.HandleBody(context.Background(), "unmapped", raw); err == nil {
 		t.Fatal("accepted unreviewed action")
 	}
 	if requests.Load() != 0 {
@@ -123,7 +123,7 @@ func TestImportsRejectOversizedMessagePackHeadersBeforeAllocation(t *testing.T) 
 		{0x81, 0xa3, 'k', 'e', 'y', 0xdd, 0x7f, 0xff, 0xff, 0xff},
 		{0x81, 0xa3, 'k', 'e', 'y', 0xc6, 0x7f, 0xff, 0xff, 0xff},
 	} {
-		if _, err := i.Prepare(protocol.JumpPayload{Action: "remote_lookup", Input: raw}); err == nil || !strings.Contains(err.Error(), "MCP_INVALID_INPUT") {
+		if _, err := i.PrepareBody("remote_lookup", raw); err == nil || !strings.Contains(err.Error(), "MCP_INVALID_INPUT") {
 			t.Fatalf("malformed length accepted: %x %v", raw, err)
 		}
 	}
@@ -216,7 +216,7 @@ func TestImportsRemoteFailureIsolation(t *testing.T) {
 	}
 	defer i.Close()
 	raw, _ := protocol.EncodePayload(map[string]any{"key": "x"})
-	if _, err = i.Handle(t.Context(), protocol.Envelope{}, protocol.JumpPayload{Action: a.Action, Input: raw}); err == nil {
+	if _, err = i.HandleBody(t.Context(), a.Action, raw); err == nil {
 		t.Fatal("unavailable target succeeded")
 	}
 	if _, err = callImport(i, t.Context(), "x"); err != nil || calls.Load() != 1 {
@@ -440,7 +440,7 @@ func TestImportsStructuredTypesRoundTrip(t *testing.T) {
 	defer i.Close()
 	payload := map[string]any{"text": "你好🙂", "integer": int64(9007199254740991), "decimal": 1.25, "null": nil, "empty": map[string]any{}, "nested": []any{true, "x", nil}}
 	raw, _ := protocol.EncodePayload(payload)
-	value, err := i.Handle(t.Context(), protocol.Envelope{}, protocol.JumpPayload{Action: "echo_data", Input: raw})
+	value, err := i.HandleBody(t.Context(), "echo_data", raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +452,7 @@ func TestImportsStructuredTypesRoundTrip(t *testing.T) {
 	}
 	payload["integer"] = int64(9007199254740993)
 	raw, _ = protocol.EncodePayload(payload)
-	if _, err = i.Handle(t.Context(), protocol.Envelope{}, protocol.JumpPayload{Action: "echo_data", Input: raw}); err == nil || calls.Load() != 1 {
+	if _, err = i.HandleBody(t.Context(), "echo_data", raw); err == nil || calls.Load() != 1 {
 		t.Fatal("unsafe integer reached target")
 	}
 }

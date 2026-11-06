@@ -94,7 +94,7 @@ func (a *asyncImports) Close(ctx context.Context) error {
 	}
 }
 
-// asyncImport 是 v1 action 与 /spv2 原生 method 共用的异步受理实现。
+// asyncImport 是 /spv2 原生 import method 的异步受理实现。
 // caller/trace/boss 是路由字段，body 是原始 MessagePack，不合成信封。
 func (s *Server) asyncImport(ctx context.Context, action string, body []byte, caller, trace, boss string) (any, error) {
 	if caller == "" || trace == "" || ctx.Err() != nil {
@@ -159,12 +159,7 @@ func importDeliveryUnconfirmed(raw []byte) bool {
 	return fields["status"] == "ignored" || fields["accepted"] == false || fields["received"] == false
 }
 
-// handleCancelImport 是 v1 action 的薄包装。
-func (s *Server) handleCancelImport(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.cancelImport(in.Input, env.From)
-}
-
-// cancelImport 与 /spv2 原生 method 共用：body 是原始 MessagePack。
+// cancelImport 处理 /spv2 原生 method：body 是原始 MessagePack。
 func (s *Server) cancelImport(body []byte, caller string) (any, error) {
 	if len(body) > 256 {
 		return nil, errors.New("cancel_import input exceeds byte limit")

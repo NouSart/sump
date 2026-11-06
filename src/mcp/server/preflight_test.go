@@ -169,7 +169,7 @@ func TestImportCheckBoundsLifetimeAndSharesRemoteCapacity(t *testing.T) {
 	raw, _ := protocol.EncodePayload(map[string]any{"key": "held"})
 	var held []*preparedImport
 	for range 4 {
-		p, err := i.Prepare(protocol.JumpPayload{Action: "remote_lookup", Input: raw})
+		p, err := i.PrepareBody("remote_lookup", raw)
 		if err != nil {
 			t.Fatal(err)
 		}

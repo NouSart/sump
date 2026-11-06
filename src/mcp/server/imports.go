@@ -309,12 +309,7 @@ func importMethodSchema(raw json.RawMessage) map[string]any {
 	return schema
 }
 
-// Handle 是 v1 action 的薄包装，保留 /ws 兼容边缘。
-func (i *Imports) Handle(ctx context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return i.HandleBody(ctx, in.Action, in.Input)
-}
-
-// HandleBody 是 v1 与 /spv2 共用的业务实现：body 就是调用方发来的 MessagePack。
+// HandleBody 处理 /spv2 原生 method：body 就是调用方发来的 MessagePack。
 func (i *Imports) HandleBody(ctx context.Context, action string, body []byte) (any, error) {
 	call, err := i.PrepareBody(action, body)
 	if err != nil {
@@ -351,11 +346,6 @@ func (p *preparedImport) Close() {
 		p.closed.Store(true)
 		<-p.target.slots
 	})
-}
-
-// Prepare 是 v1 action 的薄包装，body 语义与 /spv2 原生调用一致。
-func (i *Imports) Prepare(in protocol.JumpPayload) (*preparedImport, error) {
-	return i.PrepareBody(in.Action, in.Input)
 }
 
 // PrepareBody 只接收方法名与原始 MessagePack body，不依赖 v1 JumpPayload。

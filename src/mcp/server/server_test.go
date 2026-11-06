@@ -17,72 +17,63 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
-	"github.com/gorilla/websocket"
+	"github.com/NouSart/sump/spv2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const gatewayToken = "gateway-test-secret-01234567890123456789"
 
-// A real WS peer with a deliberately tiny application handler. Production
-// center/files/mcp processes are covered separately in tests/mcp_test.go.
-func gatewayPeer(t *testing.T, fn func(protocol.Envelope) (any, error)) string {
+// nativePeer 是一个最小的原生 /spv2 对端桩：卡片按 methods 声明方法，
+// 每次 call 交给 fn；fn 的返回值即 reply body，error 变成 error reply。
+// 设置中心、后端服务、补报接收方都用它扮演。
+type nativePeer struct {
+	http *httptest.Server
+}
+
+func newNativePeer(t *testing.T, name string, methods []string, fn func(call *spv2.Call) (any, error)) *nativePeer {
 	t.Helper()
-	var mu sync.Mutex
-	var conns []*websocket.Conn
-	u := websocket.Upgrader{}
-	h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := u.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		mu.Lock()
-		conns = append(conns, c)
-		mu.Unlock()
-		defer c.Close()
-		for {
-			_, data, err := c.ReadMessage()
-			if err != nil {
-				return
-			}
-			env, err := protocol.Unmarshal(data)
-			if err != nil {
-				return
-			}
-			out, e := fn(env)
-			raw, _ := protocol.EncodePayload(out)
-			response := protocol.ResponsePayload{OK: e == nil, Data: raw}
+	card := spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: name, Actor: spv2.ServiceRef(name), Version: "stub/1",
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	}
+	for _, method := range methods {
+		card.Methods = append(card.Methods, spv2.Method{Name: method, Shape: spv2.ShapeCall})
+	}
+	srv, err := spv2.NewServer(card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range methods {
+		srv.Handle(method, func(_ context.Context, call *spv2.Call) error {
+			out, e := fn(call)
 			if e != nil {
-				response.Error = e.Error()
+				return call.ReplyError(spv2.CodeInternal, e.Error(), false, nil)
 			}
-			res, _ := protocol.NewResponse(env, "fixture", response)
-			encoded, _ := protocol.Marshal(res)
-			if c.WriteMessage(websocket.BinaryMessage, encoded) != nil {
-				return
-			}
-		}
-	}))
-	t.Cleanup(func() {
-		mu.Lock()
-		for _, c := range conns {
-			_ = c.Close()
-		}
-		mu.Unlock()
-		h.Close()
-	})
-	return "ws" + strings.TrimPrefix(h.URL, "http")
+			return call.Reply(out)
+		})
+	}
+	p := &nativePeer{}
+	p.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(p.http.Close)
+	return p
+}
+
+// URL 返回桩自己的原生服务地址（以 /spv2 结尾）；卡片地址必须用它。
+func (p *nativePeer) URL() string {
+	return "ws" + strings.TrimPrefix(p.http.URL, "http") + "/spv2"
 }
 
 func startGateway(t *testing.T, cfg Config, cards []protocol.ServiceCard, exports string) *Server {
 	t.Helper()
-	center := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
-		if env.Type == protocol.TypeRegister {
+	center := newNativePeer(t, "settings-center", []string{"register", "report"}, func(call *spv2.Call) (any, error) {
+		if call.Frame.Method == "register" {
 			return protocol.RosterPayload{Services: cards, Revision: 1}, nil
 		}
-		return protocol.SettingsResult{}, nil
+		return map[string]any{"ok": true}, nil
 	})
 	dir := t.TempDir()
 	cfg.Listen = "127.0.0.1:0"
-	cfg.Center = center
+	cfg.Center = center.URL()
 	cfg.HTTP.Listen = "127.0.0.1:0"
 	cfg.SecretFile = filepath.Join(dir, "secret.json")
 	cfg.ConfigPath = filepath.Join(dir, "mcp.json")
@@ -134,14 +125,15 @@ func gatewayCall(t *testing.T, c *mcp.ClientSession, name string, args any) *mcp
 
 func TestGatewayToolContractAndRevocation(t *testing.T) {
 	var calls atomic.Int32
-	peer := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
+	peer := newNativePeer(t, "files", []string{"read"}, func(call *spv2.Call) (any, error) {
 		calls.Add(1)
-		if env.Boss != "mcp" || env.From != "mcp" || env.Trace == "" {
-			t.Errorf("bad routing: %+v", env)
+		// 原生帧里来源即结果归属（boss）：mcp 作为入口自己发起这一跳。
+		if call.Frame.From.ID != "mcp" || call.Frame.Work == "" {
+			t.Errorf("bad routing: %+v", call.Frame)
 		}
 		return protocol.FileReadResult{ID: "sample", Filename: "sample.txt", Text: strings.Repeat("你好\n<", 10000)}, nil
 	})
-	s := startGateway(t, Config{}, []protocol.ServiceCard{{Name: "files", Addr: peer, Provides: []protocol.Provide{{Action: "read", Tool: true}}}, {Name: "shell", Addr: peer, Provides: []protocol.Provide{{Action: "run", Async: true, Tool: false}}}}, `{"exports":["files__read"]}`)
+	s := startGateway(t, Config{}, []protocol.ServiceCard{{Name: "files", Addr: peer.URL(), Provides: []protocol.Provide{{Action: "read", Tool: true}}}, {Name: "shell", Addr: peer.URL(), Provides: []protocol.Provide{{Action: "run", Async: true, Tool: false}}}}, `{"exports":["files__read"]}`)
 	c := gatewayClient(t, s, gatewayToken)
 	list, err := c.ListTools(t.Context(), nil)
 	if err != nil || len(list.Tools) != 1 || list.Tools[0].Name != "files__read" {
@@ -178,13 +170,9 @@ func TestGatewayToolContractAndRevocation(t *testing.T) {
 
 func TestGatewayFileReadContinuation(t *testing.T) {
 	received := make(chan protocol.FileReadPayload, 1)
-	peer := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
-		var jump protocol.JumpPayload
-		if err := env.DecodePayload(&jump); err != nil {
-			return nil, err
-		}
+	peer := newNativePeer(t, "files", []string{"read"}, func(call *spv2.Call) (any, error) {
 		var in protocol.FileReadPayload
-		if err := protocol.DecodeRaw(jump.Input, &in); err != nil {
+		if err := call.Frame.DecodeBody(&in); err != nil {
 			return nil, err
 		}
 		received <- in
@@ -193,7 +181,7 @@ func TestGatewayFileReadContinuation(t *testing.T) {
 			Total: 30, Next: 22, Warnings: []string{"sheet 2 failed"},
 		}, nil
 	})
-	s := startGateway(t, Config{}, []protocol.ServiceCard{{Name: "files", Addr: peer, Provides: []protocol.Provide{{Action: "read", Tool: true}}}}, `{"exports":["files__read"]}`)
+	s := startGateway(t, Config{}, []protocol.ServiceCard{{Name: "files", Addr: peer.URL(), Provides: []protocol.Provide{{Action: "read", Tool: true}}}}, `{"exports":["files__read"]}`)
 	c := gatewayClient(t, s, gatewayToken)
 	r := gatewayCall(t, c, "files__read", map[string]any{"id": "f", "offset": 10, "limit": 12})
 	if r.IsError {
@@ -218,12 +206,12 @@ func TestGatewayFileReadContinuation(t *testing.T) {
 func TestGatewayCallLimitAndRecovery(t *testing.T) {
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})
-	peer := gatewayPeer(t, func(protocol.Envelope) (any, error) {
+	peer := newNativePeer(t, "files", []string{"read"}, func(*spv2.Call) (any, error) {
 		entered <- struct{}{}
 		<-release
 		return protocol.FileReadResult{ID: "x", Text: "ok"}, nil
 	})
-	s := startGateway(t, Config{MaxCalls: 1, MaxCallsPerPrincipal: 1}, []protocol.ServiceCard{{Name: "files", Addr: peer, Provides: []protocol.Provide{{Action: "read", Tool: true}}}}, `{"exports":["files__read"]}`)
+	s := startGateway(t, Config{MaxCalls: 1, MaxCallsPerPrincipal: 1}, []protocol.ServiceCard{{Name: "files", Addr: peer.URL(), Provides: []protocol.Provide{{Action: "read", Tool: true}}}}, `{"exports":["files__read"]}`)
 	c := gatewayClient(t, s, gatewayToken)
 	var once sync.Once
 	defer once.Do(func() { close(release) })
@@ -253,12 +241,12 @@ func TestGatewayCallLimitAndRecovery(t *testing.T) {
 func TestGatewayTimeoutNeverReplays(t *testing.T) {
 	var calls atomic.Int32
 	release := make(chan struct{})
-	peer := gatewayPeer(t, func(protocol.Envelope) (any, error) {
+	peer := newNativePeer(t, "files", []string{"read"}, func(*spv2.Call) (any, error) {
 		calls.Add(1)
 		<-release
 		return protocol.FileReadResult{ID: "x", Text: "finished after caller timeout"}, nil
 	})
-	s := startGateway(t, Config{CallTimeout: 50 * time.Millisecond}, []protocol.ServiceCard{{Name: "files", Addr: peer, Provides: []protocol.Provide{{Action: "read", Tool: true}}}}, `{"exports":["files__read"]}`)
+	s := startGateway(t, Config{CallTimeout: 50 * time.Millisecond}, []protocol.ServiceCard{{Name: "files", Addr: peer.URL(), Provides: []protocol.Provide{{Action: "read", Tool: true}}}}, `{"exports":["files__read"]}`)
 	c := gatewayClient(t, s, gatewayToken)
 	defer close(release)
 	r := gatewayCall(t, c, "files__read", map[string]any{"id": "x"})
@@ -272,8 +260,10 @@ func TestGatewayTimeoutNeverReplays(t *testing.T) {
 }
 
 func TestGatewaySecretRotationAndErrorRedaction(t *testing.T) {
-	peer := gatewayPeer(t, func(protocol.Envelope) (any, error) { return nil, errors.New("backend error " + gatewayToken) })
-	s := startGateway(t, Config{}, []protocol.ServiceCard{{Name: "files", Addr: peer, Provides: []protocol.Provide{{Action: "read", Tool: true}}}}, `{"exports":["files__read"]}`)
+	peer := newNativePeer(t, "files", []string{"read"}, func(*spv2.Call) (any, error) {
+		return nil, errors.New("backend error " + gatewayToken)
+	})
+	s := startGateway(t, Config{}, []protocol.ServiceCard{{Name: "files", Addr: peer.URL(), Provides: []protocol.Provide{{Action: "read", Tool: true}}}}, `{"exports":["files__read"]}`)
 	c := gatewayClient(t, s, gatewayToken)
 	r := gatewayCall(t, c, "files__read", map[string]any{"id": "x"})
 	raw, _ := json.Marshal(r)
@@ -338,25 +328,20 @@ func TestFailedSecretPersistenceDoesNotAuthorizeToken(t *testing.T) {
 	}
 	// The secret destination is deliberately a directory: atomic rename must
 	// fail, without depending on OS-specific permission or administrator rules.
-	c, err := protocol.Dial(s.WsURL(), nil)
+	c, err := spv2.Dial(t.Context(), s.WsURL())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
 	const replacement = "replacement-secret-01234567890123456789"
-	raw, _ := protocol.EncodePayload(protocol.ConfigurePayload{Key: "http.token", Value: replacement})
-	env, _ := protocol.NewEnvelope(protocol.TypeJump, "settings-center", "mcp", "", protocol.JumpPayload{Action: "configure", Input: raw})
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	defer cancel()
-	res, err := c.Call(ctx, env)
+	call, err := spv2.NewCall("work-configure", spv2.ServiceRef("settings-center"), spv2.ServiceRef("mcp"), "configure",
+		protocol.ConfigurePayload{Key: "http.token", Value: replacement})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var response protocol.ResponsePayload
-	if err = res.DecodePayload(&response); err != nil {
-		t.Fatal(err)
-	}
-	if response.OK {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	if _, err = c.Call(ctx, call); err == nil {
 		t.Fatal("secret persistence unexpectedly succeeded")
 	}
 	if _, err = s.verifyToken(ctx, replacement, nil); err == nil {
@@ -370,11 +355,11 @@ func TestFailedSecretPersistenceDoesNotAuthorizeToken(t *testing.T) {
 
 func TestGatewayRevocationBeforeDispatch(t *testing.T) {
 	var dispatched atomic.Int32
-	peer := gatewayPeer(t, func(protocol.Envelope) (any, error) {
+	peer := newNativePeer(t, "files", []string{"read"}, func(*spv2.Call) (any, error) {
 		dispatched.Add(1)
 		return protocol.FileReadResult{ID: "x", Text: "ok"}, nil
 	})
-	s := startGateway(t, Config{}, []protocol.ServiceCard{{Name: "files", Addr: peer, Provides: []protocol.Provide{{Action: "read", Tool: true}}}}, `{"exports":["files__read"]}`)
+	s := startGateway(t, Config{}, []protocol.ServiceCard{{Name: "files", Addr: peer.URL(), Provides: []protocol.Provide{{Action: "read", Tool: true}}}}, `{"exports":["files__read"]}`)
 	identity, err := s.verifyToken(t.Context(), gatewayToken, nil)
 	if err != nil {
 		t.Fatal(err)
