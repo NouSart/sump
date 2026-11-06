@@ -7,11 +7,14 @@ package fetchsafe
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCheckRejectsNonHTTPScheme 钉住第一层：非 http/https 协议（file / gopher / ftp / http+unix / 缺协议）
@@ -181,6 +184,41 @@ func TestRedirectHopsStrictlyChecked(t *testing.T) {
 		var ref *Refusal
 		if !errors.As(err, &ref) {
 			t.Fatalf("重定向拒绝应是策略拒绝: %T %v", err, err)
+		}
+	}
+}
+
+// TestDialRefusesHostileLiteralAddress 直接验拨号那一层的复查，不经 Check。
+//
+// 为什么必须单独验：From URL 出发的话，第一层 Check 已经把危险地址拦掉了，
+// 拨号层的复查在测试里"永远轮不到出手"——异变测试把它的复查关掉时全套测试一声不响。
+// 而它守的正是那 15 毫秒：Check 看过的是 A，真连接前 DNS 可以换成 B，
+// 重定向每一跳也直接落到这里。这一层没人看着，就等于第三层不存在。
+func TestDialRefusesHostileLiteralAddress(t *testing.T) {
+	dial := Policy{}.dialContext(&net.Dialer{Timeout: time.Second})
+	// 每个地址都要拿到 *Refusal（守卫在起作用），不能是"连不上"这种含糊的网络错误。
+	for _, addr := range []string{"127.0.0.1:65001", "169.254.169.254:80", "10.0.0.1:65001", "0.0.0.0:80", "[::1]:65001"} {
+		_, err := dial(context.Background(), "tcp", addr)
+		var ref *Refusal
+		if !errors.As(err, &ref) {
+			t.Errorf("拨向 %s 必须被守卫拒绝，实际错误: %v", addr, err)
+		}
+	}
+
+	// 逃生闸只把环回放进拨号层，私有网段照旧拒——开闸不等于这一层失守。
+	openDial := Policy{AllowLoopback: true}.dialContext(&net.Dialer{Timeout: time.Second})
+	if _, err := openDial(context.Background(), "tcp", "10.0.0.1:65001"); err == nil {
+		t.Error("开闸后私有网段仍必须被拒")
+	} else {
+		var ref *Refusal
+		if !errors.As(err, &ref) {
+			t.Errorf("私有网段要由守卫拒绝而不是网络错误，实际: %v", err)
+		}
+	}
+	if _, err := openDial(context.Background(), "tcp", "127.0.0.1:65001"); err != nil {
+		var ref *Refusal
+		if errors.As(err, &ref) {
+			t.Errorf("开闸后环回不该由守卫拒绝（应是要么连上要么不通）: %v", err)
 		}
 	}
 }
