@@ -10,7 +10,7 @@
   `protocol.TypeJump`、`protocol.TypeRegister/TypeResponse/TypeHeartbeat`、`protocol.ResponsePayload`、
   `protocol.NewEnvelope/NewResponse/Dial/Client`、`SUMP_SPV2`、`src/spv2/adapter`、业务 `/ws`（OneBot 除外）。
 - 全部 Go 模块、跨服务 e2e、frontend、embedding 测试通过；三套异变测试 0 存活。
-- 迁移共 32 个提交（`8dacc8a..bbd82ce`），全部作者 `XR <85773844+QAQ-awa-QAQ@users.noreply.github.com>`，
+- 迁移共 32 个功能/测试/文档提交 + 本报告（`8dacc8a..6dc18f8`），全部作者 `XR <85773844+QAQ-awa-QAQ@users.noreply.github.com>`，
   每个提交带 `Co-authored-by: qaq_awa_qaq <2271917353@qq.com>`。
 
 ## 2. 各层改动
