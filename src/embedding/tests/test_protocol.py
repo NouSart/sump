@@ -1,4 +1,7 @@
-"""协议层测试：跨语言锚点（解 Go 产出的字节 + 本侧原生帧回锚夹具）+ 编码往返与 omitempty 语义。"""
+"""协议层测试：跨语言载荷锚点 + 原生 register/heartbeat 回锚。
+
+Go 侧不再产出 v1 信封，夹具改为 Frame body（payload 字节）；断言内容不变。
+"""
 
 import base64
 import logging
@@ -6,42 +9,28 @@ import logging
 import msgspec
 
 from fixtures import (  # type: ignore[import-not-found]
-    GO_HEARTBEAT,
-    GO_REGISTER,
-    GO_RESPONSE,
-    GO_ROSTER,
-    GO_SETTINGS,
+    GO_HEARTBEAT_BODY,
+    GO_REGISTER_BODY,
+    GO_ROSTER_BODY,
+    GO_SETTINGS_BODY,
 )
 from sump_embedding import spv2
 from sump_embedding.center import CenterLink
-from sump_embedding.protocol import (
-    PROTOCOL_VERSION,
-    TYPE_HEARTBEAT,
-    TYPE_REGISTER,
-    TYPE_RESPONSE,
-    TYPE_ROSTER,
-    TYPE_SETTINGS,
-    decode,
-    encode,
-    new_envelope,
-    new_id,
-    new_response,
-)
+from sump_embedding.protocol import new_id
 
 
 def b64(s: str) -> bytes:
     return base64.b64decode(s)
 
 
-def test_decode_go_register() -> None:
-    env = decode(b64(GO_REGISTER))
-    assert env["v"] == 1
-    assert env["type"] == TYPE_REGISTER
-    assert env["from"] == "svc-a"
-    assert env["to"] == "settings-center"
-    assert env["trace"] == "TRACE-1"
-    assert env["id"].startswith("01FIXREGISTER"), env["id"]
-    p = env["payload"]
+def body(fixture: str) -> dict:
+    raw = msgspec.msgpack.decode(b64(fixture))
+    assert isinstance(raw, dict)
+    return raw
+
+
+def test_decode_go_register_body() -> None:
+    p = body(GO_REGISTER_BODY)
     assert p["name"] == "svc-a"
     assert p["addr"] == "ws://127.0.0.1:9999/ws"
     assert p["description"] == "夹具服务"
@@ -53,39 +42,20 @@ def test_decode_go_register() -> None:
     assert p["heartbeat_ms"] == 15000
 
 
-def test_decode_go_roster() -> None:
-    env = decode(b64(GO_ROSTER))
-    assert env["type"] == TYPE_ROSTER
-    assert env["from"] == "settings-center"
-    r = env["payload"]
+def test_decode_go_roster_body() -> None:
+    r = body(GO_ROSTER_BODY)
     assert r["revision"] == 3
     assert r["services"][0]["name"] == "svc-a"
     assert r["services"][0]["addr"] == "ws://127.0.0.1:9999/ws"
     assert r["services"][0]["heartbeat_ms"] == 15000
 
 
-def test_decode_go_response() -> None:
-    env = decode(b64(GO_RESPONSE))
-    assert env["type"] == TYPE_RESPONSE
-    assert env["to"] == "svc-a"
-    assert env["trace"] == "TRACE-1"  # NewResponse 沿用请求 trace
-    assert env["payload"]["ok"] is True
-    sr = env["payload"]["data"]
-    assert sr["services"][0]["service"] == "svc-a"
-    assert sr["services"][0]["settings"][0]["value"] == "10m"
-    assert sr["services"][0]["settings"][0]["overridden"] is True
+def test_decode_go_heartbeat_body() -> None:
+    assert body(GO_HEARTBEAT_BODY)["status"] == "ok"
 
 
-def test_decode_go_heartbeat() -> None:
-    env = decode(b64(GO_HEARTBEAT))
-    assert env["type"] == TYPE_HEARTBEAT
-    assert env["payload"]["status"] == "ok"
-
-
-def test_decode_go_settings_event() -> None:
-    env = decode(b64(GO_SETTINGS))
-    assert env["type"] == TYPE_SETTINGS
-    p = env["payload"]
+def test_decode_go_settings_body() -> None:
+    p = body(GO_SETTINGS_BODY)
     assert p["cause"] == "set_setting"
     assert p["service"] == "svc-a"
     assert p["results"][0]["key"] == "tool.notify_mode"
@@ -93,43 +63,6 @@ def test_decode_go_settings_event() -> None:
     assert p["results"][0]["ok"] is True
     assert p["results"][1]["ok"] is False
     assert "未送达" in p["results"][1]["error"]
-
-
-def test_envelope_roundtrip() -> None:
-    env = new_envelope(
-        "jump",
-        "embedding",
-        "memory",
-        "",
-        {"action": "embed", "input": {"texts": ["苹果"], "query": True}},
-    )
-    back = decode(encode(env))
-    assert back["v"] == PROTOCOL_VERSION
-    assert back["id"] == env["id"]
-    assert back["trace"]  # 空 trace 自动生成
-    assert back["type"] == "jump"
-    assert back["payload"]["action"] == "embed"
-    assert back["payload"]["input"]["texts"] == ["苹果"]
-
-
-def test_envelope_omitempty() -> None:
-    env = new_envelope("heartbeat", "a", "b", "T", None)
-    raw = msgspec.msgpack.decode(encode(env))  # 线路键（未见过的键不出现）
-    assert "payload" not in raw
-    assert "boss" not in raw
-    assert raw["trace"] == "T"
-    # decode() 归一化视图仍给出空值（调用方不必判键存在）
-    norm = decode(encode(env))
-    assert norm["payload"] is None and norm["boss"] == ""
-
-
-def test_new_response_pairs_request() -> None:
-    req = new_envelope("jump", "caller", "embedding", "TRACE-9", {"action": "embed"})
-    resp = new_response(req, "embedding", {"ok": True})
-    assert resp["id"] == req["id"]
-    assert resp["trace"] == "TRACE-9"
-    assert resp["to"] == "caller"
-    assert resp["type"] == TYPE_RESPONSE
 
 
 def test_new_id_shape() -> None:
@@ -157,7 +90,7 @@ def test_new_id_shape() -> None:
 def _fixture_center_link() -> CenterLink:
     """与 Go 夹具同输入的 CenterLink（只用构造参数，不建连接）。
 
-    self_url 的 /ws 是 GO_REGISTER 夹具里那个服务登记的地址（夹具字节的一部分），
+    self_url 的 /ws 是 GO_REGISTER_BODY 夹具里那个服务登记的地址（夹具字节的一部分），
     不是本服务的路由；本服务只监听 /spv2。
     """
     return CenterLink(
@@ -173,19 +106,19 @@ def _fixture_center_link() -> CenterLink:
 
 
 def _native_body(frame: spv2.Frame) -> dict:
-    body = spv2.decode_body(frame.body)
-    assert isinstance(body, dict)
-    return body
+    out = spv2.decode_body(frame.body)
+    assert isinstance(out, dict)
+    return out
 
 
 def test_register_frame_body_matches_go_fixture() -> None:
     """原生 register 的 body：键名漂移（如 heartbeat_ms → hb_ms）会被中心静默读成零值。"""
     frame = _fixture_center_link().register_frame()
     assert frame.type == spv2.TYPE_CALL and frame.method == "register"
-    assert _native_body(frame) == decode(b64(GO_REGISTER))["payload"]
+    assert _native_body(frame) == body(GO_REGISTER_BODY)
 
 
 def test_heartbeat_event_body_matches_go_fixture() -> None:
     event = _fixture_center_link().heartbeat_event("ok")
     assert event.type == spv2.TYPE_EVENT and event.method == "heartbeat"
-    assert _native_body(event) == decode(b64(GO_HEARTBEAT))["payload"]
+    assert _native_body(event) == body(GO_HEARTBEAT_BODY)

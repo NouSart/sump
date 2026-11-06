@@ -53,7 +53,7 @@ Copy-Item 'D:\agent\SUMP\1\data\models\models--Qdrant--bge-small-zh-v1.5\snapsho
 
 ## 结构
 
-- `sump_embedding/protocol.py`：消息 id 与信封编解码（线路键名与 Go `protocol/` 对齐；`tests/test_protocol.py` 用 Go 产出字节锚定注册 / 心跳载荷）；
+- `sump_embedding/protocol.py`：ULID 形态的消息 id 生成（`new_id`，与 Go / TS 对齐）；协议与载荷由 SPv2.1 定义，v1 信封编解码已删除；`tests/test_protocol.py` 用 Go 产出字节锚定注册 / 心跳 / 名册 / 设置载荷的键名；
 - `sump_embedding/center.py`：中心连接（注册 / 心跳 / 断线自愈 / 名册广播；只走原生 `/spv2`：register call、heartbeat event、roster/settings event；首次注册失败即退出——引导错误立刻可见）；
 - `sump_embedding/spv2.py`：SPv2.1 帧编解码（msgpack map / bin body）与原生 `/spv2` 端点（call 分派、reply、hello/health；不伪造 metrics）；
 - `sump_embedding/service.py`：服务组装与路径分流——只有 `/spv2` 进入原生端点，其它路径 404 / 关闭；
