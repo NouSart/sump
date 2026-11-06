@@ -224,3 +224,36 @@ func TestParseNotes(t *testing.T) {
 		t.Fatalf("解析不了就当没写: %+v", got)
 	}
 }
+
+// TestParseNotesDurabilityFollowsKindSubstring 把「含『偏好』」这条判定本身钉住：
+// 它是**子串**匹配（reflect.go:189-192），不是等值匹配——模型给的 kind 通常是「用户偏好」
+// 「偏好（长期有效）」这种长短语；kind 里出现「偏好」就走 core，没有出现就一律 durable。
+// 这是代码侧的口径（经验库那侧的半衰期口径属于文档，不在这里断言）。
+func TestParseNotesDurabilityFollowsKindSubstring(t *testing.T) {
+	cases := []struct {
+		kind string
+		want string
+	}{
+		{"偏好", "core"},
+		{"用户偏好", "core"},
+		{"主人的回复偏好", "core"},
+		{"偏好（长期有效）", "core"},
+		// 子串匹配不问句意：这句其实不是说"用户偏好"，今天也照样升 core（如实记录，不美化）。
+		{"坑（与偏好设置无关）", "core"},
+		{"做法", "durable"},
+		{"坑", "durable"},
+		{"取舍", "durable"},
+		{"决定", "durable"},
+		{"", "durable"}, // 没给 kind 也走遗忘曲线，不留空耐用度
+	}
+	for _, c := range cases {
+		raw := `{"notes":[{"content":"一条经验","kind":"` + c.kind + `"}]}`
+		_, notes := parseReflect(raw)
+		if len(notes) != 1 {
+			t.Fatalf("kind=%q 应写出 1 条经验，实际 %+v", c.kind, notes)
+		}
+		if notes[0].Durability != c.want {
+			t.Fatalf("kind=%q 的耐用度应为 %q，实际 %q", c.kind, c.want, notes[0].Durability)
+		}
+	}
+}

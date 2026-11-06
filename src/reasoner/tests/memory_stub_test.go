@@ -31,6 +31,26 @@ type stubMemory struct {
 	notes    []protocol.NotePayload // 复盘写回的经验（交付后由 reasoner 异步发来）
 	// publishes 是复盘发布到共享经验库的任务摘要（另一个库、另一条路）。
 	publishes []protocol.PublishSessionPayload
+	// works 记录每次入站调用的帧头 work（SPv2 的链路 id / trace）：
+	// 「trace 原样沿链」只有在对端留下记录之后才是可断言的事实。
+	works map[string][]string
+}
+
+// noteWork 记下这帧的 work。各 handler 第一件事就做它，确保测试观察到结果时记录已就位。
+func (m *stubMemory) noteWork(method, work string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.works == nil {
+		m.works = map[string][]string{}
+	}
+	m.works[method] = append(m.works[method], work)
+}
+
+// Works 返回某 method 收到的帧头 work 快照（按到达顺序；没有则空）。
+func (m *stubMemory) Works(method string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.works[method]...)
 }
 
 // startStubMemory 起一个服务名为 "memory" 的记忆替身。
@@ -50,11 +70,12 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 		spv2.Method{Name: "note", Shape: spv2.ShapeCall},
 		spv2.Method{Name: "publish_session", Shape: spv2.ShapeCall},
 	)
-	m := &stubMemory{srv: e.srv, url: e.URL(), name: name}
+	m := &stubMemory{srv: e.srv, url: e.URL(), name: name, works: map[string][]string{}}
 
 	e.handle("store", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.StorePayload
 		_ = call.Frame.DecodeBody(&p)
+		m.noteWork("store", call.Frame.Work)
 		m.mu.Lock()
 		m.stores = append(m.stores, p)
 		m.mu.Unlock()
@@ -65,6 +86,7 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 		if err := call.Frame.DecodeBody(&p); err != nil {
 			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 		}
+		m.noteWork("recall", call.Frame.Work)
 		m.mu.Lock()
 		m.recalls++
 		m.recallContexts = append(m.recallContexts, p.Context)
@@ -94,6 +116,7 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 	e.handle("task_finish", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.TaskFinishPayload
 		_ = call.Frame.DecodeBody(&p)
+		m.noteWork("task_finish", call.Frame.Work)
 		m.mu.Lock()
 		m.finished = append(m.finished, p)
 		m.mu.Unlock()
@@ -102,6 +125,7 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 	e.handle("task_rename", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.TaskRenamePayload
 		_ = call.Frame.DecodeBody(&p)
+		m.noteWork("task_rename", call.Frame.Work)
 		m.mu.Lock()
 		m.renamed = append(m.renamed, p)
 		m.mu.Unlock()
@@ -110,6 +134,7 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 	e.handle("note", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.NotePayload
 		_ = call.Frame.DecodeBody(&p)
+		m.noteWork("note", call.Frame.Work)
 		m.mu.Lock()
 		m.notes = append(m.notes, p)
 		m.mu.Unlock()
@@ -118,6 +143,7 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 	e.handle("publish_session", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.PublishSessionPayload
 		_ = call.Frame.DecodeBody(&p)
+		m.noteWork("publish_session", call.Frame.Work)
 		m.mu.Lock()
 		m.publishes = append(m.publishes, p)
 		m.mu.Unlock()

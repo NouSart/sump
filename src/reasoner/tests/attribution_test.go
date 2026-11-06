@@ -229,8 +229,19 @@ func TestSilentIsNotStickyAcrossMessages(t *testing.T) {
 	sendGroupUser(t, s, "第二条", protocol.Sender{Channel: "group", ID: "1", GroupID: "67890", GroupSize: 5})
 	select {
 	case d := <-boss.delivered:
+		// 正向断言：静默不粘性 ≠ 「发出去的不是第一轮那句」——只断不等号的话，
+		// 第二轮返回空串 / 乱码 / 第三句同样绿。这里钉住交付的就是第二轮那句话本身。
 		if d.Text == "（第一轮不该发）" {
 			t.Fatal("静默状态被读成了粘性：第一轮的文本被发出去了")
+		}
+		if d.Text == "" {
+			t.Fatalf("第二轮交付了空文本（静默作废不等于可以发一句废话）: %+v", d)
+		}
+		if d.Text != "这句要发" {
+			t.Fatalf("第二轮交付的文本不符: %q（应为「这句要发」）", d.Text)
+		}
+		if d.ConversationID != "qq:group:67890" {
+			t.Fatalf("交付应回到同一个群会话: %+v", d)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("超时：第二轮应正常交付")

@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,10 +20,32 @@ import (
 )
 
 // stubBoss 是“老板”的最小替身：实现约定的 deliver 动作，收到结果放进 channel。
+// 另外记下每次入站调用的帧头 work（SPv2 的链路 id / trace）——“trace 沿链不变”这件事
+// 只有在这里落了记录才谈得上断言（见 native_test.go 的 TestReasonerNativeUserMessageBoss）。
 type stubBoss struct {
 	delivered chan protocol.DeliverPayload
 	progress  chan protocol.ProgressPayload
 	delay     atomic.Int64 // 交付响应前的停顿：把补报卡在「正在交付」的窗口里（见 TestReportResultNotSwallowedWhileDelivering）
+
+	trMu sync.Mutex
+	trs  map[string][]string // method → 收到的帧头 work（按到达顺序）
+}
+
+// Works 返回某 method 收到的帧头 work 快照（按到达顺序；没有则空）。
+func (b *stubBoss) Works(method string) []string {
+	b.trMu.Lock()
+	defer b.trMu.Unlock()
+	return append([]string(nil), b.trs[method]...)
+}
+
+// noteWork 记下这帧的 work（handler 里调用）。
+func (b *stubBoss) noteWork(method, work string) {
+	b.trMu.Lock()
+	defer b.trMu.Unlock()
+	if b.trs == nil {
+		b.trs = map[string][]string{}
+	}
+	b.trs[method] = append(b.trs[method], work)
 }
 
 // setDeliverDelay 设置交付响应的延迟（0 = 不延迟）。
@@ -30,7 +53,7 @@ func (b *stubBoss) setDeliverDelay(d time.Duration) { b.delay.Store(int64(d)) }
 
 func startStubBoss(t *testing.T, center *stubCenter) *stubBoss {
 	t.Helper()
-	b := &stubBoss{delivered: make(chan protocol.DeliverPayload, 4)}
+	b := &stubBoss{delivered: make(chan protocol.DeliverPayload, 4), trs: map[string][]string{}}
 	e := newStubEndpoint(t, "stub-boss",
 		spv2.Method{Name: "deliver", Shape: spv2.ShapeCall},
 		spv2.Method{Name: "progress", Shape: spv2.ShapeCall},
@@ -38,6 +61,8 @@ func startStubBoss(t *testing.T, center *stubCenter) *stubBoss {
 	e.handle("deliver", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.DeliverPayload
 		_ = call.Frame.DecodeBody(&p)
+		// 先记 work 再投递：测试从 delivered 拿到结果时，这帧的 trace 一定已经记下了。
+		b.noteWork("deliver", call.Frame.Work)
 		select {
 		case b.delivered <- p:
 		default:
@@ -50,6 +75,7 @@ func startStubBoss(t *testing.T, center *stubCenter) *stubBoss {
 	e.handle("progress", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.ProgressPayload
 		_ = call.Frame.DecodeBody(&p)
+		b.noteWork("progress", call.Frame.Work)
 		if b.progress != nil {
 			select {
 			case b.progress <- p:

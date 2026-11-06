@@ -229,4 +229,30 @@ func TestReasonerNativeUserMessageBoss(t *testing.T) {
 	if recalls[0].Boss != "stub-boss" {
 		t.Fatalf("recall 的 boss = %q, want stub-boss", recalls[0].Boss)
 	}
+
+	// trace 真的原样沿链（上面注释承诺的事，这里才是断言）：入口 call 的帧头 work 是
+	// "w-native-chain"，它应当出现在链上每一帧的 work 里——
+	//   reasoner → memory 的 recall 带着它 →（替身用同一个 work 回 resume）→
+	//   任务把帧头 work 当作自己的 trace → 交付 deliver 与落库 store 仍带着它。
+	const wantTrace = "w-native-chain"
+	if got := mem.Works("recall"); len(got) != 1 || got[0] != wantTrace {
+		t.Fatalf("recall 的帧头 work 应为 [%q]，实际 %q", wantTrace, got)
+	}
+	if got := boss.Works("deliver"); len(got) != 1 || got[0] != wantTrace {
+		t.Fatalf("deliver 的帧头 work 应为 [%q]，实际 %q（trace 在最后一跳丢了？）", wantTrace, got)
+	}
+	// store 是 Fire（发出不等回执），落库时刻不定：只等「到没到」，不放宽「是不是同一个 trace」。
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(mem.Works("store")) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	stores := mem.Works("store")
+	if len(stores) == 0 {
+		t.Fatal("memory 没收到 store（trace 断言无从落脚）")
+	}
+	for i, w := range stores {
+		if w != wantTrace {
+			t.Fatalf("store 第 %d 帧的 work = %q，应等于入口 trace %q", i, w, wantTrace)
+		}
+	}
 }
