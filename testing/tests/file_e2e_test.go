@@ -15,8 +15,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/NouSart/sump/protocol"
 )
 
 // ---------- 文件链专用假 LLM ----------
@@ -151,11 +149,11 @@ func TestQQFileE2E(t *testing.T) {
 	filPort := freePort(t)
 	alPort := freePort(t)
 	qqPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	memURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", memPort)
-	filURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", filPort)
-	alURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", alPort)
-	qqURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", qqPort)
+	centerURL := spv2URL(scPort)
+	memURL := spv2URL(memPort)
+	filURL := spv2URL(filPort)
+	alURL := spv2URL(alPort)
+	qqURL := spv2URL(qqPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
@@ -194,11 +192,7 @@ func TestQQFileE2E(t *testing.T) {
 	waitWSReady(t, qqURL, 60*time.Second)
 
 	// 等名册齐全。
-	obs, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = obs.Close() })
+	obs := dialSPV2(t, centerURL)
 	for _, name := range []string{"memory", "files", "reasoner", "qq"} {
 		waitRosterHas(t, obs, name, 60*time.Second)
 	}

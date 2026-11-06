@@ -9,23 +9,18 @@ package tests
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
-var timerUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-
-// e2eCaller 是调用方替身：像任何服务一样注册进真中心，并收 timer 跳回来的补报。
+// e2eCaller 是调用方替身：像任何服务一样注册进真中心，并收 timer 调回来的补报。
 type e2eCaller struct {
-	ln  net.Listener
-	srv *http.Server
+	srv *httptest.Server
 
 	mu  sync.Mutex
 	got []protocol.AsyncResultPayload
@@ -33,78 +28,24 @@ type e2eCaller struct {
 
 func startE2ECaller(t *testing.T, centerURL, name string) *e2eCaller {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := &e2eCaller{ln: ln}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", c.handleWS)
-	c.srv = &http.Server{Handler: mux}
-	go func() { _ = c.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = c.srv.Close() })
-
-	// 注册进真中心：timer 到点要靠名册里的地址直连回来。
-	reg, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reg.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, name, "settings-center", "", protocol.RegisterPayload{
-		Name: name, Addr: c.URL(), Description: "端到端调用方替身",
+	c := &e2eCaller{}
+	srv := newStubServer(t, name, "端到端调用方替身", spv2.Method{Name: "report_result", Shape: spv2.ShapeCall})
+	srv.Handle("report_result", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.AsyncResultPayload
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		c.mu.Lock()
+		c.got = append(c.got, p)
+		c.mu.Unlock()
+		return call.Reply(map[string]string{"status": "accepted"})
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := reg.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil || !rp.OK {
-		t.Fatalf("调用方替身注册失败: %v / %s", err, rp.Error)
-	}
+	c.srv = serveStub(t, srv)
+	registerService(t, centerURL, name, c.URL(), "端到端调用方替身")
 	return c
 }
 
-func (c *e2eCaller) URL() string { return "ws://" + c.ln.Addr().String() + "/ws" }
-
-func (c *e2eCaller) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := timerUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil || env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action == "report_result" {
-			var p protocol.AsyncResultPayload
-			if err := protocol.DecodeRaw(jp.Input, &p); err == nil {
-				c.mu.Lock()
-				c.got = append(c.got, p)
-				c.mu.Unlock()
-			}
-			resp, _ := protocol.NewResponse(env, "e2e-caller", protocol.ResponsePayload{OK: true})
-			writeWS(ws, resp)
-			continue
-		}
-		resp, _ := protocol.NewResponse(env, "e2e-caller", protocol.ResponsePayload{OK: false, Error: "unknown action: " + jp.Action})
-		writeWS(ws, resp)
-	}
-}
+func (c *e2eCaller) URL() string { return wsURL(c.srv) }
 
 // waitReport 等一条指定条目、指定阶段的补报（超时即失败）。
 func (c *e2eCaller) waitReport(t *testing.T, phase, item string, timeout time.Duration) protocol.AsyncResultPayload {
@@ -154,33 +95,9 @@ func (c *e2eCaller) phases() []string {
 	return out
 }
 
-// callJumpFrom 与 callJump 同（见 e2e_test.go），但可指定信封 from——
-// timer 靠 from 才知道到点把补报跳回谁，用错就等于把补报发给了别人。
-func callJumpFrom(t *testing.T, c *protocol.Client, from, to, action string, input any, ctx context.Context) protocol.ResponsePayload {
-	t.Helper()
-	raw, err := protocol.EncodePayload(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, from, to, "", protocol.JumpPayload{Action: action, Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	return rp
-}
-
 // e2ePortal 是门户替身：只收 timer 推来的计时快照（真门户是 node 进程，这里验的是推的链路本身）。
 type e2ePortal struct {
-	ln  net.Listener
-	srv *http.Server
+	srv *httptest.Server
 
 	mu  sync.Mutex
 	got []protocol.TimerStatePayload
@@ -188,77 +105,24 @@ type e2ePortal struct {
 
 func startE2EPortal(t *testing.T, centerURL, name string) *e2ePortal {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := &e2ePortal{ln: ln}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", p.handleWS)
-	p.srv = &http.Server{Handler: mux}
-	go func() { _ = p.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = p.srv.Close() })
-
-	reg, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reg.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, name, "settings-center", "", protocol.RegisterPayload{
-		Name: name, Addr: p.URL(), Description: "端到端口户替身",
+	p := &e2ePortal{}
+	srv := newStubServer(t, name, "端到端口户替身", spv2.Method{Name: "timer_state", Shape: spv2.ShapeCall})
+	srv.Handle("timer_state", func(_ context.Context, call *spv2.Call) error {
+		var st protocol.TimerStatePayload
+		if err := call.Frame.DecodeBody(&st); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		p.mu.Lock()
+		p.got = append(p.got, st)
+		p.mu.Unlock()
+		return call.Reply(map[string]string{"status": "accepted"})
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := reg.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil || !rp.OK {
-		t.Fatalf("门户替身注册失败: %v / %s", err, rp.Error)
-	}
+	p.srv = serveStub(t, srv)
+	registerService(t, centerURL, name, p.URL(), "端到端口户替身")
 	return p
 }
 
-func (p *e2ePortal) URL() string { return "ws://" + p.ln.Addr().String() + "/ws" }
-
-func (p *e2ePortal) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := timerUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil || env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action == "timer_state" {
-			var st protocol.TimerStatePayload
-			if err := protocol.DecodeRaw(jp.Input, &st); err == nil {
-				p.mu.Lock()
-				p.got = append(p.got, st)
-				p.mu.Unlock()
-			}
-			resp, _ := protocol.NewResponse(env, "e2e-portal", protocol.ResponsePayload{OK: true})
-			writeWS(ws, resp)
-			continue
-		}
-		resp, _ := protocol.NewResponse(env, "e2e-portal", protocol.ResponsePayload{OK: false, Error: "unknown action: " + jp.Action})
-		writeWS(ws, resp)
-	}
-}
+func (p *e2ePortal) URL() string { return wsURL(p.srv) }
 
 // waitTimers 等一条满足条件的快照（快照按 seq 认，不认到达顺序）。
 func (p *e2ePortal) waitTimers(t *testing.T, ok func(protocol.TimerStatePayload) bool, timeout time.Duration, what string) protocol.TimerStatePayload {
@@ -287,8 +151,8 @@ func TestTimerSleepWakeE2E(t *testing.T) {
 
 	scPort := freePort(t)
 	timerPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	timerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", timerPort)
+	centerURL := spv2URL(scPort)
+	timerURL := spv2URL(timerPort)
 
 	// -settings ""：测试中心的覆盖值不落盘——否则本用例设的 max_ms=500 会写进
 	// 仓库的 data/settings.json，下次跑（新中心读到旧覆盖）就在前面的用例上翻车。
@@ -305,18 +169,10 @@ func TestTimerSleepWakeE2E(t *testing.T) {
 		"-portal", "e2e-portal",
 	)
 
-	obs, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = obs.Close() })
+	obs := dialSPV2(t, centerURL)
 	waitRosterHas(t, obs, "timer", 60*time.Second)
 
-	cl, err := protocol.Dial(timerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = cl.Close() })
+	cl := dialSPV2(t, timerURL)
 
 	// 断言 a：受理即回执——400ms 的计时，回执不该等它（真进程上同样成立）。
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

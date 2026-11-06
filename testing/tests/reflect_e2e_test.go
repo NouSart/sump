@@ -136,9 +136,9 @@ func TestReflectWritesExperienceE2E(t *testing.T) {
 	rsPort := freePort(t)
 	memPort := freePort(t)
 	embPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	reasonerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", rsPort)
-	memoryURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", memPort)
+	centerURL := spv2URL(scPort)
+	reasonerURL := spv2URL(rsPort)
+	memoryURL := spv2URL(memPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
@@ -169,34 +169,14 @@ func TestReflectWritesExperienceE2E(t *testing.T) {
 	waitRosterHas(t, obs, "memory", 60*time.Second)
 
 	startEmbeddingProc(t, centerURL, embPort)
-	waitWSReady(t, fmt.Sprintf("ws://127.0.0.1:%d/ws", embPort), 60*time.Second)
+	waitWSReady(t, spv2URL(embPort), 60*time.Second)
 	waitRosterHas(t, obs, "embedding", 60*time.Second)
 
 	// 发起一次任务并等它交付完。
-	ac, err := protocol.Dial(reasonerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ac.Close() })
-	raw, err := protocol.EncodePayload(map[string]any{"text": "把并发写的序号问题修一下", "conversation_id": "e2e-reflect"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "e2e", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Boss = "e2e-boss"
+	ac := dialSPV2(t, reasonerURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	resp, err := ac.Call(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack protocol.ResponsePayload
-	if err := resp.DecodePayload(&ack); err != nil {
-		t.Fatal(err)
-	}
+	ack := callJumpFrom(t, ac, "e2e-boss", "reasoner", "user_message", map[string]any{"text": "把并发写的序号问题修一下", "conversation_id": "e2e-reflect"}, ctx)
 	if !ack.OK {
 		t.Fatalf("user_message 未被受理: %s", ack.Error)
 	}

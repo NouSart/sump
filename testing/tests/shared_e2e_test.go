@@ -24,8 +24,8 @@ func TestSharedExperienceE2E(t *testing.T) {
 
 	scPort := freePort(t)
 	memPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	memURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", memPort)
+	centerURL := spv2URL(scPort)
+	memURL := spv2URL(memPort)
 	dir := t.TempDir()
 	privDB := filepath.Join(dir, "memory.db")
 	sharedDB := filepath.Join(dir, "experience.db")

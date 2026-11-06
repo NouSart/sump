@@ -175,22 +175,45 @@ func scanActions(t *testing.T, dir string) (declared, handled, mentioned map[str
 			}
 			return true
 		})
-		// s.Handle("x", ...)：注册动作（HandleSetting / HandleReadOnly 不是动作）。
+		// s.Handle("x", ...) / s.HandleNative(spv2.Method{Name: "x"}, ...)：
+		// 注册动作（HandleSetting / HandleReadOnly 不是动作）。
 		ast.Inspect(file, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
 			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "Handle" || len(call.Args) != 2 {
+			if !ok || len(call.Args) != 2 {
 				return true
 			}
-			if v, ok := stringLit(call.Args[0]); ok {
-				// mux.Handle("/spv2", ...) 是 HTTP 路由，不是服务动作。
-				if strings.HasPrefix(v, "/") {
-					return true
+			switch sel.Sel.Name {
+			case "Handle":
+				// 兼容 spv2.Server 的 mux 式注册（settings-center 等自派发模块）。
+				if v, ok := stringLit(call.Args[0]); ok {
+					// mux.Handle("/spv2", ...) 是 HTTP 路由，不是服务动作。
+					if strings.HasPrefix(v, "/") {
+						return true
+					}
+					handled[v] = true
 				}
-				handled[v] = true
+			case "HandleNative":
+				lit, ok := call.Args[0].(*ast.CompositeLit)
+				if !ok {
+					return true // 动态方法（如 mcp 的导入动作）不在静态扫描范围
+				}
+				for _, field := range lit.Elts {
+					kv, ok := field.(*ast.KeyValueExpr)
+					if !ok {
+						continue
+					}
+					key, ok := kv.Key.(*ast.Ident)
+					if !ok || key.Name != "Name" {
+						continue
+					}
+					if v, ok := stringLit(kv.Value); ok {
+						handled[v] = true
+					}
+				}
 			}
 			return true
 		})

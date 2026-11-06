@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -17,9 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // fakeDeepSeek 是 OpenAI 兼容的假 LLM（异步工具版剧本）：
@@ -133,96 +131,42 @@ func (f *fakeDeepSeek) Requests() []map[string]any {
 	return out
 }
 
-// bossConn 是 e2eBoss 一侧的写封装。
-type bossConn struct {
-	ws *websocket.Conn
-	mu sync.Mutex
-}
-
-func (c *bossConn) send(env protocol.Envelope) {
-	data, err := protocol.Marshal(env)
-	if err != nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.ws.WriteMessage(websocket.BinaryMessage, data)
-}
-
 // e2eBoss 是测试进程内的“老板”替身：实现约定的 deliver 动作。
 type e2eBoss struct {
-	ln        net.Listener
-	srv       *http.Server
+	srv       *httptest.Server
 	delivered chan string
 }
 
-var bossUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-
 func startE2EBoss(t *testing.T) *e2eBoss {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	b := &e2eBoss{ln: ln, delivered: make(chan string, 4)}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", b.handleWS)
-	b.srv = &http.Server{Handler: mux}
-	go func() { _ = b.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = b.srv.Close() })
+	b := &e2eBoss{delivered: make(chan string, 4)}
+	srv := newStubServer(t, "e2e-boss", "e2e 老板替身", spv2.Method{Name: "deliver", Shape: spv2.ShapeCall})
+	srv.Handle("deliver", func(_ context.Context, call *spv2.Call) error {
+		var p struct {
+			Text string `msgpack:"text"`
+		}
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		select {
+		case b.delivered <- p.Text:
+		default:
+		}
+		return call.Reply(map[string]any{"ok": true})
+	})
+	b.srv = serveStub(t, srv)
 	return b
 }
 
-func (b *e2eBoss) URL() string { return "ws://" + b.ln.Addr().String() + "/ws" }
-
-func (b *e2eBoss) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := bossUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	c := &bossConn{ws: ws}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		if env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action == "deliver" {
-			var p struct {
-				Text string `msgpack:"text"`
-			}
-			_ = protocol.DecodeRaw(jp.Input, &p)
-			select {
-			case b.delivered <- p.Text:
-			default:
-			}
-			resp, _ := protocol.NewResponse(env, "e2e-boss", protocol.ResponsePayload{OK: true})
-			c.send(resp)
-		}
-	}
-}
+func (b *e2eBoss) URL() string { return wsURL(b.srv) }
 
 // register 把 boss 名片注册进真设置中心（保持连接，接收 roster）。
-func (b *e2eBoss) register(t *testing.T, centerURL string) *protocol.Client {
+func (b *e2eBoss) register(t *testing.T, centerURL string) *spv2.Client {
 	t.Helper()
-	c, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := dialSPV2(t, centerURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, "e2e-boss", "settings-center", "", protocol.RegisterPayload{
+	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef("e2e-boss"), spv2.ServiceRef("settings-center"), "register", protocol.RegisterPayload{
 		Name:        "e2e-boss",
 		Addr:        b.URL(),
 		Description: "e2e 老板替身",
@@ -231,16 +175,9 @@ func (b *e2eBoss) register(t *testing.T, centerURL string) *protocol.Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	if !rp.OK {
-		t.Fatalf("boss 注册失败: %s", rp.Error)
+	var roster protocol.RosterPayload
+	if err := c.CallDecode(ctx, call, &roster); err != nil {
+		t.Fatalf("boss 注册失败: %v", err)
 	}
 	return c
 }
@@ -259,9 +196,9 @@ func TestInferChainE2E(t *testing.T) {
 	scPort := freePort(t)
 	alPort := freePort(t)
 	memPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	reasonerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", alPort)
-	memoryURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", memPort)
+	centerURL := spv2URL(scPort)
+	reasonerURL := spv2URL(alPort)
+	memoryURL := spv2URL(memPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
@@ -289,74 +226,30 @@ func TestInferChainE2E(t *testing.T) {
 	waitWSReady(t, reasonerURL, 60*time.Second)
 
 	// 等名册齐全。
-	obs, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = obs.Close() })
+	obs := dialSPV2(t, centerURL)
 	waitRosterHas(t, obs, "reasoner", 60*time.Second)
 	waitRosterHas(t, obs, "memory", 10*time.Second)
 
 	// 预置会话历史（上一轮的对话）——验证 recall 会把它注入 LLM 请求。
-	mc, err := protocol.Dial(memoryURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = mc.Close() })
+	mc := dialSPV2(t, memoryURL)
 	ctx0, cancel0 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel0()
 	for _, sp := range []protocol.StorePayload{
 		{ConversationID: "e2e-conv", Role: "user", Content: "上次谈话内容A"},
 		{ConversationID: "e2e-conv", Role: "assistant", Content: "上次答复B"},
 	} {
-		raw, err := protocol.EncodePayload(sp)
-		if err != nil {
-			t.Fatal(err)
-		}
-		env, err := protocol.NewEnvelope(protocol.TypeJump, "e2e", "memory", "", protocol.JumpPayload{Action: "store", Input: raw})
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp, err := mc.Call(ctx0, env)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var rp protocol.ResponsePayload
-		if err := resp.DecodePayload(&rp); err != nil {
-			t.Fatal(err)
-		}
+		rp := callJumpFrom(t, mc, "e2e", "memory", "store", sp, ctx0)
 		if !rp.OK {
 			t.Fatalf("预置 store 失败: %s", rp.Error)
 		}
 	}
 
-	// 发起链：boss=e2e-boss。
-	ac, err := protocol.Dial(reasonerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ac.Close() })
-
-	raw, err := protocol.EncodePayload(map[string]any{"text": "你好", "conversation_id": "e2e-conv"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "e2e", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Boss = "e2e-boss"
+	// 发起链：from 就是结果归属方，所以用 e2e-boss 身份发起。
+	ac := dialSPV2(t, reasonerURL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	resp, err := ac.Call(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack protocol.ResponsePayload
-	if err := resp.DecodePayload(&ack); err != nil {
-		t.Fatal(err)
-	}
+	ack := callJumpFrom(t, ac, "e2e-boss", "reasoner", "user_message", map[string]any{"text": "你好", "conversation_id": "e2e-conv"}, ctx)
 	if !ack.OK {
 		t.Fatalf("user_message 未被受理: %s", ack.Error)
 	}
@@ -455,23 +348,7 @@ func TestInferChainE2E(t *testing.T) {
 	}
 
 	// ---------- 第二轮对话：长期记忆召回（remember 的条目应被注入） ----------
-	raw2, err := protocol.EncodePayload(map[string]any{"text": "给我推荐点美式咖啡吧", "conversation_id": "e2e-conv"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req2, err := protocol.NewEnvelope(protocol.TypeJump, "e2e", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req2.Boss = "e2e-boss"
-	resp2, err := ac.Call(ctx, req2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack2 protocol.ResponsePayload
-	if err := resp2.DecodePayload(&ack2); err != nil {
-		t.Fatal(err)
-	}
+	ack2 := callJumpFrom(t, ac, "e2e-boss", "reasoner", "user_message", map[string]any{"text": "给我推荐点美式咖啡吧", "conversation_id": "e2e-conv"}, ctx)
 	if !ack2.OK {
 		t.Fatalf("第二轮 user_message 未被受理: %s", ack2.Error)
 	}

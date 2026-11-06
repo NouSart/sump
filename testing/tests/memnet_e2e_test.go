@@ -26,8 +26,8 @@ func TestMemnetDataFlowE2E(t *testing.T) {
 
 	scPort := freePort(t)
 	memPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	memURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", memPort)
+	centerURL := spv2URL(scPort)
+	memURL := spv2URL(memPort)
 	dir := t.TempDir()
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
@@ -46,7 +46,7 @@ func TestMemnetDataFlowE2E(t *testing.T) {
 	// embedding 后上线：顺带验"种子向量懒补齐"（note 之前网里还没有大类向量）。
 	embPort := freePort(t)
 	startEmbeddingProc(t, centerURL, embPort)
-	waitWSReady(t, fmt.Sprintf("ws://127.0.0.1:%d/ws", embPort), 60*time.Second)
+	waitWSReady(t, spv2URL(embPort), 60*time.Second)
 	waitRosterHas(t, obs, "embedding", 60*time.Second)
 
 	probe := startResumeProbe(t, centerURL)

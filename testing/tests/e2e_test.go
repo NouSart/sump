@@ -15,18 +15,19 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // TestHelloWeb 是 M1 的验收：两个真实进程（settings-center + reasoner）
-// 跑通最小闭环——注册 / 名册 / 跨服务跳转 / 自我跳转。
+// 跑通最小闭环——注册 / 名册 / 跨服务调用 / 自我调用。
 func TestHelloWeb(t *testing.T) {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
 	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
 
 	scPort := freePort(t)
 	alPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	reasonerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", alPort)
+	centerURL := spv2URL(scPort)
+	reasonerURL := spv2URL(alPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
@@ -38,24 +39,16 @@ func TestHelloWeb(t *testing.T) {
 	)
 
 	// 观察者客户端：作为第三方接入设置中心（不依赖任何服务内部状态）。
-	obs, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = obs.Close() })
+	obs := dialSPV2(t, centerURL)
 
 	// 断言 a：reasoner 注册成功，名册可见（含设置中心自身）。
 	waitRosterHas(t, obs, "reasoner", 60*time.Second)
 	waitRosterHas(t, obs, "settings-center", 10*time.Second)
 
-	// 观察者连 reasoner，做跳转断言。
-	ac, err := protocol.Dial(reasonerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ac.Close() })
+	// 观察者连 reasoner，做调用断言。
+	ac := dialSPV2(t, reasonerURL)
 
-	// 断言 b：reasoner → settings-center 跳转（ping → pong）。
+	// 断言 b：reasoner → settings-center 调用（ping → pong）。
 	ctxB, cancelB := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelB()
 	rp := callJump(t, ac, "reasoner", "debug_jump", map[string]any{
@@ -63,7 +56,7 @@ func TestHelloWeb(t *testing.T) {
 		"action": "ping",
 	}, ctxB)
 	if !rp.OK {
-		t.Fatalf("跨服务跳转失败: %s", rp.Error)
+		t.Fatalf("跨服务调用失败: %s", rp.Error)
 	}
 	var pong struct {
 		Pong bool   `msgpack:"pong"`
@@ -185,7 +178,7 @@ func waitWSReady(t *testing.T, url string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		c, err := protocol.Dial(url, nil)
+		c, err := spv2.Dial(context.Background(), url)
 		if err == nil {
 			_ = c.Close()
 			return
@@ -196,7 +189,7 @@ func waitWSReady(t *testing.T, url string, timeout time.Duration) {
 }
 
 // waitRosterHas 轮询拉取名册，直到包含指定服务。
-func waitRosterHas(t *testing.T, obs *protocol.Client, name string, timeout time.Duration) {
+func waitRosterHas(t *testing.T, obs *spv2.Client, name string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -216,26 +209,4 @@ func waitRosterHas(t *testing.T, obs *protocol.Client, name string, timeout time
 		time.Sleep(300 * time.Millisecond)
 	}
 	t.Fatalf("等待名册出现 %s 超时", name)
-}
-
-// callJump 以观察者身份发起一次跳转，返回响应 payload。
-func callJump(t *testing.T, c *protocol.Client, to, action string, input any, ctx context.Context) protocol.ResponsePayload {
-	t.Helper()
-	raw, err := protocol.EncodePayload(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "e2e-observer", to, "", protocol.JumpPayload{Action: action, Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	return rp
 }

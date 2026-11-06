@@ -14,8 +14,7 @@ package tests
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,9 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // pythonExe 选择运行 embedding 服务的解释器：仓库内 venv 优先（本地开发），
@@ -71,94 +69,32 @@ func startEmbeddingProc(t *testing.T, centerURL string, port int) {
 // ---------- resume 观察者（测试进程内的“调用方”替身） ----------
 
 type resumeProbe struct {
-	ln      net.Listener
-	srv     *http.Server
+	srv     *httptest.Server
 	resumes chan protocol.ResumePayload
 }
 
-var probeUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-
 func startResumeProbe(t *testing.T, centerURL string) *resumeProbe {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := &resumeProbe{ln: ln, resumes: make(chan protocol.ResumePayload, 16)}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", p.handleWS)
-	p.srv = &http.Server{Handler: mux}
-	go func() { _ = p.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = p.srv.Close() })
-
-	// 注册进中心：memory 依赖名册解析 resume 目标（probe 的名字必须与 recall 的 from 一致）。
-	reg, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reg.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, "probe", "settings-center", "", protocol.RegisterPayload{
-		Name: "probe", Addr: p.URL(), Description: "e2e resume 观察者",
+	p := &resumeProbe{resumes: make(chan protocol.ResumePayload, 16)}
+	srv := newStubServer(t, "probe", "e2e resume 观察者", spv2.Method{Name: "resume", Shape: spv2.ShapeCall})
+	srv.Handle("resume", func(_ context.Context, call *spv2.Call) error {
+		var p2 protocol.ResumePayload
+		if err := call.Frame.DecodeBody(&p2); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		select {
+		case p.resumes <- p2:
+		default:
+		}
+		return call.Reply(map[string]string{"status": "accepted"})
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := reg.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil || !rp.OK {
-		t.Fatalf("probe 注册失败: %v / %s", err, rp.Error)
-	}
+	p.srv = serveStub(t, srv)
+	// 注册进中心：memory 依赖名册解析 resume 目标（probe 的名字必须与 recall 的 from 一致）。
+	registerService(t, centerURL, "probe", p.URL(), "e2e resume 观察者")
 	return p
 }
 
-func (p *resumeProbe) URL() string { return "ws://" + p.ln.Addr().String() + "/ws" }
-
-func (p *resumeProbe) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := probeUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil || env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action != "resume" {
-			resp, _ := protocol.NewResponse(env, "probe", protocol.ResponsePayload{OK: false, Error: "unknown action: " + jp.Action})
-			writeWS(ws, resp)
-			continue
-		}
-		var p2 protocol.ResumePayload
-		if err := protocol.DecodeRaw(jp.Input, &p2); err == nil {
-			select {
-			case p.resumes <- p2:
-			default:
-			}
-		}
-		resp, _ := protocol.NewResponse(env, "probe", protocol.ResponsePayload{OK: true})
-		writeWS(ws, resp)
-	}
-}
-
-func writeWS(ws *websocket.Conn, env protocol.Envelope) {
-	if data, err := protocol.Marshal(env); err == nil {
-		_ = ws.WriteMessage(websocket.BinaryMessage, data)
-	}
-}
+func (p *resumeProbe) URL() string { return wsURL(p.srv) }
 
 // ---------- 用例 ----------
 
@@ -169,9 +105,9 @@ func TestSemanticRecallCrossLanguageE2E(t *testing.T) {
 
 	dir := t.TempDir()
 	scPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
+	centerURL := spv2URL(scPort)
 	memPort := freePort(t)
-	memURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", memPort)
+	memURL := spv2URL(memPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort), "-settings", filepath.Join(dir, "settings.json"))
 	waitWSReady(t, centerURL, 60*time.Second)
@@ -198,7 +134,7 @@ func TestSemanticRecallCrossLanguageE2E(t *testing.T) {
 	// Python embedding 后上线：热注册 → 中心广播名册（memory 随之可解析）。
 	embPort := freePort(t)
 	startEmbeddingProc(t, centerURL, embPort)
-	waitWSReady(t, fmt.Sprintf("ws://127.0.0.1:%d/ws", embPort), 60*time.Second)
+	waitWSReady(t, spv2URL(embPort), 60*time.Second)
 	waitRosterHas(t, obs, "embedding", 60*time.Second)
 
 	block := recallStable(t, probe, memURL, "apple", "e2e-semantic-1")
@@ -213,33 +149,13 @@ func TestSemanticRecallCrossLanguageE2E(t *testing.T) {
 	}
 }
 
-// memoryCall 直连 memory 发一次跳转并等回执（短连接）。
-func memoryCall(t *testing.T, memURL, action string, input any) protocol.ResponsePayload {
+// memoryCall 直连 memory 发一次原生调用并等回执（短连接）。
+func memoryCall(t *testing.T, memURL, action string, input any) callResult {
 	t.Helper()
-	c, err := protocol.Dial(memURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	raw, err := protocol.EncodePayload(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "e2e", "memory", "", protocol.JumpPayload{Action: action, Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := dialSPV2(t, memURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	return rp
+	return callJumpFrom(t, c, "e2e", "memory", action, input, ctx)
 }
 
 // recallStable 发起 recall 并返回记忆块；名册广播存在毫秒级异步窗口——
@@ -268,36 +184,17 @@ func recallStable(t *testing.T, p *resumeProbe, memURL, query, conv string) stri
 // recallOnce 以 probe 的身份发起一次 recall，等待 resume 并提取记忆块（【记忆】开头的 system 消息）。
 func recallOnce(t *testing.T, p *resumeProbe, memURL, query, conv string) (string, error) {
 	t.Helper()
-	c, err := protocol.Dial(memURL, nil)
-	if err != nil {
-		return "", err
-	}
-	defer c.Close()
-	raw, err := protocol.EncodePayload(protocol.RecallPayload{Context: protocol.TaskContext{
+	c := dialSPV2(t, memURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	rp := callJumpFrom(t, c, "probe", "memory", "recall", protocol.RecallPayload{Context: protocol.TaskContext{
 		ConversationID: conv,
 		Boss:           "probe",
 		Messages: []protocol.Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: query},
 		},
-	}})
-	if err != nil {
-		return "", err
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "probe", "memory", "", protocol.JumpPayload{Action: "recall", Input: raw})
-	if err != nil {
-		return "", err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		return "", err
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		return "", err
-	}
+	}}, ctx)
 	if !rp.OK {
 		return "", fmt.Errorf("recall 未被受理: %s", rp.Error)
 	}
