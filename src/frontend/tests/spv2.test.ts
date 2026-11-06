@@ -159,10 +159,59 @@ test('createSPv2WSS 处理 deliver 并回执', async () => {
     );
     assert.deepEqual(out, { delivered: true });
     assert.deepEqual(delivered, { conversationId: 'web:private:owner', text: 'hi' });
+    // conversation_id 为空串时必须回落到门户默认会话，而不是把空串当会话 id。
+    const out2 = await dialSPv2Once(
+      `ws://127.0.0.1:${port}`,
+      'reasoner',
+      'frontend',
+      'deliver',
+      { text: 'again', conversation_id: '' },
+      2000,
+    );
+    assert.deepEqual(out2, { delivered: true });
+    assert.deepEqual(delivered, { conversationId: 'web:private:owner', text: 'again' });
   } finally {
     for (const ws of wss.clients) ws.terminate();
     await new Promise<void>((resolve) => wss.close(() => resolve()));
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('原生事件 body 为零长字节时按无 body 投递，不触发解码错误', async () => {
+  const wss = new WebSocketServer({ port: 0 });
+  const port = await listen(wss);
+  const events: { method: string; body: unknown }[] = [];
+  const errors: Error[] = [];
+  wss.on('connection', (ws) => {
+    ws.on('message', (data) => {
+      const f = decodeFrame(new Uint8Array(data as Buffer));
+      if (f.type !== 'call') return;
+      ws.send(encodeFrame({
+        v: 'spv2.1', id: 'r', type: 'reply', work: f.work,
+        from: { kind: 'service', id: 'center' }, to: f.from, reply_to: f.id,
+        status: 'ok', body: new Uint8Array(),
+      }));
+      ws.send(encodeFrame({
+        v: 'spv2.1', id: 'ev-empty', type: 'event', work: f.work,
+        from: { kind: 'service', id: 'center' }, to: f.from,
+        method: 'tick', body: new Uint8Array(0),
+      }));
+    });
+  });
+  try {
+    const session = await SPv2Session.dial(`ws://127.0.0.1:${port}`, 'frontend', 'center', {
+      onEvent: (ev) => events.push(ev),
+      onError: (err) => errors.push(err),
+    });
+    assert.equal(await session.call('hello', undefined), undefined);
+    const deadline = Date.now() + 2000;
+    while (events.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+    assert.deepEqual(events, [{ method: 'tick', body: undefined }]);
+    assert.deepEqual(errors, []);
+    session.close();
+  } finally {
+    for (const ws of wss.clients) ws.terminate();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
   }
 });
 
