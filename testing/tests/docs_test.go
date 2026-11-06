@@ -117,10 +117,11 @@ func TestDocsModuleCountMatchesGoWork(t *testing.T) {
 			}
 		}
 	}
-	// 两份文档都不提数量也是允许的（没有可校对的说法），但要在日志里留下痕迹，
-	// 免得日后文档改成不写数量时这个用例悄悄变成空转。
+	// 守卫不能被"删掉被守卫的对象"解除：两份文档都不写数量，这个用例就只是空转，
+	// 而绿着的空转守卫比没有守卫更糟——它会让人以为数字有人管。
+	// 判失败，与 go.work 侧 countGoWorkModules 的写法对称。
 	if found == 0 {
-		t.Logf("README / CONTRIBUTING 里没出现模块数量，无可校对项（go.work 登记 %d 个）", fromGoWork)
+		t.Fatalf("README / CONTRIBUTING 里都没出现模块数量，无可校对项（go.work 当场登记 %d 个）——把数量写回文档，别让这个守卫空转", fromGoWork)
 	}
 }
 
