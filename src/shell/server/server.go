@@ -257,8 +257,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.As("number"),
 		service.Unit("ms"))
 
-	s.Handle("run", s.actionRun)
-	// /spv2 原生 method：同一业务实体（s.run），body 直接是 ShellRunPayload，
+	// 原生 SPv2.1 method：同一业务实体（s.run），body 直接是 ShellRunPayload，
 	// 元数据取自帧（work = 链路 id，from.id = 调用方/结果归属）。
 	s.HandleNative(spv2.Method{
 		Name: "run", Tool: true, LongRunning: true,
@@ -296,13 +295,8 @@ func (s *Server) RunningCount() int {
 
 // ---------- 受理 ----------
 
-// actionRun 是 v1（/ws 的 JumpPayload）兼容边缘：只把信封里的元数据交给共享实现。
-func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.run(env.From, env.Trace, env.Boss, in.Input)
-}
-
-// nativeRun 是 /spv2 的原生入口：body 直接就是 ShellRunPayload，元数据取自帧
-// （from.id = 调用方、work = 链路 id），不合成 v1 的 JumpPayload / Envelope。
+// nativeRun 是 run 的原生入口：body 直接就是 ShellRunPayload，元数据取自帧
+// （from.id = 调用方、work = 链路 id）。
 // 帧没有 boss 字段：结果归属按 from 记（与 timer 的约定一致）。
 func (s *Server) nativeRun(_ context.Context, call *spv2.Call) error {
 	out, err := s.run(call.Frame.From.ID, call.Frame.Work, call.Frame.From.ID, call.Frame.Body)
@@ -313,7 +307,7 @@ func (s *Server) nativeRun(_ context.Context, call *spv2.Call) error {
 }
 
 // run 受理一条命令：立即回执（不等审批、不等执行，后续由 report_result 补报）。
-// 这是业务实体：v1 边缘（actionRun）与原生 method（nativeRun）都只调它，不各写一遍。
+// 这是业务实体：唯一的入口（nativeRun）只调它，不另写一遍。
 //
 // 同步拒绝的只有两类：请求本身不合法（命令为空 / 工作目录越界），以及**同时在跑的命令已达上限**。
 // 后者是熔断不是调度：满了就明确告诉你"这次没执行"，绝不返回"已排队"这种要你干等的回执。
