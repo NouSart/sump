@@ -110,6 +110,21 @@ func TestEntropyGateRejectsLowEntropyRuns(t *testing.T) {
 	if hasHighEntropy("排查连接问题，默认地址改成本机端口") {
 		t.Error("中文提炼物不该被高熵探针命中")
 	}
+	// 阈值下界要有"差一点就过"的反例：经验里最常见的过阈误伤源就是驼峰 / 蛇形标识符，
+	// 实测 19 位的 WorkflowExpandPanel 形状只有 3.83。没有这一组，把 3.9 改成 3.7 不会有任何测试变红。
+	for _, s := range []string{"WorkflowExpandPanel", "workflowExpandPanel", "conversation_list_messages"} {
+		if e := entropyOf(s); e >= minEntropyBits {
+			t.Errorf("entropyOf(%q) = %.4f，标识符形状不该过阈", s, e)
+		}
+		if hasHighEntropy("详见 " + s + " 一节") {
+			t.Errorf("%q 这种标识符不该被高熵探针命中", s)
+		}
+	}
+	// 记代价，不粉饰：长蛇形英文短语确实过阈（实测 4.16），这一路躲不开它。
+	// 真要加值判别器把它压下去，这条得一起改——别让它悄悄变成"已经覆盖了"。
+	if !hasHighEntropy("the_quickest_brown_fox_jumps") {
+		t.Errorf("这条钉的是已知误报面：它现在会过阈，探针没改就别让它变绿")
+	}
 	// 16 位是下限：短一段就放过去，是这一路的取舍，写死在这里免得日后被"顺手放宽"。
 	if hasHighEntropy("Q7tZk3Xp9Lm2Wn8") {
 		t.Error("15 位串按设计不该进高熵探针")
@@ -150,34 +165,41 @@ func TestKnownValuesExtractsLeavesRecursively(t *testing.T) {
 	raw := `{
 	  "napcat": {"token": "a1b2c3d4e5f6g7", "ws": "ws://127.0.0.1:3000"},
 	  "admin": ["9876543210", {"qq": "1234567890"}],
-	  "enable": true, "short": "abc", "blank": "   "
+	  "dup": "a1b2c3d4e5f6g7",
+	  "version": 1, "enable": true, "gone": null, "short": "abc", "blank": "   "
 	}`
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := KnownValues(path)
+	got, skipped, err := KnownValues(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// dup 与 napcat.token 是同一个值：写两遍不许把"取到 N 个"撑虚。
 	want := []string{"1234567890", "9876543210", "a1b2c3d4e5f6g7", "ws://127.0.0.1:3000"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("KnownValues = %v，期望 %v（短的 / 布尔 / 空白要滤掉，其余递归取全）", got, want)
+		t.Errorf("KnownValues = %v，期望 %v（短的 / 布尔 / 空白要滤掉，重复的要并掉，其余递归取全）", got, want)
 	}
 	if !sort.StringsAreSorted(got) {
 		t.Errorf("输出没排序：%v", got)
+	}
+	// version/enable/gone 三个非字符串叶子必须被数出来：真凭据要写成 1234567890 这种
+	// 不带引号的数，第一路探针就看不见它，静默丢掉等于假装看过了。
+	if skipped != 3 {
+		t.Errorf("非字符串叶子跳过数 = %d，期望 3（数字 / 布尔 / null 各一）", skipped)
 	}
 }
 
 func TestKnownValuesReportsBadInput(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := KnownValues(filepath.Join(dir, "missing.json")); err == nil {
+	if _, _, err := KnownValues(filepath.Join(dir, "missing.json")); err == nil {
 		t.Error("文件不存在要报错，不能当成\"没有已知凭据\"")
 	}
 	bad := filepath.Join(dir, "bad.json")
 	if err := os.WriteFile(bad, []byte("{不是 JSON"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := KnownValues(bad); err == nil {
+	if _, _, err := KnownValues(bad); err == nil {
 		t.Error("非法 JSON 要报错")
 	} else if !strings.Contains(err.Error(), bad) {
 		t.Errorf("错误信息要指明是哪个文件：%v", err)

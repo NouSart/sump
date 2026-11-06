@@ -41,13 +41,17 @@ func main() {
 	}
 	var known []string
 	if *knownPath != "" {
-		vals, err := audit.KnownValues(*knownPath)
+		vals, skipped, err := audit.KnownValues(*knownPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(2)
 		}
 		known = vals
-		fmt.Fprintf(os.Stderr, "已知凭据：从 %s 取到 %d 个够长的字符串叶子（值不打印）\n", *knownPath, len(known))
+		fmt.Fprintf(os.Stderr, "已知凭据：从 %s 取到 %d 个够长的字符串叶子（值不打印）", *knownPath, len(known))
+		if skipped > 0 {
+			fmt.Fprintf(os.Stderr, "，另有 %d 个数字/布尔/null 叶子未纳入——凭据要写成那样的话这一路看不见", skipped)
+		}
+		fmt.Fprintln(os.Stderr)
 	}
 
 	db, err := sql.Open("sqlite", *dbPath)

@@ -22,7 +22,10 @@
 //   - 密钥上下文：认"关键词 + 值"，全库校准命中 1 行（强制要分隔符的严格版命中 0，
 //     所以分隔符可选）。裸写、前后没有任何关键词的令牌仍然认不出。
 //   - 高熵串：不看关键词，看统计。随机凭据一般过阈；真实经验的中文短语不会。
-//     阈值 3.9 bit/字符配 16 字符下限，是为了躲开英文句子和 uuid 分段。
+//     16 字符下限配 3.9 bit/字符，是为了躲开重复串、uuid 分段与经验里常见的驼峰标识符
+//     （实测 19 位的 `WorkflowExpandPanel` 形状只有 3.83，不过阈）。
+//     说清楚代价：**长蛇形英文短语会误报**（`the_quickest_brown_fox_jumps` 实测 4.16，过阈），
+//     这条不是被阈值躲开了，是这一路的固有代价；钉在 TestEntropyGateRejectsLowEntropyRuns 里。
 //   - 长数字：10~11 位数字串，QQ 号 / 手机号 / Unix 秒的形状。误报是设计内代价，
 //     报出来由人读。
 //
@@ -112,18 +115,25 @@ func (f Finding) String() string {
 	return fmt.Sprintf("%s.%d.%s(%s)", f.Table, f.RowKey, f.Column, f.Probe)
 }
 
-// KnownValues 从 JSON 文件里递归取出所有字符串叶子，只保留长度够的那些。
+// KnownValues 从 JSON 文件里递归取出所有字符串叶子，只保留长度够的那些，并顺带数出
+// 被跳过的非字符串叶子（数字 / 布尔 / null）。
 // 读的是 data/qq-secret.json 这类**本机**配置文件：它不是共享库，允许有真值。
-func KnownValues(path string) ([]string, error) {
+//
+// 为什么要报 skipped：本包 writer 那一头（src/service/secrets.go 的 map[string]string）
+// 只会写字符串，所以真凭据不会是数字；但 -known 指到谁是由人决定的，手写的配置里
+// 完全可能把凭据写成 1234567890 这种不带引号的数。静默丢掉就等于假装看过了——
+// data/qq-secret.json 里就有一个 int 叶子（version），这不是假想情形。
+func KnownValues(path string) ([]string, int, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("读已知凭据文件 %s 失败: %w", path, err)
+		return nil, 0, fmt.Errorf("读已知凭据文件 %s 失败: %w", path, err)
 	}
 	var root any
 	if err := json.Unmarshal(raw, &root); err != nil {
-		return nil, fmt.Errorf("已知凭据文件 %s 不是合法 JSON: %w", path, err)
+		return nil, 0, fmt.Errorf("已知凭据文件 %s 不是合法 JSON: %w", path, err)
 	}
 	var out []string
+	skipped := 0
 	var walk func(v any)
 	walk = func(v any) {
 		switch t := v.(type) {
@@ -139,11 +149,26 @@ func KnownValues(path string) ([]string, error) {
 			if s := strings.TrimSpace(t); len(s) >= minKnownLen {
 				out = append(out, s)
 			}
+		case nil, bool, float64:
+			skipped++
 		}
 	}
 	walk(root)
 	sort.Strings(out)
-	return out, nil
+	// 去重：同一个值在 JSON 里写两遍，报"取到 N 个"就是虚的（命中数不受影响，
+	// probes 每一格最多报一次这一路）。
+	return dedupeSorted(out), skipped, nil
+}
+
+// dedupeSorted 在已排序的切片上原地去重。
+func dedupeSorted(in []string) []string {
+	out := in[:0]
+	for i, s := range in {
+		if i == 0 || s != in[i-1] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Scan 扫库：known 是已知凭据原文（可为空，空则跳过第一路探针）。
