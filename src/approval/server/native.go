@@ -1,7 +1,6 @@
 // 原生 SPv2.1 method：approval_request / approval_decide / approval_list / capabilities。
 //
-// 四个 method 与同名 v1 action 共用业务函数；/spv2 路径直接读 call.Frame.Body，
-// 不合成 protocol.JumpPayload，也不合成 protocol.Envelope。
+// 四个 method 直接复用业务函数；/spv2 路径直接读 call.Frame.Body。
 package server
 
 import (

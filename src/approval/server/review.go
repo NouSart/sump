@@ -149,12 +149,7 @@ func (s *Server) awaitUserDecision(ctx context.Context, caller, trace, boss stri
 	return result, nil
 }
 
-// actionDecide 是 v1 入口：只把信封里的来源交给共享实现。
-func (s *Server) actionDecide(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.decide(env.From, in.Input)
-}
-
-// decide 承接用户在门户上的裁决。只接受门户发来的——裁决权不外包给任意服务。
+// decide 承接用户在门户上的裁决（原生 approval_decide 的业务实现）。只接受门户发来的——裁决权不外包给任意服务。
 func (s *Server) decide(from string, body []byte) (any, error) {
 	portal := s.portalNow()
 	if portal == "" || from != portal {
@@ -185,12 +180,7 @@ func (s *Server) decide(from string, body []byte) (any, error) {
 	}
 }
 
-// actionList 是 v1 入口：只把信封里的来源交给共享实现。
-func (s *Server) actionList(_ context.Context, env protocol.Envelope, _ protocol.JumpPayload) (any, error) {
-	return s.list(env.From)
-}
-
-// list 返回当前待审项（门户重启后据此恢复列表）。
+// list 返回当前待审项（门户重启后据此恢复列表；原生 approval_list 的业务实现）。
 func (s *Server) list(from string) (any, error) {
 	portal := s.portalNow()
 	if portal == "" || from != portal {

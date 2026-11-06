@@ -4,7 +4,6 @@ package server
 // 这里直接调处理器（不启传输层），把返回字段逐项钉住。
 
 import (
-	"context"
 	"io"
 	"log"
 	"path/filepath"
@@ -20,14 +19,7 @@ import (
 func TestCapabilitiesReportsDialectsAndReviewState(t *testing.T) {
 	s := newTierServer(t)
 
-	out, err := s.actionCapabilities(context.Background(), protocol.Envelope{}, protocol.JumpPayload{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, ok := out.(map[string]any)
-	if !ok {
-		t.Fatalf("capabilities 应返回对象，实际 %T", out)
-	}
+	got := s.capabilities()
 	if got["schema_version"] != 1 {
 		t.Fatalf("schema_version 应为 1: %+v", got)
 	}
@@ -66,11 +58,7 @@ func TestCapabilitiesReportsDialectsAndReviewState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err = withPortal.actionCapabilities(context.Background(), protocol.Envelope{}, protocol.JumpPayload{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got = out.(map[string]any)
+	got = withPortal.capabilities()
 	if got["review_enabled"] != true || got["review_portal"] != "frontend" {
 		t.Fatalf("第二层状态不符: %+v", got)
 	}

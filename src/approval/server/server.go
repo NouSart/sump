@@ -119,18 +119,9 @@ func New(cfg Config) (*Server, error) {
 		service.Label("命令审批策略"),
 		service.Hint("JSON 策略：deny_commands 里的命令直接拒绝；rules 里列出的命令免审批直过；其余挂起等你在门户点批准"),
 		service.As("textarea"))
-	s.Handle(protocol.ApprovalAction, s.actionApprove)
-	s.Handle(protocol.ApprovalDecideAction, s.actionDecide)
-	s.Handle(protocol.ApprovalListAction, s.actionList)
-	s.Handle("capabilities", s.actionCapabilities)
-	// 原生 SPv2.1 method：与同名 v1 action 共用业务函数，/spv2 不再合成 v1 信封。
+	// 原生 SPv2.1 method：/spv2 直接解帧体，不合成 v1 信封。
 	s.registerNativeMethods()
 	return s, nil
-}
-
-// actionCapabilities 是 v1 入口：capabilities 不需要信封里的任何字段。
-func (s *Server) actionCapabilities(context.Context, protocol.Envelope, protocol.JumpPayload) (any, error) {
-	return s.capabilities(), nil
 }
 
 // capabilities 说明审批服务当前的方言、第二层状态与档位（管理/调试动作，不暴露给模型）。
@@ -145,12 +136,7 @@ func (s *Server) capabilities() map[string]any {
 		"pending":      len(s.pendingSnapshot()), "accepted": s.accepted.Load(), "busy": s.busy.Load()}
 }
 
-// actionApprove 是 v1 入口：只把信封里的元信息交给共享实现。
-func (s *Server) actionApprove(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.approve(ctx, env.From, env.Trace, env.Boss, in.Input)
-}
-
-// approve 是 approval_request 的共享实现：v1 action 与原生 SPv2 method 都走这里。
+// approve 是 approval_request 的业务实现，原生 SPv2 method 直接调它。
 func (s *Server) approve(ctx context.Context, caller, trace, boss string, body []byte) (out any, err error) {
 	// handler 级限制不等于传输层大帧限制；部署边界保持为可信本地服务。
 	if len(body) > 64<<10 {

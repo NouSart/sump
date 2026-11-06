@@ -6,7 +6,6 @@
 package server
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -49,7 +48,7 @@ func TestPortalReadyUsesRoster(t *testing.T) {
 func TestApprovalListOnlyPortal(t *testing.T) {
 	s, _ := newReviewServer(t, nil)
 
-	out, err := s.actionList(context.Background(), protocol.Envelope{From: "frontend"}, protocol.JumpPayload{Action: protocol.ApprovalListAction})
+	out, err := s.list("frontend")
 	if err != nil {
 		t.Fatalf("门户拉取被拒: %v", err)
 	}
@@ -58,7 +57,7 @@ func TestApprovalListOnlyPortal(t *testing.T) {
 	}
 
 	for _, from := range []string{"shell", "reasoner", "frontend-fake", ""} {
-		if _, err := s.actionList(context.Background(), protocol.Envelope{From: from}, protocol.JumpPayload{Action: protocol.ApprovalListAction}); err == nil {
+		if _, err := s.list(from); err == nil {
 			t.Fatalf("from=%q 不该能拉待审项", from)
 		} else if !strings.Contains(err.Error(), "只有门户") {
 			t.Fatalf("from=%q 的错误应指明只有门户，实际: %v", from, err)
@@ -69,7 +68,7 @@ func TestApprovalListOnlyPortal(t *testing.T) {
 // 门户未配置时，approval_list 同样拒绝（不要把队列暴露给「谁都不是」的调用方）。
 func TestApprovalListRejectedWithoutPortal(t *testing.T) {
 	s, _ := newReviewServer(t, func(c *Config) { c.Portal = "" })
-	if _, err := s.actionList(context.Background(), protocol.Envelope{From: ""}, protocol.JumpPayload{Action: protocol.ApprovalListAction}); err == nil {
+	if _, err := s.list(""); err == nil {
 		t.Fatal("未配置门户时不该能拉待审项")
 	}
 }

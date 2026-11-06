@@ -20,6 +20,7 @@ import (
 	"github.com/NouSart/sump/approval/server"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
 )
 
 func main() {
@@ -143,16 +144,16 @@ func send(parent context.Context, args []string) error {
 	results := make(chan protocol.AsyncResultPayload, 16)
 	name := "approval-console-" + fmt.Sprint(time.Now().UnixNano())
 	c := service.New(service.Config{Name: name, Listen: "127.0.0.1:0", Center: *center, Description: "命令提交与反馈观察客户端；不是真实 LLM"})
-	c.Handle("report_result", func(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	c.HandleNative(spv2.Method{Name: "report_result", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
 		var r protocol.AsyncResultPayload
-		if err := protocol.DecodeRaw(in.Input, &r); err != nil {
-			return nil, err
+		if err := protocol.DecodeRaw(call.Frame.Body, &r); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 		}
 		select {
 		case results <- r:
-			return map[string]string{"status": "accepted"}, nil
+			return call.Reply(map[string]string{"status": "accepted"})
 		default:
-			return nil, errors.New("反馈队列已满")
+			return call.ReplyError(spv2.CodeResourceExhausted, "反馈队列已满", false, nil)
 		}
 	})
 	if err := c.Start(ctx); err != nil {
