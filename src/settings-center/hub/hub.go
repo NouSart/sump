@@ -11,15 +11,10 @@ import (
 	"github.com/NouSart/sump/protocol"
 )
 
-// Conn 是 hub 对一条已连接服务的抽象。
+// Conn 是 hub 对一条已连接服务的抽象：只接受 SPv2 原生事件。
 type Conn interface {
-	Send(protocol.Envelope) error
-	Close() error
-}
-
-// EventConn 是可接收 SPv2 原生事件的连接；不实现时回退 v1 信封。
-type EventConn interface {
 	SendEvent(typ string, payload any) error
+	Close() error
 }
 
 // Hub 维护已注册服务的名片、连接与心跳时间。
@@ -205,17 +200,7 @@ func (h *Hub) BroadcastEvent(typ string, payload any) {
 	h.mu.Unlock()
 
 	for _, t := range targets {
-		if ec, ok := t.conn.(EventConn); ok {
-			if err := ec.SendEvent(typ, payload); err != nil {
-				h.log.Printf("%s 推送失败 (%s): %v", typ, t.name, err)
-			}
-			continue
-		}
-		env, err := protocol.NewEnvelope(typ, "settings-center", t.name, "", payload)
-		if err != nil {
-			continue
-		}
-		if err := t.conn.Send(env); err != nil {
+		if err := t.conn.SendEvent(typ, payload); err != nil {
 			h.log.Printf("%s 推送失败 (%s): %v", typ, t.name, err)
 		}
 	}

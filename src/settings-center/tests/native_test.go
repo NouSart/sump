@@ -32,7 +32,7 @@ func TestSettingsCenterNative(t *testing.T) {
 	defer c.Close()
 
 	reg, err := spv2.NewCall("w-reg", spv2.ServiceRef("peer"), spv2.ServiceRef("settings-center"), "register",
-		protocol.RegisterPayload{Name: "peer", Addr: "ws://127.0.0.1:1/ws", Description: "native"})
+		protocol.RegisterPayload{Name: "peer", Addr: "ws://127.0.0.1:1/spv2", Description: "native"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,12 +3,10 @@ package server
 // settings-center 的原生 SPv2.1 控制面。
 //
 // 这是引导面，不是业务面：register / heartbeat / report 仍复用 hub 与 settings 的
-// 同一套逻辑；v1 /ws 保留给尚未迁移的客户端（frontend / embedding / 旧服务）。
-// 原生连接实现 hub.EventConn，中心广播的 roster / settings 直接以 SPv2 event 下发。
+// 同一套逻辑；中心广播的 roster / settings 直接以 SPv2 event 下发。
 
 import (
 	"context"
-	"errors"
 
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
@@ -17,10 +15,6 @@ import (
 type nativeConn struct {
 	call *spv2.Call
 	name string
-}
-
-func (c *nativeConn) Send(protocol.Envelope) error {
-	return errors.New("native connection does not accept v1 envelopes")
 }
 
 func (c *nativeConn) SendEvent(typ string, payload any) error {

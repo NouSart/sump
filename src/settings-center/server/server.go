@@ -2,18 +2,13 @@
 package server
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/gorilla/websocket"
 
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/settings-center/hub"
@@ -56,11 +51,6 @@ type Server struct {
 	sweepWake chan struct{} // 扫描间隔变更时唤醒扫描循环（立即按新间隔重排）
 }
 
-var upgrader = websocket.Upgrader{
-	// 服务间互访，本机 / 内网使用，放开 Origin 校验。
-	CheckOrigin: func(*http.Request) bool { return true },
-}
-
 // Start 启动设置中心（非阻塞）。
 func Start(cfg Config, logger *log.Logger) (*Server, error) {
 	if cfg.Heartbeat <= 0 {
@@ -82,7 +72,7 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 	h.PutSelf(protocol.ServiceCard{
 		Name:        selfServiceName,
 		Title:       "设置中心",
-		Addr:        "ws://" + ln.Addr().String() + "/ws",
+		Addr:        "ws://" + ln.Addr().String() + "/spv2",
 		Description: "服务注册 · 全局信息 · 设置与调度",
 		Provides: []protocol.Provide{
 			{Action: "ping", Output: "pong（连通性测试）"},
@@ -127,7 +117,6 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 	}
 	s.spv2Srv = native
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", s.handleWS)
 	mux.Handle("/spv2", s.spv2Srv.Handler())
 	s.httpSrv = &http.Server{Handler: mux}
 	go func() {
@@ -136,7 +125,7 @@ func Start(cfg Config, logger *log.Logger) (*Server, error) {
 		}
 	}()
 	go s.sweepLoop()
-	logger.Printf("settings-center 监听 ws://%s/ws", ln.Addr())
+	logger.Printf("settings-center 监听 ws://%s/spv2", ln.Addr())
 	return s, nil
 }
 
@@ -171,273 +160,6 @@ func (s *Server) Shutdown() error {
 		close(s.done)
 	}
 	return s.httpSrv.Close()
-}
-
-func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		s.logger.Printf("升级失败: %v", err)
-		return
-	}
-	sc := &serverConn{ws: ws, hub: s.hub, settings: s.settings, srv: s, logger: s.logger}
-	go sc.serve()
-}
-
-// serverConn 是一条已升级的服务连接。
-type serverConn struct {
-	ws       *websocket.Conn
-	hub      *hub.Hub
-	settings *hub.Settings
-	srv      *Server // 回指（configure 推送等）
-	logger   *log.Logger
-
-	mu     sync.Mutex // 写锁（gorilla 不支持并发写）
-	name   string     // 注册后的服务名（未注册为空）
-	closed bool
-}
-
-// Send 发送一条消息（线程安全）。
-func (c *serverConn) Send(env protocol.Envelope) error {
-	data, err := protocol.Marshal(env)
-	if err != nil {
-		return err
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return protocol.ErrConnClosed
-	}
-	return c.ws.WriteMessage(websocket.BinaryMessage, data)
-}
-
-// Close 关闭连接。
-func (c *serverConn) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return nil
-	}
-	c.closed = true
-	return c.ws.Close()
-}
-
-func (c *serverConn) serve() {
-	defer func() {
-		if c.name != "" {
-			c.hub.Disconnect(c.name, c)
-			c.logger.Printf("连接断开: %s", c.name)
-		}
-		_ = c.Close()
-	}()
-	for {
-		_, data, err := c.ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			c.logger.Printf("坏帧: %v", err)
-			continue
-		}
-		c.dispatch(env)
-	}
-}
-
-func (c *serverConn) dispatch(env protocol.Envelope) {
-	switch env.Type {
-	case protocol.TypeRegister:
-		c.handleRegister(env)
-	case protocol.TypeHeartbeat:
-		c.handleHeartbeat(env)
-	case protocol.TypeJump:
-		c.handleJump(env)
-	default:
-		c.replyError(env, "unsupported message type: "+env.Type)
-	}
-}
-
-func (c *serverConn) handleRegister(env protocol.Envelope) {
-	var reg protocol.RegisterPayload
-	if err := env.DecodePayload(&reg); err != nil {
-		c.replyError(env, "bad register payload")
-		return
-	}
-	if reg.Name == "" || reg.Addr == "" {
-		c.replyError(env, "register: name and addr required")
-		return
-	}
-
-	c.name = reg.Name
-	roster, changed := c.hub.Register(reg.Card(), c)
-	declChanged := c.settings.Declare(reg.Name, reg.Settings)
-
-	data, err := protocol.EncodePayload(roster)
-	if err != nil {
-		c.replyError(env, "encode roster failed")
-		return
-	}
-	resp, err := protocol.NewResponse(env, "settings-center", protocol.ResponsePayload{OK: true, Data: data})
-	if err == nil {
-		_ = c.Send(resp)
-	}
-	if changed {
-		c.hub.Broadcast(roster)
-		c.logger.Printf("注册: %s (%s)", reg.Name, reg.Addr)
-	} else {
-		c.logger.Printf("重连: %s（名片无变化，不广播）", reg.Name)
-	}
-	// 注册即对齐（不阻塞注册响应）：声明的普通项 → 全量逐键下发（异步、有界重试）；
-	// 只有秘密项 / 只读项（没有可对齐的普通项）→ 只广播一次事件（面板刷新）。
-	if len(reg.Settings) > 0 {
-		if items := c.settings.PushItems(reg.Name); len(items) > 0 {
-			go c.srv.pushSettings(reg.Name, items, "register")
-		} else if declChanged {
-			c.srv.broadcastSettings(protocol.SettingsEventPayload{Cause: "register", Service: reg.Name})
-		}
-	} else if declChanged {
-		c.srv.broadcastSettings(protocol.SettingsEventPayload{Cause: "register", Service: reg.Name})
-	}
-}
-
-// handleHeartbeat 处理心跳：bye = 优雅下线（立即摘除）；其余 = 报活（必要时从墓碑复归）。
-func (c *serverConn) handleHeartbeat(env protocol.Envelope) {
-	var hb protocol.HeartbeatPayload
-	_ = env.DecodePayload(&hb)
-	if hb.Status == "bye" {
-		if roster, changed := c.hub.MarkOffline(env.From); changed {
-			c.hub.Broadcast(roster)
-			c.logger.Printf("下线: %s（告别）", env.From)
-		}
-		return
-	}
-	if roster, resurrected := c.hub.NoteSeen(env.From, c); resurrected {
-		c.hub.Broadcast(roster)
-	}
-}
-
-func (c *serverConn) handleJump(env protocol.Envelope) {
-	var jp protocol.JumpPayload
-	if err := env.DecodePayload(&jp); err != nil {
-		c.replyError(env, "bad jump payload")
-		return
-	}
-	switch jp.Action {
-	case "ping":
-		c.replyData(env, map[string]any{"pong": true, "who": "settings-center"})
-	case "roster":
-		// DNS 式拉取：返回最新全量清单（推送丢失 / 服务重启后自愈用）
-		c.replyData(env, c.hub.Snapshot())
-	case "list_settings":
-		c.handleListSettings(env, jp)
-	case "set_setting":
-		c.handleSetSetting(env, jp)
-	case "reset_setting":
-		c.handleResetSetting(env, jp)
-	case "report_setting":
-		c.handleReportSetting(env, jp)
-	case "report":
-		c.handleReport(env, jp)
-	default:
-		c.replyError(env, "unknown action: "+jp.Action)
-	}
-}
-
-// handleReport 处理错误上报（服务 → 中心）：记一条日志，并交给消费挂点（OnReport）。
-// 防刷由上报方退避负责；中心视为永远在线，不排队、不回补、不落盘（挂点未来接前端 / 落盘）。
-func (c *serverConn) handleReport(env protocol.Envelope, jp protocol.JumpPayload) {
-	var p protocol.ReportPayload
-	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
-		c.replyError(env, "bad report payload")
-		return
-	}
-	if p.Message == "" {
-		c.replyError(env, "report: message 必填")
-		return
-	}
-	kind := p.Kind
-	if kind == "" {
-		kind = "-"
-	}
-	c.logger.Printf("上报 %s [%s]: %s", env.From, kind, p.Message)
-	if fn := c.srv.cfg.OnReport; fn != nil {
-		fn(env.From, p)
-	}
-	c.replyData(env, map[string]any{"status": "ok"})
-}
-
-// handleListSettings 返回设置清单（可选按服务过滤）。
-func (c *serverConn) handleListSettings(env protocol.Envelope, jp protocol.JumpPayload) {
-	var p protocol.SettingsListPayload
-	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
-		c.replyError(env, "bad list_settings payload")
-		return
-	}
-	c.replyData(env, protocol.SettingsResult{Services: c.settings.List(p.Service)})
-}
-
-// handleSetSetting 写覆盖值（服务与设置项都必须已被声明）；成功后按边界落地生效值。
-func (c *serverConn) handleSetSetting(env protocol.Envelope, jp protocol.JumpPayload) {
-	var p protocol.SetSettingPayload
-	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
-		c.replyError(env, "bad set_setting payload")
-		return
-	}
-	ss, err := c.settings.Set(p.Service, p.Key, p.Value)
-	if err != nil {
-		c.replyError(env, err.Error())
-		return
-	}
-	item, hasItem := viewOf(ss, p.Key)
-	if hasItem && item.Secret {
-		c.logger.Printf("设置变更: %s.%s（秘密，不回显）（来自 %s）", p.Service, p.Key, env.From)
-	} else {
-		c.logger.Printf("设置变更: %s.%s = %q（来自 %s）", p.Service, p.Key, p.Value, env.From)
-	}
-	c.srv.applyOrPush(p.Service, ss, p.Key, "set_setting", p.Value)
-	c.replyData(env, protocol.SettingsResult{Services: []protocol.ServiceSettings{ss}})
-}
-
-// handleResetSetting 清除覆盖值，回落服务声明的预设值。
-func (c *serverConn) handleResetSetting(env protocol.Envelope, jp protocol.JumpPayload) {
-	var p protocol.ResetSettingPayload
-	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
-		c.replyError(env, "bad reset_setting payload")
-		return
-	}
-	ss, err := c.settings.Reset(p.Service, p.Key)
-	if err != nil {
-		c.replyError(env, err.Error())
-		return
-	}
-	c.logger.Printf("设置重置: %s.%s → 预设值（来自 %s）", p.Service, p.Key, env.From)
-	// 秘密项的重置 = 推一个空值过去，让服务自己清掉本地那份。
-	c.srv.applyOrPush(p.Service, ss, p.Key, "reset_setting", "")
-	c.replyData(env, protocol.SettingsResult{Services: []protocol.ServiceSettings{ss}})
-}
-
-// handleReportSetting 承接「服务自报实际值」（服务侧的值自己变了）：只更新服务侧那一列，
-// **不动**中心手里的覆盖值；秘密项只认「有没有值」。结果以 settings 事件广播（面板实时刷新）。
-func (c *serverConn) handleReportSetting(env protocol.Envelope, jp protocol.JumpPayload) {
-	var p protocol.ReportSettingPayload
-	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
-		c.replyError(env, "bad report_setting payload")
-		return
-	}
-	ss, err := c.settings.Report(p.Service, p.Key, p.Value, p.Set, p.Seq)
-	if err != nil {
-		c.replyError(env, err.Error())
-		return
-	}
-	if item, found := viewOf(ss, p.Key); found && item.Secret {
-		c.logger.Printf("设置回传: %s.%s（秘密，只回有没有值）（来自 %s）", p.Service, p.Key, env.From)
-	} else {
-		c.logger.Printf("设置回传: %s.%s = %q（来自 %s）", p.Service, p.Key, p.Value, env.From)
-	}
-	c.srv.broadcastSettings(protocol.SettingsEventPayload{
-		Cause: "report_setting", Service: p.Service,
-		Results: []protocol.SettingResult{{Key: p.Key, OK: true}},
-	})
-	c.replyData(env, protocol.SettingsResult{Services: []protocol.ServiceSettings{ss}})
 }
 
 // applyOrPush 落地一次设置变更：设置中心自身 → 本地应用并广播结果；
@@ -534,63 +256,13 @@ func (s *Server) pushSettings(service string, items []protocol.SettingView, caus
 	s.broadcastSettings(protocol.SettingsEventPayload{Cause: cause, Service: service, Results: results})
 }
 
-// pushAttempt 用一条连接逐键下发；返回仍未送达的下标（服务明确拒绝记为结果，不重试）。
+// pushAttempt 从名册取目标卡片，逐键下发；返回仍未送达的下标（服务明确拒绝记为结果，不重试）。
 func (s *Server) pushAttempt(service string, items []protocol.SettingView, idxs []int, results []protocol.SettingResult) ([]int, error) {
 	card, ok := s.hub.Lookup(service)
 	if !ok {
-		return idxs, errors.New("服务不在名册（可能已离线）")
+		return idxs, fmt.Errorf("服务不在名册（可能已离线）")
 	}
-	if remaining, handled, err := s.pushAttemptSPv2(service, card, items, idxs, results); handled {
-		return remaining, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	c, err := protocol.DialContext(ctx, card.Addr, nil)
-	if err != nil {
-		return idxs, fmt.Errorf("拨号失败: %v", err)
-	}
-	defer c.Close()
-
-	var remaining []int
-	var lastErr error
-	for _, i := range idxs {
-		it := items[i]
-		raw, err := protocol.EncodePayload(protocol.ConfigurePayload{
-			Key: it.Key, Value: it.Value, Default: it.Default, Overridden: it.Overridden,
-		})
-		if err != nil {
-			results[i].Error = "编码失败: " + err.Error()
-			continue
-		}
-		env, err := protocol.NewEnvelope(protocol.TypeJump, selfServiceName, service, "", protocol.JumpPayload{Action: "configure", Input: raw})
-		if err != nil {
-			results[i].Error = err.Error()
-			continue
-		}
-		resp, err := c.Call(ctx, env)
-		if err != nil {
-			remaining = append(remaining, i)
-			lastErr = err
-			continue
-		}
-		var rp protocol.ResponsePayload
-		if err := resp.DecodePayload(&rp); err != nil {
-			results[i].Error = "响应解析失败: " + err.Error()
-			continue
-		}
-		if !rp.OK {
-			results[i].Error = rp.Error
-			if results[i].Error == "" {
-				results[i].Error = "响应缺少 ok"
-			}
-			continue
-		}
-		results[i].OK = true
-		if !it.Secret {
-			results[i].Value = it.Value
-		}
-	}
-	return remaining, lastErr
+	return s.pushAttemptSPv2(service, card, items, idxs, results)
 }
 
 // broadcastSettings 广播一条设置事件（面板据此刷新与提示；其余服务忽略）。
@@ -622,25 +294,4 @@ func (s *Server) applySelfSetting(key, value string) error {
 	default:
 		return fmt.Errorf("未声明的设置项 %q", key)
 	}
-}
-
-// replyData 构造并发送一个成功响应（data 为任意可编码值）。
-func (c *serverConn) replyData(req protocol.Envelope, v any) {
-	data, err := protocol.EncodePayload(v)
-	if err != nil {
-		c.replyError(req, "encode failed")
-		return
-	}
-	resp, err := protocol.NewResponse(req, "settings-center", protocol.ResponsePayload{OK: true, Data: data})
-	if err == nil {
-		_ = c.Send(resp)
-	}
-}
-
-func (c *serverConn) replyError(req protocol.Envelope, msg string) {
-	resp, err := protocol.NewResponse(req, "settings-center", protocol.ResponsePayload{OK: false, Error: msg})
-	if err != nil {
-		return
-	}
-	_ = c.Send(resp)
 }

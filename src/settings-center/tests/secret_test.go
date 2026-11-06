@@ -68,12 +68,12 @@ func configureForKey(svc *stubService, key string) []protocol.ConfigurePayload {
 }
 
 // waitSecretSet 轮询 list_settings 直到某秘密项的「服务侧有值」标记变为 want。
-func waitSecretSet(t *testing.T, wsURL, service, key string, want bool, timeout time.Duration) {
+func waitSecretSet(t *testing.T, url, service, key string, want bool, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var last bool
 	for time.Now().Before(deadline) {
-		res, msg := callSettings(t, wsURL, "list_settings", protocol.SettingsListPayload{Service: service})
+		res, msg := callSettings(t, url, "list_settings", protocol.SettingsListPayload{Service: service})
 		if msg != "" {
 			t.Fatalf("list_settings 失败: %s", msg)
 		}
@@ -94,10 +94,10 @@ func TestSecretAndReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Shutdown() })
-	wsURL := "ws://" + s.Addr() + "/ws"
+	url := centerURL(s)
 
-	svc := startStubService(t)
-	_, events := registerService(t, wsURL, "svc-s", svc.URL(), []protocol.Setting{
+	svc := startStubService(t, "svc-s")
+	_, events := registerService(t, url, "svc-s", svc.URL(), []protocol.Setting{
 		{Key: "api.base", Default: "https://api.example.com"},
 		{Key: "api.key", Secret: true},
 		{Key: "api.addr", Default: "127.0.0.1:9101", ReadOnly: true},
@@ -116,7 +116,7 @@ func TestSecretAndReadOnly(t *testing.T) {
 		t.Fatalf("普通项应在注册时对齐一次: %+v", got)
 	}
 
-	res, msg := callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{
+	res, msg := callSettings(t, url, "set_setting", protocol.SetSettingPayload{
 		Service: "svc-s", Key: "api.key", Value: secret,
 	})
 	if msg != "" {
@@ -133,7 +133,7 @@ func TestSecretAndReadOnly(t *testing.T) {
 	waitConfigure(t, svc, "api.key", secret, 3*time.Second)
 
 	// 另写一个普通项做对照：证明落盘确实发生了，而不是「文件压根没写」
-	if _, msg := callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{
+	if _, msg := callSettings(t, url, "set_setting", protocol.SetSettingPayload{
 		Service: "svc-s", Key: "api.base", Value: "https://mirror.example.com",
 	}); msg != "" {
 		t.Fatalf("set_setting 普通项失败: %s", msg)
@@ -153,11 +153,11 @@ func TestSecretAndReadOnly(t *testing.T) {
 	}
 
 	// 秘密项「服务侧有值」的标记（下发成功后置位）
-	waitSecretSet(t, wsURL, "svc-s", "api.key", true, 3*time.Second)
+	waitSecretSet(t, url, "svc-s", "api.key", true, 3*time.Second)
 
 	// 重连再注册：秘密已设置，仍然不该被推——中心手里没有值，推过去就是抹掉
 	before := len(configureForKey(svc, "api.key"))
-	_, events2 := registerService(t, wsURL, "svc-s", svc.URL(), []protocol.Setting{
+	_, events2 := registerService(t, url, "svc-s", svc.URL(), []protocol.Setting{
 		{Key: "api.base", Default: "https://api.example.com"},
 		{Key: "api.key", Secret: true, Set: true},
 		{Key: "api.addr", Default: "127.0.0.1:9101", ReadOnly: true},
@@ -176,7 +176,7 @@ func TestSecretAndReadOnly(t *testing.T) {
 	if bytes.Contains(evRaw, []byte(secret)) {
 		t.Fatalf("settings 事件带出了秘密值: %s", evRaw)
 	}
-	list, msg := callSettings(t, wsURL, "list_settings", protocol.SettingsListPayload{})
+	list, msg := callSettings(t, url, "list_settings", protocol.SettingsListPayload{})
 	if msg != "" {
 		t.Fatalf("list_settings 失败: %s", msg)
 	}
@@ -189,27 +189,27 @@ func TestSecretAndReadOnly(t *testing.T) {
 	}
 
 	// 重置秘密项 = 推空值（服务自己清本地那份），中心仍不留值
-	if _, msg := callSettings(t, wsURL, "reset_setting", protocol.ResetSettingPayload{
+	if _, msg := callSettings(t, url, "reset_setting", protocol.ResetSettingPayload{
 		Service: "svc-s", Key: "api.key",
 	}); msg != "" {
 		t.Fatalf("reset_setting 秘密项失败: %s", msg)
 	}
 	waitConfigure(t, svc, "api.key", "", 3*time.Second)
-	waitSecretSet(t, wsURL, "svc-s", "api.key", false, 3*time.Second)
+	waitSecretSet(t, url, "svc-s", "api.key", false, 3*time.Second)
 
 	// 只读项：面板看得到启动值，改它/重置它都被拒
 	v = findSetting(t, list, "svc-s", "api.addr")
 	if !v.ReadOnly || v.Value != "127.0.0.1:9101" || v.Overridden {
 		t.Fatalf("只读项视图不符: %+v", v)
 	}
-	if _, msg := callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{
+	if _, msg := callSettings(t, url, "set_setting", protocol.SetSettingPayload{
 		Service: "svc-s", Key: "api.addr", Value: "0.0.0.0:1",
 	}); msg == "" {
 		t.Fatal("改只读项应被拒")
 	} else if !strings.Contains(msg, "只读") {
 		t.Fatalf("拒绝理由应说明只读: %s", msg)
 	}
-	if _, msg := callSettings(t, wsURL, "reset_setting", protocol.ResetSettingPayload{
+	if _, msg := callSettings(t, url, "reset_setting", protocol.ResetSettingPayload{
 		Service: "svc-s", Key: "api.addr",
 	}); msg == "" {
 		t.Fatal("重置只读项应被拒")
