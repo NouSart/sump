@@ -106,6 +106,21 @@ func wireKeyCases() []struct {
 			want: []string{"attempts", "body", "created_at", "from", "id", "last_error", "lease_until", "method", "reply_to", "state", "to", "work_id"},
 		},
 		{
+			name: "Frame（线帧）",
+			value: Frame{
+				V: ProtocolVersion, ID: "f1", Type: TypeReply, Work: "w1",
+				From: ServiceRef("svc"), To: AgentRef("a"), Method: "echo", ReplyTo: "c1",
+				ContentType: ContentTypeMsgPack, Schema: "s1", IdempotencyKey: "k1",
+				Stream: &Stream{ID: "s1", Seq: 1, End: true}, Status: StatusOK,
+				Error: &Error{Code: CodeInternal, Message: "boom", Retryable: true},
+				Body:  []byte("payload"),
+			},
+			// 帧头的键名是跨实现的契约（spec 的「能力可替换」靠它）：
+			// 本包自己编自己解永远对称，只有把键名钉在字节上才测得出漂移。
+			want: []string{"body", "content_type", "error", "from", "id", "idempotency_key",
+				"method", "reply_to", "schema", "status", "stream", "to", "type", "v", "work"},
+		},
+		{
 			name:  "SweepResult（清理计数）",
 			value: SweepResult{Stalled: 1, Expired: 2, Retried: 3},
 			want:  []string{"expired", "retried", "stalled"},
