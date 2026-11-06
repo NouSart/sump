@@ -343,23 +343,39 @@ func shapeText(s Shape) string {
 }
 
 // 四路探针各自的形状都要能报出来，且谓词命中与否与拆函数之前一致。
+//
+// 每条用例自带 known：已知凭据那一路的形状取决于"给了几个**不同**的值"，
+// 全部用例共用一份 known 就表达不出"同一个值在清单里写了两遍"这种输入——
+// 而那正是 knownRuns 里 `seen[k]` 去重唯一在干活的地方。
 func TestProbeShapesCarryEachKind(t *testing.T) {
-	known := []string{"a1b2c3d4e5f6g7"}
+	// 两个明确虚构的假值，形状同类、不对应任何真实凭据。
+	const (
+		fakeA = "a1b2c3d4e5f6g7"   // 14 位
+		fakeB = "zz9876543210abcd" // 16 位，与 A 不同值也不同长度
+	)
 	cases := []struct {
 		name  string
+		known []string
 		text  string
 		probe string
 		want  Shape
 	}{
-		{"已知凭据按不同值计", "令牌 a1b2c3d4e5f6g7 与 a1b2c3d4e5f6g7 出现两次", ProbeKnown,
+		{"已知凭据按不同值计", []string{fakeA}, "令牌 " + fakeA + " 与 " + fakeA + " 出现两次", ProbeKnown,
 			Shape{Runs: 1, Lens: []int{14}}},
-		{"密钥上下文按段计", "api_key = zz112233445566", ProbeContext, Shape{Runs: 1, Lens: []int{24}}},
-		{"高熵串带熵", "轮转后 abCdEf12345GhIjKlMnOp", ProbeEntropy, Shape{Runs: 1, Lens: []int{21}, Ent: []float64{4.39}}},
-		{"长数字按段计", "联系 9876543210 和 13812345678", ProbeLongDigit, Shape{Runs: 2, Lens: []int{10, 11}}},
+		// 同一个值在清单里写两遍：Runs 仍是 1。删掉 knownRuns 的 `seen[k] ||` 去重，
+		// 这里就会报 Runs=2、Lens=[14,14]，这条先红。
+		{"同一值在清单里重复只算一次", []string{fakeA, fakeA}, "令牌 " + fakeA, ProbeKnown,
+			Shape{Runs: 1, Lens: []int{14}}},
+		// 两个不同的值都在同一格里：Runs=2，长度按 (长度, 熵) 成对升序（这一路没有熵）。
+		{"两个不同值各计一次", []string{fakeA, fakeB}, "令牌 " + fakeB + " 备选 " + fakeA, ProbeKnown,
+			Shape{Runs: 2, Lens: []int{14, 16}}},
+		{"密钥上下文按段计", []string{fakeA}, "api_key = zz112233445566", ProbeContext, Shape{Runs: 1, Lens: []int{24}}},
+		{"高熵串带熵", []string{fakeA}, "轮转后 abCdEf12345GhIjKlMnOp", ProbeEntropy, Shape{Runs: 1, Lens: []int{21}, Ent: []float64{4.39}}},
+		{"长数字按段计", []string{fakeA}, "联系 9876543210 和 13812345678", ProbeLongDigit, Shape{Runs: 2, Lens: []int{10, 11}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			hits := probeShapes(c.text, known)
+			hits := probeShapes(c.text, c.known)
 			var got Shape
 			var seen bool
 			for _, h := range hits {
@@ -377,6 +393,10 @@ func TestProbeShapesCarryEachKind(t *testing.T) {
 			// 那一路不携带长度信息，见 knownRuns 的注释）。
 			if got.Runs == 0 {
 				t.Errorf("%s 命中但 Runs=0", c.probe)
+			}
+			// 非熵那一路不许造出一串 0 占位：那会让同一个形状编出两种键。
+			if c.probe != ProbeEntropy && got.Ent != nil {
+				t.Errorf("%s 不该带熵，实际 %v", c.probe, got.Ent)
 			}
 		})
 	}
