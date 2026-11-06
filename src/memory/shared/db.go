@@ -9,7 +9,7 @@
 // 每一格落库前执行，规则在 redact 包，四条写入路都过它：
 // longterm.Add、memnet.Attach、shared.Publish、以及一次性迁移 redactLegacyCell。
 // 标识列（conversation_id / task_id / source）是列不是文本，正文过滤器够不到，
-// 所以另有 fail-closed 校验；会话 id 收口成「入口 + 不可逆摘要」，分组能力留着、账号去掉。
+// 所以另有 fail-closed 校验；会话 id 收口成「入口 + 单向摘要」，分组能力留着、账号去掉。
 //
 // 边界独立：只认自己的 *sql.DB，将来要跨机共享时可整块搬成独立服务
 // （与会话库拆开这件事，现在由"两个库文件"承担，以后由"两个进程"承担）。

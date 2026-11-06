@@ -7,7 +7,7 @@
 // 两类列用两种待遇，理由不同：
 //   - 正文（content / title / goal / outcome）：掩码。经验本身要留下，形状要洗掉。
 //   - 标识（conversation_id / task_id / source）：收口。它们不是文本，掩码只会
-//     得到一堆不可用的星号；会话 id 用「入口 + 不可逆摘要」保住分组能力，
+//     得到一堆不可用的星号；会话 id 用「入口 + 单向摘要」保住分组能力，
 //     其余只允许不透明 id 形状，不合规就拒绝写入（fail-closed）。
 package redact
 
@@ -111,7 +111,8 @@ func Capabilities(in []string) []string {
 	return out
 }
 
-// SessionID 把会话 id 收成「入口 + 不可逆摘要」：`qq:private:22…` → `qq:6f2a1c…`。
+// SessionID 把会话 id 收成「入口 + 单向摘要」：`qq:private:22…` → `qq:6f2a1c…`。
+// 强度边界见 digest 上的注释：它保证库里不再出现账号原文，不保证摘要不可还原。
 //
 // 为什么摘要而不是原样存：会话 id 的尾巴是真实账号（QQ 号 / 用户 id），共享库
 // 按定义不得出现账号。为什么摘要而不是直接拒绝：目录要按会话归并、要排除自己，
@@ -171,9 +172,50 @@ func RefID(raw, what string) (string, error) {
 	return s, nil
 }
 
+// Detect 返回文本里第一个命中的泄露类别，没有则空串。
+//
+// 它是"什么算泄露"的唯一定义源：写入前的过滤、存量清理后的复检、测试里的断言，
+// 都问它，免得三处各写一套谓词、清理脚本自称干净。
+//
+// 局限要写明白：它认的是**形状**（链接 / 路径 / 邮箱 / 密钥形状 / 手机号），
+// 认不出一个裸的 QQ 号——那没有形状可言。所以标识列不看 Detect，看结构：
+// conversation_id 必须已经是收口后的形状，见 IsOpaqueSessionID。
+func Detect(s string) string {
+	switch {
+	case reURL.MatchString(s):
+		return "链接"
+	case reWinPath.MatchString(s), reUNCPath.MatchString(s), rePosix.MatchString(s):
+		return "路径"
+	case reEmail.MatchString(s):
+		return "邮箱"
+	case reToken.MatchString(s), reBearer.MatchString(s):
+		return "密钥形状"
+	case reCNPhone.MatchString(s):
+		return "手机号"
+	default:
+		return ""
+	}
+}
+
+// IsOpaqueSessionID 判断一个值是否已经是收口后的会话键形状。
+// 存量清理用它决定「这一格还需要不需要动」。
+func IsOpaqueSessionID(s string) bool {
+	return reOpaqueSession.MatchString(s) || reOpaqueBare.MatchString(s) || s == ""
+}
+
+// IsRefID 判断一个值是否已经是不透明 id 形状（空值算通过：那些列允许为空）。
+func IsRefID(s string) bool {
+	return strings.TrimSpace(s) == "" || reRefID.MatchString(strings.TrimSpace(s))
+}
+
 // digest 取 sha256 的前 12 位十六进制。
-// 12 位（48 bit）在「同一台机器上的会话数」这个量级上碰撞概率可忽略，
-// 而且这里不需要抗对抗——目标是不可逆地去掉账号，不是当身份凭证用。
+// 12 位（48 bit）在「同一台机器上的会话数」这个量级上碰撞概率可忽略。
+//
+// 强度要说准：这一层去的是**账号原文出现在共享库里**这件事，不是密码学承诺。
+// QQ 号只有 10 位十进制（~2^33 空间），拿着摘要离线枚举 sha256 就能把原号试出来。
+// 所以摘要防的是"共享库被当作文档翻、提炼物随上下文发给模型"这类**搬运**，
+// 不防拿着库文件的定向还原——那需要加盐，而盐只能存进同一个库，防不住同一对手。
+// 真到需要抗还原的那天，盐要存在库外（配置 / 密钥文件），并带上换盐重摘要的迁移。
 func digest(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])[:12]

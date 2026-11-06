@@ -71,6 +71,67 @@ func TestTextIsIdempotent(t *testing.T) {
 	}
 }
 
+// Detect 是"洗"的另一半：Text 负责改，Detect 负责回答"还有没有"。
+// 两边必须认同一批形状，否则存量清理会出现洗完仍报干净（漏报）
+// 或洗完永远不收敛（误报）——前一种正是这次事故要防的自欺。
+func TestDetectAgreesWithText(t *testing.T) {
+	dirty := map[string]string{
+		"Windows 路径": "打开 " + sampleWin,
+		"UNC 路径":     `看 \\fileserver\share\a.txt`,
+		"POSIX 路径":   "日志在 " + samplePosix,
+		"链接":         "默认地址 " + sampleURL,
+		"密钥形状":       "key 是 " + sampleToken,
+		"Bearer":     "header Bearer abc.def-ghi",
+		"邮箱":         "发到 " + sampleEmail,
+		"手机号":        "打 " + samplePhone + " 找他",
+	}
+	for name, in := range dirty {
+		if Detect(in) == "" {
+			t.Errorf("%s：Detect 认不出这一格是泄露（复检会假报干净）: %q", name, in)
+		}
+		if got := Text(in); Detect(got) != "" {
+			t.Errorf("%s：Text 洗完仍被 Detect 命中（清理永不收敛）: %q → %q", name, in, got)
+		}
+	}
+	for _, clean := range []string{
+		"在改门户的时间主题", "", "   ", "shell 的退出码与 stdout 一起送达",
+	} {
+		if why := Detect(clean); why != "" {
+			t.Errorf("正常提炼物不该被 Detect 命中（%q → %s）", clean, why)
+		}
+	}
+}
+
+// 标识列不看 Detect（裸账号没有形状可言），看结构：必须已经是摘要形状。
+// 谓词必须与构造函数互相认——不然收口函数产出的值会被复检判成脏。
+func TestOpaqueAndRefPredicatesMatchTheirConstructors(t *testing.T) {
+	for _, raw := range []string{"qq:private:120000000", "web:group:42", "120000000", "  qq:x:1 "} {
+		opaque, err := SessionID(raw)
+		if err != nil {
+			t.Fatalf("SessionID(%q): %v", raw, err)
+		}
+		if !IsOpaqueSessionID(opaque) {
+			t.Errorf("SessionID 的输出没过自己的谓词，复检会永远不收敛: %q", opaque)
+		}
+		if IsOpaqueSessionID(raw) {
+			t.Errorf("原始会话键不该被判成已收口: %q", raw)
+		}
+	}
+	if !IsOpaqueSessionID("") {
+		t.Error("空会话键应视为合规（memories.conversation_id 允许为空）")
+	}
+	for _, ok := range []string{"reasoner", "t20261019T175731-de9fa74c9a53", ""} {
+		if !IsRefID(ok) {
+			t.Errorf("不透明 id 被判成不合规: %q", ok)
+		}
+	}
+	for _, bad := range []string{"a/b", "a:b", "user@example.com", "has space", `C:\x`} {
+		if IsRefID(bad) {
+			t.Errorf("标识列谓词接受了不该接受的值: %q", bad)
+		}
+	}
+}
+
 func TestTextFlattensNewlinesAndTrims(t *testing.T) {
 	if got := Text("  第一行\n第二行\r\n第三行  "); got != "第一行 第二行 第三行" {
 		t.Errorf("换行没压平: %q", got)

@@ -56,7 +56,7 @@ type Session struct {
 // 已经发布过的旧摘要也不删——是否撤回由调用方显式 Forget 决定。
 func (s *Store) Publish(now time.Time, in PublishInput) (bool, error) {
 	// 标识列也走写入边界：会话 id 的尾巴是真实账号（qq:private:<号>），
-	// 目录按会话归并需要它，所以收成「入口 + 不可逆摘要」而不是原样落库。
+	// 目录按会话归并需要它，所以收成「入口 + 单向摘要」而不是原样落库。
 	sessionID, err := redact.SessionID(in.SessionID)
 	if err != nil {
 		return false, fmt.Errorf("publish_session: %w", err)
