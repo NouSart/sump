@@ -162,7 +162,7 @@ func TestAdjudicatedGateStillBreaksOnSmuggledLeak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("核对已裁定记录失败: %v", err)
 	}
-	novel, stale, skipped := audit.Filter(hits, adj, rowSet.Has)
+	novel, stale, skipped, conflicted := audit.Filter(hits, adj, rowSet.Has)
 
 	var leaked bool
 	for _, f := range novel {
@@ -178,6 +178,9 @@ func TestAdjudicatedGateStillBreaksOnSmuggledLeak(t *testing.T) {
 	}
 	if len(skipped) != len(adj) {
 		t.Errorf("skipped = %d，白名单有 %d 条：行不存在的条目必须全部归 skipped；落到 stale 会把环境差异报成维护问题", len(skipped), len(adj))
+	}
+	if len(conflicted) != 0 {
+		t.Errorf("键都没对上，不该有位置冲突（冲突指的是键认下而位置不符）：%v", conflicted)
 	}
 	if len(novel) == 0 {
 		t.Error("脏 fixture 上过白名单后一条 novel 都没有，探针或键算错了")
@@ -235,7 +238,7 @@ func TestAdjudicatedGateDoesNotAbsorbNewRunInSameCell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if novel, stale, _ := audit.Filter(hits, adj, rowSet.Has); len(novel) != 0 || len(stale) != 0 {
+	if novel, stale, _, conflicted := audit.Filter(hits, adj, rowSet.Has); len(novel) != 0 || len(stale) != 0 || len(conflicted) != 0 {
 		t.Fatalf("刚裁完就该放行，实际 novel=%s stale=%v", joinFindings(novel), stale)
 	}
 
@@ -245,7 +248,10 @@ func TestAdjudicatedGateDoesNotAbsorbNewRunInSameCell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	novel, stale, skipped := audit.Filter(grown, adj, rowSet.Has)
+	novel, stale, skipped, conflicted := audit.Filter(grown, adj, rowSet.Has)
+	if len(conflicted) != 0 {
+		t.Errorf("键变了就是没对上，该进 novel 而不是位置冲突：%v", conflicted)
+	}
 	if len(novel) == 0 {
 		t.Errorf("同格新增一段过阈形状被旧裁定静默吸收了：白名单退化成只记位置\n%s", joinFindings(grown))
 	}

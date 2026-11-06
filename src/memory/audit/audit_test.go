@@ -343,23 +343,39 @@ func shapeText(s Shape) string {
 }
 
 // 四路探针各自的形状都要能报出来，且谓词命中与否与拆函数之前一致。
+//
+// 每条用例自带 known：已知凭据那一路的形状取决于"给了几个**不同**的值"，
+// 全部用例共用一份 known 就表达不出"同一个值在清单里写了两遍"这种输入——
+// 而那正是 knownRuns 里 `seen[k]` 去重唯一在干活的地方。
 func TestProbeShapesCarryEachKind(t *testing.T) {
-	known := []string{"a1b2c3d4e5f6g7"}
+	// 两个明确虚构的假值，形状同类、不对应任何真实凭据。
+	const (
+		fakeA = "a1b2c3d4e5f6g7"   // 14 位
+		fakeB = "zz9876543210abcd" // 16 位，与 A 不同值也不同长度
+	)
 	cases := []struct {
 		name  string
+		known []string
 		text  string
 		probe string
 		want  Shape
 	}{
-		{"已知凭据按不同值计", "令牌 a1b2c3d4e5f6g7 与 a1b2c3d4e5f6g7 出现两次", ProbeKnown,
+		{"已知凭据按不同值计", []string{fakeA}, "令牌 " + fakeA + " 与 " + fakeA + " 出现两次", ProbeKnown,
 			Shape{Runs: 1, Lens: []int{14}}},
-		{"密钥上下文按段计", "api_key = zz112233445566", ProbeContext, Shape{Runs: 1, Lens: []int{24}}},
-		{"高熵串带熵", "轮转后 abCdEf12345GhIjKlMnOp", ProbeEntropy, Shape{Runs: 1, Lens: []int{21}, Ent: []float64{4.39}}},
-		{"长数字按段计", "联系 9876543210 和 13812345678", ProbeLongDigit, Shape{Runs: 2, Lens: []int{10, 11}}},
+		// 同一个值在清单里写两遍：Runs 仍是 1。删掉 knownRuns 的 `seen[k] ||` 去重，
+		// 这里就会报 Runs=2、Lens=[14,14]，这条先红。
+		{"同一值在清单里重复只算一次", []string{fakeA, fakeA}, "令牌 " + fakeA, ProbeKnown,
+			Shape{Runs: 1, Lens: []int{14}}},
+		// 两个不同的值都在同一格里：Runs=2，长度按 (长度, 熵) 成对升序（这一路没有熵）。
+		{"两个不同值各计一次", []string{fakeA, fakeB}, "令牌 " + fakeB + " 备选 " + fakeA, ProbeKnown,
+			Shape{Runs: 2, Lens: []int{14, 16}}},
+		{"密钥上下文按段计", []string{fakeA}, "api_key = zz112233445566", ProbeContext, Shape{Runs: 1, Lens: []int{24}}},
+		{"高熵串带熵", []string{fakeA}, "轮转后 abCdEf12345GhIjKlMnOp", ProbeEntropy, Shape{Runs: 1, Lens: []int{21}, Ent: []float64{4.39}}},
+		{"长数字按段计", []string{fakeA}, "联系 9876543210 和 13812345678", ProbeLongDigit, Shape{Runs: 2, Lens: []int{10, 11}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			hits := probeShapes(c.text, known)
+			hits := probeShapes(c.text, c.known)
 			var got Shape
 			var seen bool
 			for _, h := range hits {
@@ -377,6 +393,10 @@ func TestProbeShapesCarryEachKind(t *testing.T) {
 			// 那一路不携带长度信息，见 knownRuns 的注释）。
 			if got.Runs == 0 {
 				t.Errorf("%s 命中但 Runs=0", c.probe)
+			}
+			// 非熵那一路不许造出一串 0 占位：那会让同一个形状编出两种键。
+			if c.probe != ProbeEntropy && got.Ent != nil {
+				t.Errorf("%s 不该带熵，实际 %v", c.probe, got.Ent)
 			}
 		})
 	}
@@ -403,19 +423,28 @@ func TestFilterBreaksGateOnUnadjudicatedHit(t *testing.T) {
 		Table: "memories", RowKey: 9, Column: "content", Probe: ProbeEntropy,
 		Shape: Shape{Runs: 1, Lens: []int{17}, Ent: []float64{3.97}},
 	}
-	novel, stale, skipped := Filter([]Finding{f}, nil, rowExistsAlways)
-	if len(novel) != 1 || novel[0].Key() != f.Key() {
-		t.Errorf("没有白名单时命中必须进 novel，实际 %v", shapeText(novel[0].Shape))
+	novel, stale, skipped, conflicted := Filter([]Finding{f}, nil, rowExistsAlways)
+	// 数量与内容分两步断：合在一条 `len(novel) != 1 || novel[0]...` 里，
+	// 长度不对时只 t.Errorf，下一句取 novel[0] 就当场 panic，异变被杀死时给出的是
+	// 索引越界的栈而不是"哪一类没进对"的可读诊断。
+	if len(novel) != 1 {
+		t.Fatalf("没有白名单时命中该全部进 novel，实际 %d 条：%v", len(novel), novel)
+	}
+	if novel[0].Key() != f.Key() {
+		t.Errorf("novel 里那条不是这个命中：key=%s，期望 %s", novel[0].Key(), f.Key())
 	}
 	if len(stale) != 0 || len(skipped) != 0 {
 		t.Errorf("空白名单不该有 stale / skipped：%v / %v", stale, skipped)
+	}
+	if len(conflicted) != 0 {
+		t.Errorf("空白名单不该有位置冲突：%v", conflicted)
 	}
 
 	// 同格新增一段形状：键变了，新命中进 novel，旧条目同时成为 stale（行还在）。
 	grown := f
 	grown.Shape = Shape{Runs: 2, Lens: []int{17, 21}, Ent: []float64{3.97, 4.02}}
 	adj := []Adjudicated{adjudicatedFrom(f, "标识符，保留")}
-	novel, stale, skipped = Filter([]Finding{grown}, adj, rowExistsAlways)
+	novel, stale, skipped, conflicted = Filter([]Finding{grown}, adj, rowExistsAlways)
 	if len(novel) != 1 || novel[0].Key() != grown.Key() {
 		t.Errorf("同格新增过阈段没破闸：novel = %v", novel)
 	}
@@ -424,6 +453,9 @@ func TestFilterBreaksGateOnUnadjudicatedHit(t *testing.T) {
 	}
 	if len(skipped) != 0 {
 		t.Errorf("行还在库里，不该归 skipped：%v", skipped)
+	}
+	if len(conflicted) != 0 {
+		t.Errorf("键没对上不该算位置冲突：%v", conflicted)
 	}
 }
 
@@ -434,7 +466,7 @@ func TestFilterLetsAdjudicatedHitThrough(t *testing.T) {
 		Shape: Shape{Runs: 1, Lens: []int{33}, Ent: []float64{4.16}},
 	}
 	adj := []Adjudicated{adjudicatedFrom(f, "标识符，保留")}
-	novel, stale, skipped := Filter([]Finding{f}, adj, rowExistsAlways)
+	novel, stale, skipped, conflicted := Filter([]Finding{f}, adj, rowExistsAlways)
 	if len(novel) != 0 {
 		t.Errorf("已裁定的键不该进 novel：%v", novel)
 	}
@@ -443,6 +475,9 @@ func TestFilterLetsAdjudicatedHitThrough(t *testing.T) {
 	}
 	if len(skipped) != 0 {
 		t.Errorf("行存在且对上了不该归 skipped：%v", skipped)
+	}
+	if len(conflicted) != 0 {
+		t.Errorf("位置也对上了不该算冲突（放行就是放行）：%v", conflicted)
 	}
 }
 
@@ -453,15 +488,114 @@ func TestFilterSeparatesStaleFromSkipped(t *testing.T) {
 	// 白名单里两条，当前库一条命中都没有（外来库 / 已洗完的库）：
 	// rowExists 决定它们过期还是跳过，两者都不该把 novel 撑起来。
 	adj := []Adjudicated{adjudicatedFrom(gone, "标识符，保留")}
-	novel, stale, skipped := Filter(nil, adj, rowExistsAlways)
+	novel, stale, skipped, conflicted := Filter(nil, adj, rowExistsAlways)
 	if len(novel) != 0 {
 		t.Errorf("没有命中就不该有 novel：%v", novel)
 	}
 	if len(stale) != 1 || len(skipped) != 0 {
 		t.Errorf("行在库里但无对应命中，该判 stale：stale=%v skipped=%v", stale, skipped)
 	}
-	if _, stale, skipped = Filter(nil, adj, rowExistsNever); len(stale) != 0 || len(skipped) != 1 {
+	if len(conflicted) != 0 {
+		t.Errorf("没有命中就不该有位置冲突：%v", conflicted)
+	}
+	if _, stale, skipped, _ = Filter(nil, adj, rowExistsNever); len(stale) != 0 || len(skipped) != 1 {
 		t.Errorf("行不在库里，该归 skipped 而不是报错：stale=%v skipped=%v", stale, skipped)
+	}
+}
+
+// ④ 位置冲突（conflicted）：键是同一条，但裁定记的格子与实测命中不是同一格。
+// 四种位置字段各篡改一种都要检出，且**不放行、不重复计 novel**。
+func TestFilterDetectsPositionConflict(t *testing.T) {
+	hit := Finding{
+		Table: "memories", RowKey: 9, Column: "content", Probe: ProbeEntropy,
+		Shape: Shape{Runs: 1, Lens: []int{17}, Ent: []float64{3.97}},
+	}
+	cases := []struct {
+		name  string
+		tweak func(a *Adjudicated)
+	}{
+		{"表不同", func(a *Adjudicated) { a.Table = "mem_entries" }},
+		{"行不同", func(a *Adjudicated) { a.RowKey = 999999 }},
+		{"列不同", func(a *Adjudicated) { a.Column = "kind" }},
+		{"探针不同", func(a *Adjudicated) { a.Probe = ProbeLongDigit }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			entry := adjudicatedFrom(hit, "位置被改过的一条裁定")
+			c.tweak(&entry)
+			adj := []Adjudicated{entry}
+			novel, stale, skipped, conflicted := Filter([]Finding{hit}, adj, rowExistsAlways)
+			if len(conflicted) != 1 {
+				t.Fatalf("篡改 %s 后该进 conflicted，实际 %v（novel=%v）", c.name, conflicted, novel)
+			}
+			if conflicted[0].Key() != hit.Key() {
+				t.Errorf("冲突条目不是这条命中：%v", conflicted)
+			}
+			if len(novel) != 0 {
+				t.Errorf("键已认下的命中不该重复计 novel：%v", novel)
+			}
+			if len(stale) != 0 || len(skipped) != 0 {
+				t.Errorf("键匹配上的裁定就该被消耗，不该再落 stale / skipped：stale=%v skipped=%v", stale, skipped)
+			}
+		})
+	}
+	// 行不在库里也得照样消耗：位置冲突是"清单本身错位"，与那一行在不在无关。
+	// 少了这一遍，实现把"行不存在"优先判成 skipped 时，闸门会把真冲突吞掉。
+	entry := adjudicatedFrom(hit, "位置被改过的一条裁定")
+	entry.RowKey = 999999
+	novel, stale, skipped, conflicted := Filter([]Finding{hit}, []Adjudicated{entry}, rowExistsNever)
+	if len(conflicted) != 1 {
+		t.Fatalf("行不存在时同样该报位置冲突，实际 conflicted=%v", conflicted)
+	}
+	if len(stale) != 0 || len(skipped) != 0 || len(novel) != 0 {
+		t.Errorf("裁定被消耗后三类都该是 0：novel=%v stale=%v skipped=%v", novel, stale, skipped)
+	}
+}
+
+// 四类同时出现时互不吞没：一条放行、一条冲突、一条未裁定、一条过期、一条跳过。
+func TestFilterKeepsAllFourCategories(t *testing.T) {
+	ok := Finding{Table: "memories", RowKey: 9, Column: "content", Probe: ProbeEntropy,
+		Shape: Shape{Runs: 1, Lens: []int{17}, Ent: []float64{3.97}}}
+	clash := Finding{Table: "mem_entries", RowKey: 104, Column: "content", Probe: ProbeEntropy,
+		Shape: Shape{Runs: 1, Lens: []int{33}, Ent: []float64{4.16}}}
+	fresh := Finding{Table: "shared_tasks", RowKey: 3, Column: "goal", Probe: ProbeLongDigit,
+		Shape: Shape{Runs: 1, Lens: []int{10}}}
+
+	liveOnly := map[string]int64{"memories": 9, "mem_entries": 104, "shared_tasks": 3, "mem_nodes": 5}
+	exists := func(table string, rowKey int64) bool { return liveOnly[table] == rowKey }
+
+	adj := []Adjudicated{
+		adjudicatedFrom(ok, "合法裁定，位置对得上"),
+		func() Adjudicated { // 同键但行号被改 → conflicted，且这条被消耗，不再算 stale / skipped
+			a := adjudicatedFrom(clash, "行号被改过")
+			a.RowKey = 888888
+			return a
+		}(),
+		func() Adjudicated { // 行还在库里、当前没这条命中 → stale
+			a := adjudicatedFrom(Finding{Table: "mem_nodes", RowKey: 5, Column: "anchor", Probe: ProbeContext,
+				Shape: Shape{Runs: 1, Lens: []int{14}}}, "已洗完的一格")
+			a.Key = "aaaa0001"
+			return a
+		}(),
+		func() Adjudicated { // 行不在库里 → skipped
+			a := adjudicatedFrom(Finding{Table: "shared_sessions", RowKey: 77, Column: "title", Probe: ProbeLongDigit,
+				Shape: Shape{Runs: 1, Lens: []int{10}}}, "被删掉的会话")
+			a.Key = "bbbb0002"
+			return a
+		}(),
+	}
+	novel, stale, skipped, conflicted := Filter([]Finding{ok, clash, fresh}, adj, exists)
+	if len(novel) != 1 || novel[0].Key() != fresh.Key() {
+		t.Fatalf("未裁定的那条该独自进 novel，实际 %v", novel)
+	}
+	if len(conflicted) != 1 || conflicted[0].Key() != clash.Key() {
+		t.Errorf("位置冲突的那条该进 conflicted，实际 %v", conflicted)
+	}
+	if len(stale) != 1 || stale[0].Key != "aaaa0001" {
+		t.Errorf("行在而无对应命中该进 stale，实际 %v", stale)
+	}
+	if len(skipped) != 1 || skipped[0].Key != "bbbb0002" {
+		t.Errorf("行不在该进 skipped，实际 %v", skipped)
 	}
 }
 
@@ -502,6 +636,52 @@ func TestRowSetMissingTableIsFalseNotError(t *testing.T) {
 	// 空白名单不查库：外来库上跑闸门时不该因为清单里的表不存在而卡住。
 	if set, err := NewRowSet(db, nil); err != nil || set.Has("memories", 9) {
 		t.Errorf("空白名单应该直接返回恒 false 的判定器：%v", err)
+	}
+}
+
+// 行键列必须由清单给，不能写死 rowid：这张测试表是 WITHOUT ROWID + id INTEGER PRIMARY KEY，
+// 没有可依赖的隐式 rowid。实现若退回写死，这里要么报错、要么把真在库里的行答成"不存在"，
+// 而"不存在"会让白名单条目错误归进 skipped，把该报的位置冲突吞掉。
+func TestRowSetUsesScopeKeyColumn(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE mem_nodes (id INTEGER PRIMARY KEY, anchor TEXT) WITHOUT ROWID`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO mem_nodes (id, anchor) VALUES (7, '一条干净的锚点'), (9, '另一条')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 注入一份临时清单：同一张表的三个行键，一次 IN 查询取回。
+	cols := []Column{{Table: "mem_nodes", Name: "anchor", RowKey: "id"}}
+	adj := []Adjudicated{
+		{Table: "mem_nodes", RowKey: 7, Column: "anchor", Probe: ProbeContext, Key: "aaaa0007", Reason: "行在库里"},
+		{Table: "mem_nodes", RowKey: 8, Column: "anchor", Probe: ProbeContext, Key: "aaaa0008", Reason: "行不在库里"},
+		{Table: "mem_nodes", RowKey: 9, Column: "anchor", Probe: ProbeContext, Key: "aaaa0009", Reason: "同一次查询里的另一行"},
+	}
+	set, err := newRowSetColumns(db, adj, cols)
+	if err != nil {
+		t.Fatalf("按清单给的行键列查应当成功: %v", err)
+	}
+	if !set.Has("mem_nodes", 7) {
+		t.Error("id=7 在库里，Has 该返回 true（实现写死 rowid 就是这条先红）")
+	}
+	if !set.Has("mem_nodes", 9) {
+		t.Error("同一次查询里的 id=9 也该并进来（占位符拼错或结果覆盖会栽在这条）")
+	}
+	if set.Has("mem_nodes", 8) {
+		t.Error("id=8 不在库里，Has 该返回 false")
+	}
+
+	// 清单里没有的二元组要出声报错，不能悄悄答"这行不存在"：那会把清单错写当成行被删。
+	if _, err := newRowSetColumns(db, []Adjudicated{{
+		Table: "mem_nodes", RowKey: 7, Column: "content", Probe: ProbeContext, Key: "aaaa0009", Reason: "列不在清单里",
+	}}, cols); err == nil {
+		t.Error("（表，列）不在清单里时要报错，不能静默归成 skipped")
 	}
 }
 
