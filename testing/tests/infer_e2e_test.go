@@ -132,14 +132,19 @@ func (f *fakeDeepSeek) Requests() []map[string]any {
 }
 
 // e2eBoss 是测试进程内的“老板”替身：实现约定的 deliver 动作。
+// failNext 可注入若干次交付失败，用来验证 reasoner 的失败处理。
 type e2eBoss struct {
 	srv       *httptest.Server
 	delivered chan string
+	attempts  chan string
+
+	mu       sync.Mutex
+	failures int
 }
 
 func startE2EBoss(t *testing.T) *e2eBoss {
 	t.Helper()
-	b := &e2eBoss{delivered: make(chan string, 4)}
+	b := &e2eBoss{delivered: make(chan string, 4), attempts: make(chan string, 16)}
 	srv := newStubServer(t, "e2e-boss", "e2e 老板替身", spv2.Method{Name: "deliver", Shape: spv2.ShapeCall})
 	srv.Handle("deliver", func(_ context.Context, call *spv2.Call) error {
 		var p struct {
@@ -147,6 +152,19 @@ func startE2EBoss(t *testing.T) *e2eBoss {
 		}
 		if err := call.Frame.DecodeBody(&p); err != nil {
 			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		b.mu.Lock()
+		fail := b.failures > 0
+		if fail {
+			b.failures--
+		}
+		b.mu.Unlock()
+		select {
+		case b.attempts <- p.Text:
+		default:
+		}
+		if fail {
+			return call.ReplyError(spv2.CodeInternal, "测试注入：交付失败", false, nil)
 		}
 		select {
 		case b.delivered <- p.Text:
@@ -156,6 +174,13 @@ func startE2EBoss(t *testing.T) *e2eBoss {
 	})
 	b.srv = serveStub(t, srv)
 	return b
+}
+
+// failNext 让接下来 n 次 deliver 返回错误。
+func (b *e2eBoss) failNext(n int) {
+	b.mu.Lock()
+	b.failures = n
+	b.mu.Unlock()
 }
 
 func (b *e2eBoss) URL() string { return wsURL(b.srv) }

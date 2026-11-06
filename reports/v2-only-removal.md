@@ -27,7 +27,7 @@
 | `src/frontend` | 中心链路只走原生 register call / heartbeat event / roster·settings event；删除 v1 信封、`SUMP_SPV2`、`/ws` 入站；测试桩改真 `/spv2` |
 | `src/embedding` | 删除 `server.py`（v1 JumpEndpoint）与 `test_endpoint.py`；只放行 `/spv2`，其余路径 404；`protocol.py` 只剩 `new_id`，夹具改为 Frame body |
 | `scripts` | `run-local.ps1` 删除 `SUMP_SPV2`，12 处 `-center` 改 `/spv2`；命令审批脚本同步 |
-| 跨服务测试 | `testing/tests` 13 个文件、`testing/approval-integration`、`testing/evals` 的观察者/boss/门户/设置替身全部改原生帧 |
+| 跨服务测试 | `testing/tests` 13 个既有文件 + 原生辅助文件、`testing/approval-integration`、`testing/evals` 的观察者/boss/门户/设置替身全部改原生帧 |
 | 文档 | README、AGENTS、protocol/architecture/approval/agent-loop、add-a-service、mcp-connect、各服务 README 改为 SPv2.1；历史 handoff / archive 不动 |
 
 ## 3. 语义变化（必须明说的部分）
@@ -37,7 +37,8 @@
    改为 `from=eval-boss`。
 2. **删除 `TestDeliveryFailureNoticeE2E`**：它验证的是 v1「boss 指错、失败补报回入口」；
    v2 中 entry 恒等于 boss，该分支不可达。同时删掉 reasoner 的入口表与补报路径（否则是假承诺）。
-   交付失败仍按「送达后不重试」停住并记日志。
+   交付失败仍按「送达后不重试」停住并记日志；失败路径由新增的原生用例
+   `TestDeliverFailureKeepsTaskRetryableE2E` 覆盖（注入一次 deliver 错误 → 不记录成功交付 → 后续消息仍能交付）。
 3. **业务 DTO 中的 `boss` 字段保留**（`TaskContext.Boss`、`StorePayload.Boss`、`TimerStatePayload.Boss`）：
    它们是载荷内的业务概念（会话入口 / 计时归属），不是帧头字段；改名会破坏已有数据与设置。
 4. **OneBot `/ws` 保留**：qq 测试桩的 `/ws` 是 NapCat/OneBot 自己的协议，不是 SUMP 端点。
@@ -50,7 +51,7 @@
 | Go 模块（14 个 src） | `GOWORK=off go build/vet/test ./...` | 全绿 |
 | approval-integration | `GOWORK=off go build/vet/test ./...` | ok 4.5s |
 | evals | `GOWORK=off go build/vet` + `go test ./...`（runner 需 workspace 编译子进程） | 全绿；runner 1.9s（构建缓存命中） |
-| 跨服务 e2e | `cd testing/tests && go test ./... -count=1 -timeout 900s` | ok 89.6s（含门户真进程，前端 dist 已构建） |
+| 跨服务 e2e | `cd testing/tests && go test ./... -count=1 -timeout 900s` | ok 93.8s（含门户真进程与交付失败用例，前端 dist 已构建） |
 | frontend | `npm run typecheck` + `npm test` | node 86 pass / web 153 pass |
 | embedding | `pytest tests -q` | 48 passed, 1 skipped（ONNX 冒烟需模型目录） |
 | frontend 异变 | `node tests/mutation.mjs` | 31 个：killed 26 / timeout 5 / **lived 0** |
