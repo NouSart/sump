@@ -10,8 +10,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // Config 是服务启动配置（引导只靠它：自己的名字/地址 + 设置中心地址）。
@@ -39,6 +42,9 @@ type Config struct {
 	// SecretFile 是秘密项（HandleSecret）的本地持久化文件路径。
 	// 留空 = <name> 的默认路径（data/<name>-secret.json）；传 "-" 表示只放内存不落盘。
 	SecretFile string
+	// SPV2 为真时启用 SPv2.1 传输桥：入站额外暴露 /spv2，出站优先走目标 /spv2。
+	// 也可用环境变量 SUMP_SPV2=1 打开；默认关闭，保持现有 v1 测试行为。
+	SPV2 bool
 }
 
 // Handler 处理一次跳转动作，返回的数据会作为响应 payload 的 data。
@@ -50,6 +56,7 @@ type Service struct {
 	logger *log.Logger
 
 	actions map[string]Handler
+	native  map[string]NativeMethod
 
 	settingsMu    sync.Mutex        // 设置声明与生效值
 	settings      []settingEntry    // 已声明的设置项（按声明顺序）
@@ -63,16 +70,21 @@ type Service struct {
 	announceSeq    int64      // 设置回传（AnnounceSetting）的单调序号（settingsMu 保护）
 	applyMu        sync.Mutex // 应用串行化：多个下发不并发进回调
 
-	mu         sync.Mutex
-	roster     map[string]protocol.ServiceCard
-	selfURL    string
-	center     *protocol.Client // 当前中心连接（nil = 未连接）
-	closed     bool             // Shutdown 后为真（阻止继续重连）
-	started    bool             // Start 后为真（阻止再声明设置项）
-	regs       int64            // 注册成功次数（日志用）
-	lifeCtx    context.Context  // Start 创建、Shutdown 取消；后台循环据此退出
-	lifeCancel context.CancelFunc
-	bg         sync.WaitGroup // 生命周期后台循环（只含可取消、可快速退出的）
+	mu           sync.Mutex
+	roster       map[string]protocol.ServiceCard
+	selfURL      string
+	center       *protocol.Client // 当前 v1 中心连接（nil = 未连接）
+	centerNative *spv2.Client     // 当前 SPv2 中心连接（nil = 未连接）
+	spv2On       bool             // SPv2.1 传输桥是否启用
+	spv2Srv      *spv2.Server     // /spv2 服务端（nil = 未启用）
+	spv2PeerMu   sync.Mutex       // peer /spv2 能力缓存锁
+	spv2Peers    map[string]bool  // addr -> 是否支持 /spv2
+	closed       bool             // Shutdown 后为真（阻止继续重连）
+	started      bool             // Start 后为真（阻止再声明设置项）
+	regs         int64            // 注册成功次数（日志用）
+	lifeCtx      context.Context  // Start 创建、Shutdown 取消；后台循环据此退出
+	lifeCancel   context.CancelFunc
+	bg           sync.WaitGroup // 生命周期后台循环（只含可取消、可快速退出的）
 
 	repMu       sync.Mutex     // 错误上报退避锁
 	repThrottle reportThrottle // 错误上报防刷（见 report.go）
@@ -98,10 +110,14 @@ func New(cfg Config) *Service {
 	if cfg.SecretFile == "" {
 		cfg.SecretFile = filepath.Join("data", cfg.Name+"-secret.json")
 	}
+	spv2On := cfg.SPV2 || os.Getenv("SUMP_SPV2") == "1"
 	s := &Service{
 		cfg:            cfg,
 		logger:         cfg.Logger,
+		spv2On:         spv2On,
+		spv2Peers:      map[string]bool{},
 		actions:        map[string]Handler{},
+		native:         map[string]NativeMethod{},
 		settingIndex:   map[string]int{},
 		settingValues:  map[string]string{},
 		secrets:        map[string]string{},
@@ -120,6 +136,37 @@ func (s *Service) Handle(action string, fn Handler) {
 		return
 	}
 	s.actions[action] = fn
+}
+
+// NativeHandler 是原生 SPv2.1 method：直接读 call.Frame.Body，自己 Reply/ReplyError。
+type NativeHandler func(ctx context.Context, call *spv2.Call) error
+
+// NativeMethod 把一个原生 handler 与其服务卡声明绑在一起。
+type NativeMethod struct {
+	Method  spv2.Method
+	Handler NativeHandler
+}
+
+// HandleNative 注册原生 SPv2.1 method。同名 v1 action 仍保留给 /ws 兼容边缘；
+// /spv2 优先用原生 handler，不再合成 protocol.JumpPayload。
+func (s *Service) HandleNative(m spv2.Method, h NativeHandler) {
+	if m.Name == "" || h == nil {
+		s.logger.Printf("忽略非法原生 method 注册: name=%q", m.Name)
+		return
+	}
+	if m.Version == 0 {
+		m.Version = 1
+	}
+	if m.Shape == "" {
+		m.Shape = spv2.ShapeCall
+	}
+	if m.Input == nil {
+		m.Input = genericSchema()
+	}
+	if m.Output == nil {
+		m.Output = genericSchema()
+	}
+	s.native[m.Name] = NativeMethod{Method: m, Handler: h}
 }
 
 // WsURL 返回自己的对外地址（Start 成功后有效）。
@@ -154,6 +201,13 @@ func (s *Service) Start(ctx context.Context) error {
 	// 秘密项先落地：它们不在中心那边（中心没有值可下发），服务得自己带起来。
 	s.loadSecrets()
 
+	if s.spv2On {
+		if err := s.buildSPv2(); err != nil {
+			lifeCancel()
+			return fmt.Errorf("构建 SPv2 服务卡失败: %w", err)
+		}
+	}
+
 	ln, err := net.Listen("tcp", s.cfg.Listen)
 	if err != nil {
 		lifeCancel()
@@ -163,6 +217,9 @@ func (s *Service) Start(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
+	if s.spv2Srv != nil {
+		mux.Handle("/spv2", s.spv2Srv.Handler())
+	}
 	s.httpSrv = &http.Server{Handler: mux}
 	go func() {
 		if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -170,6 +227,9 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}()
 	s.logger.Printf("%s 监听 %s", s.cfg.Name, s.selfURL)
+	if s.spv2Srv != nil {
+		s.logger.Printf("%s SPv2.1 传输桥已启用: %s/spv2", s.cfg.Name, strings.TrimSuffix(s.selfURL, "/ws"))
+	}
 	// 内部 WS 不做身份认证：信封里的 from 是发送方自称的字段，只在敏感动作上比对
 	// （见 docs/concepts/protocol.md 的「信任边界」）。这条日志是部署前提的显式回声——
 	// 把端口暴露到不可信网络之前，看到它的那个人应该先停一下。
@@ -237,6 +297,8 @@ func (s *Service) Shutdown() {
 	s.closed = true
 	c := s.center
 	s.center = nil
+	n := s.centerNative
+	s.centerNative = nil
 	cancel := s.lifeCancel
 	s.mu.Unlock()
 
@@ -260,6 +322,21 @@ func (s *Service) Shutdown() {
 		}
 		_ = c.Close()
 	}
+	if n != nil {
+		if ev, err := spv2.NewEvent(spv2.NewID(), spv2.ServiceRef(s.cfg.Name), spv2.ServiceRef("settings-center"), "heartbeat",
+			protocol.HeartbeatPayload{Status: "bye"}); err == nil {
+			sent := make(chan struct{})
+			go func() {
+				_ = n.Send(ev)
+				close(sent)
+			}()
+			select {
+			case <-sent:
+			case <-time.After(time.Second):
+			}
+		}
+		_ = n.Close()
+	}
 	if s.httpSrv != nil {
 		_ = s.httpSrv.Close()
 	}
@@ -270,6 +347,13 @@ func (s *Service) Shutdown() {
 
 // connectAndRegister 建立一条中心连接、注册并启动心跳。
 func (s *Service) connectAndRegister(ctx context.Context) error {
+	if s.spv2On {
+		if err := s.connectAndRegisterSPv2(ctx); err == nil {
+			return nil
+		} else {
+			s.logger.Printf("%s SPv2 注册失败，回退 v1: %v", s.cfg.Name, err)
+		}
+	}
 	c, err := protocol.DialContextWithOptions(ctx, s.cfg.Center, s.onCenterEvent, protocol.DialOptions{MaxMessageBytes: s.cfg.MaxMessageBytes})
 	if err != nil {
 		return err
@@ -348,12 +432,13 @@ func (s *Service) watchCenter(ctx context.Context) {
 		s.mu.Lock()
 		closed := s.closed
 		c := s.center
+		n := s.centerNative
 		s.mu.Unlock()
 		if closed || ctx.Err() != nil {
 			return
 		}
 
-		if c == nil {
+		if c == nil && n == nil {
 			if err := s.connectAndRegister(ctx); err != nil {
 				if ctx.Err() != nil || s.isClosed() {
 					return
@@ -374,15 +459,24 @@ func (s *Service) watchCenter(ctx context.Context) {
 			continue
 		}
 
+		var done <-chan struct{}
+		if c != nil {
+			done = c.Done()
+		} else {
+			done = n.Done()
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-c.Done():
+		case <-done:
 			// 连接断开：清空后快速重连（首试 1s，不做长退避）。
 			// Shutdown 也会关连接；先看 closed，避免"关闭后还打一行重连日志再等 1s"。
 			s.mu.Lock()
 			if s.center == c {
 				s.center = nil
+			}
+			if s.centerNative == n {
+				s.centerNative = nil
 			}
 			closed := s.closed
 			s.mu.Unlock()
@@ -569,6 +663,18 @@ func (s *Service) Call(ctx context.Context, to, action string, payload any, trac
 	raw, err := encodeInput(payload)
 	if err != nil {
 		return nil, err
+	}
+
+	if s.spv2On {
+		data, err := s.callSPv2(ctx, name, addr, action, raw, trace)
+		if err == nil {
+			return data, nil
+		}
+		var de *spv2DialError
+		if !errors.As(err, &de) {
+			return nil, err
+		}
+		s.logger.Printf("SPv2 目标 %s 不可达，回退 v1: %v", addr, err)
 	}
 
 	var lastErr error

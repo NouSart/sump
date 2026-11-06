@@ -56,6 +56,10 @@ func TestProvidesMatchHandle(t *testing.T) {
 
 	for _, mod := range mods {
 		name := filepath.Base(mod) // 例外表按模块名登记，与所在分组无关
+		// spv2 是协议参考实现库，不是可部署服务；它的 Handle 注册是 method 表，不是 provides。
+		if name == "spv2" {
+			continue
+		}
 		declared, handled, mentioned := scanActions(t, filepath.Join(root, mod))
 		if len(declared) == 0 && len(handled) == 0 {
 			continue // 没有服务骨架的模块（如 protocol）
@@ -182,6 +186,10 @@ func scanActions(t *testing.T, dir string) (declared, handled, mentioned map[str
 				return true
 			}
 			if v, ok := stringLit(call.Args[0]); ok {
+				// mux.Handle("/spv2", ...) 是 HTTP 路由，不是服务动作。
+				if strings.HasPrefix(v, "/") {
+					return true
+				}
 				handled[v] = true
 			}
 			return true

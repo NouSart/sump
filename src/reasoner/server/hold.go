@@ -43,8 +43,13 @@ func (s *Server) holdFor(cid string) *holdState {
 
 // actionUserHold 承接入口服务的"用户停手"。
 func (s *Server) actionUserHold(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.userHold(in.Input)
+}
+
+// userHold 承接入口服务的“用户停手”（v1 / 原生共用）。
+func (s *Server) userHold(body []byte) (any, error) {
 	var p protocol.UserHoldPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	cid := strings.TrimSpace(p.ConversationID)

@@ -36,7 +36,7 @@ func (s *Server) longterm() *longterm.Store {
 //
 // 种子向量**锚在种子句上**，永不随成员重算——所以补一次就够了；
 // 失败（embedding 还没上线）静默返回，下次调用再试。
-func (s *Server) ensureNetCentroids(ctx context.Context, env protocol.Envelope) {
+func (s *Server) ensureNetCentroids(ctx context.Context, trace string) {
 	if s.net() == nil {
 		return
 	}
@@ -59,7 +59,7 @@ func (s *Server) ensureNetCentroids(ctx context.Context, env protocol.Envelope) 
 	for _, n := range pending {
 		texts = append(texts, n.Anchor)
 	}
-	vecs, model, err := s.embedTexts(ctx, env, texts, false)
+	vecs, model, err := s.embedTexts(ctx, trace, texts, false)
 	if err != nil {
 		// 只在**慢失败**（超时）时冷却：那种失败每次都要等满一个 embedTimeout，
 		// 而且期间所有 net 动作都堵在这把锁上。
@@ -84,12 +84,12 @@ func (s *Server) ensureNetCentroids(ctx context.Context, env protocol.Envelope) 
 // 一行一条：`[N 条 · 0.42] 代表句（id=…，来自 task-…）`——成员 id 只放这里，
 // 模型想看同一簇的其它条目/当时的过程，就自己去 dig。
 // 网不可用（没有向量 / 没有经验）时静默返回 nil：召回不因为网而失败。
-func (s *Server) experienceLines(ctx context.Context, env protocol.Envelope, query string) []string {
+func (s *Server) experienceLines(ctx context.Context, trace, query string) []string {
 	if s.net() == nil || strings.TrimSpace(query) == "" {
 		return nil
 	}
-	s.ensureNetCentroids(ctx, env)
-	vecs, _, err := s.embedTexts(ctx, env, []string{query}, true)
+	s.ensureNetCentroids(ctx, trace)
+	vecs, _, err := s.embedTexts(ctx, trace, []string{query}, true)
 	if err != nil || len(vecs) == 0 {
 		return nil
 	}
@@ -119,19 +119,24 @@ func (s *Server) experienceLines(ctx context.Context, env protocol.Envelope, que
 // actionNote 写一条经验（整理时机由调用方决定：收尾后、定时、手动都行）。
 // 不进 provides：不给 LLM 随手记东西的按钮——记错的"经验"比没记更糟。
 func (s *Server) actionNote(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.note(ctx, in.Input, callMeta{from: env.From, trace: env.Trace})
+}
+
+// note 写一条经验（v1 / SPv2 共用）。
+func (s *Server) note(ctx context.Context, body []byte, meta callMeta) (any, error) {
 	var p protocol.NotePayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if s.net() == nil {
 		return nil, errors.New("经验网未启用")
 	}
-	s.ensureNetCentroids(ctx, env)
+	s.ensureNetCentroids(ctx, meta.trace)
 	content := strings.TrimSpace(p.Content)
 	if content == "" {
 		return nil, errors.New("note: content 必填")
 	}
-	vecs, model, err := s.embedTexts(ctx, env, []string{content}, false)
+	vecs, model, err := s.embedTexts(ctx, meta.trace, []string{content}, false)
 	if err != nil {
 		return nil, fmt.Errorf("note: 向量化失败（不写半条经验）: %w", err)
 	}
@@ -139,7 +144,7 @@ func (s *Server) actionNote(ctx context.Context, env protocol.Envelope, in proto
 		Content:        content,
 		ConversationID: p.ConversationID,
 		TaskID:         p.TaskID,
-		Source:         env.From,
+		Source:         meta.from,
 		Durability:     p.Durability,
 	}, vecs[0], model)
 	if err != nil {
@@ -157,8 +162,13 @@ func (s *Server) actionNote(ctx context.Context, env protocol.Envelope, in proto
 //   - 给 entry_id：翻出这条经验同一大类里够近的兄弟（"还有没有类似的"）；
 //   - 给 node_id：展开整个大类（"这一类都有什么"）。
 func (s *Server) actionDig(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.dig(in.Input)
+}
+
+// dig 顺着线头往下扒（v1 / SPv2 共用）。
+func (s *Server) dig(body []byte) (any, error) {
 	var p protocol.DigPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if s.net() == nil {
@@ -196,15 +206,20 @@ func (s *Server) actionDig(_ context.Context, _ protocol.Envelope, in protocol.J
 
 // actionLineHeads 直接要线头（门户/调试用；recall 里是自动带的）。
 func (s *Server) actionLineHeads(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.lineHeads(ctx, in.Input, callMeta{from: env.From, trace: env.Trace})
+}
+
+// lineHeads 直接要线头（v1 / SPv2 共用）。
+func (s *Server) lineHeads(ctx context.Context, body []byte, meta callMeta) (any, error) {
 	var p protocol.LineHeadsPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if s.net() == nil {
 		return nil, errors.New("经验网未启用")
 	}
-	s.ensureNetCentroids(ctx, env)
-	vecs, _, err := s.embedTexts(ctx, env, []string{p.Query}, true)
+	s.ensureNetCentroids(ctx, meta.trace)
+	vecs, _, err := s.embedTexts(ctx, meta.trace, []string{p.Query}, true)
 	if err != nil {
 		return nil, fmt.Errorf("lineheads: 向量化失败: %w", err)
 	}
@@ -228,7 +243,12 @@ func (s *Server) actionLineHeads(ctx context.Context, env protocol.Envelope, in 
 
 // actionNetPrune 维护：软剪枝（只标状态、只断干枯的线，不删行）。
 // 不绑时机——谁调都行（收尾后 / 定时 / 门户手动）。
-func (s *Server) actionNetPrune(_ context.Context, _ protocol.Envelope, _ protocol.JumpPayload) (any, error) {
+func (s *Server) actionNetPrune(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.netPrune(in.Input)
+}
+
+// netPrune 软剪枝（v1 / SPv2 共用；输入为空）。
+func (s *Server) netPrune(_ []byte) (any, error) {
 	if s.net() == nil {
 		return nil, errors.New("经验网未启用")
 	}

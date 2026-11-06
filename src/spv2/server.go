@@ -182,6 +182,9 @@ func (s *Server) runCall(c *conn, f Frame, h Handler) {
 				code := StatusOK
 				if cached.Status == StatusError {
 					code = StatusError
+					if cached.Error != nil && cached.Error.Code != "" {
+						code = cached.Error.Code
+					}
 				}
 				s.metrics.Counter("sump_requests_total", "Total requests", map[string]string{"method": f.Method, "code": code}, 1)
 				s.metrics.Observe("sump_request_duration_seconds", "Request latency", "s", map[string]string{"method": f.Method}, time.Since(start).Seconds())
@@ -330,11 +333,9 @@ func (c *Call) SendStream(streamID string, seq int64, end bool, body any, status
 		return err
 	}
 	if end {
+		// 终态错误流走 SendStreamError；NewStreamFrame 不允许 status=error 且无 error。
 		c.mu.Lock()
 		c.replied = true
-		if f.Status == StatusError {
-			c.lastError = f.Error
-		}
 		c.mu.Unlock()
 	}
 	return c.conn.send(f)
@@ -352,6 +353,9 @@ func (c *Call) SendStreamError(streamID string, seq int64, e *Error) error {
 	c.mu.Unlock()
 	return c.conn.send(f)
 }
+
+// Close 关闭底层连接（设置中心等长连接管理用）。
+func (c *Call) Close() error { return c.conn.Close() }
 
 // WorkID 返回 work id。
 func (c *Call) WorkID() string { return c.Frame.Work }

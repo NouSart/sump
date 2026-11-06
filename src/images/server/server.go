@@ -19,6 +19,7 @@ import (
 	"github.com/NouSart/sump/images/store"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
 )
 
 // Config 是 images 服务的启动配置。
@@ -88,6 +89,46 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("save", s.actionSave)
 	s.Handle("fetch", s.actionFetch)
 	s.Handle("fetch_full", s.actionFetchFull)
+	s.HandleNative(spv2.Method{
+		Name: "save", Tool: true,
+		Description: "保存图片（URL 或 base64）",
+		Input: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"url":  map[string]any{"type": "string"},
+				"data": map[string]any{"type": "string"},
+				"mime": map[string]any{"type": "string"},
+			},
+		},
+		Output: map[string]any{"type": "object"},
+	}, s.nativeSave)
+	s.HandleNative(spv2.Method{
+		Name: "fetch", Tool: true,
+		Description: "取缩略图/矩形窗口，base64 返回",
+		Input: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":       map[string]any{"type": "string"},
+				"x1":       map[string]any{"type": "integer"},
+				"y1":       map[string]any{"type": "integer"},
+				"x2":       map[string]any{"type": "integer"},
+				"y2":       map[string]any{"type": "integer"},
+				"max_side": map[string]any{"type": "integer"},
+			},
+			"required": []any{"id"},
+		},
+		Output: map[string]any{"type": "object"},
+	}, s.nativeFetch)
+	s.HandleNative(spv2.Method{
+		Name:        "fetch_full",
+		Description: "原图，服务间专用",
+		Input: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"id": map[string]any{"type": "string"}},
+			"required":   []any{"id"},
+		},
+		Output: map[string]any{"type": "object"},
+	}, s.nativeFetchFull)
 	// 只读项：启动参数带起来的（换它要重启服务）。db/dir 是存储身份——运行中换库/换目录
 	// 意味着一批在途读写换个落点，不做（宁可不给旋钮，也不给一个会撕开的旋钮）。
 	s.HandleReadOnly("db", cfg.DBPath)
@@ -109,8 +150,20 @@ func (s *Server) maxBytesNow() int64 {
 
 // actionSave 保存一张图片：URL 或 base64 二选一。
 func (s *Server) actionSave(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.save(in.Input)
+}
+
+func (s *Server) nativeSave(_ context.Context, call *spv2.Call) error {
+	out, err := s.save(call.Frame.Body)
+	if err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+	}
+	return call.Reply(out)
+}
+
+func (s *Server) save(body []byte) (any, error) {
 	var p protocol.ImageSavePayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	var data []byte
@@ -159,8 +212,20 @@ func (s *Server) actionSave(_ context.Context, _ protocol.Envelope, in protocol.
 // 缩略图先让模型看清「大概是什么」，要看细节再用矩形平移窗口取局部原图。
 // 要原图的是服务（reasoner 内联用户刚发的图），走 fetch_full——那个动作不进工具列表。
 func (s *Server) actionFetch(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.fetch(in.Input)
+}
+
+func (s *Server) nativeFetch(_ context.Context, call *spv2.Call) error {
+	out, err := s.fetch(call.Frame.Body)
+	if err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+	}
+	return call.Reply(out)
+}
+
+func (s *Server) fetch(body []byte) (any, error) {
 	var p protocol.ImageFetchPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if p.ID == "" {
@@ -222,8 +287,20 @@ func (s *Server) actionFetch(_ context.Context, _ protocol.Envelope, in protocol
 // actionFetchFull 原样发回整张图（服务间调用：reasoner 内联用户刚发的图）。
 // 不进工具列表（provides 里不带 tool:true）：模型拿不到这条逃逸通道，才不会一把撑爆上下文。
 func (s *Server) actionFetchFull(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	return s.fetchFull(in.Input)
+}
+
+func (s *Server) nativeFetchFull(_ context.Context, call *spv2.Call) error {
+	out, err := s.fetchFull(call.Frame.Body)
+	if err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+	}
+	return call.Reply(out)
+}
+
+func (s *Server) fetchFull(body []byte) (any, error) {
 	var p protocol.ImageFetchPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	if p.ID == "" {

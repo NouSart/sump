@@ -12,9 +12,11 @@ from dataclasses import dataclass, field
 
 import websockets
 
+from . import __version__
 from .backends import Backend
 from .center import CenterLink
 from .server import JumpEndpoint
+from .spv2 import MethodSpec, NativeEndpoint, decode_body
 
 DEFAULT_MAX_BATCH = 32
 DEFAULT_ACTION_TIMEOUT = 60.0
@@ -57,14 +59,49 @@ class Service:
             action_timeout=cfg.action_timeout,
             log=log,
         )
+        # 原生 SPv2.1 端点：/spv2 的 call 直接解 body 调 action_embed，不合成 v1 信封。
+        self.native = NativeEndpoint(
+            name=cfg.name,
+            methods=[
+                MethodSpec(
+                    name="embed",
+                    handler=self.native_embed,
+                    description="批量文本 → 向量（L2 归一化）",
+                    input={
+                        "type": "object",
+                        "properties": {
+                            "texts": {"type": "array", "items": {"type": "string"}},
+                            "query": {"type": "boolean"},
+                        },
+                        "required": ["texts"],
+                    },
+                    output={
+                        "type": "object",
+                        "properties": {
+                            "vectors": {
+                                "type": "array",
+                                "items": {"type": "array", "items": {"type": "number"}},
+                            },
+                            "dim": {"type": "integer"},
+                            "model": {"type": "string"},
+                        },
+                        "required": ["vectors", "dim", "model"],
+                    },
+                ),
+            ],
+            action_timeout=cfg.action_timeout,
+            log=log,
+            version=__version__,
+            description=cfg.description,
+        )
         self.link: CenterLink | None = None
 
     async def start(self) -> None:
         host, port = split_addr(self.cfg.addr)
-        self._server = await websockets.serve(self.endpoint.handle_conn, host, port, max_size=None)
+        self._server = await websockets.serve(self.handle_conn, host, port, max_size=None)
         sockname = self._server.sockets[0].getsockname()
         self.addr = f"{sockname[0]}:{sockname[1]}"  # 支持 :0 随机端口（测试）
-        self.log.info("%s 监听 ws://%s/ws", self.cfg.name, self.addr)
+        self.log.info("%s 监听 ws://%s/ws（v1）与 ws://%s/spv2（原生 SPv2.1）", self.cfg.name, self.addr, self.addr)
         self.log.info(
             "后端: %s（%s, dim=%d）",
             type(self.backend).__name__,
@@ -96,7 +133,22 @@ class Service:
             await self._server.wait_closed()
             self._server = None
 
+    # ---------- 传输 ----------
+
+    async def handle_conn(self, ws: websockets.ServerConnection) -> None:
+        """按请求路径分流：/spv2 走原生 SPv2.1；其余（含 /ws）保持 v1 兼容边缘。"""
+        request = getattr(ws, "request", None)
+        path = getattr(request, "path", "") if request is not None else ""
+        if path.split("?", 1)[0] == "/spv2":
+            await self.native.handle_conn(ws)
+            return
+        await self.endpoint.handle_conn(ws)
+
     # ---------- 动作 ----------
+
+    async def native_embed(self, body: bytes) -> object:
+        """原生 embed：body 是 msgpack 的 {texts, query?}；返回值由端点编码成 reply body。"""
+        return await self.action_embed(decode_body(body))
 
     async def action_embed(self, input_: object) -> object:
         if not isinstance(input_, dict):

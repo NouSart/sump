@@ -12,10 +12,12 @@ import {
   createTerminalHub,
   createTimerStore,
   parsePendingApproval,
+  type ProgressUpdate,
   type TerminalUpdate,
   type TrustConfig,
 } from './portal.ts';
 import { attachJumpEndpoint, parseTimerItems, portalProvides, portalSettings } from './service.ts';
+import { createSPv2WSS } from './spv2.ts';
 
 export const frontendDescription =
   '用户交互门户（与 qq 同类）：对外提供 deliver（智能体 → 用户，推给浏览器），自己跳 user_message 给 reasoner（用户 → 智能体）；另附设置中心可视化面板';
@@ -184,25 +186,35 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
       log,
     ),
   );
+  const onDeliver = hub.publish;
+  const onTimers = timers.apply;
+  const onApproval = approvals.apply;
+  const onProgress = (p: ProgressUpdate): boolean => {
+    progress.publish(p);
+    return true;
+  };
+  const onTerminal = (u: TerminalUpdate): boolean => {
+    const conversationId = terminalOwners.get(u.itemId) ?? DEFAULT_CONVERSATION_ID;
+    terminal.publish({ ...u, conversationId });
+    if (u.final) recordTerminal(link, cfg.memory, u, conversationId, log);
+    return true;
+  };
+  const spv2Enabled = process.env.SUMP_SPV2 === '1';
+  const spv2Wss = spv2Enabled
+    ? createSPv2WSS(cfg.name, log, { onDeliver, onTimers, onApproval, onProgress, onTerminal })
+    : undefined;
   const wss: WebSocketServer = attachJumpEndpoint(
     server,
     '/ws',
     cfg.name,
     log,
-    hub.publish,
-    timers.apply,
-    approvals.apply,
-    (p) => {
-      progress.publish(p);
-      return true;
-    },
-    (u) => {
-      const conversationId = terminalOwners.get(u.itemId) ?? DEFAULT_CONVERSATION_ID;
-      terminal.publish({ ...u, conversationId });
-      if (u.final) recordTerminal(link, cfg.memory, u, conversationId, log);
-      return true;
-    },
+    onDeliver,
+    onTimers,
+    onApproval,
+    onProgress,
+    onTerminal,
     trust,
+    spv2Wss !== undefined ? { path: '/spv2', wss: spv2Wss } : undefined,
   );
   link.start();
 
@@ -263,7 +275,13 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
     close: async () => {
       link.stop();
       for (const ws of wss.clients) ws.terminate();
+      if (spv2Wss !== undefined) {
+        for (const ws of spv2Wss.clients) ws.terminate();
+      }
       await new Promise<void>((resolveClose) => wss.close(() => resolveClose()));
+      if (spv2Wss !== undefined) {
+        await new Promise<void>((resolveClose) => spv2Wss.close(() => resolveClose()));
+      }
       await new Promise<void>((resolveClose) => {
         server.close(() => resolveClose());
         server.closeAllConnections();

@@ -77,11 +77,7 @@ func New(cfg Config) (*Server, error) {
 	for _, item := range [][2]string{{"name", "mcp"}, {"addr", cfg.Listen}, {"center", cfg.Center}, {"http.addr", cfg.HTTP.Listen}, {"config.path", cfg.ConfigPath}} {
 		s.svc.HandleReadOnly(item[0], item[1])
 	}
-	for _, provide := range s.imports.Provides() {
-		s.svc.Handle(provide.Action, s.handleImport)
-	}
-	s.svc.Handle("report_result", s.handleReport)
-	s.svc.Handle("cancel_import", s.handleCancelImport)
+	s.registerNativeMethods()
 	s.http, err = NewHTTPServer(cfg.HTTP, s.configureMCP, s.verifyToken)
 	if err != nil {
 		s.imports.Close()
@@ -304,18 +300,25 @@ func (s *Server) release(principal string) {
 	}
 }
 
+// handleImport 是 v1 action 的薄包装；业务实现与 /spv2 原生 method 共用。
 func (s *Server) handleImport(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	if s.imports.IsAsync(in.Action) {
-		return s.handleAsyncImport(ctx, env, in)
+	return s.importCall(ctx, in.Action, in.Input, env.From, env.Trace, env.Boss)
+}
+
+// importCall 只接收原始 MessagePack body 与路由字段，原生路径不构造
+// v1 跳转载荷，也不合成信封。
+func (s *Server) importCall(ctx context.Context, action string, body []byte, caller, trace, boss string) (any, error) {
+	if s.imports.IsAsync(action) {
+		return s.asyncImport(ctx, action, body, caller, trace, boss)
 	}
 	// SUMP From is routing identity within the trusted internal network, not a
 	// credential. External HTTP callers cannot choose it or invoke imports here.
-	principal := "sump:" + env.From
+	principal := "sump:" + caller
 	if err := s.acquire(principal, nil); err != nil {
 		return nil, err
 	}
 	defer s.release(principal)
-	return s.imports.Handle(ctx, env, in)
+	return s.imports.HandleBody(ctx, action, body)
 }
 
 func (s *Server) callTool(ctx context.Context, req *mcp.CallToolRequest, b Binding) *mcp.CallToolResult {
