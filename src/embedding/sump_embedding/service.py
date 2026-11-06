@@ -1,4 +1,4 @@
-"""Service：把「中心连接（注册 / 心跳 / 自愈）」与「WS 端点（jump 动作）」组装成一个服务。
+"""Service：把「中心连接（注册 / 心跳 / 自愈）」与「原生 WS 端点（/spv2 call）」组装成一个服务。
 
 动作表只有 `embed`：批量文本 → 向量（L2 归一化）。推理走线程池（onnxruntime 是同步
 CPU 调用），慢动作不阻塞事件循环；并发推理安全（ONNX Runtime 会话与 tokenizers 均线程安全）。
@@ -11,22 +11,24 @@ import logging
 from dataclasses import dataclass, field
 
 import websockets
+from websockets.datastructures import Headers
+from websockets.http11 import Response
 
 from . import __version__
 from .backends import Backend
 from .center import CenterLink
-from .server import JumpEndpoint
 from .spv2 import MethodSpec, NativeEndpoint, decode_body
 
 DEFAULT_MAX_BATCH = 32
 DEFAULT_ACTION_TIMEOUT = 60.0
+NATIVE_PATH = "/spv2"
 
 
 @dataclass
 class Config:
     name: str = "embedding"
     addr: str = "127.0.0.1:9601"
-    center: str = "ws://127.0.0.1:9000/ws"
+    center: str = "ws://127.0.0.1:9000/spv2"
     heartbeat_ms: int = 15000
     max_batch: int = DEFAULT_MAX_BATCH
     action_timeout: float = DEFAULT_ACTION_TIMEOUT
@@ -53,13 +55,7 @@ class Service:
         self.addr = cfg.addr  # 实际监听地址（绑定后含真实端口）
         self._server: websockets.Server | None = None
         self._watch: asyncio.Task | None = None
-        self.endpoint = JumpEndpoint(
-            name=cfg.name,
-            actions={"embed": self.action_embed},
-            action_timeout=cfg.action_timeout,
-            log=log,
-        )
-        # 原生 SPv2.1 端点：/spv2 的 call 直接解 body 调 action_embed，不合成 v1 信封。
+        # 原生 SPv2.1 端点：/spv2 的 call 直接解 body 调 action_embed，不合成任何信封。
         self.native = NativeEndpoint(
             name=cfg.name,
             methods=[
@@ -98,10 +94,16 @@ class Service:
 
     async def start(self) -> None:
         host, port = split_addr(self.cfg.addr)
-        self._server = await websockets.serve(self.handle_conn, host, port, max_size=None)
+        self._server = await websockets.serve(
+            self.handle_conn,
+            host,
+            port,
+            max_size=None,
+            process_request=self._process_request,
+        )
         sockname = self._server.sockets[0].getsockname()
         self.addr = f"{sockname[0]}:{sockname[1]}"  # 支持 :0 随机端口（测试）
-        self.log.info("%s 监听 ws://%s/ws（v1）与 ws://%s/spv2（原生 SPv2.1）", self.cfg.name, self.addr, self.addr)
+        self.log.info("%s 监听 ws://%s/spv2（原生 SPv2.1）", self.cfg.name, self.addr)
         self.log.info(
             "后端: %s（%s, dim=%d）",
             type(self.backend).__name__,
@@ -111,7 +113,7 @@ class Service:
         self.link = CenterLink(
             name=self.cfg.name,
             center_url=self.cfg.center,
-            self_url=f"ws://{self.addr}/ws",
+            self_url=f"ws://{self.addr}/spv2",
             description=self.cfg.description,
             provides=self.cfg.provides,
             settings=[],  # 零设置项：只声明真正消费的
@@ -135,14 +137,23 @@ class Service:
 
     # ---------- 传输 ----------
 
+    def _process_request(self, _conn: object, request: object) -> Response | None:
+        """握手阶段只放行 /spv2；其余路径（尤其 /ws）明确回 404，绝不落到原生端点。"""
+        path = str(getattr(request, "path", "")).split("?", 1)[0]
+        if path == NATIVE_PATH:
+            return None
+        self.log.warning("拒绝非原生路径 %s（只接受 %s）", path or "/", NATIVE_PATH)
+        return Response(404, "Not Found", Headers())
+
     async def handle_conn(self, ws: websockets.ServerConnection) -> None:
-        """按请求路径分流：/spv2 走原生 SPv2.1；其余（含 /ws）保持 v1 兼容边缘。"""
+        """只接受原生 /spv2；其它路径（含 /ws）断开，不进入任何动作分派。"""
         request = getattr(ws, "request", None)
         path = getattr(request, "path", "") if request is not None else ""
-        if path.split("?", 1)[0] == "/spv2":
-            await self.native.handle_conn(ws)
+        if path.split("?", 1)[0] != NATIVE_PATH:
+            self.log.warning("关闭非原生路径连接: %s", path or "/")
+            await ws.close(code=1008, reason=f"只接受 {NATIVE_PATH}")
             return
-        await self.endpoint.handle_conn(ws)
+        await self.native.handle_conn(ws)
 
     # ---------- 动作 ----------
 

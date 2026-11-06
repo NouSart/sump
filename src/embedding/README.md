@@ -3,12 +3,12 @@
 > **读者**：要跑 embedding、或改召回阈值的人 ｜ **读完能做**：起服务、看懂模型放置与后端切换 ｜ **最后校验**：2026-10-30
 
 独立进程 / 独立语言（Python）/ 无存储：注册 · 心跳 · 名册 · 断线自愈 · 优雅下线走设置中心连接（与 Go 侧
-`service/` 骨架同语义）；对外只提供一个动作 **`embed`**——批量文本 → 向量（L2 归一化），供 memory 的语义召回使用。
-原生 SPv2.1 method 入口在 `/spv2`（`embed` 直接解 call 的 msgpack body、回 reply）；
-`/ws` 的 v1 jump 保留为兼容边缘，两者共用同一实现。
+`service/` 骨架同语义）；对外只提供一个原生 SPv2.1 method **`embed`**——批量文本 → 向量（L2 归一化），
+供 memory 的语义召回使用。服务只监听 `/spv2`（`embed` 直接解 call 的 msgpack body、回 reply）；
+其它路径（含 `/ws`）在握手阶段明确回 404。
 
 ```
-memory(:9201) ──jump embed──▶ embedding(:9601) ──onnx──▶ data/models/bge-small-zh-v1.5
+memory(:9201) ──call embed──▶ embedding(:9601) ──onnx──▶ data/models/bge-small-zh-v1.5
 ```
 
 ## 命令
@@ -20,7 +20,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[onnx,dev]"     # onnx=numpy/onnxruntime/tokenizers；dev=pytest
 
 # 启动（仓库根；run-local.ps1 已自动纳入）
-embedding\.venv\Scripts\python.exe -m sump_embedding -addr 127.0.0.1:9601 -center ws://127.0.0.1:9000/ws
+embedding\.venv\Scripts\python.exe -m sump_embedding -addr 127.0.0.1:9601 -center ws://127.0.0.1:9000/spv2
 # 测试/CI（无模型依赖）：-backend fake                     # 确定性伪向量（字符 bigram 特征哈希）
 ```
 
@@ -53,9 +53,9 @@ Copy-Item 'D:\agent\SUMP\1\data\models\models--Qdrant--bge-small-zh-v1.5\snapsho
 
 ## 结构
 
-- `sump_embedding/protocol.py`：协议层（信封 + MessagePack）——键名与 Go `protocol/` 对齐，`tests/test_protocol.py` 用 Go 产出字节锚定；
-- `sump_embedding/center.py`：中心连接（注册 / 心跳 / 断线自愈 / 名册广播；`SUMP_SPV2=1` 时优先原生 `/spv2`：register call、heartbeat event、roster/settings event，接入失败自动回退 v1；首次注册失败即退出——引导错误立刻可见）；
+- `sump_embedding/protocol.py`：消息 id 与信封编解码（线路键名与 Go `protocol/` 对齐；`tests/test_protocol.py` 用 Go 产出字节锚定注册 / 心跳载荷）；
+- `sump_embedding/center.py`：中心连接（注册 / 心跳 / 断线自愈 / 名册广播；只走原生 `/spv2`：register call、heartbeat event、roster/settings event；首次注册失败即退出——引导错误立刻可见）；
 - `sump_embedding/spv2.py`：SPv2.1 帧编解码（msgpack map / bin body）与原生 `/spv2` 端点（call 分派、reply、hello/health；不伪造 metrics）；
-- `sump_embedding/server.py`：v1 `/ws` 端点（jump 分派 / 未知动作回错 / 慢动作并发）——兼容边缘；
+- `sump_embedding/service.py`：服务组装与路径分流——只有 `/spv2` 进入原生端点，其它路径 404 / 关闭；
 - `sump_embedding/backends.py`：fake（确定性特征哈希，测试与 CI）/ onnx（onnxruntime + tokenizers，CLS pooling + L2 归一）；
-- `tests/`：pytest（协议锚定 / fake 后端 / 真 WS 集成）；真模型冒烟在 `SUMP_EMBED_MODEL_DIR` 指定目录时才跑。
+- `tests/`：pytest（协议锚定 / fake 后端 / 真 WS 集成，全部直连 `/spv2`）；真模型冒烟在 `SUMP_EMBED_MODEL_DIR` 指定目录时才跑。

@@ -11,19 +11,16 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CENTER = ["tests/test_center_spv2.py"]
-SPV2 = ["tests/test_spv2.py", "tests/test_endpoint.py"]
-SERVICE = ["tests/test_service.py", "tests/test_spv2.py", "tests/test_endpoint.py"]
+SPV2 = ["tests/test_spv2.py"]
+SERVICE = ["tests/test_service.py", "tests/test_spv2.py"]
 GAP = ["tests/test_mutation_gaps.py"]
 MUTANTS = [
-    {"id": "PY01", "file": "center.py", "old": 'return os.environ.get(ENV_SPV2, "").strip() == "1"', "new": 'return os.environ.get(ENV_SPV2, "").strip() != "1"', "tests": CENTER},
+    {"id": "PY01", "file": "center.py", "old": "self._set_roster(roster)", "new": "pass", "tests": CENTER},
     {"id": "PY02", "file": "center.py", "old": 'if center_url.endswith("/spv2"):', "new": 'if not center_url.endswith("/spv2"):', "tests": CENTER},
-    {"id": "PY03", "file": "center.py", "old": 'if center_url.endswith("/ws"):', "new": 'if not center_url.endswith("/ws"):', "tests": CENTER},
+    {"id": "PY03", "file": "center.py", "old": "        roster: dict[str, dict] = {}", "new": '        roster: dict[str, dict] = {"ghost": {}}', "tests": CENTER},
     {"id": "PY04", "file": "center.py", "old": 'return center_url.rstrip("/") + "/spv2"', "new": 'return center_url + "/spv2"', "tests": CENTER},
-    {"id": "PY05", "file": "center.py", "old": "if self.spv2_enabled:", "new": "if not self.spv2_enabled:", "tests": CENTER},
+    {"id": "PY05", "file": "center.py", "old": "if isinstance(payload, dict):", "new": "if not isinstance(payload, dict):", "tests": CENTER},
     {"id": "PY06", "file": "center.py", "old": "if not isinstance(roster, dict):", "new": "if isinstance(roster, dict):", "tests": CENTER},
-    {"id": "PY07", "file": "center.py", "old": 'if not resp.get("ok"):', "new": 'if resp.get("ok"):', "tests": CENTER},
-    {"id": "PY08", "file": "center.py", "old": "if isinstance(roster, dict):", "new": "if not isinstance(roster, dict):", "tests": CENTER},
-    {"id": "PY09", "file": "center.py", "old": "native = self._mode == TRANSPORT_SPV2", "new": "native = self._mode != TRANSPORT_SPV2", "tests": CENTER},
     {"id": "PY10", "file": "center.py", "old": "if not isinstance(reply, spv2.Frame) or reply.type != spv2.TYPE_REPLY:", "new": "if not isinstance(reply, spv2.Frame) and reply.type != spv2.TYPE_REPLY:", "tests": CENTER},
     {"id": "PY11", "file": "center.py", "old": "if reply.status != spv2.STATUS_OK:", "new": "if reply.status == spv2.STATUS_OK:", "tests": CENTER},
     {"id": "PY12", "file": "center.py", "old": "if not reply.body:", "new": "if reply.body:", "tests": CENTER},
@@ -50,9 +47,12 @@ MUTANTS = [
     {"id": "PY33", "file": "spv2.py", "old": 'if call.content_type not in ("", CONTENT_TYPE_MSGPACK):', "new": 'if call.content_type in ("", CONTENT_TYPE_MSGPACK):', "tests": SPV2},
     {"id": "PY34", "file": "spv2.py", "old": "if isinstance(protocol, str) and protocol and protocol != PROTOCOL_VERSION:", "new": "if isinstance(protocol, str) or protocol or protocol != PROTOCOL_VERSION:", "tests": SPV2},
     {"id": "PY35", "file": "spv2.py", "old": '"tool": spec.tool,', "new": '"tool": True,', "tests": SPV2},
+    {"id": "PY07", "file": "service.py", "old": 'center: str = "ws://127.0.0.1:9000/spv2"', "new": 'center: str = "ws://127.0.0.1:9000/ws"', "tests": SERVICE},
+    {"id": "PY08", "file": "service.py", "old": 'self_url=f"ws://{self.addr}/spv2"', "new": 'self_url=f"ws://{self.addr}/ws"', "tests": SERVICE},
+    {"id": "PY09", "file": "__main__.py", "old": 'default="ws://127.0.0.1:9000/spv2"', "new": 'default="ws://127.0.0.1:9000/ws"', "tests": SERVICE},
     {"id": "PY36", "file": "service.py", "old": "if not host or not port.isdigit():", "new": "if not host and not port.isdigit():", "tests": SERVICE},
-    {"id": "PY37", "file": "service.py", "old": 'if path.split("?", 1)[0] == "/spv2":', "new": 'if path.split("?", 1)[0] != "/spv2":', "tests": SERVICE},
-    {"id": "PY38", "file": "service.py", "old": 'if path.split("?", 1)[0] == "/spv2":', "new": 'if path == "/spv2":', "tests": SERVICE},
+    {"id": "PY37", "file": "service.py", "old": "if path == NATIVE_PATH:", "new": "if path != NATIVE_PATH:", "tests": SERVICE},
+    {"id": "PY38", "file": "service.py", "old": 'if path.split("?", 1)[0] != NATIVE_PATH:', "new": 'if path.split("?", 1)[0] == NATIVE_PATH:', "tests": SERVICE},
     {"id": "PY39", "file": "service.py", "old": "if not isinstance(input_, dict):", "new": "if isinstance(input_, dict):", "tests": SERVICE},
     {"id": "PY40", "file": "service.py", "old": "if not isinstance(texts, list) or not texts:", "new": "if not isinstance(texts, list) and not texts:", "tests": SERVICE},
     {"id": "PY41", "file": "service.py", "old": "if any(not isinstance(t, str) for t in texts):", "new": "if any(isinstance(t, str) for t in texts):", "tests": SERVICE},
@@ -64,7 +64,6 @@ MUTANTS = [
 def run_tests(cwd: Path, tests: list[str], timeout: float) -> tuple[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(cwd) + os.pathsep + env.get("PYTHONPATH", "")
-    env.pop("SUMP_SPV2", None)
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", *tests],
