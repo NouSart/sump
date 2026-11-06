@@ -118,8 +118,15 @@ func TestEntropyGateRejectsLowEntropyRuns(t *testing.T) {
 
 // 没有已知凭据文件时，第一路探针必须整体闭嘴——不然它是个凭空猜的误报器。
 func TestKnownProbeSilentWithoutKnownValues(t *testing.T) {
-	if got := probes("令牌 a1b2c3d4e5f6g7", nil); strings.Join(got, ",") == ProbeKnown || len(got) > 1 {
-		t.Errorf("known 为空时不该报已知凭据，实际 = %v", got)
+	text := "令牌 a1b2c3d4e5f6g7"
+	// 期望写成一整串，不是"不含某项"：旧写法 `== ProbeKnown || len(got) > 1` 的前半截
+	// 在 known 为空时恒不成立（probes 第一行就短路了），那条断言等于没断。
+	if got := probes(text, nil); strings.Join(got, ",") != ProbeContext {
+		t.Errorf("known 为空时只该由上下文这一路认出，实际 = %v", got)
+	}
+	// 同一条文本给了真值必须多出一路——没有这个对照，上面的"闭嘴"证明不了任何事。
+	if got := probes(text, []string{"a1b2c3d4e5f6g7"}); !strings.Contains(strings.Join(got, ","), ProbeKnown) {
+		t.Errorf("给了真值就该报已知凭据，实际 = %v", got)
 	}
 }
 
