@@ -1,6 +1,6 @@
 ﻿# MCP 服务
 
-> **读者**：要把 SUMP 的能力暴露给外部 MCP 应用、或把外部 MCP 工具接进 SUMP 的人 ｜ **读完能做**：配好能力映射、跑通双向调用与异步补报 ｜ **最后校验**：2026-10-30
+> **读者**：要把 SUMP 的能力暴露给外部 MCP 应用、或把外部 MCP 工具接进 SUMP 的人 ｜ **读完能做**：配好能力映射、跑通双向调用与异步补报 ｜ **最后校验**：2026-11-06
 >
 > 远程入口 / 证书 / 接入检查见 [docs/guides/mcp-connect.md](../../docs/guides/mcp-connect.md)；验收范围见 [docs/archive/mcp-acceptance-2026-10.md](../../docs/archive/mcp-acceptance-2026-10.md)。
 
