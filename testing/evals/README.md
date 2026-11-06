@@ -197,7 +197,7 @@ GOWORK=off 构建也在），但**不跑** `scripts/mutation` 的真异变植入
 
 ```powershell
 cd evals
-go run ./scripts/guardmutation                   # 全部（当前 28 条，约 2 分钟）
+go run ./scripts/guardmutation                   # 全部（当前 30 条，约 2 分半）
 go run ./scripts/guardmutation -only=fetchsafe   # 只跑名字或文件含该串的
 go run ./scripts/guardmutation -not=src/spv2     # 排除，分批跑用；结论要写清实际跑了几条
 go run ./scripts/guardmutation -v                # 附上每条的测试输出
@@ -215,9 +215,11 @@ go run ./scripts/guardmutation -v                # 附上每条的测试输出
 清单与源码的同步由 `TestGuardsMatchSource` 守着；`-only` / `-not` 空命中直接报错，
 不交"0 条，全部杀死"这种空集胜利。
 
-当前 **28 条，全部杀死**（2026-11-06 两次实测：2 分 12 秒 / 2 分 08 秒）。本轮逼出的四处真缺陷各自成提交：
-`src/spv2` 的键名表没有 Frame（把 `reply_to` 改成 `replyTo` 全绿，而帧头键名正是跨实现契约）、
-归档过滤的断言长在 `src/memory/tests` 而不在被改的 `store` 包里、
+当前 **30 条，全部杀死**（2026-11-06 收尾批次实测 2 分 24 秒）。新增的两条是会话目录的
+`TaskTitle` / `SessionTitle` 绕过写入边界——它们**没逼出新缺陷，因为用例先写**
+（`d3174af` 先把两个标题填实，再配守卫）。上一批 28 条时的说法仍然成立：
+那批逼出四处真缺陷各自成提交——`src/spv2` 的键名表没有 Frame（把 `reply_to` 改成 `replyTo` 全绿，
+而帧头键名正是跨实现契约）、归档过滤的断言长在 `src/memory/tests` 而不在被改的 `store` 包里、
 `TestServerMaxBody` 拿 `context.Background()` 等回执（回执一丢就拖满 10 分钟全包超时，
 连累同包其余用例）、以及清理复检与拨号复查两处"说法有、断言无"。
 
