@@ -412,6 +412,16 @@ func knownRuns(text string, known []string) []runStat {
 }
 
 // contextRuns 取密钥上下文正则命中的各段长度（按出现次数，与熵那一路同口径）。
+//
+// Lens 的口径要说死：它是**整条正则匹配的 UTF-8 字节数**，不是凭据值本身的长度——
+// 这一路的匹配天生包含三段：关键词 + 分隔符 + 值。实测（2026-11-07）：
+//   - "令牌 a1b2c3d4e5f6g7"        → 21（"令牌"6 字节 + 空格 1 + 值 14）
+//   - "密码：a1b2c3d4e5f6g7"        → 23（全角冒号占 3 字节）
+//   - "api_key = zz112233445566"    → 24
+//
+// 中文关键词按字节数进去是因为 Go 的 len(string) 本来就是字节数，不是字符数。
+// 这个数字属于**形状元数据**，与熵那一路同质，不是原值泄露（见 Shape 的注释）；
+// 它进键，所以改这个口径会废掉现有全部裁定键——要动先想清楚。
 func contextRuns(text string) []runStat {
 	var out []runStat
 	for _, m := range reCtxSecret.FindAllString(text, -1) {
