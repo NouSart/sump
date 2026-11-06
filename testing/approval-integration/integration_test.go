@@ -24,6 +24,7 @@ import (
 	"github.com/NouSart/sump/service"
 	center "github.com/NouSart/sump/settings-center/server"
 	shell "github.com/NouSart/sump/shell/server"
+	"github.com/NouSart/sump/spv2"
 )
 
 type report struct {
@@ -52,7 +53,7 @@ func setup(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = c.Shutdown() })
-	f.center = "ws://" + c.Addr() + "/ws"
+	f.center = "ws://" + c.Addr() + "/spv2"
 	return f
 }
 func (f *fixture) start(t *testing.T, s *service.Service) {
@@ -97,13 +98,13 @@ func (f *fixture) startPortal(t *testing.T, decide func(item protocol.PendingApp
 	t.Helper()
 	p := service.New(service.Config{Name: "portal", Listen: "127.0.0.1:0", Center: f.center, Logger: f.logger})
 	pending := make(chan protocol.PendingApproval, 8)
-	p.Handle(protocol.ApprovalPendingAction, func(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	p.HandleNative(spv2.Method{Name: protocol.ApprovalPendingAction, Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
 		var item protocol.PendingApproval
-		if err := protocol.DecodeRaw(in.Input, &item); err != nil {
-			return nil, err
+		if err := call.Frame.DecodeBody(&item); err != nil {
+			return err
 		}
 		pending <- item
-		return map[string]string{"status": "accepted"}, nil
+		return call.Reply(map[string]string{"status": "accepted"})
 	})
 	f.start(t, p)
 	go func() {
@@ -149,13 +150,13 @@ func TestTerminalApprovalAndFeedback(t *testing.T) {
 	f.shell(t, "approval")
 	events := make(chan protocol.AsyncResultPayload, 16)
 	c := f.client(t, "observer")
-	c.Handle("report_result", func(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	c.HandleNative(spv2.Method{Name: "report_result", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
 		var r protocol.AsyncResultPayload
-		if err := protocol.DecodeRaw(in.Input, &r); err != nil {
-			return nil, err
+		if err := call.Frame.DecodeBody(&r); err != nil {
+			return err
 		}
 		events <- r
-		return map[string]string{"status": "accepted"}, nil
+		return call.Reply(map[string]string{"status": "accepted"})
 	})
 	f.start(t, c)
 	marker := filepath.Join(f.root, "keep.txt")
@@ -255,17 +256,17 @@ func TestMissingApprovalFailsClosedAndEarlyFeedbackRetries(t *testing.T) {
 	c := f.client(t, "late-observer")
 	got := make(chan protocol.AsyncResultPayload, 1)
 	calls := 0
-	c.Handle("report_result", func(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	c.HandleNative(spv2.Method{Name: "report_result", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
 		calls++
 		if calls == 1 {
-			return map[string]string{"status": "ignored"}, nil
+			return call.Reply(map[string]string{"status": "ignored"})
 		}
 		var r protocol.AsyncResultPayload
-		if err := protocol.DecodeRaw(in.Input, &r); err != nil {
-			return nil, err
+		if err := call.Frame.DecodeBody(&r); err != nil {
+			return err
 		}
 		got <- r
-		return map[string]string{"status": "accepted"}, nil
+		return call.Reply(map[string]string{"status": "accepted"})
 	})
 	f.start(t, c)
 	if _, err := c.Call(f.ctx, "shell", "run", protocol.ShellRunPayload{Command: "Write-Output should-not-run"}, "trace", "late-observer"); err != nil {
@@ -312,18 +313,18 @@ func TestRealReasonerReceivesApprovalAndExecutionFeedback(t *testing.T) {
 	f.approval(t, analysis.PowerShell{Executable: f.exe})
 	f.shell(t, "approval")
 	memory := f.client(t, "memory")
-	memory.Handle("store", func(context.Context, protocol.Envelope, protocol.JumpPayload) (any, error) {
-		return map[string]bool{"stored": true}, nil
+	memory.HandleNative(spv2.Method{Name: "store", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]bool{"stored": true})
 	})
 	f.start(t, memory)
 	delivered := make(chan struct{}, 32)
 	boss := f.client(t, "user-service-stub")
-	boss.Handle("deliver", func(context.Context, protocol.Envelope, protocol.JumpPayload) (any, error) {
+	boss.HandleNative(spv2.Method{Name: "deliver", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
 		select {
 		case delivered <- struct{}{}:
 		default:
 		}
-		return map[string]bool{"ok": true}, nil
+		return call.Reply(map[string]bool{"ok": true})
 	})
 	f.start(t, boss)
 	fake := &recordingLLM{observed: make(chan string, 64)}
@@ -376,13 +377,13 @@ func TestUserReviewSecondLayer(t *testing.T) {
 			f.shell(t, "approval")
 			events := make(chan protocol.AsyncResultPayload, 16)
 			c := f.client(t, "observer")
-			c.Handle("report_result", func(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+			c.HandleNative(spv2.Method{Name: "report_result", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
 				var r protocol.AsyncResultPayload
-				if err := protocol.DecodeRaw(in.Input, &r); err != nil {
-					return nil, err
+				if err := call.Frame.DecodeBody(&r); err != nil {
+					return err
 				}
 				events <- r
-				return map[string]string{"status": "accepted"}, nil
+				return call.Reply(map[string]string{"status": "accepted"})
 			})
 			f.start(t, c)
 
@@ -502,18 +503,18 @@ func TestLLMReviewChain(t *testing.T) {
 	f.reviewApproval(t, analysis.PowerShell{Executable: f.exe})
 	f.shell(t, "approval")
 	memory := f.client(t, "memory")
-	memory.Handle("store", func(context.Context, protocol.Envelope, protocol.JumpPayload) (any, error) {
-		return map[string]bool{"stored": true}, nil
+	memory.HandleNative(spv2.Method{Name: "store", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]bool{"stored": true})
 	})
 	f.start(t, memory)
 	delivered := make(chan struct{}, 32)
 	boss := f.client(t, "user-service-stub")
-	boss.Handle("deliver", func(context.Context, protocol.Envelope, protocol.JumpPayload) (any, error) {
+	boss.HandleNative(spv2.Method{Name: "deliver", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
 		select {
 		case delivered <- struct{}{}:
 		default:
 		}
-		return map[string]bool{"ok": true}, nil
+		return call.Reply(map[string]bool{"ok": true})
 	})
 	f.start(t, boss)
 

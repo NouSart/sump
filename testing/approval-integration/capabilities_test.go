@@ -29,7 +29,7 @@ func TestCapabilitiesActionOverWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = c.Shutdown() })
-	centerURL := "ws://" + c.Addr() + "/ws"
+	centerURL := "ws://" + c.Addr() + "/spv2"
 
 	e, err := engine.New(analysis.Bash{}, policy.DefaultJSON)
 	if err != nil {
