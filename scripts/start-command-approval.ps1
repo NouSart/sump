@@ -24,7 +24,7 @@ foreach ($exe in @('sump-approval.exe','shell.exe','settings-center.exe')) {
 $runtimeDir = Join-Path $root 'command-runtime'
 New-Item -ItemType Directory -Force -Path $runtimeDir,$WorkRoot | Out-Null
 $WorkRoot = (Resolve-Path -LiteralPath $WorkRoot).Path
-$centerURL = "ws://127.0.0.1:$CenterPort/ws"
+$centerURL = "ws://127.0.0.1:$CenterPort/spv2"
 $children = New-Object 'System.Collections.Generic.List[System.Diagnostics.Process]'
 function Start-ServiceProcess([string]$Name,[string[]]$Arguments,[int]$Port) {
  # Start-Process joins arguments on Windows. Quote individual values, including paths with spaces.
