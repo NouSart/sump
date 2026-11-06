@@ -247,12 +247,7 @@ func (s *Service) declarations() []protocol.Setting {
 	return out
 }
 
-// actionConfigure 承接设置中心下发的设置变更（configure）：立即校验并应用（不等重启）。
-func (s *Service) actionConfigure(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.configure(in.Input)
-}
-
-// configure 是 v1 action 与原生 /spv2 configure 共用的业务实现。
+// configure 承接设置中心下发的设置变更：立即校验并应用（不等重启）。
 func (s *Service) configure(body []byte) (any, error) {
 	var p protocol.ConfigurePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {

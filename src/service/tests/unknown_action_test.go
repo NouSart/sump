@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
 )
 
 func TestUnknownActionRejected(t *testing.T) {
@@ -31,32 +31,23 @@ func TestUnknownActionRejected(t *testing.T) {
 	}
 	t.Cleanup(s.Shutdown)
 
-	c, err := protocol.Dial(s.WsURL(), nil)
+	c, err := spv2.Dial(context.Background(), s.WsURL())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
 
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "caller", "svc-unknown", "trace-unknown", protocol.JumpPayload{
-		Action: "no_such_action",
-	})
+	frame, err := spv2.NewCall("trace-unknown", spv2.ServiceRef("caller"), spv2.ServiceRef("svc-unknown"), "no_such_action", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	callCtx, callCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer callCancel()
-	resp, err := c.Call(callCtx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	if rp.OK {
+	_, err = c.Call(callCtx, frame)
+	if err == nil {
 		t.Fatal("未知动作不得返回成功")
 	}
-	if !strings.Contains(rp.Error, "unknown action") || !strings.Contains(rp.Error, "no_such_action") {
-		t.Fatalf("错误应指明未知动作: %q", rp.Error)
+	if !strings.Contains(err.Error(), "unknown method") || !strings.Contains(err.Error(), "no_such_action") {
+		t.Fatalf("错误应指明未知动作: %v", err)
 	}
 }

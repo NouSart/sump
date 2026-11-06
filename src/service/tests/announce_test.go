@@ -60,8 +60,8 @@ func TestAnnounceSetting(t *testing.T) {
 	}
 
 	// 普通项：回传的是当前生效值（下发过一次，所以是下发后的值）
-	if rp := pushConfigure(t, s.WsURL(), protocol.ConfigurePayload{Key: "demo.mode", Value: "batch"}); !rp.OK {
-		t.Fatalf("configure 应成功: %+v", rp)
+	if err := pushConfigure(t, s.WsURL(), "svc-a", protocol.ConfigurePayload{Key: "demo.mode", Value: "batch"}); err != nil {
+		t.Fatalf("configure 应成功: %v", err)
 	}
 	s.AnnounceSetting("demo.mode")
 	got := waitAnnounce(t, sc, 1, 5*time.Second)
@@ -73,8 +73,8 @@ func TestAnnounceSetting(t *testing.T) {
 	}
 
 	// 秘密项：只回「有没有值」，值永不上线
-	if rp := pushConfigure(t, s.WsURL(), protocol.ConfigurePayload{Key: "llm.key", Value: "sk-announce"}); !rp.OK {
-		t.Fatalf("秘密下发应成功: %+v", rp)
+	if err := pushConfigure(t, s.WsURL(), "svc-a", protocol.ConfigurePayload{Key: "llm.key", Value: "sk-announce"}); err != nil {
+		t.Fatalf("秘密下发应成功: %v", err)
 	}
 	s.AnnounceSetting("llm.key")
 	got = waitAnnounce(t, sc, 2, 5*time.Second)
