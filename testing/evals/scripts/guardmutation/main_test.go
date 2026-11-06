@@ -95,27 +95,10 @@ func TestRunSurvivalAndStale(t *testing.T) {
 		t.Fatalf("存活与过期都要计进 survived：code=%d stats=%+v\n%s", code, stats, buf.String())
 	}
 	if !strings.Contains(buf.String(), "过期") {
-		t.Fatalf("清单过期要单独说清楚，不能混成「跳过」：%s", buf.String())
+		t.Fatalf("过期要单独说清楚：只报「存活」会让人以为是测试太弱，其实是异变根本没植入：%s", buf.String())
 	}
 	if got, _ := os.ReadFile(path); string(got) != original {
 		t.Fatalf("过期判定不能改动源码：%q", got)
-	}
-}
-
-// TestRunSkipsSlow -skip-slow 只跳过标了 slow 的条目，且跳过不算存活也不算杀死。
-func TestRunSkipsSlow(t *testing.T) {
-	const original = "func f() { return 1 }\n"
-	path := tempModule(t, original)
-	fakeGoTest(t, map[string]int{"./sub": 1})
-
-	var buf strings.Builder
-	code, stats := run([]guard{
-		{name: "慢的", file: path, old: "return 1", new: "return 2", slow: true},
-		{name: "快的", file: path, old: "return 1", new: "return 3"},
-	}, runOptions{skipSlow: true, out: &buf})
-
-	if code != 0 || stats.killed != 1 || stats.skipped != 1 || stats.survived != 0 {
-		t.Fatalf("跳过不能计入存活：code=%d stats=%+v\n%s", code, stats, buf.String())
 	}
 }
 

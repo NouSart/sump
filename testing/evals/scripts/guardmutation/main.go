@@ -29,14 +29,10 @@ type guard struct {
 	file string // 相对仓库根，如 src/memory/redact/redact.go
 	old  string
 	new  string
-	// slow 表示该包的测试要起真进程（十几秒）；这份清单目前全是纯逻辑包，留着这个字段
-	// 是为了以后往里加端到端守卫时不用改结构。
-	slow bool
 }
 
 func main() {
 	verbose := flag.Bool("v", false, "打印每个异变的测试输出")
-	skipSlow := flag.Bool("skip-slow", false, "跳过需要真进程的包")
 	only := flag.String("only", "", "只跑名字或文件包含该串的异变")
 	not := flag.String("not", "", "排除名字或文件包含该串的异变（分批跑用；结论要写清实际跑了几条）")
 	flag.Parse()
@@ -49,22 +45,20 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	code, _ := run(list, runOptions{root: root, skipSlow: *skipSlow, verbose: *verbose, out: os.Stdout})
+	code, _ := run(list, runOptions{root: root, verbose: *verbose, out: os.Stdout})
 	if code != 0 {
 		os.Exit(code)
 	}
 }
 
 type runOptions struct {
-	root     string
-	skipSlow bool
-	verbose  bool
-	out      io.Writer
+	root    string
+	verbose bool
+	out     io.Writer
 }
 
 type runStats struct {
 	killed        int
-	skipped       int
 	survived      int // 存活 + 过期：两者都意味着"这条守卫没被测试守住"
 	survivedNames []string
 	// broken 是"改完编译不过"：既不是杀死也不是存活，它没证明任何判断被测试拦下。
@@ -81,11 +75,6 @@ func run(list []guard, opts runOptions) (int, runStats) {
 	}
 	var st runStats
 	for _, g := range list {
-		if opts.skipSlow && g.slow {
-			fmt.Fprintf(out, "跳过  %s\n", g.name)
-			st.skipped++
-			continue
-		}
 		path := resolve(opts.root, g.file)
 		orig, err := os.ReadFile(path)
 		if err != nil {
@@ -130,8 +119,8 @@ func run(list []guard, opts runOptions) (int, runStats) {
 		}
 	}
 
-	fmt.Fprintf(out, "\n守卫异变 %d 条：杀死 %d，存活 %d，无效 %d，跳过 %d\n",
-		st.killed+st.survived+st.broken, st.killed, st.survived, st.broken, st.skipped)
+	fmt.Fprintf(out, "\n守卫异变 %d 条：杀死 %d，存活 %d，无效 %d\n",
+		st.killed+st.survived+st.broken, st.killed, st.survived, st.broken)
 	if st.survived > 0 {
 		fmt.Fprintln(out, "存活清单（测试太弱或清单过期，需要补断言，不许改弱异变）：")
 		for _, s := range st.survivedNames {
