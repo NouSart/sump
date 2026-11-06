@@ -40,7 +40,7 @@
    交付失败仍按「送达后不重试」停住并记日志；失败路径由新增的原生用例
    `TestDeliverFailureKeepsTaskRetryableE2E` 覆盖（注入一次 deliver 错误 → 不记录成功交付 → 后续消息仍能交付）。
 3. **业务 DTO 中的 `boss` 字段保留**（`TaskContext.Boss`、`StorePayload.Boss`、`TimerStatePayload.Boss`）：
-   它们是载荷内的业务概念（会话入口 / 计时归属），不是帧头字段；改名会破坏已有数据与设置。
+   它们是载荷内的业务概念（会话入口 / 计时归属），不是帧头字段；改名会破坏已有数据与调用方。
 4. **OneBot `/ws` 保留**：qq 测试桩的 `/ws` 是 NapCat/OneBot 自己的协议，不是 SUMP 端点。
 
 ## 4. 验收矩阵（全部实跑）
