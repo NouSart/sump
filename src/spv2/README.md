@@ -1,11 +1,11 @@
 # spv2 · SPv2.1 参考实现
 
-> **读者**：要基于 SPv2.1 写服务、写适配器，或评估迁移差距的人 ｜ **读完能做**：用本包起 WS 服务与客户端，分清哪些是已实现机制、哪些只是协议字段 ｜ **最后校验**：2026-11-05
+> **读者**：要基于 SPv2.1 写服务，或评估迁移差距的人 ｜ **读完能做**：用本包起 WS 服务与客户端，分清哪些是已实现机制、哪些只是协议字段 ｜ **最后校验**：2026-11-06
 
 **这是 SPv2.1 的参考实现，不是生产服务迁移完成版。**
 核心协议、术语、错误码与验收标准见 [docs/concepts/spv2.md](../../docs/concepts/spv2.md)；本文只写实现视角，不复述 spec。
 
-模块路径 `github.com/NouSart/sump/spv2`，是一个独立 Go 包：核心包不 import 本仓库其他服务，只依赖 `gorilla/websocket`、`oklog/ulid`、`vmihailenco/msgpack`；`adapter` 只 import `protocol` 复用 v1 信封类型，SQLite 实现另依赖 `modernc.org/sqlite`。
+模块路径 `github.com/NouSart/sump/spv2`，是一个独立 Go 包：核心包不 import 本仓库其他服务，只依赖 `gorilla/websocket`、`oklog/ulid`、`vmihailenco/msgpack`，SQLite 实现另依赖 `modernc.org/sqlite`。
 
 ## 包结构
 
@@ -23,12 +23,11 @@
 | `sqlitestore.go` | `SQLiteStore` / `NewSQLiteStore`：`WorkStore` 的 SQLite 实现 |
 | `client.go` | `Client`：拨号、call、stream、hello、事件回调 |
 | `server.go` | `Server` / `Handler` / `Call`，内置 hello / health / metrics |
-| `http.go` | `Server.Mux`：`/ws`、`/healthz`、`/readyz`、`/metrics`（OpenMetrics） |
+| `http.go` | `Server.Mux`：`/spv2`、`/healthz`、`/readyz`、`/metrics`（OpenMetrics） |
 | `metrics.go` | `Registry`、`Metric` / `Bucket` 与快照 |
 | `idempotency.go` | `IdempotencyCache`：按卡片声明缓存 unary reply |
-| `adapter/v1.go` | v1 `jump` / `response` 与 SPv2.1 `call` / `reply` 的最小映射 |
 | `ref/` | 参考链路：entry → reasoner → memory → tool，四个服务走真实 WS；含 `ref_test.go` |
-| `*_test.go` | 帧、校验、卡片、指标、store、WS 传输与 v1 适配器测试 |
+| `*_test.go` | 帧、校验、卡片、指标、store、WS 传输测试 |
 
 ## API
 
@@ -82,7 +81,7 @@
 ### Server
 
 - `NewServer(card, ...)` 先校验卡片；默认注册 `hello` / `health` / `metrics`，其余 method 用 `Handle` 注册。
-- `Handler()` 返回挂在 `/ws` 上的 HTTP handler；`Mux()` 返回完整 mux：`/ws`、`/healthz`、`/readyz`、`/metrics`（OpenMetrics 文本）。
+- `Handler()` 返回挂在 `/spv2` 上的 HTTP handler；`Mux()` 返回完整 mux：`/spv2`、`/healthz`、`/readyz`、`/metrics`（OpenMetrics 文本）。
 - 选项有 `WithMaxMessageBytes`（默认 4 MiB）、`WithActionTimeout`（默认 30s）、`WithMaxInflight`（默认 64）、`WithMetrics`、`WithIdempotency`。
 - 收到 call 后做 `Normalize` / `Validate` / `ValidateTo`；未知 method 回 `not_found`，并发超限回 `resource_exhausted`，每个 call 在独立 goroutine 中执行。
 - `Handler` 拿到的 `*Call` 提供 `Reply` / `ReplyError` / `SendEvent` / `SendStream` / `SendStreamError` / `Replied` / `WorkID`；handler 没回应时 server 会补错误 reply。
@@ -90,7 +89,7 @@
 
 ### HTTP 观测
 
-- `Server.Mux()` 一次挂好 `/ws`、`/healthz`、`/readyz`、`/metrics`。
+- `Server.Mux()` 一次挂好 `/spv2`、`/healthz`、`/readyz`、`/metrics`。
 - `/healthz` 与 `/readyz` 都返回 JSON 的 `HealthResponse`；当前没有依赖探针，固定 `status=ok`（所以 `readyz` 还不具备“依赖不可用就不接流量”的语义）。
 - `/metrics` 把 `Registry.Snapshot()` 渲染成 OpenMetrics 文本（counter/gauge/histogram，含 `_bucket` / `_sum` / `_count`）。
 
@@ -132,7 +131,7 @@ srv.Handle("echo", func(ctx context.Context, call *spv2.Call) error {
 })
 http.ListenAndServe(":9000", srv.Mux())
 
-client, err := spv2.Dial(ctx, "ws://127.0.0.1:9000/ws")
+client, err := spv2.Dial(ctx, "ws://127.0.0.1:9000/spv2")
 if err != nil {
     return err
 }
@@ -151,11 +150,11 @@ if err := client.CallDecode(ctx, call, &out); err != nil {
 
 阶段、范围、文件地图与待办以 [IMPLEMENTATION.md](IMPLEMENTATION.md) 为准；README 只记录当前代码事实。
 
-- 已落地：帧/卡片/校验、call/reply/event/stream、WS client/server、hello/health/metrics、HTTP `/healthz` `/readyz` `/metrics`、`MemStore`（work/lease/queue/sweep/renew）、可选幂等缓存、v1 adapter、`ref/` 参考链路。
+- 已落地：帧/卡片/校验、call/reply/event/stream、WS client/server、hello/health/metrics、HTTP `/healthz` `/readyz` `/metrics`、`MemStore`（work/lease/queue/sweep/renew）、可选幂等缓存、`ref/` 参考链路。
 - SQLite：`sqlitestore.go` 有 `SQLiteStore` / `NewSQLiteStore` 和 `sqlitestore_test.go`，测试已通过；但参考链路与默认测试仍用 `MemStore`，生产 memory 尚未接入，不把参考实现当成迁移完成。
-- 未接入：生产 reasoner/memory/frontend 迁移、auth/tenant/capability、spawn/cross-owner、v1 适配器之外的服务改造；`cancel` 只在 `ref/memory` 有 handler，`renew` 只有 Store 方法，生产 method 未接。
+- 未接入：auth/tenant/capability、spawn/cross-owner；`cancel` 只在 `ref/memory` 有 handler，`renew` 只有 Store 方法，生产 method 未接。
 - 测试缺口：没有 reconnect/heartbeat、stream 缺口/重复、专门的并发压测；`go test -race` 已通过。
-- 迁移顺序：frontend → reasoner → memory → tools；先接适配器跑通一条链，再按顺序替换；v3 触发条件见 [spec §19](../../docs/concepts/spv2.md#19-实现顺序与-v3-触发)。
+- 迁移顺序：frontend → reasoner → memory → tools；v3 触发条件见 [spec §19](../../docs/concepts/spv2.md#19-实现顺序与-v3-触发)。
 
 ## 运行与测试
 
