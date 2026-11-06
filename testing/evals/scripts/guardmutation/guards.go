@@ -52,7 +52,7 @@ var guards = []guard{
 	{
 		name: "跳过复检，报告里的「剩余」永远是空",
 		file: "src/memory/repair/repair.go",
-		old:  `	rep.Remaining, err = verify(tx)`,
+		old:  `	rep.Remaining, err = verifyFn(tx)`,
 		new:  `	rep.Remaining, err = nil, nil`,
 	},
 	{
@@ -60,6 +60,44 @@ var guards = []guard{
 		file: "src/memory/repair/repair.go",
 		old:  `		{"anchor", kText},`,
 		new:  `		// anchor 是种子句，写死的，不用洗`,
+	},
+
+	// ---------- 经验网向量与出厂参数（src/memory/memnet）----------
+	{
+		name: "unit 回到就地改写（调用方手里的向量被偷偷归一化）",
+		file: "src/memory/memnet/memnet.go",
+		old: `	out := make([]float32, len(v))
+	var n float64
+	for _, f := range v {
+		n += float64(f) * float64(f)
+	}
+	if n == 0 {
+		copy(out, v)
+		return out
+	}
+	n = math.Sqrt(n)
+	for i := range v {
+		out[i] = float32(float64(v[i]) / n)
+	}
+	return out`,
+		new: `	var n float64
+	for _, f := range v {
+		n += float64(f) * float64(f)
+	}
+	if n == 0 {
+		return v
+	}
+	n = math.Sqrt(n)
+	for i := range v {
+		v[i] = float32(float64(v[i]) / n)
+	}
+	return v`,
+	},
+	{
+		name: "加挂阈值高过中心化后的带宽（「网」悄悄退化成单父树）",
+		file: "src/memory/memnet/memnet.go",
+		old:  `		LinkL1:      0.15,`,
+		new:  `		LinkL1:      0.25,`,
 	},
 
 	// ---------- 出站下载守卫（src/protocol/fetchsafe）----------
@@ -116,6 +154,55 @@ var guards = []guard{
 		file: "src/spv2/server.go",
 		old:  `		if m, ok := s.card.Method(f.Method); ok && m.Idempotent {`,
 		new:  `		if _, ok := s.card.Method(f.Method); ok {`,
+	},
+
+	// ---------- 隔离与记账（src/spv2 · 由 P3 补上）----------
+	{
+		name: "panic 被静默吞掉：不记账也不说是怎么回事",
+		file: "src/spv2/server.go",
+		old:  `	s.metrics.Counter("sump_panics_total", "Recovered handler panics", map[string]string{"method": f.Method}, 1)`,
+		new:  `	// 只隔离，不记账`,
+	},
+	{
+		name: "校验通过的 reply/stream 帧又被静默丢弃",
+		file: "src/spv2/server.go",
+		old:  `		s.countDropped(f, dropNoDispatcher, "")`,
+		new:  `		_ = f`,
+	},
+	{
+		name: "帧丢了只进指标不进日志（聚合看得见，单条查不着是谁丢的）",
+		file: "src/spv2/server.go",
+		old:  `	s.logger.Printf("%s", msg)`,
+		new:  `	_ = msg`,
+	},
+	{
+		name: "panic 的回执没算回执：event 那一半被记两次",
+		file: "src/spv2/server.go",
+		old: `			panicked = true
+			s.countPanic(call.Frame, r)`,
+		new: `			s.countPanic(call.Frame, r)`,
+	},
+	{
+		name: "校验失败的 call 不再补错误回执（账记了，调用方却还在空等）",
+		file: "src/spv2/server.go",
+		old:  `	if f.Type == TypeCall {`,
+		new:  `	if false {`,
+	},
+
+	// ---------- 会话库两张脸（src/memory/store）----------
+	{
+		name: "归档的会话又冒回默认列表",
+		file: "src/memory/store/conversations.go",
+		old:  `	if !includeArchived {`,
+		new:  `	if false && !includeArchived {`,
+	},
+
+	// ---------- 复盘归类（src/reasoner/server）----------
+	{
+		name: "偏好被降回遗忘曲线（「不该忘」变成会忘）",
+		file: "src/reasoner/server/reflect.go",
+		old:  `			dur = "core"`,
+		new:  `			dur = "durable"`,
 	},
 
 	// ---------- 审批档位（src/approval/engine）----------

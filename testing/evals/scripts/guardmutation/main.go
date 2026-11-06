@@ -37,25 +37,17 @@ type guard struct {
 func main() {
 	verbose := flag.Bool("v", false, "打印每个异变的测试输出")
 	skipSlow := flag.Bool("skip-slow", false, "跳过需要真进程的包")
-	only := flag.String("only", "", "只跑名字包含该串的异变")
+	only := flag.String("only", "", "只跑名字或文件包含该串的异变")
+	not := flag.String("not", "", "排除名字或文件包含该串的异变（分批跑用；结论要写清实际跑了几条）")
 	flag.Parse()
 
-	root, err := repoRoot()
+	list, err := selectGuards(guards, *only, *not)
 	if err != nil {
 		fatal(err)
 	}
-	list := guards
-	if *only != "" {
-		var hit []guard
-		for _, g := range guards {
-			if strings.Contains(g.name, *only) || strings.Contains(g.file, *only) {
-				hit = append(hit, g)
-			}
-		}
-		if len(hit) == 0 {
-			fatal(fmt.Errorf("-only=%q 一条都没匹配上（清单里没有这个名字）", *only))
-		}
-		list = hit
+	root, err := repoRoot()
+	if err != nil {
+		fatal(err)
 	}
 	code, _ := run(list, runOptions{root: root, skipSlow: *skipSlow, verbose: *verbose, out: os.Stdout})
 	if code != 0 {
@@ -75,6 +67,10 @@ type runStats struct {
 	skipped       int
 	survived      int // 存活 + 过期：两者都意味着"这条守卫没被测试守住"
 	survivedNames []string
+	// broken 是"改完编译不过"：既不是杀死也不是存活，它没证明任何判断被测试拦下。
+	// 把它算进杀死 = 拿一个坏掉的异变冒充覆盖率，所以单列并让退出码非 0。
+	broken      int
+	brokenNames []string
 }
 
 // run 跑一遍清单，返回退出码（0 = 全部杀死）与统计。
@@ -110,14 +106,22 @@ func run(list []guard, opts runOptions) (int, runStats) {
 			fatal(fmt.Errorf("异变 %q: %w", g.name, err))
 		}
 		code, testOut := runTest(dir, pkg, path, mutated, string(orig))
-		if code == 0 {
+		switch classify(code, testOut) {
+		case outcomeBroken:
+			// 编译不过 / 没跑起来：这条异变什么都没证明。算成"杀死"就是拿坏掉的异变冒充覆盖率，
+			// 算成"存活"又会骗人去补断言——所以单列，退出码非 0，逼着回头改这条异变本身。
+			fmt.Fprintf(out, "无效  %s（改完编译不过或测试没跑起来，不能算被杀死）\n", g.name)
+			st.broken++
+			st.brokenNames = append(st.brokenNames, g.name)
+			fmt.Fprintln(out, indent(firstLines(testOut, 12)))
+		case outcomeSurvived:
 			fmt.Fprintf(out, "存活  %s（%s）\n", g.name, g.file)
 			st.survived++
 			st.survivedNames = append(st.survivedNames, g.name)
 			if opts.verbose {
 				fmt.Fprintln(out, indent(testOut))
 			}
-		} else {
+		default:
 			fmt.Fprintf(out, "杀死  %s  [%s]\n", g.name, whereLabel(opts.root, dir, pkg))
 			st.killed++
 			if opts.verbose {
@@ -126,16 +130,93 @@ func run(list []guard, opts runOptions) (int, runStats) {
 		}
 	}
 
-	fmt.Fprintf(out, "\n守卫异变 %d 条：杀死 %d，存活 %d，跳过 %d\n",
-		st.killed+st.survived, st.killed, st.survived, st.skipped)
+	fmt.Fprintf(out, "\n守卫异变 %d 条：杀死 %d，存活 %d，无效 %d，跳过 %d\n",
+		st.killed+st.survived+st.broken, st.killed, st.survived, st.broken, st.skipped)
 	if st.survived > 0 {
 		fmt.Fprintln(out, "存活清单（测试太弱或清单过期，需要补断言，不许改弱异变）：")
 		for _, s := range st.survivedNames {
 			fmt.Fprintln(out, "  - "+s)
 		}
+	}
+	if st.broken > 0 {
+		fmt.Fprintln(out, "无效清单（异变写法本身有问题：要么换成仍能编译的错法，要么这条守卫其实没被验过）：")
+		for _, s := range st.brokenNames {
+			fmt.Fprintln(out, "  - "+s)
+		}
+	}
+	if st.survived > 0 || st.broken > 0 {
 		return 1, st
 	}
 	return 0, st
+}
+
+// outcome 是一条异变的三种结局。"退出码非 0"不等于"被测试杀死"：编译失败同样非 0，
+// 而它证明的是异变写坏了，不是守卫有人看着。
+type outcome int
+
+const (
+	outcomeKilled outcome = iota
+	outcomeSurvived
+	outcomeBroken // 编译不过 / 测试没跑起来 / 超时 / 这个包根本没有测试
+)
+
+// classify 按 go test 自己打的标记分类，不靠退出码猜。
+// 注意"panic:" 不在标记里：异变把被测代码跑出 panic，正是"测试发现了它"，属于杀死；
+// 只有超时、编译不过、没有测试文件这三种是"这条异变没证明任何判断"。
+func classify(code int, out string) outcome {
+	for _, mark := range []string{"[build failed]", "[setup failed]", "test timed out", "no test files"} {
+		if strings.Contains(out, mark) {
+			return outcomeBroken
+		}
+	}
+	if code == 0 {
+		return outcomeSurvived
+	}
+	return outcomeKilled
+}
+
+// firstLines 取输出的前 n 行：无效异变必须当场露出编译错误，不然只看到一个词猜不透。
+func firstLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = append(lines[:n], "…（截断，-v 看全文）")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// selectGuards 按 -only / -not 取子集。两个过滤器都必须真的命中，否则直接失败：
+// 拼错的 -only 会跑出"0 条，全部杀死"，拼错的 -not 会以为躲开了某个文件其实没躲开
+// ——两种都是拿着空集中门说旗开得胜。
+func selectGuards(list []guard, only, not string) ([]guard, error) {
+	out := list
+	if only != "" {
+		var hit []guard
+		for _, g := range out {
+			if strings.Contains(g.name, only) || strings.Contains(g.file, only) {
+				hit = append(hit, g)
+			}
+		}
+		if len(hit) == 0 {
+			return nil, fmt.Errorf("-only=%q 一条都没匹配上（清单里没有这个名字）", only)
+		}
+		out = hit
+	}
+	if not != "" {
+		var hit []guard
+		for _, g := range out {
+			if !strings.Contains(g.name, not) && !strings.Contains(g.file, not) {
+				hit = append(hit, g)
+			}
+		}
+		if len(hit) == len(out) {
+			return nil, fmt.Errorf("-not=%q 没排除掉任何一条（拼错了？宁可报错也不要假装躲开了）", not)
+		}
+		out = hit
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("-only 与 -not 互相抵消，一条都不剩")
+	}
+	return out, nil
 }
 
 // resolve 把清单里的仓库相对路径拼成绝对路径；测试直接传绝对路径时原样用。

@@ -20,8 +20,21 @@ import (
 // fakeGoTest 换掉真的 go test：按包名返回剧本里的退出码。
 func fakeGoTest(t *testing.T, codes map[string]int) {
 	t.Helper()
+	fakeGoTestOut(t, codes, nil)
+}
+
+// fakeGoTestOut 同上，还能按包名剧本化输出——分类靠的就是输出里的标记，
+// 只给退出码的那半边测不出"编译失败被当成杀死"。
+func fakeGoTestOut(t *testing.T, codes map[string]int, outs map[string]string) {
+	t.Helper()
 	orig := goTest
-	goTest = func(_, pkg string) (int, string) { return codes[pkg], "剧本输出：" + pkg }
+	goTest = func(_, pkg string) (int, string) {
+		out, ok := outs[pkg]
+		if !ok {
+			out = "剧本输出：" + pkg
+		}
+		return codes[pkg], out
+	}
 	t.Cleanup(func() { goTest = orig })
 }
 
@@ -180,6 +193,100 @@ func TestTestTarget(t *testing.T) {
 		rel, err := filepath.Rel(root, dir)
 		if err != nil || filepath.ToSlash(rel) != c.wantMod {
 			t.Errorf("%s 模块根 = %q，期望 %q（err=%v）", c.file, filepath.ToSlash(rel), c.wantMod, err)
+		}
+	}
+}
+
+// TestSelectGuardsFilters 过滤器拼错时必须报错，不能静默跑出空集或全集。
+func TestSelectGuardsFilters(t *testing.T) {
+	list := []guard{
+		{name: "甲", file: "src/spv2/server.go"},
+		{name: "乙", file: "src/memory/redact/redact.go"},
+		{name: "丙", file: "src/qq/napcat/napcat.go"},
+	}
+	cases := []struct {
+		only, not string
+		want      int
+		wantErr   string
+	}{
+		{want: 3},
+		{only: "spv2", want: 1},
+		{not: "spv2/server.go", want: 2},
+		{only: "甲", not: "甲", want: 0, wantErr: "一条都不剩"},
+		{only: "根本没有的名字", want: 0, wantErr: "一条都没匹配上"},
+		{not: "根本没有的名字", want: 0, wantErr: "没排除掉任何一条"},
+	}
+	for _, c := range cases {
+		got, err := selectGuards(list, c.only, c.not)
+		switch {
+		case c.wantErr != "" && err == nil:
+			t.Errorf("only=%q not=%q 期望报错（%s），实际返回 %d 条", c.only, c.not, c.wantErr, len(got))
+		case c.wantErr != "" && !strings.Contains(err.Error(), c.wantErr):
+			t.Errorf("only=%q not=%q 报错文案要指到原因，实际: %v", c.only, c.not, err)
+		case c.wantErr == "" && err != nil:
+			t.Errorf("only=%q not=%q 不该报错: %v", c.only, c.not, err)
+		case c.wantErr == "" && len(got) != c.want:
+			t.Errorf("only=%q not=%q 命中 %d 条，期望 %d", c.only, c.not, len(got), c.want)
+		}
+	}
+	// 真实清单上必须真能躲开 spv2/server.go：分批跑靠的就是它。
+	hit, err := selectGuards(guards, "", "spv2/server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range hit {
+		if strings.Contains(g.file, "spv2/server.go") {
+			t.Fatalf("-not 之后还剩 %s，等于会去改正在被别的活儿动的文件", g.file)
+		}
+	}
+	if len(hit) >= len(guards) {
+		t.Fatalf("-not 没减少条数（%d/%d）", len(hit), len(guards))
+	}
+}
+
+// TestBuildFailureIsNotAKill 改完编译不过 ≠ 守卫被测试守住。
+// 这一条是整个工具最容易自欺的地方：go test 非 0 有两种完全不同的含义。
+func TestBuildFailureIsNotAKill(t *testing.T) {
+	const original = "func f() { return 1 }\n"
+	path := tempModule(t, original)
+	fakeGoTestOut(t, map[string]int{"./sub": 2},
+		map[string]string{"./sub": "# example.com/tmp/sub\n./sub/src.go:1:1: syntax error\nFAIL\texample.com/tmp/sub [build failed]\n"})
+
+	var buf strings.Builder
+	code, stats := run([]guard{{name: "编译不过的", file: path, old: "return 1", new: "return"}},
+		runOptions{out: &buf})
+
+	if code != 1 {
+		t.Fatalf("有无效异变时不能报成功（退出码 %d）", code)
+	}
+	if stats.killed != 0 || stats.broken != 1 || stats.survived != 0 {
+		t.Fatalf("编译失败必须记为无效，不能记为杀死：stats=%+v\n%s", stats, buf.String())
+	}
+	if !strings.Contains(buf.String(), "syntax error") {
+		t.Fatalf("无效要当场露出原因，不能只给一个词：%s", buf.String())
+	}
+	if got, _ := os.ReadFile(path); string(got) != original {
+		t.Fatalf("无效异变也必须还原源码：%q", got)
+	}
+}
+
+// TestClassifyMarks 分类认 go test 自己打的标记；退出码单独不可信（超时也是非 0）。
+func TestClassifyMarks(t *testing.T) {
+	cases := []struct {
+		code int
+		out  string
+		want outcome
+	}{
+		{0, "ok  \tpkg 0.5s", outcomeSurvived},
+		{1, "--- FAIL: TestX\nFAIL\tpkg 0.5s\n", outcomeKilled},
+		{1, "FAIL\tpkg [build failed]\n", outcomeBroken},
+		{1, "FAIL\tpkg [setup failed]\n", outcomeBroken},
+		{2, "panic: test timed out after 300s\n", outcomeBroken},
+		{0, "?   \tpkg\t[no test files]", outcomeBroken},
+	}
+	for _, c := range cases {
+		if got := classify(c.code, c.out); got != c.want {
+			t.Errorf("classify(%d, %q) = %d，期望 %d", c.code, c.out, got, c.want)
 		}
 	}
 }
