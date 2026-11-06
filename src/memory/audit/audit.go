@@ -17,6 +17,13 @@
 //
 // 本包只读不写：没有 UPDATE、没有事务、拿不到 *sql.Tx。清洗的活归 repair。
 //
+// 命中带什么、闸门怎么放：每处命中不只报位置，还带一份**形状摘要**（这一格这一路
+// 命中几段、各多长、熵多少），位置 + 类别 + 形状压成 8 位指纹就是 Finding.Key()。
+// 人已逐处读过、决定保留的那些指纹登记在 adjudicated.json（编进二进制的默认白名单，
+// key 从 String() 的输出逐字抄，不重算），所以闸门口径是"有**未裁定**的命中才破"；
+// 白名单里对不上当前库的条目算过期，也破闸。同格里新增一段过阈的形状会改键 → 必破，
+// 旧裁定吸收不了新东西。关掉白名单（sump-repair 的 -no-adjudicated）就是无条件口径。
+//
 // 四路探针各自的强弱，说清楚免得把它当成银弹：
 //   - 已知凭据：手里有真值时对**这一份**凭据最强，也最脆——换了机器、轮换过令牌就归零。
 //   - 密钥上下文：认"关键词 + 值"，全库校准命中 1 行（强制要分隔符的严格版命中 0，
@@ -45,6 +52,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -102,17 +110,131 @@ func Scope() []Column {
 	return out
 }
 
-// Finding 是一处命中。只带位置与类别，**不带原值**——
+// Shape 是一格内某一路探针的**形状摘要**：不是原值，是"命中几段、各多长、熵多少"的聚合。
+// 它存在的理由只有一个：让白名单能钉住"当初裁定的那一格长什么样"。同格里任何位置
+// 新增长度或熵不同的过阈段都会改掉 Shape，进而改掉 Finding.Key()，闸门必破。
+//
+// Lens 里含已知凭据的长度、Ent 里含高熵段的熵值，这是**有意的形状元数据**，与
+// "第几行第几列"同质，都描述形状而不搬运原文——从它们复原不出任何凭据。
+// 日后若有人当泄漏把这两列删掉，Key() 会跟着作废（键就是这两列的摘要），
+// 所以要动先想清楚：删掉的是防线，不是噪音。
+type Shape struct {
+	Runs int       // 本格该路命中的段数
+	Lens []int     // 各段长度，与 Ent 成对升序
+	Ent  []float64 // 各段熵（取整 0.01），与 Lens 一一对应；非熵探针留空
+}
+
+// Finding 是一处命中。只带位置、类别与形状摘要，**不带原值**——
 // 把凭据从库里搬到 stdout / 日志里不算修复，算换个地方泄露。
 type Finding struct {
 	Table  string
 	RowKey int64
 	Column string
 	Probe  string
+	Shape  Shape
 }
 
+// Key 是"这一格这一路、就长成这个样子"的指纹：
+// 表 \x00 列 \x00 行 \x00 探针 \x00 段数 \x00 形状规范编码，整串取 sha256 前 8 位。
+//
+// 键里必须带形状而不只带位置：只记位置时，同格后来新增的过阈段会被旧白名单条目
+// 静默吸收，闸门就退化成"这行以前有人看过"的备忘录，不再是"形状没变"的守卫。
+// 规范编码只在这里（canonicalShape）实现一次；白名单里的 key 是从 String() 的输出
+// 逐字抄下来的，没有任何地方从 lens/ent 重算它。
+func (f Finding) Key() string {
+	var b strings.Builder
+	b.WriteString(f.Table)
+	b.WriteByte(0)
+	b.WriteString(f.Column)
+	b.WriteByte(0)
+	b.WriteString(strconv.FormatInt(f.RowKey, 10))
+	b.WriteByte(0)
+	b.WriteString(f.Probe)
+	b.WriteByte(0)
+	b.WriteString(strconv.Itoa(f.Shape.Runs))
+	b.WriteByte(0)
+	b.WriteString(canonicalShape(f.Shape.Lens, f.Shape.Ent))
+	return digest8(b.String())
+}
+
+// canonicalShape 把 (Lens, Ent) 编成一段确定字符串：有熵时成对写 "长度:熵"，
+// 非熵探针（形状里本来就没有熵）只写长度，两种形态都不会互相撞车。
+// 取整时机固定在 roundEnt（造 Shape 时取到 0.01），这里只按 %.2f 落字，
+// 两处必须一致，否则同一个形状在键里会编成两个样子。
+func canonicalShape(lens []int, ent []float64) string {
+	parts := make([]string, 0, len(lens))
+	for i, n := range lens {
+		if i < len(ent) {
+			parts = append(parts, fmt.Sprintf("%d:%.2f", n, ent[i]))
+			continue
+		}
+		parts = append(parts, strconv.Itoa(n))
+	}
+	return strings.Join(parts, ",")
+}
+
+// String 是 Finding 唯一的序列化出口：sump-repair 打印走它，测试断言"报告不含原值"
+// 也走它，白名单条目的 key 同样从这里抄。所以它必须带上 key——输出里没有 key，
+// 人就无法把一条裁定逐字登记进 adjudicated.json。
 func (f Finding) String() string {
-	return fmt.Sprintf("%s.%d.%s(%s)", f.Table, f.RowKey, f.Column, f.Probe)
+	return fmt.Sprintf("%s.%d.%s(%s runs=%d lens=%s ent=%s key=%s)",
+		f.Table, f.RowKey, f.Column, f.Probe,
+		f.Shape.Runs, formatInts(f.Shape.Lens), formatFloats(f.Shape.Ent), f.Key())
+}
+
+// formatInts / formatFloats 把两列形状渲染成 `[a,b]`，空列渲染成 `[]`：
+// 让人一眼看得出"这一格有几段、读数是多少"，又不必把段本身搬出来。
+func formatInts(xs []int) string {
+	out := make([]string, len(xs))
+	for i, x := range xs {
+		out[i] = strconv.Itoa(x)
+	}
+	return "[" + strings.Join(out, ",") + "]"
+}
+
+func formatFloats(xs []float64) string {
+	out := make([]string, len(xs))
+	for i, x := range xs {
+		out[i] = fmt.Sprintf("%.2f", x)
+	}
+	return "[" + strings.Join(out, ",") + "]"
+}
+
+// runStat 是一段命中的形状：长度加熵。非熵探针只填 Len。
+type runStat struct {
+	Len int
+	Ent float64
+}
+
+// shapeOf 把若干 runStat 造出一个确定形状：按 (长度, 熵) **成对**排序再拆两列。
+// 只排 Lens 是不行的——键照样稳定，但输出与 JSON 里给人读的那两列会错位，
+// 而这两列存在的唯一理由就是给人读。
+// withEnt 为 false 时 Ent 留空：非熵探针不造一串 0 出来占位。
+func shapeOf(runs []runStat, withEnt bool) Shape {
+	sorted := append([]runStat(nil), runs...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Len != sorted[j].Len {
+			return sorted[i].Len < sorted[j].Len
+		}
+		return sorted[i].Ent < sorted[j].Ent
+	})
+	s := Shape{Runs: len(sorted), Lens: make([]int, 0, len(sorted))}
+	if withEnt {
+		s.Ent = make([]float64, 0, len(sorted))
+	}
+	for _, r := range sorted {
+		s.Lens = append(s.Lens, r.Len)
+		if withEnt {
+			s.Ent = append(s.Ent, r.Ent)
+		}
+	}
+	return s
+}
+
+// roundEnt 把熵取整到 0.01。形状要进键，就必须有一个唯一的取整时机，
+// 定在"造 Shape 的那一刻"，后面各处只读不再算。
+func roundEnt(h float64) float64 {
+	return math.Round(h*100) / 100
 }
 
 // KnownValues 从 JSON 文件里递归取出所有字符串叶子，只保留长度够的那些，并顺带数出
@@ -215,27 +337,105 @@ func scanColumn(db *sql.DB, col Column, known []string) ([]Finding, error) {
 		if text == "" {
 			continue
 		}
-		for _, probe := range probes(text, known) {
-			hits = append(hits, Finding{Table: col.Table, RowKey: rowKey, Column: col.Name, Probe: probe})
+		for _, hit := range probeShapes(text, known) {
+			hits = append(hits, Finding{
+				Table: col.Table, RowKey: rowKey, Column: col.Name,
+				Probe: hit.Probe, Shape: hit.Shape,
+			})
 		}
 	}
 	return hits, rows.Err()
 }
 
-// probes 返回这一格命中的类别（同一格可以多类同时命中，分开报）。
-func probes(text string, known []string) []string {
-	var out []string
+// probeShapes 返回这一格命中的（类别，形状）；同一格可以多类同时命中，分开报。
+//
+// **返回顺序是契约**：已知凭据 → 密钥上下文 → 高熵串 → 长数字。
+// TestProbesFlagEachShape 用精确等值守着这个顺序，拆函数时不许顺手调换。
+//
+// 四路的"是否命中"谓词逐字保留原样（hitsKnown / reCtxSecret.MatchString /
+// hasHighEntropy / reLongDigits.MatchString），拆出来的 *_runs 只负责形状。
+// 已知凭据那一路两者的口径**故意不一致**，见 knownRuns 的注释。
+func probeShapes(text string, known []string) []probeHit {
+	var out []probeHit
 	if len(known) > 0 && hitsKnown(text, known) {
-		out = append(out, ProbeKnown)
+		out = append(out, probeHit{ProbeKnown, shapeOf(knownRuns(text, known), false)})
 	}
 	if reCtxSecret.MatchString(text) {
-		out = append(out, ProbeContext)
+		out = append(out, probeHit{ProbeContext, shapeOf(contextRuns(text), false)})
 	}
 	if hasHighEntropy(text) {
-		out = append(out, ProbeEntropy)
+		out = append(out, probeHit{ProbeEntropy, shapeOf(entropyRuns(text), true)})
 	}
 	if reLongDigits.MatchString(text) {
-		out = append(out, ProbeLongDigit)
+		out = append(out, probeHit{ProbeLongDigit, shapeOf(digitRuns(text), false)})
+	}
+	return out
+}
+
+// probeHit 是一格内一路探针的结果。
+type probeHit struct {
+	Probe string
+	Shape Shape
+}
+
+// probes 返回这一格命中的类别名，是 probeShapes 的投影（顺序同为契约）。
+func probes(text string, known []string) []string {
+	var out []string
+	for _, hit := range probeShapes(text, known) {
+		out = append(out, hit.Probe)
+	}
+	return out
+}
+
+// knownRuns 定义已知凭据这一路的形状：
+//
+//	Runs = 命中的**不同已知值**个数；Lens = 这些值各自的 len(k)，升序；Ent 留空（这一路没有熵）。
+//
+// 不按出现次数计，也不走片段摘要那一路。原因是 hitsKnown 有子串与摘要两条路，
+// 值本身是一段连续字母数字时两路重合、同一个值会被数两次；而子串路压根不给位置，
+// 出现次数只能靠猜。形状是键的一部分，只有唯一定义的算法才逐字可复现。
+//
+// 代价（写清楚，免得被当成 bug）：只被摘要那一路认出时 Runs = 0、Lens 为空，
+// 这一格在输出里只有位置没有形状。此时谓词仍然成立（命中照报、闸门照破），
+// 只是形状给不出读数——摘要那一路本来就不携带长度以外的信息。
+func knownRuns(text string, known []string) []runStat {
+	seen := make(map[string]bool, len(known))
+	var out []runStat
+	for _, k := range known {
+		if seen[k] || !strings.Contains(text, k) {
+			continue
+		}
+		seen[k] = true
+		out = append(out, runStat{Len: len(k)})
+	}
+	return out
+}
+
+// contextRuns 取密钥上下文正则命中的各段长度（按出现次数，与熵那一路同口径）。
+func contextRuns(text string) []runStat {
+	var out []runStat
+	for _, m := range reCtxSecret.FindAllString(text, -1) {
+		out = append(out, runStat{Len: len(m)})
+	}
+	return out
+}
+
+// entropyRuns 取过阈的 16 位以上字母数字段：各段长度与取整后的熵。
+func entropyRuns(text string) []runStat {
+	var out []runStat
+	for _, run := range reRun.FindAllString(text, -1) {
+		if e := entropyOf(run); e >= minEntropyBits {
+			out = append(out, runStat{Len: len(run), Ent: roundEnt(e)})
+		}
+	}
+	return out
+}
+
+// digitRuns 取 10~11 位数字串的各段长度（按出现次数：同格两个账号是两个段）。
+func digitRuns(text string) []runStat {
+	var out []runStat
+	for _, m := range reLongDigits.FindAllString(text, -1) {
+		out = append(out, runStat{Len: len(m)})
 	}
 	return out
 }
@@ -266,14 +466,10 @@ func hitsKnown(text string, known []string) bool {
 	return false
 }
 
-// hasHighEntropy 任一段 16 位以上的字母数字串，字符熵过阈就算命中。
+// hasHighEntropy 谓词：任一段 16 位以上的字母数字串，字符熵过阈就算命中。
+// 现在是 entropyRuns 的包装，判定条件（≥minEntropyBits、reRun 的下限）一个字没改。
 func hasHighEntropy(text string) bool {
-	for _, run := range reRun.FindAllString(text, -1) {
-		if entropyOf(run) >= minEntropyBits {
-			return true
-		}
-	}
-	return false
+	return len(entropyRuns(text)) > 0
 }
 
 // entropyOf 按字节算香农熵（输入已经被探针限定成 ASCII 字母数字段）。

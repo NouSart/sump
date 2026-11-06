@@ -1,0 +1,24 @@
+[
+  {
+    "table": "memories",
+    "row_key": 9,
+    "column": "content",
+    "probe": "高熵串",
+    "key": "c33ed7da",
+    "runs": 1,
+    "lens": [17],
+    "ent": [3.97],
+    "reason": "17 位纯字母驼峰标识符，能在源码里 git grep -F 命中，是标识符不是凭据。写入边界够不着：没有关键词上下文也没有分隔符特征，redact 洗不掉，遮掉只会把提炼物读成乱码。2026-11-06 逐处读过并决定保留，见 TODO.md「-audit 的高熵串会报出 redact 洗不掉的形状」。key 从 -audit -no-adjudicated 的 String() 输出逐字抄入（2026-11-07）。"
+  },
+  {
+    "table": "mem_entries",
+    "row_key": 104,
+    "column": "content",
+    "probe": "高熵串",
+    "key": "33016163",
+    "runs": 1,
+    "lens": [33],
+    "ent": [4.16],
+    "reason": "33 位纯字母驼峰标识符，能在源码里 git grep -F 命中，是标识符不是凭据。同 memories 9：redact 够不着这一形状，遮掉只得到乱码。2026-11-06 逐处读过并决定保留，见 TODO.md 同一条目。key 从 -audit -no-adjudicated 的 String() 输出逐字抄入（2026-11-07）。"
+  }
+]
