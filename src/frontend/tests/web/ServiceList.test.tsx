@@ -9,8 +9,8 @@ import type { ServiceCardView } from '../../src/web/types';
 const tZh: Translate = (key, fallback) => fallback ?? key;
 
 const services: ServiceCardView[] = [
-  { name: 'images', title: '图片', addr: 'ws://127.0.0.1:9401/ws', description: '图片服务' },
-  { name: 'qq', addr: 'ws://127.0.0.1:9301/ws' },
+  { name: 'images', title: '图片', addr: 'ws://127.0.0.1:9401/spv2', description: '图片服务' },
+  { name: 'qq', addr: 'ws://127.0.0.1:9301/spv2' },
 ];
 
 function renderList(over: Partial<Parameters<typeof ServiceList>[0]> = {}) {

@@ -1,6 +1,6 @@
 // frontend：SUMP v2 的用户交互门户（与 qq 同类）＋ 设置中心可视化面板。
 // 服务节点：把自己注册进设置中心（心跳 / 名册）；浏览器侧：HTTP JSON + SSE。
-// 用法：node dist/server/index.js [-addr 127.0.0.1:9501] [-center ws://127.0.0.1:9000/ws] [-name frontend]
+// 用法：node dist/server/index.js [-addr 127.0.0.1:9501] [-center ws://127.0.0.1:9000/spv2] [-name frontend]
 //        [-web dist/web] [-heartbeat-ms 15000] [-reasoner reasoner] [-memory memory]
 //        [-files files] [-images images] [-shell shell] [-upload-max-bytes 20971520]
 //        [-locales locales] [-lang zh-CN] [-trusted-hosts a.example,b.example]
@@ -49,7 +49,7 @@ function resolveFlags(argv: string[]): FrontendConfig {
   }
   return {
     addr: raw.addr ?? '127.0.0.1:9501',
-    centerURL: raw.center ?? 'ws://127.0.0.1:9000/ws',
+    centerURL: raw.center ?? 'ws://127.0.0.1:9000/spv2',
     name: raw.name ?? 'frontend',
     webDir: raw.web ?? resolve(here, '../web'),
     heartbeatMS,
@@ -76,7 +76,7 @@ const log = (msg: string): void => {
 const flags = resolveFlags(process.argv.slice(2));
 const handle = await startFrontend(flags, log);
 log(`面板入口 http://${handle.addr}/（静态目录 ${flags.webDir}）`);
-log(`服务节点 ${flags.name}：ws://${handle.addr}/ws → 注册到 ${flags.centerURL}`);
+log(`服务节点 ${flags.name}：ws://${handle.addr}/spv2 → 注册到 ${flags.centerURL}`);
 
 let stopping = false;
 const shutdown = (): void => {

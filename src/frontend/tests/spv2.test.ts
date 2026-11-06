@@ -15,6 +15,7 @@ import {
   decodeFrame,
   spv2Addr,
 } from '../src/server/spv2.ts';
+import { newID } from '../src/server/protocol.ts';
 
 function listen(wss: WebSocketServer): Promise<number> {
   return new Promise((resolve) => {
@@ -25,8 +26,15 @@ function listen(wss: WebSocketServer): Promise<number> {
   });
 }
 
-test('spv2Addr 把 /ws 换成 /spv2', () => {
-  assert.equal(spv2Addr('ws://h:1/ws'), 'ws://h:1/spv2');
+test('newID：26 字符 ULID 形态且互不相同', () => {
+  const a = newID();
+  const b = newID();
+  assert.equal(a.length, 26);
+  assert.match(a, /^[0-9A-HJKMNP-TV-Z]{26}$/);
+  assert.notEqual(a, b);
+});
+
+test('spv2Addr 补 /spv2 后缀，已有后缀不重复', () => {
   assert.equal(spv2Addr('ws://h:1'), 'ws://h:1/spv2');
   assert.equal(spv2Addr('ws://h:1/spv2'), 'ws://h:1/spv2');
 });

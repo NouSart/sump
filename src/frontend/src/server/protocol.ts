@@ -1,18 +1,6 @@
-// SUMP v2 协议（TypeScript 侧）：信封 + MessagePack 编解码。
-// 与 Go 侧 protocol/ 逐字段对齐——msgpack 的键名即线路键名（snake_case），
-// 兼容性由 tests/protocol.test.ts 中的 Go 产出夹具钉死（双向字节级验证）。
-import { decode, encode } from '@msgpack/msgpack';
+// SUMP 协议 DTO（TypeScript 侧）：名册 / 设置等载荷的形状，以及消息 id 与帧字节工具。
+// v1 信封（register / jump / response …）已删除——出站与入站只走 SPv2.1 原生帧（见 spv2.ts）。
 import { randomBytes } from 'node:crypto';
-
-export const ProtocolVersion = 1;
-
-// 消息类型（信封 type 字段的取值，与 Go 侧一致）。
-export const TypeRegister = 'register';
-export const TypeResponse = 'response';
-export const TypeRoster = 'roster';
-export const TypeJump = 'jump';
-export const TypeHeartbeat = 'heartbeat';
-export const TypeSettings = 'settings';
 
 export interface Provide {
   action: string;
@@ -59,28 +47,6 @@ export interface RosterPayload {
   revision: number;
 }
 
-export interface ResponsePayload {
-  ok: boolean;
-  data?: unknown;
-  error?: string;
-}
-
-// ResponsePayloadView 是解码侧视图（字段可能缺失）。
-export interface ResponsePayloadView {
-  ok?: boolean;
-  data?: unknown;
-  error?: string;
-}
-
-export interface JumpPayload {
-  action: string;
-  input?: unknown;
-}
-
-export interface HeartbeatPayload {
-  status?: string;
-}
-
 export interface SettingView {
   key: string;
   value: string;
@@ -124,17 +90,6 @@ export interface SettingsEventView {
   results?: SettingResultView[];
 }
 
-export interface Envelope {
-  v: number;
-  id: string;
-  trace?: string;
-  boss?: string;
-  type: string;
-  from: string;
-  to: string;
-  payload?: unknown;
-}
-
 const ID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 // newID 生成 ULID 形态的消息 / 链路 id（26 字符：48 位毫秒时间 + 80 位随机）。
@@ -151,60 +106,6 @@ export function newID(): string {
     suffix += ID_ALPHABET.charAt((rnd[i] ?? 0) % 32);
   }
   return time + suffix;
-}
-
-// 关于 payload 的线路形状（重要）：
-// Go 侧 Envelope.Payload 是 msgpack.RawMessage——编码时直接内联为“嵌套值”（map / 数组 / …），
-// 不是 bin 字节块。因此 TS 侧 payload 就是普通 JS 值：编解码都只有一层，不做二次包装。
-
-// encodeEnvelope 把信封编码为线路字节；空字段与 Go 的 omitempty 对齐（不出现键）。
-export function encodeEnvelope(env: Envelope): Uint8Array {
-  const out: Record<string, unknown> = {
-    v: env.v,
-    id: env.id,
-    type: env.type,
-    from: env.from,
-    to: env.to,
-  };
-  if (env.trace) out.trace = env.trace;
-  if (env.boss) out.boss = env.boss;
-  if (env.payload !== undefined) out.payload = env.payload;
-  return encode(out);
-}
-
-export function decodeEnvelope(bytes: Uint8Array): Envelope {
-  const raw = decode(bytes) as Record<string, unknown>;
-  return {
-    v: typeof raw.v === 'number' ? raw.v : 0,
-    id: typeof raw.id === 'string' ? raw.id : '',
-    trace: typeof raw.trace === 'string' ? raw.trace : undefined,
-    boss: typeof raw.boss === 'string' ? raw.boss : undefined,
-    type: typeof raw.type === 'string' ? raw.type : '',
-    from: typeof raw.from === 'string' ? raw.from : '',
-    to: typeof raw.to === 'string' ? raw.to : '',
-    payload: raw.payload ?? undefined,
-  };
-}
-
-// newEnvelope 构造一条消息：自动填协议版本与 id（trace 为空时自动生成）。
-export function newEnvelope(type: string, from: string, to: string, trace: string, payload?: unknown, boss?: string): Envelope {
-  return {
-    v: ProtocolVersion,
-    id: newID(),
-    trace: trace || newID(),
-    type,
-    from,
-    to,
-    boss: boss || undefined,
-    payload,
-  };
-}
-
-// newResponse 构造对 req 的响应：沿用请求的 id（配对）与 trace（同链）。
-export function newResponse(req: Envelope, from: string, payload: ResponsePayload): Envelope {
-  const env = newEnvelope(TypeResponse, from, req.from, req.trace ?? '', payload);
-  env.id = req.id;
-  return env;
 }
 
 // frameBytes 把 WS 帧（Buffer / ArrayBuffer / 分片数组）统一为字节视图。

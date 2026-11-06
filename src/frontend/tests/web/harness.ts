@@ -84,7 +84,7 @@ export function countCalls(calls: FetchCall[], path: string): number {
 // rosterOf 构造名册视图。
 export function rosterOf(names: string[], revision = 1): RosterView {
   return {
-    services: names.map((name) => ({ name, addr: `ws://127.0.0.1:1/ws`, description: `${name} 测试服务` })),
+    services: names.map((name) => ({ name, addr: `ws://127.0.0.1:1/spv2`, description: `${name} 测试服务` })),
     revision,
   };
 }
@@ -109,8 +109,8 @@ export function settingsOf(
 export function overviewOf(r: RosterView, settingsList: ServiceSettingsView[] = []): Overview {
   return {
     connected: true,
-    center: 'ws://127.0.0.1:9000/ws',
-    self: { name: 'frontend', ws: 'ws://127.0.0.1:9501/ws', http: '127.0.0.1:9501' },
+    center: 'ws://127.0.0.1:9000/spv2',
+    self: { name: 'frontend', ws: 'ws://127.0.0.1:9501/spv2', http: '127.0.0.1:9501' },
     roster: r,
     settings: { services: settingsList },
     fetchedAt: '2026-10-14T00:00:00Z',

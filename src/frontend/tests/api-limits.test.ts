@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { WebSocket } from 'ws';
 import { startFrontend, type FrontendConfig } from '../src/server/app.ts';
-import { StubCenter } from './stub-center.ts';
+import { StubNativeCenter } from './stub-native-center.ts';
 
 const silent = (): void => {};
 
@@ -61,7 +61,7 @@ function openEventStream(addr: string): Promise<{ status: number; close: () => v
 }
 
 test('事件流：并发连接有上限，超出返回 503', async (t) => {
-  const stub = new StubCenter();
+  const stub = new StubNativeCenter();
   const cfg = await baseConfig();
   cfg.centerURL = await stub.start();
   const handle = await startFrontend(cfg, silent);
@@ -80,7 +80,7 @@ test('事件流：并发连接有上限，超出返回 503', async (t) => {
 });
 
 test('WS：单帧超过 1 MiB 直接断开（不把进程带崩）', async (t) => {
-  const stub = new StubCenter();
+  const stub = new StubNativeCenter();
   const cfg = await baseConfig();
   cfg.centerURL = await stub.start();
   const handle = await startFrontend(cfg, silent);
@@ -89,7 +89,7 @@ test('WS：单帧超过 1 MiB 直接断开（不把进程带崩）', async (t) =
     await stub.stop();
   });
 
-  const ws = new WebSocket(`ws://${handle.addr}/ws`);
+  const ws = new WebSocket(`ws://${handle.addr}/spv2`);
   await new Promise<void>((resolve, reject) => {
     ws.once('open', () => resolve());
     ws.once('error', reject);

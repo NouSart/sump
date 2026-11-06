@@ -5,21 +5,12 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { decode, encode } from '@msgpack/msgpack';
-import { WebSocketServer, type RawData } from 'ws';
 import { startFrontend, type FrontendHandle } from '../src/server/app.ts';
-import { StubCenter } from './stub-center.ts';
+import { StubNativeCenter } from './stub-native-center.ts';
+import { StubNativeService, type NativeCall } from './stub-native-service.ts';
 import { waitFor } from './util.ts';
 
 const silent = (): void => {};
-
-interface Jump {
-  to: string;
-  action: string;
-  input: unknown;
-  from: string;
-  boss: string;
-}
 
 async function makeWebDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'sump-web-'));
@@ -27,54 +18,23 @@ async function makeWebDir(): Promise<string> {
   return dir;
 }
 
-// startStub：冒充 files / images / reasoner（同一个 WS 端点，按 to 分辨），记录收到的 jump。
+// startStub：冒充 files / images / reasoner（真 /spv2 端点，按 to 分辨），记录收到的 call。
 async function startStub(reply: { ok: boolean; data?: unknown; error?: string }): Promise<{
   url: string;
-  jumps: Jump[];
+  calls: NativeCall[];
   stop: () => Promise<void>;
 }> {
-  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
-  const jumps: Jump[] = [];
-  wss.on('connection', (ws) => {
-    ws.on('message', (data: RawData) => {
-      const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : new Uint8Array(data);
-      const env = decode(bytes) as {
-        id: string;
-        from: string;
-        to: string;
-        boss?: string;
-        payload?: { action?: string; input?: unknown };
-      };
-      if (env.payload === undefined) return;
-      jumps.push({
-        to: env.to,
-        action: env.payload.action ?? '',
-        input: env.payload.input,
-        from: env.from,
-        boss: env.boss ?? '',
-      });
-      ws.send(encode({ v: 1, id: env.id, type: 'response', from: env.to, to: env.from, payload: reply }));
-    });
-  });
-  await new Promise<void>((resolve) => wss.once('listening', () => resolve()));
-  const port = (wss.address() as { port: number }).port;
-  const url = `ws://127.0.0.1:${String(port)}/ws`;
-  return {
-    url,
-    jumps,
-    stop: () =>
-      new Promise<void>((resolve) => {
-        for (const c of wss.clients) c.terminate();
-        wss.close(() => resolve());
-      }),
-  };
+  const stub = new StubNativeService();
+  stub.replyFor = () => reply;
+  const url = await stub.start();
+  return { url, calls: stub.calls, stop: () => stub.stop() };
 }
 
 async function startPortal(opts: { roster: { name: string; addr: string }[]; uploadMaxBytes?: number }): Promise<FrontendHandle> {
-  const stub = new StubCenter();
+  const stub = new StubNativeCenter();
   const centerURL = await stub.start();
   stub.roster = {
-    services: [{ name: 'frontend', addr: 'ws://127.0.0.1:9/ws' }, ...opts.roster],
+    services: [{ name: 'frontend', addr: 'ws://127.0.0.1:9/spv2' }, ...opts.roster],
     revision: 3,
   };
   const handle = await startFrontend(
@@ -138,9 +98,9 @@ test('upload：文档走 files.save，图片走 images.save', async (t) => {
   assert.equal(docBody.id, 'f1');
   assert.equal(docBody.filename, '报告.pdf');
   assert.equal(docBody.size, 5);
-  assert.equal(stub.jumps.at(-1)?.to, 'files');
-  assert.equal(stub.jumps.at(-1)?.action, 'save');
-  assert.deepEqual(stub.jumps.at(-1)?.input, { data: b64('hello'), filename: '报告.pdf', mime: 'application/pdf' });
+  assert.equal(stub.calls.at(-1)?.to, 'files');
+  assert.equal(stub.calls.at(-1)?.method, 'save');
+  assert.deepEqual(stub.calls.at(-1)?.input, { data: b64('hello'), filename: '报告.pdf', mime: 'application/pdf' });
 
   const img = await postJSON(`http://${handle.addr}/api/upload`, {
     filename: '截图.png',
@@ -150,9 +110,9 @@ test('upload：文档走 files.save，图片走 images.save', async (t) => {
   assert.equal(img.status, 200);
   const imgBody = (await img.json()) as { kind: string };
   assert.equal(imgBody.kind, 'image');
-  assert.equal(stub.jumps.at(-1)?.to, 'images');
+  assert.equal(stub.calls.at(-1)?.to, 'images');
   // images.save 没有 filename 字段：不要塞不认识的键。
-  assert.deepEqual(stub.jumps.at(-1)?.input, { data: b64('png'), mime: 'image/png' });
+  assert.deepEqual(stub.calls.at(-1)?.input, { data: b64('png'), mime: 'image/png' });
 });
 
 test('upload：超过门户上限 413，坏 base64 400，非 JSON 415', async (t) => {
@@ -168,7 +128,7 @@ test('upload：超过门户上限 413，坏 base64 400，非 JSON 415', async (t
   });
   assert.equal(big.status, 413);
   assert.match(((await big.json()) as { error: string }).error, /超过门户上限/);
-  assert.equal(stub.jumps.length, 0, '被门户挡下的请求不该打到下游');
+  assert.equal(stub.calls.length, 0, '被门户挡下的请求不该打到下游');
 
   const bad = await postJSON(`http://${handle.addr}/api/upload`, {
     filename: 'a.txt',
@@ -198,7 +158,7 @@ test('upload：缺 filename 400；空 mime 也照发（由 files 自己探测）
   // 浏览器给不出 mime 时不要把请求挡在门口：交给 files 的 DetectContentType。
   const noMime = await postJSON(`http://${handle.addr}/api/upload`, { filename: 'a.bin', data: b64('hi') });
   assert.equal(noMime.status, 200);
-  const sent = stub.jumps.at(-1)?.input as { mime: string };
+  const sent = stub.calls.at(-1)?.input as { mime: string };
   assert.equal(sent.mime, '');
   // 下游回的 mime 优先（它探测出来的才是真的）。
   assert.equal(((await noMime.json()) as { mime: string }).mime, 'image/png');
@@ -227,7 +187,7 @@ test('upload：超过 1 MiB 的提示用 MB 计数；文件名过长被截断', 
   });
   assert.equal(justOver.status, 413);
   assert.match(((await justOver.json()) as { error: string }).error, /超过门户上限 2\.0 MB/);
-  assert.equal(stub.jumps.length, 0, '被门户挡下的请求不该打到下游');
+  assert.equal(stub.calls.length, 0, '被门户挡下的请求不该打到下游');
 
   const longName = `${'a'.repeat(250)}.txt`;
   const ok = await postJSON(`http://${handle.addr}/api/upload`, {
@@ -256,7 +216,7 @@ test('message：附件清单形状不对整批拒（不猜、不静默丢）', a
     const res = await postJSON(`http://${handle.addr}/api/message`, { text: 'x', attachments: c.attachments });
     assert.equal(res.status, 400, `${c.name} 应被拒`);
   }
-  assert.equal(stub.jumps.length, 0, '被拒的消息不该打到 reasoner');
+  assert.equal(stub.calls.length, 0, '被拒的消息不该打到 reasoner');
 
   // 缺 filename / size：退回 id 当名字、不写大小段（不编造数据）。
   const loose = await postJSON(`http://${handle.addr}/api/message`, {
@@ -264,7 +224,7 @@ test('message：附件清单形状不对整批拒（不猜、不静默丢）', a
     attachments: [{ kind: 'file', id: 'f1' }],
   });
   assert.equal(loose.status, 200);
-  const text = (stub.jumps.at(-1)?.input as { text: string }).text;
+  const text = (stub.calls.at(-1)?.input as { text: string }).text;
   assert.equal(text, 'x\n\n[附件] f1（files:f1）——需要时用 files.read {id:"f1"} 读');
 });
 
@@ -332,7 +292,7 @@ test('message：小于 1 KiB 的附件按字节读数；没有大小就不写那
     text: 'x',
     attachments: [{ kind: 'file', id: 'f1', filename: 'a.txt', size: 512 }],
   });
-  const withBytes = (stub.jumps.at(-1)?.input as { text: string }).text;
+  const withBytes = (stub.calls.at(-1)?.input as { text: string }).text;
   // 512 字节写成 "512 B"：换成 KB 会变成 "0.5 KB"，读起来像被截了。
   assert.equal(withBytes, 'x\n\n[附件] a.txt（files:f1，512 B）——需要时用 files.read {id:"f1"} 读');
 
@@ -340,7 +300,7 @@ test('message：小于 1 KiB 的附件按字节读数；没有大小就不写那
     text: 'x',
     attachments: [{ kind: 'file', id: 'f2', filename: 'b.txt' }],
   });
-  const noSize = (stub.jumps.at(-1)?.input as { text: string }).text;
+  const noSize = (stub.calls.at(-1)?.input as { text: string }).text;
   assert.equal(noSize, 'x\n\n[附件] b.txt（files:f2）——需要时用 files.read {id:"f2"} 读');
 });
 
@@ -373,8 +333,8 @@ test('message：附件写成模型看得懂的一行，文件名里的换行被�
     ],
   });
   assert.equal(res.status, 200);
-  const sent = stub.jumps.at(-1);
-  assert.equal(sent?.action, 'user_message');
+  const sent = stub.calls.at(-1);
+  assert.equal(sent?.method, 'user_message');
   const text = (sent?.input as { text: string }).text;
   assert.match(text, /^看看这个\n\n\[附件\] 报告\.pdf（files:f9，312\.0 KB）——需要时用 files\.read \{id:"f9"\} 读/);
   assert.match(text, /\[附件\] 截图\.png（images:i7，10\.0 KB）——用 images\.fetch \{id:"i7"\}/);
@@ -391,7 +351,7 @@ test('message：只有附件没有文字也能发；两者都空则 400', async 
     attachments: [{ kind: 'file', id: 'f1', filename: 'a.txt', size: 2 }],
   });
   assert.equal(onlyAttachment.status, 200);
-  assert.match((stub.jumps.at(-1)?.input as { text: string }).text, /^\[附件\] a\.txt（files:f1/);
+  assert.match((stub.calls.at(-1)?.input as { text: string }).text, /^\[附件\] a\.txt（files:f1/);
 
   const empty = await postJSON(`http://${handle.addr}/api/message`, { text: '   ' });
   assert.equal(empty.status, 400);
