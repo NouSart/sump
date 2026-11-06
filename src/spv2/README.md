@@ -91,8 +91,10 @@
 
 - `NewServer(card, ...)` 先校验卡片；默认注册 `hello` / `health` / `metrics`，其余 method 用 `Handle` 注册。
 - `Handler()` 返回挂在 `/spv2` 上的 HTTP handler；`Mux()` 返回完整 mux：`/spv2`、`/healthz`、`/readyz`、`/metrics`（OpenMetrics 文本）。
-- 选项有 `WithMaxMessageBytes`（默认 4 MiB）、`WithActionTimeout`（默认 30s）、`WithMaxInflight`（默认 64）、`WithMetrics`、`WithIdempotency`。
+- 选项有 `WithMaxMessageBytes`（默认 4 MiB）、`WithActionTimeout`（默认 30s）、`WithMaxInflight`（默认 64）、`WithMetrics`、`WithIdempotency`、`WithLogger`（默认 `log.Default()`；生产骨架传自己的 logger，见 `src/service/spv2_bridge.go`）。
 - 收到 call 后做 `Normalize` / `Validate` / `ValidateTo`；未知 method 回 `not_found`，并发超限回 `resource_exhausted`，每个 call 在独立 goroutine 中执行。
+- **丢弃必留痕**（spec 附录 A 第 1 条「无静默终态：drop 必计数」）：解不开 / 校验失败 / 超 body 上限 / 没有分发分支的入站帧，一律记 `sump_dropped_total{reason}` 并写一条日志（原因取值见 `server.go` 的常量表）。call 额外多回一帧错误 reply，只为不让调用方空等——同一种事件仍只记一次账，call 与 event 不分家。
+- **panic 不外溢**：handler 的 panic 在 `invoke` 里被收成 `internal` 错误，回给调用方、记 `sump_panics_total{method}`、把栈写进日志；进程与这条连接继续工作。event 的 panic 同理，但不再另记 `sump_event_errors_total`（一个事件一个指标）。
 - `Handler` 拿到的 `*Call` 提供 `Reply` / `ReplyError` / `SendEvent` / `SendStream` / `SendStreamError` / `Replied` / `WorkID`；handler 没回应时 server 会补错误 reply。
 - `hello` 校验请求协议版本并返回服务卡；`health` 返回 status/version/uptime；`metrics` 返回当前快照。event 交给同名 handler 处理，不产生 reply。
 
@@ -122,7 +124,7 @@
 
 - `Registry` 支持 `Counter`、`Gauge`、`AddGauge`、`Observe`、`Snapshot`；相同名字 + 标签聚合为一条序列，快照按名字和标签排序。
 - 直方图默认桶为 0.005 / 0.01 / 0.05 / 0.1 / 0.5 / 1 / 5 秒。
-- server 自动埋 `sump_requests_total`（method/code）、`sump_request_duration_seconds`（method）、`sump_inflight_requests`（method）；命名、单位和标签纪律由调用方负责，Registry 不强制。
+- server 自动埋 `sump_requests_total`（method/code）、`sump_request_duration_seconds`（method）、`sump_inflight_requests`（method）、`sump_dropped_total`（reason）、`sump_panics_total`（method）、`sump_unknown_event_total`（method）、`sump_event_errors_total`（method）；命名、单位和标签纪律由调用方负责，Registry 不强制。
 
 ## 最小示例
 

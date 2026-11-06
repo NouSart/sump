@@ -72,7 +72,9 @@ func (s *Service) buildSPv2() error {
 		Limits:        spv2.Limits{MaxBody: maxBody},
 		Observability: spv2.Observability{Health: true, Metrics: true, Format: "spv2.metrics.v1"},
 	}
-	srv, err := spv2.NewServer(card, spv2.WithMaxMessageBytes(maxBody))
+	// 骨架的日志必须接到 SPv2 服务端：丢弃帧与处理方 panic 要落在这个服务自己的日志里，
+	// 而不是默认的 process stderr（见 src/spv2/server.go 的 countDropped / countPanic）。
+	srv, err := spv2.NewServer(card, spv2.WithMaxMessageBytes(maxBody), spv2.WithLogger(s.logger))
 	if err != nil {
 		return err
 	}
