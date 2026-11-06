@@ -68,10 +68,12 @@ func TestRedlinePublishMasksBodyAndHashesAccount(t *testing.T) {
 	s := openTest(t)
 	now := time.Now()
 	published, err := s.Publish(now, PublishInput{
-		SessionID: fakeCIDPlain,
-		TaskID:    fakeTaskID,
-		Goal:      `排查 ` + fakeWinPath + ` 的 NapCat 连接，默认地址 ` + fakeURL + `，令牌 ` + fakeToken,
-		Outcome:   "日志见 " + fakePosix + "，联系 " + fakePhone + "；备用令牌 " + fakeTokenBare,
+		SessionID:    fakeCIDPlain,
+		SessionTitle: "运维会话，联系 " + fakePhone,
+		TaskID:       fakeTaskID,
+		TaskTitle:    `排查 ` + fakeWinPath,
+		Goal:         `排查 ` + fakeWinPath + ` 的 NapCat 连接，默认地址 ` + fakeURL + `，令牌 ` + fakeToken,
+		Outcome:      "日志见 " + fakePosix + "，联系 " + fakePhone + "；备用令牌 " + fakeTokenBare,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -80,16 +82,18 @@ func TestRedlinePublishMasksBodyAndHashesAccount(t *testing.T) {
 		t.Fatal("有内容就该占目录位置")
 	}
 
-	var sessionID, entry, title string
-	if err := s.db.QueryRow(`SELECT id, entry, title FROM shared_sessions LIMIT 1`).Scan(&sessionID, &entry, &title); err != nil {
+	// 两个 title 列必须查、而且必须有料：以前输入是空串，SELECT 到了也白到了，
+	// 把 sessions.go 里的 Sanitize 摘掉测试一声不响。
+	var sessionID, entry, sessionTitle string
+	if err := s.db.QueryRow(`SELECT id, entry, title FROM shared_sessions LIMIT 1`).Scan(&sessionID, &entry, &sessionTitle); err != nil {
 		t.Fatal(err)
 	}
-	var taskID, goal, outcome string
-	if err := s.db.QueryRow(`SELECT task_id, goal, outcome FROM shared_tasks LIMIT 1`).Scan(&taskID, &goal, &outcome); err != nil {
+	var taskID, taskTitle, goal, outcome string
+	if err := s.db.QueryRow(`SELECT task_id, title, goal, outcome FROM shared_tasks LIMIT 1`).Scan(&taskID, &taskTitle, &goal, &outcome); err != nil {
 		t.Fatal(err)
 	}
-	assertNoLeak(t, "shared_sessions", sessionID, entry, title)
-	assertNoLeak(t, "shared_tasks", taskID, goal, outcome)
+	assertNoLeak(t, "shared_sessions", sessionID, entry, sessionTitle)
+	assertNoLeak(t, "shared_tasks", taskID, taskTitle, goal, outcome)
 
 	// 收口不是抹掉：分组键与入口都要留下，否则目录散架、"排除自己"也失效。
 	if want := mustOpaque(t, fakeCIDPlain); sessionID != want {
@@ -107,6 +111,12 @@ func TestRedlinePublishMasksBodyAndHashesAccount(t *testing.T) {
 	// 无前缀的裸令牌：reToken 够不着，只能靠"令牌 <值>"这一层上下文。
 	if !strings.Contains(outcome, "[已隐去]") {
 		t.Errorf("outcome 里的裸令牌该被上下文规则遮掉，实际 = %q", outcome)
+	}
+	if !strings.Contains(taskTitle, "[路径]") {
+		t.Errorf("shared_tasks.title 该走同一道写入边界，实际 = %q", taskTitle)
+	}
+	if !strings.Contains(sessionTitle, "[已隐去]") {
+		t.Errorf("shared_sessions.title 该走同一道写入边界，实际 = %q", sessionTitle)
 	}
 }
 
