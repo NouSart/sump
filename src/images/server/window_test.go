@@ -143,9 +143,13 @@ func TestEncodeFitStaysUnderLimit(t *testing.T) {
 			img.SetRGBA(x, y, color.RGBA{R: uint8(seed >> 24), G: uint8(seed >> 16), B: uint8(seed >> 8), A: 255})
 		}
 	}
-	out, w, h, shrunk, err := encodeFit(img, false)
+	out, mime, w, h, shrunk, err := encodeFit(img, false)
 	if err != nil {
 		t.Fatalf("不该失败: %v", err)
+	}
+	// 编码器的产物说一不二：preferJPEG=false 出 PNG 字节，MIME 也必须是 image/png。
+	if mime != "image/png" || !bytes.HasPrefix(out, []byte("\x89PNG\r\n\x1a\n")) {
+		t.Fatalf("mime=%q 与实际字节不符（应以 PNG 魔数开头）", mime)
 	}
 	if len(out) > maxResultBytes {
 		t.Fatalf("编码结果 %d 字节，超过上限 %d", len(out), maxResultBytes)

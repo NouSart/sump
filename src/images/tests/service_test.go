@@ -149,6 +149,9 @@ func TestSaveFetchFlow(t *testing.T) {
 	srv := server.New(server.Config{
 		Name: "images", Listen: "127.0.0.1:0", Center: sc.URL(),
 		HeartbeatInterval: 200 * time.Millisecond, Store: st,
+		// httptest 对端在 127.0.0.1：本测试文件走下载逃生闸（口径与生产相反的默认值
+		// 由 fetch_guard_test.go 的默认态用例覆盖）。
+		FetchAllowLoopback: true,
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -280,6 +283,17 @@ func TestFetchThumbnailAndWindow(t *testing.T) {
 	if th.DataBytes >= len(bigPNG) {
 		t.Fatalf("缩略图没变小: %d >= %d", th.DataBytes, len(bigPNG))
 	}
+	// mime 必须跟着编码器实际产物走：PNG 源（format!="jpeg" → PNG 重编码）不能标成 image/jpeg。
+	rawTH, err := base64.StdEncoding.DecodeString(th.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th.Mime != "image/png" {
+		t.Fatalf("缩略图 mime 与编码产物不符: %q（PNG 源重编码产物是 PNG）", th.Mime)
+	}
+	if !bytes.HasPrefix(rawTH, []byte("\x89PNG\r\n\x1a\n")) {
+		t.Fatalf("mime=%q 但字节没有 PNG 魔数: % x", th.Mime, rawTH[:8])
+	}
 
 	// 给矩形 = 那块原图：尺寸原样、不放大不缩小、坐标如实回显。
 	win := fetch(t, protocol.ImageFetchPayload{X1: 100, Y1: 100, X2: 300, Y2: 200})
@@ -291,6 +305,9 @@ func TestFetchThumbnailAndWindow(t *testing.T) {
 	}
 	if win.Downscaled {
 		t.Fatal("局部原图不该被缩小")
+	}
+	if win.Mime != "image/png" {
+		t.Fatalf("窗口 mime 与编码产物不符: %q", win.Mime)
 	}
 
 	// 越界矩形夹到边界，而不是报错。

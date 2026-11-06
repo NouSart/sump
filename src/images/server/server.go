@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/NouSart/sump/images/store"
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/protocol/fetchsafe"
 	"github.com/NouSart/sump/service"
 	"github.com/NouSart/sump/spv2"
 )
@@ -32,6 +32,10 @@ type Config struct {
 	MaxBytes          int64         // 单图上限（默认 32MiB，对齐 DeepSeek 图片限制；作为声明预设上报）
 	DBPath            string        // 元数据库路径（只读项展示用：换它要重启）
 	Dir               string        // 图片二进制目录（只读项展示用：换它要重启）
+	// FetchAllowLoopback 是仅供测试/显式配置的逃生闸：放行 save{url} 的**首个地址**指向环回
+	// （httptest 对端都在 127.0.0.1）。重定向跳永远按严格口径检查，私有/链路本地等照旧拒绝。
+	// 生产默认必须为 false——详见 fetchsafe 包头的说明。
+	FetchAllowLoopback bool
 }
 
 // 默认单图上限（32MiB）。
@@ -43,6 +47,10 @@ type Server struct {
 
 	cfg    Config
 	logger *log.Logger
+
+	// fetchGuard 是 URL 下载的 SSRF 守卫（协议白名单 + 地址检查 + 重定向逐跳 + 钉 IP），
+	// FallbackMaxBytes 保留本服务原有口径（32MiB）。
+	fetchGuard fetchsafe.Policy
 
 	setMu    sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
 	maxBytes int64      // 当前单图上限（字节）
@@ -57,6 +65,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		cfg.MaxBytes = 1 << 20 // 声明以 MB 计——小于 1MiB 的引导值归一到 1MiB
 	}
 	s := &Server{cfg: cfg, logger: logger, maxBytes: cfg.MaxBytes}
+	// 下载守卫：兜底上限沿用本服务原口径（32MiB）；逃生闸只由 Config 显式打开。
+	s.fetchGuard = fetchsafe.Policy{AllowLoopback: cfg.FetchAllowLoopback, FallbackMaxBytes: defaultMaxBytes}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Title:             "图片",
@@ -168,7 +178,8 @@ func (s *Server) save(body []byte) (any, error) {
 	limit := s.maxBytesNow()
 	switch {
 	case strings.TrimSpace(p.URL) != "":
-		data, mimeHint, err = fetchURL(p.URL, limit)
+		// 模型给的 URL 一律走 fetchsafe 守卫下载（限时、限大小、SSRF 四连检），本服务不再自带下载体。
+		data, mimeHint, err = s.fetchGuard.Fetch(p.URL, limit)
 	case strings.TrimSpace(p.Data) != "":
 		data, err = base64.StdEncoding.DecodeString(p.Data)
 	default:
@@ -254,7 +265,9 @@ func (s *Server) fetch(body []byte) (any, error) {
 	}
 	before := out.Bounds()
 	out, scaled := scaleToFit(out, maxSide)
-	enc, w, h, shrunk, err := encodeFit(out, format == "jpeg")
+	// encMime 跟着编码器的实际产物走：format=="jpeg" 出 JPEG，其余（PNG/GIF 源）出 PNG——
+	// 过去这里硬编码 image/jpeg，PNG 字节被贴上 JPEG 标签，属于指鹿为马。
+	enc, encMime, w, h, shrunk, err := encodeFit(out, format == "jpeg")
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
@@ -267,7 +280,7 @@ func (s *Server) fetch(body []byte) (any, error) {
 		}, nil
 	}
 	return protocol.ImageFetchResult{
-		ID: p.ID, Mime: "image/jpeg", Data: base64.StdEncoding.EncodeToString(enc), Size: int64(len(data)),
+		ID: p.ID, Mime: encMime, Data: base64.StdEncoding.EncodeToString(enc), Size: int64(len(data)),
 		OriginalWidth: b.Dx(), OriginalHeight: b.Dy(),
 		Width: w, Height: h,
 		X1: rect.Min.X, Y1: rect.Min.Y, X2: rect.Max.X, Y2: rect.Max.Y,
@@ -302,32 +315,4 @@ func (s *Server) fetchFull(body []byte) (any, error) {
 		ID: p.ID, Mime: mime, Data: base64.StdEncoding.EncodeToString(data), Size: int64(len(data)),
 		DataBytes: len(data),
 	}, nil
-}
-
-// fetchURL 下载图片：限时 30s、限制大小（多读 1 字节探测超限）。
-func fetchURL(url string, maxBytes int64) ([]byte, string, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		return nil, "", fmt.Errorf("下载失败: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
-	}
-	if maxBytes <= 0 {
-		maxBytes = 32 << 20
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-	if err != nil {
-		return nil, "", fmt.Errorf("读取下载内容失败: %w", err)
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, "", fmt.Errorf("下载内容超过 %d 字节上限", maxBytes)
-	}
-	mime := resp.Header.Get("Content-Type")
-	if i := strings.IndexByte(mime, ';'); i >= 0 {
-		mime = mime[:i]
-	}
-	return data, strings.TrimSpace(mime), nil
 }

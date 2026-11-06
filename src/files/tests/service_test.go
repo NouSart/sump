@@ -142,6 +142,8 @@ func startFiles(t *testing.T, centerURL string, readMaxChars int) *server.Server
 		Name: "files", Listen: "127.0.0.1:0", Center: centerURL,
 		HeartbeatInterval: 200 * time.Millisecond, Store: st,
 		ReadMaxChars: readMaxChars,
+		// httptest 对端在 127.0.0.1：走下载逃生闸（默认（生产）口径的拒绝由 fetch_guard_test.go 覆盖）。
+		FetchAllowLoopback: true,
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

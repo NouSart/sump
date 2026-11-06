@@ -212,6 +212,9 @@ func TestQQFullChainE2E(t *testing.T) {
 		"-center", centerURL,
 		"-db", filepath.Join(t.TempDir(), "images.db"),
 		"-dir", t.TempDir(),
+		// 被下载的图来自本机 httptest：不加这个开关，下载守卫会按生产口径拒掉环回地址。
+		// 只放开首个地址，重定向仍严格检查，所以它不构成守卫的绕行。
+		"-fetch-allow-loopback",
 	)
 	waitWSReady(t, imgURL, 60*time.Second)
 

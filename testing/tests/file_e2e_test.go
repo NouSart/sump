@@ -170,6 +170,10 @@ func TestQQFileE2E(t *testing.T) {
 		"-center", centerURL,
 		"-db", filepath.Join(t.TempDir(), "files.db"),
 		"-dir", t.TempDir(),
+		// 这条用例的被下载方就是本机的 httptest 服务：不加这个开关，
+		// 下载守卫会按生产口径拒掉环回地址（默认必须是拒）。
+		// 只放开首个地址，重定向仍严格检查——所以它不构成守卫的绕行。
+		"-fetch-allow-loopback",
 	)
 	waitWSReady(t, filURL, 60*time.Second)
 

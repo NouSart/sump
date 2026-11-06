@@ -172,40 +172,42 @@ func cropImage(src image.Image, r image.Rectangle) image.Image {
 }
 
 // encodeFit 把图片编码成 PNG / JPEG，并在超出 maxResultBytes 时逐次缩小。
-// 返回编码结果、最终尺寸、是否缩小过。
-func encodeFit(img image.Image, preferJPEG bool) ([]byte, int, int, bool, error) {
+// 返回编码结果、**与产物真正对应的 MIME**、最终尺寸、是否缩小过——
+// MIME 必须跟着编码器走：preferJPEG=false 出的是 PNG 字节，就只能标 image/png。
+func encodeFit(img image.Image, preferJPEG bool) ([]byte, string, int, int, bool, error) {
 	cur := img
 	shrunk := false
 	for attempt := 0; attempt < 5; attempt++ {
-		out, err := encode(cur, preferJPEG)
+		out, mime, err := encode(cur, preferJPEG)
 		if err != nil {
-			return nil, 0, 0, false, err
+			return nil, "", 0, 0, false, err
 		}
 		if len(out) <= maxResultBytes {
-			return out, cur.Bounds().Dx(), cur.Bounds().Dy(), shrunk, nil
+			return out, mime, cur.Bounds().Dx(), cur.Bounds().Dy(), shrunk, nil
 		}
 		w := cur.Bounds().Dx()
 		if w <= 64 {
-			return nil, 0, 0, false, fmt.Errorf("局部太大（> %d KiB），请缩小矩形范围", maxResultBytes>>10)
+			return nil, "", 0, 0, false, fmt.Errorf("局部太大（> %d KiB），请缩小矩形范围", maxResultBytes>>10)
 		}
 		cur = resizeBilinear(cur, w*3/4, cur.Bounds().Dy()*3/4)
 		shrunk = true
 	}
-	return nil, 0, 0, false, fmt.Errorf("局部太大（> %d KiB），请缩小矩形范围", maxResultBytes>>10)
+	return nil, "", 0, 0, false, fmt.Errorf("局部太大（> %d KiB），请缩小矩形范围", maxResultBytes>>10)
 }
 
-func encode(img image.Image, preferJPEG bool) ([]byte, error) {
+// encode 按 preferJPEG 选编码器，并如实返回所用编码对应的 MIME。
+func encode(img image.Image, preferJPEG bool) ([]byte, string, error) {
 	var buf bytes.Buffer
 	if preferJPEG {
 		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		return buf.Bytes(), nil
+		return buf.Bytes(), "image/jpeg", nil
 	}
 	if err := png.Encode(&buf, img); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return buf.Bytes(), nil
+	return buf.Bytes(), "image/png", nil
 }
 
 // 注册解码器：image.Decode 需要它们可用。

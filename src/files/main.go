@@ -11,6 +11,7 @@ import (
 
 	"github.com/NouSart/sump/files/server"
 	"github.com/NouSart/sump/files/store"
+	"github.com/NouSart/sump/protocol/fetchsafe"
 )
 
 func main() {
@@ -21,6 +22,10 @@ func main() {
 	dir := flag.String("dir", "data/files", "文件二进制存放目录")
 	maxMB := flag.Int("max-mb", 100, "单文件大小上限（MB）")
 	readMaxChars := flag.Int("read-max-chars", 4000, "read 返回的最大字符数（截断阈值）")
+	// 逃生闸（默认关）：只放行 save{url} 首个地址指向环回，供本地测试/显式配置用；
+	// 重定向逐跳仍按严格口径检查。生产绝不能开——那等于把「读本机服务」的门交给模型。
+	// 同样的闸也可用环境变量 SUMP_FETCH_ALLOW_LOOPBACK=1 打开（子进程测试用）。
+	fetchLoopback := flag.Bool("fetch-allow-loopback", false, "允许 URL 下载的首个地址指向环回（仅测试；重定向仍严格检查；生产必须保持 false）")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "[files] ", log.LstdFlags|log.Lmicroseconds)
@@ -32,14 +37,15 @@ func main() {
 	defer st.Close()
 
 	s := server.New(server.Config{
-		Name:         *name,
-		Listen:       *addr,
-		Center:       *center,
-		Store:        st,
-		MaxBytes:     int64(*maxMB) << 20,
-		ReadMaxChars: *readMaxChars,
-		DBPath:       *dbPath,
-		Dir:          *dir,
+		Name:               *name,
+		Listen:             *addr,
+		Center:             *center,
+		Store:              st,
+		MaxBytes:           int64(*maxMB) << 20,
+		ReadMaxChars:       *readMaxChars,
+		DBPath:             *dbPath,
+		Dir:                *dir,
+		FetchAllowLoopback: *fetchLoopback || fetchsafe.EnvAllowsLoopback(),
 	}, logger)
 	if err := s.Start(context.Background()); err != nil {
 		logger.Fatalf("启动失败: %v", err)
