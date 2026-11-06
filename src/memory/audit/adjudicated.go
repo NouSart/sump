@@ -125,38 +125,52 @@ func inScope(table, column string) bool {
 	return false
 }
 
-// Filter 拿白名单对账，三分类：
+// Filter 拿白名单对账，四分类：
 //
-//	novel   —— 命中里键没被白名单认下的：未裁定，**安全**问题，必须破闸。
-//	stale   —— 白名单条目里行还在库里、却对不上当前任何一条同键命中的：行被改写过，
-//	           或者这一格已经被洗掉了。这是**维护**问题（清单与库脱钩），同样破闸，
-//	           但错误信息要与 novel 分开，别让人把"该重新抄 key"读成"新泄漏"。
-//	skipped —— 白名单条目里行已经不在了（洗完删过行，或换了一份 schema 相同、内容不同的库）：
-//	           不是错误，只打一行提示。
+//	novel      —— 命中里键没被白名单认下的：未裁定，**安全**问题，必须破闸。
+//	conflicted —— 键认下了、但裁定条目记的位置（表 / 行 / 列 / 探针）与实测命中不一致：
+//	              这条键是从别的格子抄来的，或者格子被搬过。**既不放行也不重复计 novel**——
+//	              放行等于让一份错位清单替当前库背书，计 novel 又把"清单本身坏了"报成新泄漏。
+//	stale      —— 白名单条目里行还在库里、却对不上当前任何一条同键命中的：行被改写过，
+//	              或者这一格已经被洗掉了。**维护**问题，同样破闸，但错误信息与 novel 分开。
+//	skipped    —— 白名单条目里行已经不在了（洗完删过行，或换了一份 schema 相同、内容不同的库）：
+//	              不是错误，只打一行提示。
+//
+// 键匹配上的裁定条目**即视为已消耗**，不再参与 stale / skipped 分类——哪怕位置不一致产生了
+// conflicted。同一条裁定不能既报"位置不符"又报"这行没了"，两个结论会互相稀释。
+// 比较只看 Table / RowKey / Column / Probe 四项位置；Runs / Lens / Ent / Reason 一律不参与，
+// 也绝不从它们重算键（理由见 Adjudicated 的注释）。
 //
 // rowExists 对"整张表都不存在"也必须返回 false 而不是报错：白名单是跟着代码走的，
 // 库却是各跑各的——同一份清单遇到换了 schema 的库时，答案该是"这些条目在当前库里
 // 对不上任何行"，不是一句 no such table 把整次运行打死（崩掉会连本次的 novel 一起吞了）。
-// 行不存在的条目归 skipped，闸门只看 novel 与 stale。
+// 行不存在的条目归 skipped，闸门看 novel、conflicted 与 stale。
 //
 // 匹配的是键，不是位置：同格形状一变，键就变，旧条目立刻成为 stale 而新命中成为 novel，
 // 两处一起响。这是"同格新增过阈段不许被旧裁定静默吸收"的落点。
 func Filter(hits []Finding, adj []Adjudicated, rowExists func(table string, rowKey int64) bool) (
-	novel []Finding, stale, skipped []Adjudicated) {
-	adjudged := make(map[string]bool, len(adj))
+	novel []Finding, stale, skipped []Adjudicated, conflicted []Finding) {
+	adjudged := make(map[string]Adjudicated, len(adj))
 	for _, a := range adj {
-		adjudged[a.Key] = true
+		adjudged[a.Key] = a // ParseAdjudicated 收口过键唯一，同键不会互相覆盖出歧义
 	}
-	live := make(map[string]bool, len(hits))
+	consumed := make(map[string]bool, len(hits))
 	for _, f := range hits {
 		k := f.Key()
-		live[k] = true
-		if !adjudged[k] {
+		entry, ok := adjudged[k]
+		if !ok {
 			novel = append(novel, f)
+			continue
 		}
+		consumed[k] = true
+		if entry.Table == f.Table && entry.RowKey == f.RowKey &&
+			entry.Column == f.Column && entry.Probe == f.Probe {
+			continue // 位置也一致：已裁定，放行
+		}
+		conflicted = append(conflicted, f)
 	}
 	for _, a := range adj {
-		if live[a.Key] {
+		if consumed[a.Key] {
 			continue
 		}
 		if rowExists(a.Table, a.RowKey) {
@@ -181,7 +195,18 @@ func Filter(hits []Finding, adj []Adjudicated, rowExists func(table string, rowK
 	}
 	byLocation(stale)
 	byLocation(skipped)
-	return novel, stale, skipped
+	return novel, stale, skipped, conflicted
+}
+
+// AdjudicatedAt 按键找回白名单里那条裁定记录的位置，供输出把"记的位置"与"实测的位置"并排给人读。
+// 只查位置，不参与任何判定。
+func AdjudicatedAt(adj []Adjudicated, key string) (Adjudicated, bool) {
+	for _, a := range adj {
+		if a.Key == key {
+			return a, true
+		}
+	}
+	return Adjudicated{}, false
 }
 
 // RowSet 回答"白名单指的这一行还在不在当前库里"，是 Filter 的 rowExists 实现。

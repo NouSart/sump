@@ -156,12 +156,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "核对已裁定记录失败: %v\n", err)
 		return 1
 	}
-	novel, stale, skipped := audit.Filter(hits, adj, rowSet.Has)
+	novel, stale, skipped, conflicted := audit.Filter(hits, adj, rowSet.Has)
 
-	// 先报安全问题（未裁定），再报维护问题（过期），两份都报完才决定退出码：
-	// 一行被改写时 novel 与 stale 同时成立，只报其中一个会把另一个吞掉。
+	// 三类问题全部收集、全部输出，最后统一决定退出码：一行被改写时 novel / conflicted / stale
+	// 可能同时成立，早退会把另外两类吞掉——而其中 conflicted 恰恰是"白名单本身不干净"。
 	for _, f := range novel {
 		fmt.Fprintln(stdout, f)
+	}
+	for _, f := range conflicted {
+		fmt.Fprintf(stdout, "位置冲突命中：%s\n", f)
+		if entry, ok := audit.AdjudicatedAt(adj, f.Key()); ok {
+			fmt.Fprintf(stdout, "  白名单把这条键记在：%s\n", entry)
+		}
 	}
 	for _, a := range stale {
 		fmt.Fprintf(stdout, "过期裁定条目：%s\n", a)
@@ -169,16 +175,25 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(skipped) > 0 {
 		fmt.Fprintf(stdout, "跳过 %d 条已裁定记录：它们指的行不在当前库里（换了库或行已删），不算命中也不算失败\n", len(skipped))
 	}
-	fmt.Fprintf(stdout, "独立复检命中 %d 处：未裁定 %d 处、过期裁定 %d 处、已裁定放行 %d 处（报告只出位置、形状摘要与键，不含原值）\n",
-		len(hits), len(novel), len(stale), len(hits)-len(novel))
+	fmt.Fprintf(stdout, "独立复检命中 %d 处：未裁定 %d 处、位置冲突 %d 处、过期裁定 %d 处、已裁定放行 %d 处（报告只出位置、形状摘要与键，不含原值）\n",
+		len(hits), len(novel), len(conflicted), len(stale), len(hits)-len(novel)-len(conflicted))
+
+	// 三个分支各判各的：删掉任何一个都该只让它自己那一类场景失去破闸能力（异变盯的就是这个）。
+	exit := 0
 	if len(novel) > 0 {
 		fmt.Fprintln(stderr, "第二把尺不归零：有未裁定的命中，逐处人工读过再决定，不许为了让它闭嘴去改弱探针")
-		return 1
+		exit = 1
+	}
+	if len(conflicted) > 0 {
+		fmt.Fprintln(stderr, "白名单里有键对得上、位置对不上的条目：这条裁定不是从当前这一格抄来的，逐处核对后重新抄 key 或直接删掉它")
+		exit = 1
 	}
 	if len(stale) > 0 {
 		fmt.Fprintln(stderr, "白名单里有对不上当前库的条目（行被改写过或已洗掉）：跑一遍 -no-adjudicated，逐处读过再把 key 抄回 adjudicated.json")
-		return 1
+		exit = 1
 	}
-	fmt.Fprintf(stdout, "命中 %d 处，全部已裁定\n", len(hits))
-	return 0
+	if exit == 0 {
+		fmt.Fprintf(stdout, "命中 %d 处，全部已裁定\n", len(hits))
+	}
+	return exit
 }

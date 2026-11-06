@@ -403,19 +403,22 @@ func TestFilterBreaksGateOnUnadjudicatedHit(t *testing.T) {
 		Table: "memories", RowKey: 9, Column: "content", Probe: ProbeEntropy,
 		Shape: Shape{Runs: 1, Lens: []int{17}, Ent: []float64{3.97}},
 	}
-	novel, stale, skipped := Filter([]Finding{f}, nil, rowExistsAlways)
+	novel, stale, skipped, conflicted := Filter([]Finding{f}, nil, rowExistsAlways)
 	if len(novel) != 1 || novel[0].Key() != f.Key() {
 		t.Errorf("没有白名单时命中必须进 novel，实际 %v", shapeText(novel[0].Shape))
 	}
 	if len(stale) != 0 || len(skipped) != 0 {
 		t.Errorf("空白名单不该有 stale / skipped：%v / %v", stale, skipped)
 	}
+	if len(conflicted) != 0 {
+		t.Errorf("空白名单不该有位置冲突：%v", conflicted)
+	}
 
 	// 同格新增一段形状：键变了，新命中进 novel，旧条目同时成为 stale（行还在）。
 	grown := f
 	grown.Shape = Shape{Runs: 2, Lens: []int{17, 21}, Ent: []float64{3.97, 4.02}}
 	adj := []Adjudicated{adjudicatedFrom(f, "标识符，保留")}
-	novel, stale, skipped = Filter([]Finding{grown}, adj, rowExistsAlways)
+	novel, stale, skipped, conflicted = Filter([]Finding{grown}, adj, rowExistsAlways)
 	if len(novel) != 1 || novel[0].Key() != grown.Key() {
 		t.Errorf("同格新增过阈段没破闸：novel = %v", novel)
 	}
@@ -424,6 +427,9 @@ func TestFilterBreaksGateOnUnadjudicatedHit(t *testing.T) {
 	}
 	if len(skipped) != 0 {
 		t.Errorf("行还在库里，不该归 skipped：%v", skipped)
+	}
+	if len(conflicted) != 0 {
+		t.Errorf("键没对上不该算位置冲突：%v", conflicted)
 	}
 }
 
@@ -434,7 +440,7 @@ func TestFilterLetsAdjudicatedHitThrough(t *testing.T) {
 		Shape: Shape{Runs: 1, Lens: []int{33}, Ent: []float64{4.16}},
 	}
 	adj := []Adjudicated{adjudicatedFrom(f, "标识符，保留")}
-	novel, stale, skipped := Filter([]Finding{f}, adj, rowExistsAlways)
+	novel, stale, skipped, conflicted := Filter([]Finding{f}, adj, rowExistsAlways)
 	if len(novel) != 0 {
 		t.Errorf("已裁定的键不该进 novel：%v", novel)
 	}
@@ -443,6 +449,9 @@ func TestFilterLetsAdjudicatedHitThrough(t *testing.T) {
 	}
 	if len(skipped) != 0 {
 		t.Errorf("行存在且对上了不该归 skipped：%v", skipped)
+	}
+	if len(conflicted) != 0 {
+		t.Errorf("位置也对上了不该算冲突（放行就是放行）：%v", conflicted)
 	}
 }
 
@@ -453,15 +462,114 @@ func TestFilterSeparatesStaleFromSkipped(t *testing.T) {
 	// 白名单里两条，当前库一条命中都没有（外来库 / 已洗完的库）：
 	// rowExists 决定它们过期还是跳过，两者都不该把 novel 撑起来。
 	adj := []Adjudicated{adjudicatedFrom(gone, "标识符，保留")}
-	novel, stale, skipped := Filter(nil, adj, rowExistsAlways)
+	novel, stale, skipped, conflicted := Filter(nil, adj, rowExistsAlways)
 	if len(novel) != 0 {
 		t.Errorf("没有命中就不该有 novel：%v", novel)
 	}
 	if len(stale) != 1 || len(skipped) != 0 {
 		t.Errorf("行在库里但无对应命中，该判 stale：stale=%v skipped=%v", stale, skipped)
 	}
-	if _, stale, skipped = Filter(nil, adj, rowExistsNever); len(stale) != 0 || len(skipped) != 1 {
+	if len(conflicted) != 0 {
+		t.Errorf("没有命中就不该有位置冲突：%v", conflicted)
+	}
+	if _, stale, skipped, _ = Filter(nil, adj, rowExistsNever); len(stale) != 0 || len(skipped) != 1 {
 		t.Errorf("行不在库里，该归 skipped 而不是报错：stale=%v skipped=%v", stale, skipped)
+	}
+}
+
+// ④ 位置冲突（conflicted）：键是同一条，但裁定记的格子与实测命中不是同一格。
+// 四种位置字段各篡改一种都要检出，且**不放行、不重复计 novel**。
+func TestFilterDetectsPositionConflict(t *testing.T) {
+	hit := Finding{
+		Table: "memories", RowKey: 9, Column: "content", Probe: ProbeEntropy,
+		Shape: Shape{Runs: 1, Lens: []int{17}, Ent: []float64{3.97}},
+	}
+	cases := []struct {
+		name  string
+		tweak func(a *Adjudicated)
+	}{
+		{"表不同", func(a *Adjudicated) { a.Table = "mem_entries" }},
+		{"行不同", func(a *Adjudicated) { a.RowKey = 999999 }},
+		{"列不同", func(a *Adjudicated) { a.Column = "kind" }},
+		{"探针不同", func(a *Adjudicated) { a.Probe = ProbeLongDigit }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			entry := adjudicatedFrom(hit, "位置被改过的一条裁定")
+			c.tweak(&entry)
+			adj := []Adjudicated{entry}
+			novel, stale, skipped, conflicted := Filter([]Finding{hit}, adj, rowExistsAlways)
+			if len(conflicted) != 1 {
+				t.Fatalf("篡改 %s 后该进 conflicted，实际 %v（novel=%v）", c.name, conflicted, novel)
+			}
+			if conflicted[0].Key() != hit.Key() {
+				t.Errorf("冲突条目不是这条命中：%v", conflicted)
+			}
+			if len(novel) != 0 {
+				t.Errorf("键已认下的命中不该重复计 novel：%v", novel)
+			}
+			if len(stale) != 0 || len(skipped) != 0 {
+				t.Errorf("键匹配上的裁定就该被消耗，不该再落 stale / skipped：stale=%v skipped=%v", stale, skipped)
+			}
+		})
+	}
+	// 行不在库里也得照样消耗：位置冲突是"清单本身错位"，与那一行在不在无关。
+	// 少了这一遍，实现把"行不存在"优先判成 skipped 时，闸门会把真冲突吞掉。
+	entry := adjudicatedFrom(hit, "位置被改过的一条裁定")
+	entry.RowKey = 999999
+	novel, stale, skipped, conflicted := Filter([]Finding{hit}, []Adjudicated{entry}, rowExistsNever)
+	if len(conflicted) != 1 {
+		t.Fatalf("行不存在时同样该报位置冲突，实际 conflicted=%v", conflicted)
+	}
+	if len(stale) != 0 || len(skipped) != 0 || len(novel) != 0 {
+		t.Errorf("裁定被消耗后三类都该是 0：novel=%v stale=%v skipped=%v", novel, stale, skipped)
+	}
+}
+
+// 四类同时出现时互不吞没：一条放行、一条冲突、一条未裁定、一条过期、一条跳过。
+func TestFilterKeepsAllFourCategories(t *testing.T) {
+	ok := Finding{Table: "memories", RowKey: 9, Column: "content", Probe: ProbeEntropy,
+		Shape: Shape{Runs: 1, Lens: []int{17}, Ent: []float64{3.97}}}
+	clash := Finding{Table: "mem_entries", RowKey: 104, Column: "content", Probe: ProbeEntropy,
+		Shape: Shape{Runs: 1, Lens: []int{33}, Ent: []float64{4.16}}}
+	fresh := Finding{Table: "shared_tasks", RowKey: 3, Column: "goal", Probe: ProbeLongDigit,
+		Shape: Shape{Runs: 1, Lens: []int{10}}}
+
+	liveOnly := map[string]int64{"memories": 9, "mem_entries": 104, "shared_tasks": 3, "mem_nodes": 5}
+	exists := func(table string, rowKey int64) bool { return liveOnly[table] == rowKey }
+
+	adj := []Adjudicated{
+		adjudicatedFrom(ok, "合法裁定，位置对得上"),
+		func() Adjudicated { // 同键但行号被改 → conflicted，且这条被消耗，不再算 stale / skipped
+			a := adjudicatedFrom(clash, "行号被改过")
+			a.RowKey = 888888
+			return a
+		}(),
+		func() Adjudicated { // 行还在库里、当前没这条命中 → stale
+			a := adjudicatedFrom(Finding{Table: "mem_nodes", RowKey: 5, Column: "anchor", Probe: ProbeContext,
+				Shape: Shape{Runs: 1, Lens: []int{14}}}, "已洗完的一格")
+			a.Key = "aaaa0001"
+			return a
+		}(),
+		func() Adjudicated { // 行不在库里 → skipped
+			a := adjudicatedFrom(Finding{Table: "shared_sessions", RowKey: 77, Column: "title", Probe: ProbeLongDigit,
+				Shape: Shape{Runs: 1, Lens: []int{10}}}, "被删掉的会话")
+			a.Key = "bbbb0002"
+			return a
+		}(),
+	}
+	novel, stale, skipped, conflicted := Filter([]Finding{ok, clash, fresh}, adj, exists)
+	if len(novel) != 1 || novel[0].Key() != fresh.Key() {
+		t.Fatalf("未裁定的那条该独自进 novel，实际 %v", novel)
+	}
+	if len(conflicted) != 1 || conflicted[0].Key() != clash.Key() {
+		t.Errorf("位置冲突的那条该进 conflicted，实际 %v", conflicted)
+	}
+	if len(stale) != 1 || stale[0].Key != "aaaa0001" {
+		t.Errorf("行在而无对应命中该进 stale，实际 %v", stale)
+	}
+	if len(skipped) != 1 || skipped[0].Key != "bbbb0002" {
+		t.Errorf("行不在该进 skipped，实际 %v", skipped)
 	}
 }
 
