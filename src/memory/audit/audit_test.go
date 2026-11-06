@@ -424,8 +424,14 @@ func TestFilterBreaksGateOnUnadjudicatedHit(t *testing.T) {
 		Shape: Shape{Runs: 1, Lens: []int{17}, Ent: []float64{3.97}},
 	}
 	novel, stale, skipped, conflicted := Filter([]Finding{f}, nil, rowExistsAlways)
-	if len(novel) != 1 || novel[0].Key() != f.Key() {
-		t.Errorf("没有白名单时命中必须进 novel，实际 %v", shapeText(novel[0].Shape))
+	// 数量与内容分两步断：合在一条 `len(novel) != 1 || novel[0]...` 里，
+	// 长度不对时只 t.Errorf，下一句取 novel[0] 就当场 panic，异变被杀死时给出的是
+	// 索引越界的栈而不是"哪一类没进对"的可读诊断。
+	if len(novel) != 1 {
+		t.Fatalf("没有白名单时命中该全部进 novel，实际 %d 条：%v", len(novel), novel)
+	}
+	if novel[0].Key() != f.Key() {
+		t.Errorf("novel 里那条不是这个命中：key=%s，期望 %s", novel[0].Key(), f.Key())
 	}
 	if len(stale) != 0 || len(skipped) != 0 {
 		t.Errorf("空白名单不该有 stale / skipped：%v / %v", stale, skipped)
