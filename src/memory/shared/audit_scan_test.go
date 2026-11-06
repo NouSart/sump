@@ -8,7 +8,6 @@ package shared
 // 它用 shared.Open 建库，audit 反过来谁也不 import——依赖方向和包注释里的约束一致。
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -59,8 +58,13 @@ func TestAuditFindsRawLegacyRows(t *testing.T) {
 		}
 	}
 	// 报告里不许出现原值——把凭据从库里搬到 stdout 是换个地方泄露。
-	if strings.Contains(joinFindings(hits), fakeTokenBare) {
-		t.Errorf("命中清单里出现了凭据原文：%s", joinFindings(hits))
+	// 查全部塞进去的值，不只令牌那一个：Finding 以后多带一个字段（比如 excerpt）就会当场露出来，
+	// 而只 grep 令牌等于假装其余形状都无害。
+	report := joinFindings(hits)
+	for _, v := range append(append([]string{}, leaky...), fakeAccount10) {
+		if strings.Contains(report, v) {
+			t.Errorf("命中清单里出现了原值 %q：%s", v, report)
+		}
 	}
 }
 
@@ -206,7 +210,10 @@ func joinFindings(hits []audit.Finding) string {
 	}
 	out := make([]string, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, fmt.Sprintf("%s.%d.%s(%s)", h.Table, h.RowKey, h.Column, h.Probe))
+		// 用 Finding.String() 而不是在这里自己拼一遍：sump-repair 打印走的就是它，
+		// 自己拼等于把"报告里不许有原值"这条断言变成永远为真——本用例就是这么个假断言，
+		// 给 Finding 加一个带原值的字段后它照样绿。
+		out = append(out, h.String())
 	}
 	return strings.Join(out, ", ")
 }
