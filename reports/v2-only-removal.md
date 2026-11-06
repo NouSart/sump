@@ -48,9 +48,9 @@
 | --- | --- | --- |
 | gofmt | `gofmt -l $(git ls-files '*.go')` | 无输出 |
 | Go 模块（14 个 src） | `GOWORK=off go build/vet/test ./...` | 全绿 |
-| approval-integration | `GOWORK=off go build/vet/test ./...` | ok 4.7s |
-| evals | `GOWORK=off go build/vet` + `go test ./...`（runner 需 workspace 编译子进程） | 全绿；runner 7.0s |
-| 跨服务 e2e | `cd testing/tests && go test ./... -count=1 -timeout 900s` | ok 87.9s（含门户真进程，前端 dist 已构建） |
+| approval-integration | `GOWORK=off go build/vet/test ./...` | ok 4.5s |
+| evals | `GOWORK=off go build/vet` + `go test ./...`（runner 需 workspace 编译子进程） | 全绿；runner 1.9s（构建缓存命中） |
+| 跨服务 e2e | `cd testing/tests && go test ./... -count=1 -timeout 900s` | ok 89.6s（含门户真进程，前端 dist 已构建） |
 | frontend | `npm run typecheck` + `npm test` | node 86 pass / web 153 pass |
 | embedding | `pytest tests -q` | 48 passed, 1 skipped（ONNX 冒烟需模型目录） |
 | frontend 异变 | `node tests/mutation.mjs` | 31 个：killed 26 / timeout 5 / **lived 0** |
@@ -63,6 +63,26 @@
 grep -rn "protocol\.Envelope|protocol\.JumpPayload|protocol\.TypeJump|SUMP_SPV2" --include=*.go --include=*.ts --include=*.py src testing scripts
 # 无输出
 ```
+
+## 5. 验收例外（逐条）
+
+任务书的验收正则命中以下位置，均为有意保留：
+
+1. `Handle("`：全部是 `*spv2.Server.Handle`（原生 method 注册表）或 `mux.Handle("/spv2")`，
+   不是 v1 `service.Service.Handle` 动作桥（该 API 已删除）。代表位置：
+   `src/settings-center/server/native.go`、`src/spv2/server.go`、`src/spv2/ref/*`、
+   `testing/evals/runner/stack.go` 的假 boss、各服务测试里的中心/对端桩。
+2. `/ws`：
+   - qq 测试桩的 NapCat/OneBot `/ws`——外部协议，不是 SUMP 端点；
+   - embedding 对 `/ws` 返回 404 的断言与 docstring——负向测试；
+   - frontend / embedding 异变脚本里“把 `/spv2` 改成 `/ws`”的变异体——测漂移的输入；
+   - embedding 冻结 Go 夹具里的 `addr` 值——历史字节，不是路由；
+   - 文档里“不存在 `/ws` 业务端点”的否定表述。
+3. 业务载荷字段名 `boss`：仍存在于 `TaskContext` / `StorePayload` / `TimerStatePayload`，
+   表示会话入口 / 计时归属，不是帧头字段；SPv2 帧没有 `boss`。
+4. `docs/archive/` 与历史 handoff 保留旧协议描述：历史记录，不作为现行契约。
+5. `testing/tests` 的门户用例在缺少前端 `dist/` 时跳过（既有环境跳过）；本次验收先构建，
+   实际执行；embedding 的 ONNX 冒烟同理（无模型目录）。
 
 ## 5. 已知边界与未做
 
