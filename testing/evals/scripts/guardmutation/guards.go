@@ -243,4 +243,52 @@ var guards = []guard{
 		old:  `	return buf.Bytes(), "image/png", nil`,
 		new:  `	return buf.Bytes(), "image/jpeg", nil`,
 	},
+
+	// ---------- 审计闸门与已裁定白名单（src/memory/audit 与 cmd/sump-repair）----------
+	// 七条各盯一处"改完照样编译、照样跑、看上去还说得通"的走法。
+	// 隔离靠 cmd/sump-repair 与 audit 里那些单类场景：被删的检查必须是当时唯一能给出
+	// 那个退出码的原因，别的类别全为空——所以删掉任何一条，只有它自己的用例翻脸。
+	{
+		name: "未裁定的命中不再破闸（novel 只打印不拦）",
+		file: "src/memory/cmd/sump-repair/main.go",
+		old:  `	if len(novel) > 0 {`,
+		new:  `	if false && len(novel) > 0 {`,
+	},
+	{
+		name: "白名单过期不再破闸（清单与库脱钩当成功）",
+		file: "src/memory/cmd/sump-repair/main.go",
+		old:  `	if len(stale) > 0 {`,
+		new:  `	if false && len(stale) > 0 {`,
+	},
+	{
+		name: "位置冲突不再破闸（键撞上而格子搬走也退出 0）",
+		file: "src/memory/cmd/sump-repair/main.go",
+		old:  `	if len(conflicted) > 0 {`,
+		new:  `	if false && len(conflicted) > 0 {`,
+	},
+	{
+		name: "两个白名单开关不再互斥（谁赢由实现顺序决定）",
+		file: "src/memory/cmd/sump-repair/main.go",
+		old:  `	if *noAdjudicated && *adjudicatedPath != "" {`,
+		new:  `	if false && *noAdjudicated && *adjudicatedPath != "" {`,
+	},
+	{
+		name: "已裁定的位置不对账（列与探针被改也照样放行）",
+		file: "src/memory/audit/adjudicated.go",
+		old: `		if entry.Table == f.Table && entry.RowKey == f.RowKey &&
+			entry.Column == f.Column && entry.Probe == f.Probe {`,
+		new: `		if entry.Table == f.Table && entry.RowKey == f.RowKey {`,
+	},
+	{
+		name: "行键列写死 rowid（清单给了别的键列也不认）",
+		file: "src/memory/audit/adjudicated.go",
+		old:  `		keyColumn, ok := keyColumnOf(cols, a.Table, a.Column)`,
+		new:  `		keyColumn, ok := "rowid", true`,
+	},
+	{
+		name: "已知凭据按出现次数计（同一值在清单里写两遍被数两次）",
+		file: "src/memory/audit/audit.go",
+		old:  `		if seen[k] || !strings.Contains(text, k) {`,
+		new:  `		if !strings.Contains(text, k) {`,
+	},
 }

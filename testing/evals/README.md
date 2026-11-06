@@ -197,7 +197,7 @@ GOWORK=off 构建也在），但**不跑** `scripts/mutation` 的真异变植入
 
 ```powershell
 cd evals
-go run ./scripts/guardmutation                   # 全部（当前 30 条，约 2 分半）
+go run ./scripts/guardmutation                   # 全部（当前 37 条，2026-11-07 实测 2 分 37 秒）
 go run ./scripts/guardmutation -only=fetchsafe   # 只跑名字或文件含该串的
 go run ./scripts/guardmutation -not=src/spv2     # 排除，分批跑用；结论要写清实际跑了几条
 go run ./scripts/guardmutation -v                # 附上每条的测试输出
@@ -215,14 +215,32 @@ go run ./scripts/guardmutation -v                # 附上每条的测试输出
 清单与源码的同步由 `TestGuardsMatchSource` 守着；`-only` / `-not` 空命中直接报错，
 不交"0 条，全部杀死"这种空集胜利。
 
-当前 **30 条，全部杀死**（2026-11-06 两次实测 2 分 24 秒 / 2 分 26 秒；尺子与断言收尾改动之后
-11-07 复跑一次 2 分 25 秒，三次结论一致）。新增的两条是会话目录的
-`TaskTitle` / `SessionTitle` 绕过写入边界——它们**没逼出新缺陷，因为用例先写**
-（`d3174af` 先把两个标题填实，再配守卫）。上一批 28 条时的说法仍然成立：
-那批逼出四处真缺陷各自成提交——`src/spv2` 的键名表没有 Frame（把 `reply_to` 改成 `replyTo` 全绿，
-而帧头键名正是跨实现契约）、归档过滤的断言长在 `src/memory/tests` 而不在被改的 `store` 包里、
-`TestServerMaxBody` 拿 `context.Background()` 等回执（回执一丢就拖满 10 分钟全包超时，
-连累同包其余用例）、以及清理复检与拨号复查两处"说法有、断言无"。
+当前 **37 条，全部杀死**（2026-11-07 实测 2 分 37 秒，存活 0、无效 0、无过期）。
+30 条那批的 2 分 24 / 2 分 26 / 2 分 25 秒是历史测量，不拿来描述这一批。
+
+本批新增七条，守的是审计闸门与已裁定白名单——四条落在 `src/memory ./cmd/sump-repair`，
+三条落在 `src/memory ./audit`：
+
+| 异变 | 被改坏的判断 |
+|---|---|
+| 未裁定的命中不再破闸 | `novel` 非空时的失败退出 |
+| 白名单过期不再破闸 | `stale` 非空时的失败退出 |
+| 位置冲突不再破闸 | `conflicted` 非空时的失败退出 |
+| 两个白名单开关不再互斥 | `-adjudicated` 与 `-no-adjudicated` 的互斥检查 |
+| 已裁定的位置不对账 | 键撞上之后 表 / 行 / 列 / 探针 的四字段对账 |
+| 行键列写死 rowid | 行键列取自扫描清单（`Column.RowKey`），不是硬编码 |
+| 已知凭据按出现次数计 | `knownRuns` 按**不同值**计数的去重条件 |
+
+这七条不是补在既有缺陷旁边的装饰——它们要守的判断本身就是本批新立的：闸门曾只比键不比位置、
+行存在性查询曾写死 `rowid`、去重条件曾没有任何看守、三个退出分支曾在 `main()` 里没法测。
+隔离的做法是给每个被删的检查配一个**只有它非空**的场景（`cmd/sump-repair` 与 `audit` 里的
+单类用例）：删掉任何一条，只让它自己的用例翻脸，不靠同场景里别的失败分支兜底。
+其中互斥那条要同时断退出码与 stderr 里的"互斥"文案——只看退出码的话，默认库不存在
+返回的那个 2 会把它冒充成已经验过。
+
+更早几批逼出的四处真缺陷（`src/spv2` 的键名表没有 Frame、归档过滤的断言长在 `src/memory/tests`
+而不在被改的 `store` 包里、`TestServerMaxBody` 拿 `context.Background()` 等回执、
+清理复检与拨号复查两处"说法有、断言无"）各自成提交记在历史里，这里不再重列。
 
 CI 里跑的是 `go test ./scripts/guardmutation`（清单同步 + 分类逻辑），真植入仍手工。
 改动任一红线判定后跑一次。
