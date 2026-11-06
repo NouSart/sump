@@ -10,10 +10,10 @@ import (
 	"time"
 )
 
-// Mux 返回一个完整的 HTTP mux：/ws、/healthz、/readyz、/metrics。
+// Mux 返回一个完整的 HTTP mux：/spv2、/healthz、/readyz、/metrics。
 func (s *Server) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.Handle("/ws", s.Handler())
+	mux.Handle("/spv2", s.Handler())
 	mux.HandleFunc("/healthz", s.handleHealthHTTP)
 	mux.HandleFunc("/readyz", s.handleReadyHTTP)
 	mux.HandleFunc("/metrics", s.handleMetricsHTTP)

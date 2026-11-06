@@ -265,13 +265,13 @@ func (c *Client) readLoop() {
 	}
 }
 
-// HTTPToWS 把 http:// 地址转为 ws://.../ws（测试/示例用）。
+// HTTPToWS 把 http:// 地址转为 ws://.../spv2（测试/示例用）。
 func HTTPToWS(addr string) string {
 	if len(addr) >= 7 && addr[:7] == "http://" {
-		return "ws://" + addr[7:] + "/ws"
+		return "ws://" + addr[7:] + "/spv2"
 	}
 	if len(addr) >= 8 && addr[:8] == "https://" {
-		return "wss://" + addr[8:] + "/ws"
+		return "wss://" + addr[8:] + "/spv2"
 	}
 	return addr
 }

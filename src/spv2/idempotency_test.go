@@ -28,14 +28,14 @@ func TestIdempotentCallCached(t *testing.T) {
 		return c.Reply(in)
 	})
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/ws" {
+		if r.URL.Path == "/spv2" {
 			srv.Handler().ServeHTTP(w, r)
 			return
 		}
 		http.NotFound(w, r)
 	}))
 	defer ts.Close()
-	url := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	url := "ws" + strings.TrimPrefix(ts.URL, "http") + "/spv2"
 	c, err := Dial(context.Background(), url)
 	if err != nil {
 		t.Fatal(err)

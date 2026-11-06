@@ -86,7 +86,7 @@ func (s *Server) Metrics() *Registry { return s.metrics }
 // Handle 注册 method。
 func (s *Server) Handle(name string, h Handler) { s.handlers[name] = h }
 
-// Handler 返回 HTTP handler（挂到 /ws）。
+// Handler 返回 HTTP handler（挂到 /spv2）。
 func (s *Server) Handler() http.Handler { return http.HandlerFunc(s.serveWS) }
 
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {

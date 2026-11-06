@@ -9,7 +9,7 @@ import (
 	"github.com/NouSart/sump/spv2"
 )
 
-// ReasonerConfig 是参考 reasoner 的对端地址（ws://host:port/ws）。
+// ReasonerConfig 是参考 reasoner 的对端地址（ws://host:port/spv2）。
 type ReasonerConfig struct {
 	MemoryURL   string
 	ToolURL     string

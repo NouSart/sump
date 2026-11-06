@@ -21,14 +21,14 @@ func TestServerMaxBody(t *testing.T) {
 		return nil
 	})
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/ws" {
+		if r.URL.Path == "/spv2" {
 			srv.Handler().ServeHTTP(w, r)
 			return
 		}
 		http.NotFound(w, r)
 	}))
 	defer ts.Close()
-	c, err := Dial(context.Background(), "ws"+strings.TrimPrefix(ts.URL, "http")+"/ws")
+	c, err := Dial(context.Background(), "ws"+strings.TrimPrefix(ts.URL, "http")+"/spv2")
 	if err != nil {
 		t.Fatal(err)
 	}

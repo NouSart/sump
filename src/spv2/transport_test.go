@@ -58,7 +58,7 @@ func wsTestMethod(name string) Method {
 	return Method{Name: name, Shape: ShapeCall, Version: 1}
 }
 
-// wsStartServer 起 httptest 服务并把 Handler 挂到 /ws，返回服务端与客户端 URL。
+// wsStartServer 起 httptest 服务并把 Handler 挂到 /spv2，返回服务端与客户端 URL。
 func wsStartServer(t *testing.T, card Card, opts ...ServerOption) (*Server, string) {
 	t.Helper()
 	srv, err := NewServer(card, opts...)
@@ -66,10 +66,10 @@ func wsStartServer(t *testing.T, card Card, opts ...ServerOption) (*Server, stri
 		t.Fatalf("NewServer: %v", err)
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/ws", srv.Handler())
+	mux.Handle("/spv2", srv.Handler())
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
-	return srv, "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	return srv, "ws" + strings.TrimPrefix(ts.URL, "http") + "/spv2"
 }
 
 func wsDialClient(t *testing.T, url string, opts ...ClientOption) *Client {
