@@ -23,7 +23,7 @@ import (
 func main() {
 	name := flag.String("name", "memory", "服务名")
 	addr := flag.String("addr", "127.0.0.1:9201", "监听地址（host:port）")
-	center := flag.String("center", "ws://127.0.0.1:9000/ws", "设置中心 WS 地址")
+	center := flag.String("center", "ws://127.0.0.1:9000/spv2", "设置中心 WS 地址")
 	dbPath := flag.String("db", "data/memory.db", "会话库（私有）路径")
 	// 共享库默认与会话库同目录（data/experience.db）：换 -db 时不必记得同时换它，
 	// 测试也就不会把共享数据写进仓库的 data/。

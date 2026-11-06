@@ -13,36 +13,25 @@ import (
 
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
 )
 
 // pushConfigure 以设置中心身份向服务地址推送一条 configure（单键）并取回执。
-func pushConfigure(t *testing.T, addr string, p protocol.ConfigurePayload) protocol.ResponsePayload {
+func pushConfigure(t *testing.T, addr, to string, p protocol.ConfigurePayload) error {
 	t.Helper()
-	raw, err := protocol.EncodePayload(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c, err := protocol.Dial(addr, nil)
+	c, err := spv2.Dial(context.Background(), addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "settings-center", "svc-s", "trace-cfg",
-		protocol.JumpPayload{Action: "configure", Input: raw})
+	f, err := spv2.NewCall("trace-cfg", spv2.ServiceRef("settings-center"), spv2.ServiceRef(to), "configure", p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	return rp
+	var out map[string]any
+	return c.CallDecode(ctx, f, &out)
 }
 
 // newRecorder 返回线程安全的应用记录器。
@@ -103,9 +92,8 @@ func TestSettingConfigure(t *testing.T) {
 	}
 
 	// 正常下发：立即应用并回执。
-	rp := pushConfigure(t, s.WsURL(), protocol.ConfigurePayload{Key: "demo.mode", Value: "batch", Default: "each", Overridden: true})
-	if !rp.OK {
-		t.Fatalf("configure 应成功: %+v", rp)
+	if err := pushConfigure(t, s.WsURL(), "svc-s", protocol.ConfigurePayload{Key: "demo.mode", Value: "batch", Default: "each", Overridden: true}); err != nil {
+		t.Fatalf("configure 应成功: %v", err)
 	}
 	if v := s.SettingValue("demo.mode"); v != "batch" {
 		t.Fatalf("生效值应为 batch，实际 %q", v)
@@ -115,9 +103,9 @@ func TestSettingConfigure(t *testing.T) {
 	}
 
 	// 非法值：拒绝、保持旧值。
-	rp = pushConfigure(t, s.WsURL(), protocol.ConfigurePayload{Key: "demo.mode", Value: "nope", Default: "each", Overridden: true})
-	if rp.OK || !strings.Contains(rp.Error, "不接受值") || !strings.Contains(rp.Error, "demo.mode") {
-		t.Fatalf("非法值应被拒绝并带上下文: %+v", rp)
+	err := pushConfigure(t, s.WsURL(), "svc-s", protocol.ConfigurePayload{Key: "demo.mode", Value: "nope", Default: "each", Overridden: true})
+	if err == nil || !strings.Contains(err.Error(), "不接受值") || !strings.Contains(err.Error(), "demo.mode") {
+		t.Fatalf("非法值应被拒绝并带上下文: %v", err)
 	}
 	if v := s.SettingValue("demo.mode"); v != "batch" {
 		t.Fatalf("拒绝后应保持旧值 batch，实际 %q", v)
@@ -127,9 +115,9 @@ func TestSettingConfigure(t *testing.T) {
 	}
 
 	// 未声明键：拒绝。
-	rp = pushConfigure(t, s.WsURL(), protocol.ConfigurePayload{Key: "ghost", Value: "x"})
-	if rp.OK || !strings.Contains(rp.Error, "未声明的设置项") {
-		t.Fatalf("未声明键应被拒绝: %+v", rp)
+	err = pushConfigure(t, s.WsURL(), "svc-s", protocol.ConfigurePayload{Key: "ghost", Value: "x"})
+	if err == nil || !strings.Contains(err.Error(), "未声明的设置项") {
+		t.Fatalf("未声明键应被拒绝: %v", err)
 	}
 }
 
@@ -231,17 +219,17 @@ func TestSettingsEventIgnored(t *testing.T) {
 	}
 	t.Cleanup(s.Shutdown)
 
-	sc.Broadcast(protocol.TypeSettings, protocol.SettingsEventPayload{
+	sc.Broadcast("settings", protocol.SettingsEventPayload{
 		Cause: "set_setting", Service: "svc-e",
 		Results: []protocol.SettingResult{{Key: "k", Value: "v", OK: true}},
 	})
 	// 真正的未知事件仍应记日志（对照组），确保静默只针对 settings。
 	sc.Broadcast("mystery_event", map[string]any{"x": 1})
 	// 事件之后名册照常工作。
-	sc.Broadcast(protocol.TypeRoster, protocol.RosterPayload{
+	sc.Broadcast("roster", protocol.RosterPayload{
 		Services: []protocol.ServiceCard{
 			{Name: "settings-center", Addr: sc.URL()},
-			{Name: "svc-x", Addr: "ws://127.0.0.1:1/ws"},
+			{Name: "svc-x", Addr: "ws://127.0.0.1:1/spv2"},
 		},
 		Revision: 2,
 	})

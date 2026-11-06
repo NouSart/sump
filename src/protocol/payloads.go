@@ -78,23 +78,10 @@ func (r RegisterPayload) Card() ServiceCard {
 	}
 }
 
-// ResponsePayload 是通用响应的 payload。
-type ResponsePayload struct {
-	OK    bool               `msgpack:"ok"`
-	Data  msgpack.RawMessage `msgpack:"data,omitempty"`
-	Error string             `msgpack:"error,omitempty"`
-}
-
 // RosterPayload 是全局服务清单（register 响应与 roster 事件共用）。
 type RosterPayload struct {
 	Services []ServiceCard `msgpack:"services"`
 	Revision int64         `msgpack:"revision"`
-}
-
-// JumpPayload 是一次跳转访问：目标服务上的动作 + 输入。
-type JumpPayload struct {
-	Action string             `msgpack:"action"`
-	Input  msgpack.RawMessage `msgpack:"input,omitempty"`
 }
 
 // HeartbeatPayload 是报活 payload。
@@ -109,7 +96,7 @@ type HeartbeatPayload struct {
 // 派生数据一律现算（否则两处真相迟早对不上）。
 // Title 为空 = 还没起名（界面自己回退一个占位，别在库里造假名字）。
 // Entry 是入口服务名（门户 / qq / shell）：同一套记忆，进来的门不同。
-// Status：active = 可在用；archived = 收起了（只读，列表默认不显示）。
+// Status：active = 可在用；archived = 收起了（默认列表不显示；不拦写入，不是只读）。
 type Conversation struct {
 	ID        string `msgpack:"id"`
 	Title     string `msgpack:"title,omitempty"`
@@ -457,7 +444,7 @@ type UserMessagePayload struct {
 
 // ---------- 交付与图片 ----------
 
-// DeliverPayload 是 deliver（链终点 → boss）的 payload：最终文本 + 会话标识（boss 据此路由回复）。
+// DeliverPayload 是 deliver（链终点 → 结果归属方）的 payload：最终文本 + 会话标识（归属方据此路由回复）。
 type DeliverPayload struct {
 	Text           string `msgpack:"text"`
 	ConversationID string `msgpack:"conversation_id,omitempty"`
@@ -1060,7 +1047,7 @@ type TimerListResult struct {
 }
 
 // TimerStatePayload 是 timer 主动推给门户的快照（门户据此展示倒计时）。
-// Boss 指明这批计时属于谁（信封 boss 原样带来）——门户据此认领该给哪个会话展示；
+// Boss 指明这批计时属于谁（调用方帧头 from 原样带来）——门户据此认领该给哪个会话展示；
 // 空 Boss 表示无主的计时，门户可自行归到默认会话。
 // Seq 单调递增：骨架的 Fire 各自成 goroutine 投递、**到达顺序无保证**，
 // 门户只接受比已见序号大的快照，旧的自然丢弃。

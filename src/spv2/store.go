@@ -26,25 +26,25 @@ var ErrLeaseExhausted = errors.New("lease exhausted")
 
 // QueuedMessage 是一条 A2A 投递。
 type QueuedMessage struct {
-	ID         string    `json:"id"`
-	WorkID     string    `json:"work_id"`
-	From       Ref       `json:"from"`
-	To         Ref       `json:"to"`
-	Method     string    `json:"method"`
-	ReplyTo    string    `json:"reply_to,omitempty"`
-	Body       []byte    `json:"body,omitempty"`
-	State      string    `json:"state"`
-	Attempts   int       `json:"attempts"`
-	LastError  string    `json:"last_error,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	LeaseUntil time.Time `json:"lease_until,omitempty"`
+	ID         string    `msgpack:"id" json:"id"`
+	WorkID     string    `msgpack:"work_id" json:"work_id"`
+	From       Ref       `msgpack:"from" json:"from"`
+	To         Ref       `msgpack:"to" json:"to"`
+	Method     string    `msgpack:"method" json:"method"`
+	ReplyTo    string    `msgpack:"reply_to,omitempty" json:"reply_to,omitempty"`
+	Body       []byte    `msgpack:"body,omitempty" json:"body,omitempty"`
+	State      string    `msgpack:"state" json:"state"`
+	Attempts   int       `msgpack:"attempts" json:"attempts"`
+	LastError  string    `msgpack:"last_error,omitempty" json:"last_error,omitempty"`
+	CreatedAt  time.Time `msgpack:"created_at" json:"created_at"`
+	LeaseUntil time.Time `msgpack:"lease_until,omitempty" json:"lease_until,omitempty"`
 }
 
 // SweepResult 是一次清理的计数。
 type SweepResult struct {
-	Stalled int `json:"stalled"`
-	Expired int `json:"expired"`
-	Retried int `json:"retried"`
+	Stalled int `msgpack:"stalled" json:"stalled"`
+	Expired int `msgpack:"expired" json:"expired"`
+	Retried int `msgpack:"retried" json:"retried"`
 }
 
 // WorkStore 是 memory 的 work/queue/lease 账本接口。

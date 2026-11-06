@@ -10,7 +10,18 @@ import (
 //
 // 与低档的区别：不要求命令在只读清单里（python -c 这类判不出意图的也放行），
 // 但仍然拦黑名单动作、管道进解释器（见 checkPipeIntoInterpreter），
-// 以及往工作目录外写、碰密钥文件。
+// 以及"写到工作目录外"和碰密钥文件。
+//
+// 「写到工作目录外」这一条只覆盖**重定向目标**（下面的 for r := range stage.Redirects），
+// 不覆盖参数里的路径：`touch ../../evil`、`tee ../evil`、`mkdir -p ../../evil` 目前仍自动放行，
+// 而「工作区」档会把它们转人工（见 tier_workspace.go 的 workspacePathViolation 调用）。
+// 这是**已知缺口，不是漏写**：工作区档的边界判定是"每个参数都当路径查"，读写不分——
+// 直接搬到中档会把 `ls /etc`、`cat /etc/hosts`、`python /opt/tools/fix.py`、
+// `docker run -v /host/data:/data …` 这些日常动作一起挂起来等人点，
+// 而中档承诺的是"只拦黑名单，其余自动放行"。要补这一条，得先有"这个命令是不是在写"
+// 的判定（写意图名单或分析器给出读写属性），那是协议之外的新机制，不在本档的能力范围内。
+// 该缺口由 tier_test.go 的 TestTierMediumWriteOutsideRepoBoundary 逐条钉住：
+// 真要补上的那天，那个用例会红，改动的人必须显式改它。
 func checkMediumStage(stage analysis.Stage, cwd, root string) stageVerdict {
 	if len(stage.Unknowns) > 0 {
 		return stageVerdict{code: "DYNAMIC_BEHAVIOR", text: "含展开或转义（" + strings.Join(dedupe(stage.Unknowns), ", ") + "），值不确定"}

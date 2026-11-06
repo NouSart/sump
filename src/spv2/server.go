@@ -2,7 +2,10 @@ package spv2
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -12,6 +15,14 @@ import (
 // Handler 处理一次 call/event。call 必须通过 Call.Reply / ReplyError / SendStream 回应。
 type Handler func(ctx context.Context, call *Call) error
 
+// 丢弃原因（sump_dropped_total 的 reason 标签）：一类事件一个取值，全部低基数、可枚举。
+const (
+	dropUndecodable  = "undecodable"     // 反序列化失败：连帧头都拿不到，无法归属
+	dropInvalidFrame = "invalid_frame"   // 帧校验失败：版本 / 必填字段 / 目标不是本服务
+	dropMaxBody      = "max_body"        // body 超过服务卡上限
+	dropNoDispatcher = "unhandled_frame" // 校验通过但没有分发分支（如 reply/stream 帧打到服务端）
+)
+
 // ServerOptions 是服务端选项。
 type ServerOptions struct {
 	MaxMessageBytes int64
@@ -19,6 +30,7 @@ type ServerOptions struct {
 	MaxInflight     int
 	Metrics         *Registry
 	Idempotency     *IdempotencyCache
+	Logger          *log.Logger // 丢弃与 panic 的落点；默认 log.Default()
 }
 
 // ServerOption 修改 ServerOptions。
@@ -42,6 +54,11 @@ func WithIdempotency(c *IdempotencyCache) ServerOption {
 	return func(o *ServerOptions) { o.Idempotency = c }
 }
 
+// WithLogger 指定日志落点：丢弃帧与处理方 panic 必须留下痕迹，不能静默。
+func WithLogger(l *log.Logger) ServerOption {
+	return func(o *ServerOptions) { o.Logger = l }
+}
+
 // Server 是一个 SPv2.1 服务端。
 type Server struct {
 	card     Card
@@ -49,6 +66,7 @@ type Server struct {
 	opts     ServerOptions
 	metrics  *Registry
 	idem     *IdempotencyCache
+	logger   *log.Logger
 	sem      chan struct{}
 	upgrader websocket.Upgrader
 	started  time.Time
@@ -66,9 +84,13 @@ func NewServer(card Card, opts ...ServerOption) (*Server, error) {
 	if o.Metrics == nil {
 		o.Metrics = NewRegistry()
 	}
+	if o.Logger == nil {
+		o.Logger = log.Default()
+	}
 	s := &Server{
 		card: card, handlers: map[string]Handler{}, opts: o, metrics: o.Metrics, idem: o.Idempotency,
-		sem: make(chan struct{}, o.MaxInflight), started: time.Now(),
+		logger: o.Logger,
+		sem:    make(chan struct{}, o.MaxInflight), started: time.Now(),
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
 	}
 	s.Handle("hello", s.handleHello)
@@ -86,7 +108,7 @@ func (s *Server) Metrics() *Registry { return s.metrics }
 // Handle 注册 method。
 func (s *Server) Handle(name string, h Handler) { s.handlers[name] = h }
 
-// Handler 返回 HTTP handler（挂到 /ws）。
+// Handler 返回 HTTP handler（挂到 /spv2）。
 func (s *Server) Handler() http.Handler { return http.HandlerFunc(s.serveWS) }
 
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +128,10 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 		}
 		f, err := Unmarshal(data)
 		if err != nil {
+			// 解不开就不知道帧头（work / id / type 全没有），既无法回复也无法继续解析这条流；
+			// 结束连接是让调用方立刻拿到 ErrConnClosed 的唯一办法。但"结束"不等于"不留痕迹"：
+			// 丢弃必须计数 + 落日志，否则这条链路上谁也看不出帧被吃掉了。
+			s.countDropped(Frame{}, dropUndecodable, err.Error())
 			return
 		}
 		s.dispatch(c, f)
@@ -115,29 +141,22 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) dispatch(c *conn, f Frame) {
 	f.Normalize()
 	if err := f.Validate(); err != nil {
-		if f.Type == TypeCall {
-			_ = c.send(NewErrorReply(f, s.card.Actor, codeOf(err), err.Error(), retryableOf(err), detailsOf(err)))
-		}
+		s.reject(c, f, dropInvalidFrame, codeOf(err), err.Error(), retryableOf(err), detailsOf(err))
 		return
 	}
 	if err := ValidateTo(f, s.card.Actor); err != nil {
-		if f.Type == TypeCall {
-			_ = c.send(NewErrorReply(f, s.card.Actor, codeOf(err), err.Error(), retryableOf(err), detailsOf(err)))
-		}
+		s.reject(c, f, dropInvalidFrame, codeOf(err), err.Error(), retryableOf(err), detailsOf(err))
 		return
 	}
 	if max := s.card.Limits.MaxBody; max > 0 && int64(len(f.Body)) > max {
-		if f.Type == TypeCall {
-			_ = c.send(NewErrorReply(f, s.card.Actor, CodeResourceExhausted, "body 超过 max_body", false, nil))
-		} else {
-			s.metrics.Counter("sump_dropped_total", "Dropped frames", map[string]string{"reason": "max_body"}, 1)
-		}
+		s.reject(c, f, dropMaxBody, CodeResourceExhausted, "body 超过 max_body", false, nil)
 		return
 	}
 	switch f.Type {
 	case TypeCall:
 		h, ok := s.handlers[f.Method]
 		if !ok {
+			// 未知 method 的 call 必须回错误 reply（AGENTS.md），这一帧有归属、有回执，不是丢弃。
 			_ = c.send(NewErrorReply(f, s.card.Actor, CodeNotFound, "unknown method: "+f.Method, false, nil))
 			return
 		}
@@ -161,11 +180,60 @@ func (s *Server) dispatch(c *conn, f Frame) {
 			ctx, cancel := context.WithTimeout(context.Background(), s.opts.ActionTimeout)
 			defer cancel()
 			call := &Call{Frame: f, srv: s, conn: c}
-			if err := h(ctx, call); err != nil {
+			err, panicked := s.invoke(ctx, call, h)
+			if panicked {
+				return // panic 已经进 sump_panics_total；同一件事不记两处
+			}
+			if err != nil {
 				s.metrics.Counter("sump_event_errors_total", "Event handler errors", map[string]string{"method": f.Method}, 1)
 			}
 		}()
+	default:
+		// 校验通过但这里没有分支可走（服务端不该收到 reply/stream 帧）：过去静默 return。
+		s.countDropped(f, dropNoDispatcher, "")
 	}
+}
+
+// reject 是「入站帧没通过检查」的唯一处理口径：先按同一事件记账，
+// 再对 call 补一帧错误 reply——补回执只为不让调用方空等，不改变事件的归类。
+// 校验失败对 call / event / 其它帧一视同仁：一个事件，一个指标，一个 reason。
+func (s *Server) reject(c *conn, f Frame, reason, code, msg string, retryable bool, details map[string]any) {
+	s.countDropped(f, reason, msg)
+	if f.Type == TypeCall {
+		_ = c.send(NewErrorReply(f, s.card.Actor, code, msg, retryable, details))
+	}
+}
+
+// countDropped 累加 sump_dropped_total 并留一条日志（指标是聚合，日志是单条）。
+// detail 只放原因性的短文本；不打 body 全文，也不把原始字节写进标签。
+func (s *Server) countDropped(f Frame, reason, detail string) {
+	s.metrics.Counter("sump_dropped_total", "Dropped frames", map[string]string{"reason": reason}, 1)
+	msg := fmt.Sprintf("丢弃入站帧 reason=%s type=%q method=%q work=%q id=%q", reason, f.Type, f.Method, f.Work, f.ID)
+	if detail != "" {
+		msg += "：" + detail
+	}
+	s.logger.Printf("%s", msg)
+}
+
+// countPanic 累加 sump_panics_total 并把 panic 值与栈写进日志。
+// 栈只进日志：指标标签必须低基数，错误信息也不该把内部细节带上线。
+func (s *Server) countPanic(f Frame, r any) {
+	s.metrics.Counter("sump_panics_total", "Recovered handler panics", map[string]string{"method": f.Method}, 1)
+	s.logger.Printf("处理方 panic 已隔离 method=%q work=%q id=%q: %v\n%s", f.Method, f.Work, f.ID, r, debug.Stack())
+}
+
+// invoke 跑 handler，并把 panic 关在这一次调用里：转成 internal 错误交回调用方。
+// 不 recover 的话，一个 goroutine 里的 panic 会掀掉整个进程，同一条链上别的在途请求一起没。
+// panicked 单独返回，是为了让调用方区分"处理方返回了错误"和"处理方炸了"，不重复计数。
+func (s *Server) invoke(ctx context.Context, call *Call, h Handler) (err error, panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = true
+			s.countPanic(call.Frame, r)
+			err = ErrCode(CodeInternal, fmt.Sprintf("处理方 %s 发生 panic，已隔离", call.Frame.Method), false, nil)
+		}
+	}()
+	return h(ctx, call), false
 }
 
 func (s *Server) runCall(c *conn, f Frame, h Handler) {
@@ -196,7 +264,8 @@ func (s *Server) runCall(c *conn, f Frame, h Handler) {
 	defer cancel()
 	call := &Call{Frame: f, srv: s, conn: c, idemKey: idemKey}
 	s.metrics.AddGauge("sump_inflight_requests", "In-flight requests", map[string]string{"method": f.Method}, 1)
-	err := h(ctx, call)
+	// panic 也走这条错误路径：invoke 把它转成 internal，调用方拿到回执而不是空等到超时。
+	err, _ := s.invoke(ctx, call, h)
 	if err != nil && !call.Replied() {
 		_ = call.ReplyError(codeOf(err), err.Error(), retryableOf(err), detailsOf(err))
 	}

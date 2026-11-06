@@ -11,28 +11,30 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func postJobReport(t *testing.T, s *Server, original protocol.Envelope, item, phase string, final bool) {
+// postJobReport 用原生 report_result 投递一条补报。调用成功（reply 无 error）
+// 对应 v1 时代的 response.ok=true；是否被观察受理由 accepted 字段单独表达，
+// 晚到补报被忽略也属于成功往返。
+func postJobReport(t *testing.T, s *Server, work, item, phase string, final bool) {
 	t.Helper()
-	c, err := protocol.Dial(s.WsURL(), nil)
+	c, err := spv2.Dial(t.Context(), s.WsURL())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	raw, _ := protocol.EncodePayload(protocol.AsyncResultPayload{ItemID: item, Phase: phase, Text: "timer " + phase, Final: final})
-	env, _ := protocol.NewEnvelope(protocol.TypeJump, "timer", "mcp", original.Trace, protocol.JumpPayload{Action: "report_result", Input: raw})
-	env.Boss = "mcp"
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	defer cancel()
-	res, err := c.Call(ctx, env)
+	call, err := spv2.NewCall(work, spv2.ServiceRef("timer"), spv2.ServiceRef("mcp"), "report_result",
+		protocol.AsyncResultPayload{ItemID: item, Phase: phase, Text: "timer " + phase, Final: final})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reply protocol.ResponsePayload
-	if res.DecodePayload(&reply) != nil || !reply.OK {
-		t.Fatalf("report failed: %+v", reply)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	var reply map[string]any
+	if err := c.CallDecode(ctx, call, &reply); err != nil {
+		t.Fatalf("report failed: %v", err)
 	}
 }
 
@@ -71,13 +73,13 @@ func timerCard(peer string) protocol.ServiceCard {
 
 func TestExportEarlyFinalAndCrossRequestRead(t *testing.T) {
 	var s *Server
-	peer := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
+	peer := newNativePeer(t, "timer", []string{"sleep", "cancel"}, func(call *spv2.Call) (any, error) {
 		// Deliver the final report and wait for its acknowledgment BEFORE the
 		// original request gets a receipt. No scheduling luck is involved.
-		postJobReport(t, s, env, "early-item", "done", true)
+		postJobReport(t, s, call.Frame.Work, "early-item", "done", true)
 		return protocol.TimerSleepResult{ItemID: "early-item", Phase: "queued"}, nil
 	})
-	s = startGateway(t, Config{MaxCalls: 1, MaxCallsPerPrincipal: 1}, []protocol.ServiceCard{timerCard(peer)}, `{"exports":["timer__sleep"]}`)
+	s = startGateway(t, Config{MaxCalls: 1, MaxCallsPerPrincipal: 1}, []protocol.ServiceCard{timerCard(peer.URL())}, `{"exports":["timer__sleep"]}`)
 	c := gatewayClient(t, s, gatewayToken)
 	_, uri := jobCallIDs(t, gatewayCall(t, c, "timer__sleep", map[string]any{"ms": 100}))
 	otherConnection := gatewayClient(t, s, gatewayToken)
@@ -99,18 +101,16 @@ func TestExportEarlyFinalAndCrossRequestRead(t *testing.T) {
 
 func TestExportHeldCapacityAndCancellation(t *testing.T) {
 	var sequence atomic.Int32
-	peer := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
-		var jump protocol.JumpPayload
-		_ = env.DecodePayload(&jump)
-		if jump.Action == "cancel" {
+	peer := newNativePeer(t, "timer", []string{"sleep", "cancel"}, func(call *spv2.Call) (any, error) {
+		if call.Frame.Method == "cancel" {
 			var cancel protocol.TimerCancelPayload
-			_ = protocol.DecodeRaw(jump.Input, &cancel)
+			_ = call.Frame.DecodeBody(&cancel)
 			return protocol.TimerCancelResult{ItemID: cancel.ItemID, Status: "canceled"}, nil
 		}
 		sequence.Add(1)
 		return protocol.TimerSleepResult{ItemID: protocol.NewID(), Phase: "queued"}, nil
 	})
-	s := startGateway(t, Config{MaxCalls: 1, MaxCallsPerPrincipal: 1}, []protocol.ServiceCard{timerCard(peer)}, `{"exports":["timer__sleep","timer__cancel"]}`)
+	s := startGateway(t, Config{MaxCalls: 1, MaxCallsPerPrincipal: 1}, []protocol.ServiceCard{timerCard(peer.URL())}, `{"exports":["timer__sleep","timer__cancel"]}`)
 	c := gatewayClient(t, s, gatewayToken)
 	id, uri := jobCallIDs(t, gatewayCall(t, c, "timer__sleep", map[string]any{"ms": 1000}))
 	if r := gatewayCall(t, c, "timer__sleep", map[string]any{"ms": 1000}); !r.IsError {
@@ -132,12 +132,12 @@ func TestExportHeldCapacityAndCancellation(t *testing.T) {
 }
 
 func TestExportUnknownReceiptCanAcceptLateFinal(t *testing.T) {
-	calls := make(chan protocol.Envelope, 1)
-	peer := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
-		calls <- env
+	calls := make(chan string, 1)
+	peer := newNativePeer(t, "timer", []string{"sleep", "cancel"}, func(call *spv2.Call) (any, error) {
+		calls <- call.Frame.Work
 		return nil, errors.New("receipt unavailable")
 	})
-	s := startGateway(t, Config{}, []protocol.ServiceCard{timerCard(peer)}, `{"exports":["timer__sleep"]}`)
+	s := startGateway(t, Config{}, []protocol.ServiceCard{timerCard(peer.URL())}, `{"exports":["timer__sleep"]}`)
 	c := gatewayClient(t, s, gatewayToken)
 	_, uri := jobCallIDs(t, gatewayCall(t, c, "timer__sleep", map[string]any{"ms": 100}))
 	if out := readJob(t, c, uri); out.State != "unknown" || out.Final {
@@ -154,15 +154,13 @@ func TestExportUnknownReceiptCanAcceptLateFinal(t *testing.T) {
 
 func TestExportReadOwnershipAndControlRevocation(t *testing.T) {
 	var cancelCalls atomic.Int32
-	peer := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
-		var jump protocol.JumpPayload
-		_ = env.DecodePayload(&jump)
-		if jump.Action == "cancel" {
+	peer := newNativePeer(t, "timer", []string{"sleep", "cancel"}, func(call *spv2.Call) (any, error) {
+		if call.Frame.Method == "cancel" {
 			cancelCalls.Add(1)
 		}
 		return protocol.TimerSleepResult{ItemID: "retained-item", Phase: "queued"}, nil
 	})
-	s := startGateway(t, Config{}, []protocol.ServiceCard{timerCard(peer)}, `{"exports":["timer__sleep","timer__cancel"]}`)
+	s := startGateway(t, Config{}, []protocol.ServiceCard{timerCard(peer.URL())}, `{"exports":["timer__sleep","timer__cancel"]}`)
 	c := gatewayClient(t, s, gatewayToken)
 	id, uri := jobCallIDs(t, gatewayCall(t, c, "timer__sleep", map[string]any{"ms": 1000}))
 	if err := os.WriteFile(s.cfg.ConfigPath, []byte(`{"exports":[]}`), 0600); err != nil {
@@ -191,14 +189,14 @@ func TestExportReadOwnershipAndControlRevocation(t *testing.T) {
 }
 
 func TestExportFreshServerDoesNotRecoverOldObservation(t *testing.T) {
-	peer := gatewayPeer(t, func(protocol.Envelope) (any, error) {
+	peer := newNativePeer(t, "timer", []string{"sleep", "cancel"}, func(*spv2.Call) (any, error) {
 		return protocol.TimerSleepResult{ItemID: "unconfirmed-after-restart", Phase: "queued"}, nil
 	})
-	old := startGateway(t, Config{}, []protocol.ServiceCard{timerCard(peer)}, `{"exports":["timer__sleep"]}`)
+	old := startGateway(t, Config{}, []protocol.ServiceCard{timerCard(peer.URL())}, `{"exports":["timer__sleep"]}`)
 	client := gatewayClient(t, old, gatewayToken)
 	_, uri := jobCallIDs(t, gatewayCall(t, client, "timer__sleep", map[string]any{"ms": 1000}))
 	old.Close()
-	current := startGateway(t, Config{}, []protocol.ServiceCard{timerCard(peer)}, `{"exports":["timer__sleep"]}`)
+	current := startGateway(t, Config{}, []protocol.ServiceCard{timerCard(peer.URL())}, `{"exports":["timer__sleep"]}`)
 	if _, err := gatewayClient(t, current, gatewayToken).ReadResource(t.Context(), &mcp.ReadResourceParams{URI: uri}); err == nil {
 		t.Fatal("fresh server invented recovery of a volatile observation")
 	}

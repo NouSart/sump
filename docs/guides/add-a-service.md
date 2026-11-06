@@ -1,32 +1,32 @@
 # 写一个服务
 
-> **读者**：要给 SUMP 加一个新能力（= 一个新服务）的人，不限语言 ｜ **读完能做**：写出一个能被中心发现、被模型调用、被测试覆盖的服务 ｜ **最后校验**：2026-10-30
+> **读者**：要给 SUMP 加一个新能力（= 一个新服务）的人，不限语言 ｜ **读完能做**：写出一个能被中心发现、被模型调用、被测试覆盖的服务 ｜ **最后校验**：2026-11-06
 
-协议契约（信封、消息类型、链机制）见 [../concepts/protocol.md](../concepts/protocol.md)。
+协议契约（SPv2.1 帧、method 词汇、链机制）见 [../concepts/protocol.md](../concepts/protocol.md)。
 
 ## 1. 最短路径
 
 1. 在 `src/` 下建目录 `<服务名>/`，`main.go`（或任意语言入口）+ `tests/`
-2. 从启动参数拿三要素：`-name` / `-addr` / `-center`
-3. 向中心 `register`，名片里写清 `provides` 与 `settings`
-4. 收 `jump` → 按 `action` 分派 → 回 `response`
-5. 每 15s 发 `heartbeat`；退出前发 `status="bye"`
+2. 从启动参数拿三要素：`-name` / `-addr` / `-center`（中心地址带 `/spv2`）
+3. 监听 `/spv2`，向中心发 `register` **call**，名片里写清 `provides` 与 `settings`
+4. 收 `call` → 按 `method` 分派 → 回 `reply`（成功 `status=ok`）；收 `event` 只处理不回复
+5. 每 15s 发一条 `heartbeat` **event**；退出前发 `status="bye"`
 6. 断线指数退避重连 + 重新注册
-7. 给每个动作写测试（含错误路径）
+7. 给每个 method 写测试（含错误路径）
 8. 在 `go.work`（Go）或启动脚本里登记
-9. 只暴露能力类动作（`tool: true`），管理 / 调试动作不要暴露
-10. 需要长耗时 → 用 `async: true` + `report_result` 补报，不要让调用方等
+9. 只暴露能力类 method（`tool: true`），管理 / 调试 method 不要暴露
+10. 需要长耗时 → 用 `async: true` + 受理回执 + `report_result` 补报，不要让调用方等
 
-Go 服务直接用 `src/service/` 骨架（注册 / 心跳 / 名册 / 重连 / 告别 / 设置接收都现成），只写业务动作。**其他语言照此实现即可**：`src/protocol/` 与 `src/service/` 是 Go 侧的便利库，不是准入条件。
+Go 服务直接用 `src/service/` 骨架（注册 / 心跳 / 名册 / 重连 / 告别 / 设置接收 / 原生 method 注册都现成），只写业务 method。**其他语言照此实现即可**：`src/spv2/`、`src/protocol/` 与 `src/service/` 是 Go 侧的便利库，不是准入条件。
 
 ## 2. 名片：`provides` 与 `settings`
 
 ```jsonc
 {
   "name": "images",
-  "addr": "ws://127.0.0.1:9401/ws",
+  "addr": "ws://127.0.0.1:9401/spv2",
   "description": "图片服务：保存图片（URL/base64），按需转 base64 发回调用方",
-  "provides": [                                  // 我对外提供哪些动作（"tool": true 才作为 LLM 工具暴露；"async": true = 受理即回执）
+  "provides": [                                  // 我对外提供哪些 method（action 字段即 method 名；"tool": true 才作为 LLM 工具暴露；"async": true = 受理即回执）
     { "action": "save",  "input": "{url} 或 {data(base64), mime}", "output": "{id, mime, size}" },
     { "action": "fetch", "input": "{id}", "output": "{id, mime, data(base64), size}" }
   ],
@@ -39,7 +39,7 @@ Go 服务直接用 `src/service/` 骨架（注册 / 心跳 / 名册 / 重连 / �
 }
 ```
 
-- `provides[].input/output` 是**给人看的宽松描述**，不是 JSON Schema。精确字段形状由协议包里的载荷类型定义（`src/protocol/payloads.go`）。
+- `provides[].input/output` 是**给人看的宽松描述**，不是 JSON Schema。精确字段形状由协议包里的载荷类型定义（`src/protocol/payloads.go`）；服务卡 `hello` 会给出 method 的精确 schema。
 - 名片字段名（`action` / `input` / `output` / `tool` / `async` / `batchable`）跨语言一致，见 [命名基线](../concepts/protocol.md)。
 
 ### 2.1 设置项的人话元数据（全部可选）
@@ -56,9 +56,9 @@ Go 服务直接用 `src/service/` 骨架（注册 / 心跳 / 名册 / 重连 / �
 
 `service` 表示值是一个服务名：面板从名册里列候选，但**名册只是候选，校验权仍在服务**（名册里没有的名字照样提交，服务自己拒）。`optional-service` 表示该项可以「没有」（清空 = 关闭这项能力），面板画成「开关 + 选择」。
 
-## 3. 设置中心提供的动作
+## 3. 设置中心提供的 method
 
-| 动作（jump 到 `settings-center`） | 输入 | 输出 |
+| method（call 到 `settings-center`） | body | reply body |
 | --- | --- | --- |
 | `list_settings` | `{service?}`（可选过滤） | `{services:[{service, settings:[{key,value,default,overridden,secret?,readonly?,set?}]}]}` |
 | `set_setting` | `{service, key, value}` | 被改动服务的设置（同上结构） |
@@ -67,7 +67,7 @@ Go 服务直接用 `src/service/` 骨架（注册 / 心跳 / 名册 / 重连 / �
 
 - 生效值 = **覆盖值 ?? 服务声明的预设值**；覆盖值落盘于设置中心（`data/settings.json`）。
 - 校验两级：中心只校验「服务已注册、设置项已被声明」；**值是否合法由服务自己校验**——`configure` 被服务拒绝即保持旧值（中心把拒绝理由记入结果事件）。
-- **下发（注册即对齐 + 变更单键）**：中心在 `register` 响应发出后**异步**（不阻塞注册、不等待送达）把该服务的普通项生效值逐键以 `configure` 下发（有界重试 +0.5s、+2s；服务明确拒绝不重试）；`set_setting` / `reset_setting` 成功后单键下发。**受理回执只表示「已落盘受理」**，送达结果（含失败原因）以 `settings` 事件广播：`{cause, service, results:[{key, value?, ok, error?}]}`（cause = `register` / `set_setting` / `reset_setting`）——面板据此自动刷新与提示。
+- **下发（注册即对齐 + 变更单键）**：中心在 `register` 的 reply 发出后**异步**（不阻塞注册、不等待送达）把该服务的普通项生效值逐键以 `configure` 下发（有界重试 +0.5s、+2s；服务明确拒绝不重试）；`set_setting` / `reset_setting` 成功后单键下发。**受理回执只表示「已落盘受理」**，送达结果（含失败原因）以 `settings` 事件广播：`{cause, service, results:[{key, value?, ok, error?}]}`（cause = `register` / `set_setting` / `reset_setting`）——面板据此自动刷新与提示。
 - **服务侧接收（骨架通用）**：Go 骨架提供 `HandleSetting(键, 预设, 校验+应用回调)`——声明进名片、统一承接 `configure`、注册成功后**异步拉取一次**作兜底（只应用覆盖项；与下发幂等）；另暴露 `RefreshSettings()` 手动拉取。预设值由**服务自己决定**；非 Go 服务照此实现。
 - **离线一致性**：服务离线期间的变更**不排队补发**——其下次注册时全量对齐（幂等收敛）。
 
@@ -86,7 +86,7 @@ Go 服务直接用 `src/service/` 骨架（注册 / 心跳 / 名册 / 重连 / �
 
 控制方向只有一条（中心 → 服务 `configure`）；反方向的 `report_setting` **只报事实**：
 
-| 动作（jump 到 `settings-center`） | 输入 | 输出 |
+| method（call 到 `settings-center`） | body | reply body |
 | --- | --- | --- |
 | `report_setting` | `{service, key, value, set?, seq}` | 被改动服务的设置（同上结构） |
 
@@ -98,14 +98,14 @@ Go 服务直接用 `src/service/` 骨架（注册 / 心跳 / 名册 / 重连 / �
 
 ## 6. 测试要求
 
-- 服务自带 `tests/`：起真实服务 + 真实 WS，覆盖自己的动作（含错误路径）。
+- 服务自带 `tests/`：起真实服务 + 真实 WS，覆盖自己的 method（含错误路径）。
 - `testing/tests/`：跨服务**真进程**端到端（新增链路时补一条）。
 - 测试**不得依赖外网**：用假 LLM（OpenAI 兼容替身）/ 假对端；真模型只在显式开关下跑冒烟。
 - 测试里构造消息建议**手写字段**（当「只读规范的第三方」），而不是复用生产结构体——这样契约漂移会立刻被测试抓住。
 
 ## 7. 别做的事
 
-- 管理 / 调试类动作（改配置、清库、发号施令型代理）暴露给 LLM。
+- 管理 / 调试类 method（改配置、清库、发号施令型代理）暴露给 LLM。
 - 直接读写别的服务的库表或目录。
 - 让调用方等你完成长任务（用 `async` + `report_result`）。
 - 新增设置同步通道（设置只走服务 ↔ 中心）。

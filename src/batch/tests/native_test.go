@@ -13,12 +13,11 @@ import (
 // TestNativeSPV2MethodsRegistered：batch 服务卡必须把 Provides 的五个动作都声明成
 // 原生 method（带 input/output schema），而不是让骨架用通用桥接 method 顶替。
 func TestNativeSPV2MethodsRegistered(t *testing.T) {
-	t.Setenv("SUMP_SPV2", "1")
 	f := startFixture(t, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	addr := strings.TrimSuffix(f.batch.WsURL(), "/ws") + "/spv2"
+	addr := f.batch.WsURL()
 	c, err := spv2.Dial(ctx, addr)
 	if err != nil {
 		t.Fatalf("连接 %s 失败: %v", addr, err)
@@ -49,7 +48,7 @@ func TestNativeSPV2MethodsRegistered(t *testing.T) {
 		t.Fatal("run 是异步动作，应声明 long_running")
 	}
 
-	// 再直连 /spv2 调一次 status：错误文本必须与 v1 边一致，证明原生 handler 真的在接客。
+	// 再直连 /spv2 调一次 status：错误文本必须带 BATCH_JOB_UNKNOWN，证明原生 handler 真的在接客。
 	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef("probe"), spv2.ServiceRef("batch"),
 		"status", protocol.BatchStatusPayload{ItemID: "01ZZZZZZZZZZZZZZZZZZZZZZZZ"})
 	if err != nil {

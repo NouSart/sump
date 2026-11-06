@@ -35,10 +35,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# SPv2.1：Go 服务启用 /spv2 传输桥；frontend 出站优先 /spv2、入站也提供 /spv2；
-# embedding / settings-center 仍走 v1（由调用方自动回退）。
-$env:SUMP_SPV2 = '1'
-
 $approvalRuntime = Get-Command pwsh -ErrorAction SilentlyContinue
 if (-not $approvalRuntime) { $approvalRuntime = Get-Command powershell -ErrorAction SilentlyContinue }
 if (-not $approvalRuntime) { throw '命令审批需要 PowerShell' }
@@ -230,7 +226,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 $modelDir = Join-Path $dataDir 'models\bge-small-zh-v1.5'
 $modelFile = Get-ChildItem $modelDir -Filter '*.onnx' -ErrorAction SilentlyContinue | Select-Object -First 1
-$embeddingArgs = @('-addr', $EmbeddingAddr, '-center', "ws://$CenterAddr/ws")
+$embeddingArgs = @('-addr', $EmbeddingAddr, '-center', "ws://$CenterAddr/spv2")
 if ($null -ne $modelFile) {
     & $embPython -c "import onnxruntime, tokenizers, numpy" 2>$null
     if ($LASTEXITCODE -ne 0) {
@@ -266,34 +262,34 @@ try {
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
     Write-Host '[5/9] 启动 memory + embedding ...' -ForegroundColor Cyan
-    $mem = Start-Process -FilePath (Join-Path $binDir 'memory.exe') -ArgumentList '-addr', $MemoryAddr, '-center', "ws://$CenterAddr/ws", '-db', (Join-Path $dataDir 'memory.db') -PassThru -WindowStyle Hidden
+    $mem = Start-Process -FilePath (Join-Path $binDir 'memory.exe') -ArgumentList '-addr', $MemoryAddr, '-center', "ws://$CenterAddr/spv2", '-db', (Join-Path $dataDir 'memory.db') -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $MemoryAddr 60 $mem)) { throw 'memory 未在 60 秒内就绪' }
     $emb = Start-Process -FilePath $embPython -ArgumentList (@('-m', 'sump_embedding') + $embeddingArgs) -WorkingDirectory $root -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $EmbeddingAddr 60 $emb)) { throw 'embedding 未在 60 秒内就绪（首次启动需加载模型，或依赖缺失——见上方日志）' }
 
     Write-Host '[6/9] 启动 images + files + qq ...' -ForegroundColor Cyan
-    $img = Start-Process -FilePath (Join-Path $binDir 'sump-images.exe') -ArgumentList '-addr', $ImageAddr, '-center', "ws://$CenterAddr/ws", '-db', (Join-Path $dataDir 'images.db'), '-dir', (Join-Path $dataDir 'images') -PassThru -WindowStyle Hidden
+    $img = Start-Process -FilePath (Join-Path $binDir 'sump-images.exe') -ArgumentList '-addr', $ImageAddr, '-center', "ws://$CenterAddr/spv2", '-db', (Join-Path $dataDir 'images.db'), '-dir', (Join-Path $dataDir 'images') -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $ImageAddr 60 $img)) { throw 'images 未在 60 秒内就绪' }
-    $fil = Start-Process -FilePath (Join-Path $binDir 'sump-files.exe') -ArgumentList '-addr', $FilesAddr, '-center', "ws://$CenterAddr/ws", '-db', (Join-Path $dataDir 'files.db'), '-dir', (Join-Path $dataDir 'files') -PassThru -WindowStyle Hidden
+    $fil = Start-Process -FilePath (Join-Path $binDir 'sump-files.exe') -ArgumentList '-addr', $FilesAddr, '-center', "ws://$CenterAddr/spv2", '-db', (Join-Path $dataDir 'files.db'), '-dir', (Join-Path $dataDir 'files') -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $FilesAddr 60 $fil)) { throw 'files 未在 60 秒内就绪' }
-    $qqArgs = @('-addr', $QQAddr, '-center', "ws://$CenterAddr/ws", '-napcat', $NapCatURL)
+    $qqArgs = @('-addr', $QQAddr, '-center', "ws://$CenterAddr/spv2", '-napcat', $NapCatURL)
     if ($NapCatToken) { $qqArgs += @('-napcat-token', $NapCatToken) }
     if ($Owner) { $qqArgs += @('-owner', $Owner) }
     $qq = Start-Process -FilePath (Join-Path $binDir 'qq.exe') -ArgumentList $qqArgs -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $QQAddr 60 $qq)) { throw 'qq 未在 60 秒内就绪' }
 
     Write-Host '[7/9] 启动 approval + batch + shell + timer + mcp ...' -ForegroundColor Cyan
-    $approvalSvc = Start-Process -FilePath (Join-Path $binDir 'sump-approval.exe') -ArgumentList 'serve', '-addr', $ApprovalAddr, '-center', "ws://$CenterAddr/ws", '-portal', 'frontend' -PassThru -WindowStyle Hidden
+    $approvalSvc = Start-Process -FilePath (Join-Path $binDir 'sump-approval.exe') -ArgumentList 'serve', '-addr', $ApprovalAddr, '-center', "ws://$CenterAddr/spv2", '-portal', 'frontend' -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $ApprovalAddr 60 $approvalSvc)) { throw 'approval 未在 60 秒内就绪' }
-    $batchSvc = Start-Process -FilePath (Join-Path $binDir 'batch.exe') -ArgumentList '-addr', $BatchAddr, '-center', "ws://$CenterAddr/ws", '-db', ('"' + (Join-Path $dataDir 'batch.db') + '"') -PassThru -WindowStyle Hidden
+    $batchSvc = Start-Process -FilePath (Join-Path $binDir 'batch.exe') -ArgumentList '-addr', $BatchAddr, '-center', "ws://$CenterAddr/spv2", '-db', ('"' + (Join-Path $dataDir 'batch.db') + '"') -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $BatchAddr 60 $batchSvc)) { throw 'batch 未在 60 秒内就绪' }
-    $shellSvc = Start-Process -FilePath (Join-Path $binDir 'shell.exe') -ArgumentList '-addr', $ShellAddr, '-center', "ws://$CenterAddr/ws", '-root', ('"' + $root + '"'), '-approval', 'approval' -PassThru -WindowStyle Hidden
+    $shellSvc = Start-Process -FilePath (Join-Path $binDir 'shell.exe') -ArgumentList '-addr', $ShellAddr, '-center', "ws://$CenterAddr/spv2", '-root', ('"' + $root + '"'), '-approval', 'approval' -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $ShellAddr 60 $shellSvc)) { throw 'shell 未在 60 秒内就绪' }
     # -portal frontend：把在计时器推给门户展示倒计时（留空 = 不推）。
-    $timerSvc = Start-Process -FilePath (Join-Path $binDir 'timer.exe') -ArgumentList '-addr', $TimerAddr, '-center', "ws://$CenterAddr/ws", '-portal', 'frontend' -PassThru -WindowStyle Hidden
+    $timerSvc = Start-Process -FilePath (Join-Path $binDir 'timer.exe') -ArgumentList '-addr', $TimerAddr, '-center', "ws://$CenterAddr/spv2", '-portal', 'frontend' -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $TimerAddr 60 $timerSvc)) { throw 'timer 未在 60 秒内就绪' }
 
-    $mcpArgs = @('-addr', $MCPAddr, '-center', "ws://$CenterAddr/ws", '-http-addr', $MCPHTTPAddr,
+    $mcpArgs = @('-addr', $MCPAddr, '-center', "ws://$CenterAddr/spv2", '-http-addr', $MCPHTTPAddr,
         '-config', ('"' + (Join-Path $dataDir 'mcp.json') + '"'),
         '-secret-file', ('"' + (Join-Path $dataDir 'mcp-secret.json') + '"'))
     $mcpSvc = Start-Process -FilePath (Join-Path $binDir 'sump-mcp.exe') -ArgumentList $mcpArgs -WorkingDirectory $root -PassThru -WindowStyle Hidden
@@ -301,28 +297,28 @@ try {
     if (-not (Wait-Port $MCPHTTPAddr 60 $mcpSvc)) { throw 'mcp HTTP 未在 60 秒内就绪' }
 
     Write-Host '[8/9] 启动 reasoner ...' -ForegroundColor Cyan
-    $reasonerArgs = @('-addr', $ReasonerAddr, '-center', "ws://$CenterAddr/ws", '-llm-base', $LlmBase, '-llm-model', $LlmModel)
+    $reasonerArgs = @('-addr', $ReasonerAddr, '-center', "ws://$CenterAddr/spv2", '-llm-base', $LlmBase, '-llm-model', $LlmModel)
     if ($LlmKey) { $reasonerArgs += @('-llm-key', $LlmKey) }
     $reasoner = Start-Process -FilePath (Join-Path $binDir 'reasoner.exe') -ArgumentList $reasonerArgs -PassThru -WindowStyle Hidden
 
     Write-Host '[9/9] 启动 frontend ...' -ForegroundColor Cyan
-    $frontend = Start-Process -FilePath 'node' -ArgumentList 'dist/server/index.js', '-addr', $FrontendAddr, '-center', "ws://$CenterAddr/ws", '-approval', 'approval' -WorkingDirectory $frontendDir -PassThru -WindowStyle Hidden
+    $frontend = Start-Process -FilePath 'node' -ArgumentList 'dist/server/index.js', '-addr', $FrontendAddr, '-center', "ws://$CenterAddr/spv2", '-approval', 'approval' -WorkingDirectory $frontendDir -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $FrontendAddr 60 $frontend)) { throw 'frontend 未在 60 秒内就绪' }
 
     Write-Host ''
-    Write-Host "settings-center: ws://$CenterAddr/ws  (PID $($center.Id))"
-    Write-Host "memory:          ws://$MemoryAddr/ws  (PID $($mem.Id))  db: data/memory.db"
-    Write-Host "embedding:       ws://$EmbeddingAddr/ws  (PID $($emb.Id))  后端: $(if ($null -ne $modelFile) { 'onnx（真模型）' } else { 'fake（无模型——语义召回不可用）' })"
-    Write-Host "files:           ws://$FilesAddr/ws  (PID $($fil.Id))  db: data/files.db  dir: data/files"
-    Write-Host "images:          ws://$ImageAddr/ws  (PID $($img.Id))  db: data/images.db  dir: data/images"
-    Write-Host "qq:              ws://$QQAddr/ws  (PID $($qq.Id))  napcat: $NapCatURL"
-    Write-Host "shell:           ws://$ShellAddr/ws  (PID $($shellSvc.Id))  root: $root  审批: approval"
-    Write-Host "approval:        ws://$ApprovalAddr/ws  (PID $($approvalSvc.Id))  PowerShell 第一层"
-    Write-Host "batch:           ws://$BatchAddr/ws  (PID $($batchSvc.Id))  db: data/batch.db"
-    Write-Host "timer:           ws://$TimerAddr/ws  (PID $($timerSvc.Id))  门户: frontend"
-    Write-Host "mcp:             ws://$MCPAddr/ws  (PID $($mcpSvc.Id))  外部: http://$MCPHTTPAddr/mcp"
+    Write-Host "settings-center: ws://$CenterAddr/spv2  (PID $($center.Id))"
+    Write-Host "memory:          ws://$MemoryAddr/spv2  (PID $($mem.Id))  db: data/memory.db"
+    Write-Host "embedding:       ws://$EmbeddingAddr/spv2  (PID $($emb.Id))  后端: $(if ($null -ne $modelFile) { 'onnx（真模型）' } else { 'fake（无模型——语义召回不可用）' })"
+    Write-Host "files:           ws://$FilesAddr/spv2  (PID $($fil.Id))  db: data/files.db  dir: data/files"
+    Write-Host "images:          ws://$ImageAddr/spv2  (PID $($img.Id))  db: data/images.db  dir: data/images"
+    Write-Host "qq:              ws://$QQAddr/spv2  (PID $($qq.Id))  napcat: $NapCatURL"
+    Write-Host "shell:           ws://$ShellAddr/spv2  (PID $($shellSvc.Id))  root: $root  审批: approval"
+    Write-Host "approval:        ws://$ApprovalAddr/spv2  (PID $($approvalSvc.Id))  PowerShell 第一层"
+    Write-Host "batch:           ws://$BatchAddr/spv2  (PID $($batchSvc.Id))  db: data/batch.db"
+    Write-Host "timer:           ws://$TimerAddr/spv2  (PID $($timerSvc.Id))  门户: frontend"
+    Write-Host "mcp:             ws://$MCPAddr/spv2  (PID $($mcpSvc.Id))  外部: http://$MCPHTTPAddr/mcp"
     Write-Host '                 首次使用：面板设置 mcp/http.token，data/mcp.json 配置导入/导出绑定。' -ForegroundColor DarkGray
-    Write-Host "reasoner:       ws://$ReasonerAddr/ws  (PID $($reasoner.Id))"
+    Write-Host "reasoner:       ws://$ReasonerAddr/spv2  (PID $($reasoner.Id))"
     Write-Host "frontend:       http://$FrontendAddr/  (PID $($frontend.Id))  ← 设置面板" -ForegroundColor Green
     Write-Host '按 Ctrl+C 停止' -ForegroundColor Yellow
 

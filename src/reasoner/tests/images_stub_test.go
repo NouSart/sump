@@ -5,8 +5,6 @@ package tests
 import (
 	"context"
 	"log"
-	"net"
-	"net/http"
 	"os"
 	"sync"
 	"testing"
@@ -15,12 +13,13 @@ import (
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/reasoner/llm"
 	"github.com/NouSart/sump/reasoner/server"
+	"github.com/NouSart/sump/spv2"
 )
 
 // stubImages 是图片服务替身：fetch / fetch_full 请求 → 返回预置 base64。
 type stubImages struct {
-	ln  net.Listener
-	srv *http.Server
+	srv *spv2.Server
+	url string
 
 	mu      sync.Mutex
 	name    string // 服务名（默认 images；服务名热改测试用别的名字）
@@ -36,29 +35,36 @@ func startStubImages(t *testing.T, center *stubCenter) *stubImages {
 // startStubImagesNamed 起一个自定义服务名的图片替身（服务名热改测试用）。
 func startStubImagesNamed(t *testing.T, center *stubCenter, name string) *stubImages {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	e := newStubEndpoint(t, name,
+		spv2.Method{Name: "save", Shape: spv2.ShapeCall},
+		spv2.Method{Name: "fetch", Shape: spv2.ShapeCall},
+		spv2.Method{Name: "fetch_full", Shape: spv2.ShapeCall},
+	)
+	m := &stubImages{srv: e.srv, url: e.URL(), name: name}
+	fetch := func(_ context.Context, call *spv2.Call) error {
+		var p protocol.ImageFetchPayload
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		m.mu.Lock()
+		m.fetched = append(m.fetched, p.ID)
+		m.mu.Unlock()
+		// 预置图片："QUJD" = base64("ABC")。
+		return call.Reply(protocol.ImageFetchResult{ID: p.ID, Mime: "image/png", Data: "QUJD", Size: 3})
 	}
-	m := &stubImages{ln: ln, name: name}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", m.handleWS)
-	m.srv = &http.Server{Handler: mux}
-	go func() { _ = m.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = m.srv.Close() })
+	e.handle("fetch", fetch)
+	e.handle("fetch_full", fetch)
 
-	center.mu.Lock()
-	center.cards[name] = protocol.ServiceCard{
+	registerStub(t, center, protocol.RegisterPayload{
 		Name:        name,
-		Addr:        m.URL(),
+		Addr:        e.URL(),
 		Description: "图片测试替身",
 		Provides:    []protocol.Provide{{Action: "save"}, {Action: "fetch"}, {Action: "fetch_full"}},
-	}
-	center.mu.Unlock()
+	})
 	return m
 }
 
-func (m *stubImages) URL() string { return "ws://" + m.ln.Addr().String() + "/ws" }
+func (m *stubImages) URL() string { return m.url }
 
 // Fetched 返回已收到的 fetch 请求 id 快照。
 func (m *stubImages) Fetched() []string {
@@ -67,51 +73,6 @@ func (m *stubImages) Fetched() []string {
 	out := make([]string, len(m.fetched))
 	copy(out, m.fetched)
 	return out
-}
-
-func (m *stubImages) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := stubUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	c := &stubConn{ws: ws}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		if env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action != "fetch" && jp.Action != "fetch_full" {
-			continue
-		}
-		var p protocol.ImageFetchPayload
-		if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
-			continue
-		}
-		m.mu.Lock()
-		m.fetched = append(m.fetched, p.ID)
-		m.mu.Unlock()
-
-		// 预置图片："QUJD" = base64("ABC")。
-		result := protocol.ImageFetchResult{ID: p.ID, Mime: "image/png", Data: "QUJD", Size: 3}
-		resultData, err := protocol.EncodePayload(result)
-		if err != nil {
-			continue
-		}
-		resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true, Data: resultData})
-		c.send(resp)
-	}
 }
 
 // TestImagePrefetch 验证图片引用在推理前被取回并内联（llm 请求的 Images 与消息 ImageIDs）。
@@ -141,31 +102,11 @@ func TestImagePrefetch(t *testing.T) {
 	t.Cleanup(s.Shutdown)
 	mem.setReasonerURL(s.WsURL())
 
-	c := dialReasoner(t, s)
-	raw, err := protocol.EncodePayload(map[string]any{
+	sendFrom(t, s, "stub-boss", map[string]any{
 		"text":            "看看这图",
 		"conversation_id": "c-img",
 		"images":          []string{"img-1"},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Boss = "stub-boss"
-	resp, err := c.Call(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack protocol.ResponsePayload
-	if err := resp.DecodePayload(&ack); err != nil {
-		t.Fatal(err)
-	}
-	if !ack.OK {
-		t.Fatalf("user_message 未被受理: %s", ack.Error)
-	}
 
 	select {
 	case d := <-boss.delivered:

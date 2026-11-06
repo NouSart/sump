@@ -63,9 +63,6 @@ type Server struct {
 	holdMu       sync.Mutex // user hold state; see hold.go
 	holds        map[string]*holdState
 
-	entryMu sync.Mutex        // 会话入口表锁（交付失败时往哪补一条）
-	entries map[string]string // 会话 → 入口服务名（user_message 的 from）
-
 	retryFrom func(string) bool // 测试注入：retry 的来源校验（名册在 service 包里，测试拿不到 setter）
 
 	memSeq int64 // 会话记录的单调序号（atomic）：并发写（Fire 是 goroutine）也按真实先后落库
@@ -112,7 +109,6 @@ func New(cfg Config, logger *log.Logger) *Server {
 		asyncEarly:   map[asyncKey][]protocol.AsyncResultPayload{},
 		asyncDone:    map[asyncKey]time.Time{},
 		holds:        map[string]*holdState{},
-		entries:      map[string]string{},
 		notify:       cfg.NotifyMode,
 		conc:         cfg.ToolConcurrency,
 		timeout:      cfg.ToolTimeout,
@@ -244,18 +240,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.HandleReadOnly("name", cfg.Name)
 	s.HandleReadOnly("addr", cfg.Listen)
 	s.HandleReadOnly("center", cfg.Center)
-	s.Handle("echo", s.actionEcho)
-	s.Handle("debug_jump", s.actionDebugJump)
-	s.Handle("think", s.actionThink)
-	s.Handle("user_message", s.actionUserMessage)
-	s.Handle("step", s.actionStep)
-	s.Handle("resume", s.actionResume)
-	s.Handle("report_result", s.actionReportResult)
-	// 用户停手（入口服务的控制面，不是模型工具）：见 hold.go。
-	s.Handle("user_hold", s.actionUserHold)
-	s.Handle("retry", s.actionRetry)
-	// 原生 SPv2.1 method：/spv2 直接解 Frame.Body，不再合成 v1 JumpPayload / Envelope。
-	// 同名 v1 action 保留给 /ws 兼容边缘（见 native.go）。
+	// 原生 SPv2.1 method：/spv2 直接解 Frame.Body，元信息取自帧头（见 native.go）。
 	s.registerNativeMethods()
 	return s
 }
@@ -416,11 +401,7 @@ func (s *Server) setImagesName(v string) {
 
 // ---------- 调试 / 测试动作 ----------
 
-func (s *Server) actionEcho(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.echo(in.Input)
-}
-
-// echo 原样返回输入（所有入口共用的实现）。
+// echo 原样返回输入（原生入口调它）。
 func (s *Server) echo(body []byte) (any, error) {
 	var v any
 	if err := protocol.DecodeRaw(body, &v); err != nil {
@@ -429,13 +410,7 @@ func (s *Server) echo(body []byte) (any, error) {
 	return map[string]any{"who": s.cfg.Name, "echo": v}, nil
 }
 
-// actionDebugJump 替调用方向目标服务发起一次跳转（调试 / 测试用），
-// 支持 to = "self"（自我跳转）或服务名（查名册解析地址）。
-func (s *Server) actionDebugJump(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.debugJump(ctx, env.Trace, in.Input)
-}
-
-// debugJump 执行一次调试跳转；trace 原样传给目标（v1 取信封、原生取 Frame.Work）。
+// debugJump 执行一次调试跳转；trace 原样传给目标（原生取 Frame.Work）。
 func (s *Server) debugJump(ctx context.Context, trace string, body []byte) (any, error) {
 	var req struct {
 		To     string             `msgpack:"to"`
@@ -448,7 +423,7 @@ func (s *Server) debugJump(ctx context.Context, trace string, body []byte) (any,
 	if req.To == "" || req.Action == "" {
 		return nil, errors.New("debug_jump: to 与 action 必填")
 	}
-	data, err := s.Call(ctx, req.To, req.Action, req.Input, trace, "")
+	data, err := s.Call(ctx, req.To, req.Action, req.Input, trace)
 	if err != nil {
 		return nil, err
 	}

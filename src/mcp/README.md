@@ -1,6 +1,6 @@
 ﻿# MCP 服务
 
-> **读者**：要把 SUMP 的能力暴露给外部 MCP 应用、或把外部 MCP 工具接进 SUMP 的人 ｜ **读完能做**：配好能力映射、跑通双向调用与异步补报 ｜ **最后校验**：2026-10-30
+> **读者**：要把 SUMP 的能力暴露给外部 MCP 应用、或把外部 MCP 工具接进 SUMP 的人 ｜ **读完能做**：配好能力映射、跑通双向调用与异步补报 ｜ **最后校验**：2026-11-06
 >
 > 远程入口 / 证书 / 接入检查见 [docs/guides/mcp-connect.md](../../docs/guides/mcp-connect.md)；验收范围见 [docs/archive/mcp-acceptance-2026-10.md](../../docs/archive/mcp-acceptance-2026-10.md)。
 
@@ -17,7 +17,7 @@ MCP 是一个独立的 SUMP 服务，提供双向协议翻译。设置中心只�
                                               │
                                        SUMP files.read
 
-SUMP 调用方 ── WS /ws + MessagePack ──> mcp 的具名动作
+SUMP 调用方 ── WS /spv2 + SPv2.1 Frame ──> mcp 的具名 method
                                               │
                                   导入绑定、Schema 核对、结果转换
                                               │
@@ -53,10 +53,10 @@ MCP 导入动作的 `Provide.Batchable` 保持 `false`。显式导入只允许�
 集成项目的 `scripts/run-local.ps1` 已包含 MCP。单独启动时先运行设置中心，在 `mcp/` 执行：
 
 ```powershell
-go run . -addr 127.0.0.1:9902 -center ws://127.0.0.1:9000/ws -http-addr 127.0.0.1:9903 -config ../data/mcp.json -secret-file ../data/mcp-secret.json
+go run . -addr 127.0.0.1:9902 -center ws://127.0.0.1:9000/spv2 -http-addr 127.0.0.1:9903 -config ../data/mcp.json -secret-file ../data/mcp-secret.json
 ```
 
-默认 HTTP 入口为 `http://127.0.0.1:9903/mcp`，内部入口为 `ws://127.0.0.1:9902/ws`。所有相对路径以进程工作目录为准。配置缺失时不导入、不导出任何工具，外部认证仍强制要求。
+默认 HTTP 入口为 `http://127.0.0.1:9903/mcp`，内部入口为 `ws://127.0.0.1:9902/spv2`。所有相对路径以进程工作目录为准。配置缺失时不导入、不导出任何工具，外部认证仍强制要求。
 
 通过项目**已有设置面板**选择 `mcp`：
 
@@ -88,13 +88,13 @@ go run . -addr 127.0.0.1:9902 -center ws://127.0.0.1:9000/ws -http-addr 127.0.0.
 | --- | --- | --- | --- |
 | `files__read` | `files.read` | `{"id":"已有文件ID","offset?":起始字符,"limit?":本次最多字符}` | `id`、`filename`、`text`、`truncated`、`total`、`next`、`warnings` |
 
-只有 `exports` 包含工具且当前名册的目标动作是 `tool:true`、`async` 与绑定一致时才可见、可调用。`files__read` 是同步动作，`timer__sleep` 是异步动作。客户端不能指定内部 `from/to/boss`。参数必须是对象；拒绝重复键、未知字段、空 ID、负数 `offset`、非正 `limit`、非 UTF-8、过深嵌套及过长 ID。
+只有 `exports` 包含工具且当前名册的目标 method 是 `tool:true`、`async` 与绑定一致时才可见、可调用。`files__read` 是同步 method，`timer__sleep` 是异步 method。客户端不能指定内部 `from/to`。参数必须是对象；拒绝重复键、未知字段、空 ID、负数 `offset`、非正 `limit`、非 UTF-8、过深嵌套及过长 ID。
 
 `offset` 是字符（rune）偏移，`limit` 是本次最多返回的字符数且仍受 files 的 `read_max_chars` 上限约束；省略时从开头读。结果里 `total` 是全文长度，`next` 非 0 表示还有下一块，续读时把 `next` 当 `offset`。`warnings` 非空表示结果不完整（例如某张工作表损坏）；`truncated:true` 而 `next` 缺失或为 0 表示没有可续读的下一块。
 
 入口在每个请求上验证凭据，不创建应用层会话。客户端按新协议发送请求元信息及 `MCP-Protocol-Version`、`Mcp-Method` 等必要头部。无需旧式初始化；不提供旧协议兼容通道。结果标为 `private`、TTL 0，HTTP 使用 `no-store`。
 
-MCP 发出新的原生调用 ID/trace，以 `from=mcp,boss=mcp` 直接调用 files。返回 `CallToolResult`，结构化结果同时提供 JSON 文本。文件文本超限时按 UTF-8 边界裁切，设置 `truncated:true`，并把 `next` 改成“被裁掉的位置”（而不是上游原来的下一块），避免续读跳过中间正文；元数据不能裁切，超限时报错。原服务的 `truncated`、`total`、`warnings` 均保留；`next` 在上游未触发本地裁剪时原样保留。
+MCP 发出新的原生调用 ID/trace，以 `from=mcp` 直接调用 files。返回 `CallToolResult`，结构化结果同时提供 JSON 文本。文件文本超限时按 UTF-8 边界裁切，设置 `truncated:true`，并把 `next` 改成“被裁掉的位置”（而不是上游原来的下一块），避免续读跳过中间正文；元数据不能裁切，超限时报错。原服务的 `truncated`、`total`、`warnings` 均保留；`next` 在上游未触发本地裁剪时原样保留。
 
 参数或权限拒绝返回 `isError:true`；派发后超时或无法确认结果，明确返回结果未知，不自动重发。撤销在本地准入前生效；准入后的调用可能继续抵达原服务，不能据此宣称远端已停止。
 
@@ -152,7 +152,7 @@ jump.input = MessagePack({"query":"天气工具"})
 
 后台工作使用服务生命周期和 `-async-timeout`，不依赖已返回的入站请求 Context。目录和 Schema 核对仍在真正调用前完成；远端不可用、契约变化等可以在受理后以失败补报返回。工具调用最多派发一次。
 
-原生最终补报沿原 `from/trace/boss` 返回，使用现有 `report_result`：
+原生最终补报沿原 `from/work` 返回，使用现有 `report_result`：
 
 ```text
 item_id = 回执句柄

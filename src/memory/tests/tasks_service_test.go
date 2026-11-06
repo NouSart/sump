@@ -12,7 +12,7 @@ import (
 )
 
 // taskResult 解一个单任务回执。
-func taskResult(t *testing.T, rp protocol.ResponsePayload) protocol.TaskResult {
+func taskResult(t *testing.T, rp callResult) protocol.TaskResult {
 	t.Helper()
 	var out protocol.TaskResult
 	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {

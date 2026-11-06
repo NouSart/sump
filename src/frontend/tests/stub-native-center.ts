@@ -1,5 +1,5 @@
 // StubNativeCenter：测试用假设置中心（原生 SPv2 /spv2 控制面）。
-// 覆盖 register call / heartbeat event / roster & settings event / list_settings call；
+// 覆盖 register call / heartbeat event / roster & settings event / 设置控制面 call；
 // 帧形状与 src/settings-center/server/native.go 的实现对齐。
 import { decode, encode } from '@msgpack/msgpack';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
@@ -17,13 +17,28 @@ export class StubNativeCenter {
   calls: { method: string; input: unknown; from: string }[] = [];
   roster: { services: unknown[]; revision: number } = { services: [], revision: 1 };
   settingsReply: { services: unknown[] } = { services: [] };
+  /** 非空时 set_setting 回这个错误：验证 API 把中心拒绝映射成 400。 */
+  setError = '';
+  /** 非空时 register 一律回错误：验证“注册不上会长退避重试”而不是死循环刷屏。 */
+  registerError = '';
+  /** true 时拒绝所有握手：验证“拨号失败会退避重试”。 */
+  down = false;
+  /** 握手尝试次数（含被拒的）。 */
+  attempts = 0;
 
   private wss: WebSocketServer | null = null;
   private readonly conns = new Map<WebSocket, { kind: string; id: string }>();
   private url = '';
 
   async start(): Promise<string> {
-    const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    const wss = new WebSocketServer({
+      port: 0,
+      host: '127.0.0.1',
+      verifyClient: () => {
+        this.attempts++;
+        return !this.down;
+      },
+    });
     this.wss = wss;
     wss.on('connection', (ws) => {
       ws.on('close', () => this.conns.delete(ws));
@@ -31,7 +46,7 @@ export class StubNativeCenter {
     });
     await new Promise<void>((resolve) => wss.once('listening', () => resolve()));
     const address = wss.address() as { port: number };
-    this.url = `ws://127.0.0.1:${address.port}/ws`;
+    this.url = `ws://127.0.0.1:${address.port}/spv2`;
     return this.url;
   }
 
@@ -97,12 +112,34 @@ export class StubNativeCenter {
     if (method === 'register') {
       const reg = (input as Record<string, unknown> | undefined) ?? {};
       this.registrations.push(reg);
+      if (this.registerError !== '') {
+        this.replyError(ws, frame, this.registerError);
+        return;
+      }
       this.conns.set(ws, frame.from);
       this.reply(ws, frame, this.roster);
       return;
     }
     if (method === 'list_settings') {
       this.reply(ws, frame, this.settingsReply);
+      return;
+    }
+    if (method === 'set_setting') {
+      if (this.setError !== '') {
+        this.replyError(ws, frame, this.setError);
+        return;
+      }
+      const p = input as { service: string; key: string; value: string };
+      this.reply(ws, frame, {
+        services: [{ service: p.service, settings: [{ key: p.key, value: p.value, default: '', overridden: true }] }],
+      });
+      return;
+    }
+    if (method === 'reset_setting') {
+      const p = input as { service: string; key: string };
+      this.reply(ws, frame, {
+        services: [{ service: p.service, settings: [{ key: p.key, value: 'd', default: 'd', overridden: false }] }],
+      });
       return;
     }
     this.replyError(ws, frame, `unknown method: ${method}`);

@@ -29,7 +29,7 @@ func TestCapabilitiesActionOverWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = c.Shutdown() })
-	centerURL := "ws://" + c.Addr() + "/ws"
+	centerURL := "ws://" + c.Addr() + "/spv2"
 
 	e, err := engine.New(analysis.Bash{}, policy.DefaultJSON)
 	if err != nil {
@@ -53,7 +53,7 @@ func TestCapabilitiesActionOverWire(t *testing.T) {
 	}
 	t.Cleanup(client.Shutdown)
 
-	raw, err := client.Call(ctx, "approval", "capabilities", map[string]any{}, "trace-cap", "observer")
+	raw, err := client.Call(ctx, "approval", "capabilities", map[string]any{}, "trace-cap")
 	if err != nil {
 		t.Fatalf("capabilities 经动作入口调用失败: %v", err)
 	}

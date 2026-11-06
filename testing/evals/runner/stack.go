@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
-	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,9 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // BuildBinaries 把需要的服务编译到 outDir，返回 服务名 → 二进制路径。
@@ -72,12 +71,16 @@ func BuildBinariesCached(repoRoot string, outDir string, names []string, force b
 }
 
 // sourceFingerprint 把"这个服务可能依赖到的 Go 源码"折成一个哈希：
-// 服务目录 + protocol + service 三个目录下的全部 .go 文件（内容 + 相对路径）。
+// 服务目录 + protocol + spv2 + service 四个目录下的全部 .go 文件（内容 + 相对路径）。
+// 源码在 src/ 下；兼容直接在根目录放包的临时树（测试用）。
 func sourceFingerprint(repoRoot, name string) (string, error) {
-	dirs := []string{
-		filepath.Join(repoRoot, name),
-		filepath.Join(repoRoot, "protocol"),
-		filepath.Join(repoRoot, "service"),
+	var dirs []string
+	for _, dir := range []string{name, "protocol", "spv2", "service"} {
+		p := filepath.Join(repoRoot, "src", dir)
+		if _, err := os.Stat(p); err != nil {
+			p = filepath.Join(repoRoot, dir)
+		}
+		dirs = append(dirs, p)
 	}
 	h := sha256.New()
 	for _, dir := range dirs {
@@ -174,7 +177,7 @@ type Stack struct {
 	policy  string
 	logf    func(string, ...any)
 	procs   []*proc
-	clients []*protocol.Client
+	clients []*spv2.Client
 
 	CenterURL   string
 	MemoryURL   string
@@ -226,7 +229,7 @@ func StartStack(opts StackOptions) (*Stack, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.CenterURL = fmt.Sprintf("ws://127.0.0.1:%d/ws", centerPort)
+	s.CenterURL = fmt.Sprintf("ws://127.0.0.1:%d/spv2", centerPort)
 	if _, err := s.start("settings-center", "-addr", fmt.Sprintf("127.0.0.1:%d", centerPort), "-settings", ""); err != nil {
 		return nil, err
 	}
@@ -244,7 +247,7 @@ func StartStack(opts StackOptions) (*Stack, error) {
 		// 故意的"依赖缺席"：不起 memory，reasoner 会在入口就停住。
 		s.logf("按配置不启动 memory（依赖缺席故障）")
 	} else {
-		s.MemoryURL = fmt.Sprintf("ws://127.0.0.1:%d/ws", memPort)
+		s.MemoryURL = fmt.Sprintf("ws://127.0.0.1:%d/spv2", memPort)
 		if _, err := s.start("memory",
 			"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
 			"-center", s.CenterURL,
@@ -275,7 +278,7 @@ func StartStack(opts StackOptions) (*Stack, error) {
 		s.Close()
 		return nil, err
 	}
-	s.ReasonerURL = fmt.Sprintf("ws://127.0.0.1:%d/ws", rsPort)
+	s.ReasonerURL = fmt.Sprintf("ws://127.0.0.1:%d/spv2", rsPort)
 	if _, err := s.start("reasoner",
 		"-addr", fmt.Sprintf("127.0.0.1:%d", rsPort),
 		"-center", s.CenterURL,
@@ -300,7 +303,7 @@ func StartStack(opts StackOptions) (*Stack, error) {
 		}
 	}
 
-	obs, err := protocol.Dial(s.CenterURL, nil)
+	obs, err := spv2.Dial(context.Background(), s.CenterURL)
 	if err != nil {
 		s.Close()
 		return nil, err
@@ -421,7 +424,7 @@ func splitSettingKey(k string) (service, key string, err error) {
 // 键的格式是 `<服务名>.<设置项>`（例如 `approval.auto_approve`）——
 // 设置项归服务所有，不给服务名就不知道该推给谁。
 func (s *Stack) applySettings(kv map[string]string) error {
-	cli, err := protocol.Dial(s.CenterURL, nil)
+	cli, err := spv2.Dial(context.Background(), s.CenterURL)
 	if err != nil {
 		return err
 	}
@@ -431,26 +434,20 @@ func (s *Stack) applySettings(kv map[string]string) error {
 		if err != nil {
 			return err
 		}
-		raw, err := protocol.EncodePayload(protocol.SetSettingPayload{Service: svc, Key: key, Value: v})
-		if err != nil {
-			return err
-		}
-		env, err := protocol.NewEnvelope(protocol.TypeJump, "eval", "settings-center", "", protocol.JumpPayload{Action: "set_setting", Input: raw})
+		call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef("eval"), spv2.ServiceRef("settings-center"), "set_setting",
+			protocol.SetSettingPayload{Service: svc, Key: key, Value: v})
 		if err != nil {
 			return err
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		resp, err := cli.Call(ctx, env)
+		var res protocol.SettingsResult
+		err = cli.CallDecode(ctx, call, &res)
 		cancel()
 		if err != nil {
 			return fmt.Errorf("下发设置 %s 失败: %w", k, err)
 		}
-		var rp protocol.ResponsePayload
-		if err := resp.DecodePayload(&rp); err != nil {
-			return err
-		}
-		if !rp.OK {
-			return fmt.Errorf("下发设置 %s 被拒: %s", k, rp.Error)
+		if len(res.Services) != 1 || res.Services[0].Service != svc {
+			return fmt.Errorf("下发设置 %s 的回执不符: %+v", k, res)
 		}
 		s.logf("设置 %s=%s 已下发", k, v)
 	}
@@ -483,7 +480,7 @@ func waitWS(url string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var last error
 	for time.Now().Before(deadline) {
-		c, err := protocol.Dial(url, nil)
+		c, err := spv2.Dial(context.Background(), url)
 		if err == nil {
 			_ = c.Close()
 			return nil
@@ -494,29 +491,23 @@ func waitWS(url string, timeout time.Duration) error {
 	return last
 }
 
-func waitRoster(obs *protocol.Client, name string, timeout time.Duration) error {
+func waitRoster(obs *spv2.Client, name string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		raw, _ := protocol.EncodePayload(nil)
-		env, err := protocol.NewEnvelope(protocol.TypeJump, "eval", "settings-center", "", protocol.JumpPayload{Action: "roster", Input: raw})
+		call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef("eval"), spv2.ServiceRef("settings-center"), "roster", nil)
+		var roster protocol.RosterPayload
 		if err == nil {
-			if resp, err := obs.Call(ctx, env); err == nil {
-				var rp protocol.ResponsePayload
-				if err := resp.DecodePayload(&rp); err == nil && rp.OK {
-					var r protocol.RosterPayload
-					if err := protocol.DecodeRaw(rp.Data, &r); err == nil {
-						for _, svc := range r.Services {
-							if svc.Name == name {
-								cancel()
-								return nil
-							}
-						}
-					}
+			err = obs.CallDecode(ctx, call, &roster)
+		}
+		cancel()
+		if err == nil {
+			for _, svc := range roster.Services {
+				if svc.Name == name {
+					return nil
 				}
 			}
 		}
-		cancel()
 		time.Sleep(250 * time.Millisecond)
 	}
 	return fmt.Errorf("名册里等不到 %s", name)
@@ -524,32 +515,52 @@ func waitRoster(obs *protocol.Client, name string, timeout time.Duration) error 
 
 // ---------- boss 替身 ----------
 
-var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-
-// bossServer 扮演「入口方」：接收 deliver，把文本交给评测器。
+// bossServer 扮演「入口方」：接收 deliver，把文本交给评测器；progress 只回执。
 type bossServer struct {
-	ln        net.Listener
-	srv       *http.Server
+	http      *httptest.Server
 	mu        sync.Mutex
 	delivered []string
 }
 
 func startBoss() (*bossServer, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "eval-boss", Actor: spv2.ServiceRef("eval-boss"),
+		Version: "eval-boss/1", Description: "评测器扮演的入口方",
+		Methods: []spv2.Method{
+			{Name: "deliver", Shape: spv2.ShapeCall},
+			{Name: "progress", Shape: spv2.ShapeCall},
+		},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	})
 	if err != nil {
 		return nil, err
 	}
-	b := &bossServer{ln: ln}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", b.handleWS)
-	b.srv = &http.Server{Handler: mux}
-	go func() { _ = b.srv.Serve(ln) }()
+	b := &bossServer{}
+	srv.Handle("deliver", func(_ context.Context, call *spv2.Call) error {
+		var p struct {
+			Text string `msgpack:"text"`
+		}
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		b.mu.Lock()
+		b.delivered = append(b.delivered, p.Text)
+		b.mu.Unlock()
+		return call.Reply(map[string]any{"ok": true})
+	})
+	// 实况不是评测事实，但推理侧等回执；收下即确认，免得记成未送达。
+	srv.Handle("progress", func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]any{"ok": true})
+	})
+	b.http = httptest.NewServer(srv.Handler())
 	return b, nil
 }
 
-func (b *bossServer) URL() string { return "ws://" + b.ln.Addr().String() + "/ws" }
+func (b *bossServer) URL() string {
+	return "ws" + strings.TrimPrefix(b.http.URL, "http") + "/spv2"
+}
 
-func (b *bossServer) Close() { _ = b.srv.Close() }
+func (b *bossServer) Close() { b.http.Close() }
 
 // Delivered 返回收到的交付文本。
 func (b *bossServer) Delivered() []string {
@@ -567,74 +578,27 @@ func (b *bossServer) Reset() {
 	b.delivered = nil
 }
 
-func (b *bossServer) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		if env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action != "deliver" {
-			continue
-		}
-		var p struct {
-			Text string `msgpack:"text"`
-		}
-		_ = protocol.DecodeRaw(jp.Input, &p)
-		b.mu.Lock()
-		b.delivered = append(b.delivered, p.Text)
-		b.mu.Unlock()
-
-		resp, _ := protocol.NewResponse(env, "eval-boss", protocol.ResponsePayload{OK: true})
-		if raw, err := protocol.Marshal(resp); err == nil {
-			_ = ws.WriteMessage(websocket.BinaryMessage, raw)
-		}
-	}
-}
-
 func registerBoss(centerURL, bossURL string) error {
-	c, err := protocol.Dial(centerURL, nil)
+	c, err := spv2.Dial(context.Background(), centerURL)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, "eval-boss", "settings-center", "", protocol.RegisterPayload{
+	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef("eval-boss"), spv2.ServiceRef("settings-center"), "register", protocol.RegisterPayload{
 		Name:        "eval-boss",
 		Addr:        bossURL,
 		Title:       "评测入口",
 		Description: "评测器扮演的入口方",
-		Provides:    []protocol.Provide{{Action: "deliver", Input: "{text}", Output: "回执"}},
+		Provides:    []protocol.Provide{{Action: "deliver", Input: "{text}", Output: "回执"}, {Action: "progress", Input: "{conversation_id,seq,kind,content}", Output: "回执"}},
 	})
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		return err
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		return err
-	}
-	if !rp.OK {
-		return fmt.Errorf("boss 注册失败: %s", rp.Error)
+	var roster protocol.RosterPayload
+	if err := c.CallDecode(ctx, call, &roster); err != nil {
+		return fmt.Errorf("boss 注册失败: %w", err)
 	}
 	return nil
 }
@@ -657,69 +621,50 @@ func (s *Stack) HasMemory() bool { return s.MemoryURL != "" }
 
 // History 拉取整个会话的记录（含轨迹）。
 func (s *Stack) History(conversationID string) ([]HistoryEntry, error) {
-	c, err := protocol.Dial(s.MemoryURL, nil)
+	c, err := spv2.Dial(context.Background(), s.MemoryURL)
 	if err != nil {
 		return nil, err
 	}
 	defer c.Close()
-	raw, err := protocol.EncodePayload(protocol.HistoryPayload{ConversationID: conversationID, AllTasks: true, Limit: 500})
-	if err != nil {
-		return nil, err
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "eval", "memory", "", protocol.JumpPayload{Action: "history", Input: raw})
+	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef("eval"), spv2.ServiceRef("memory"), "history",
+		protocol.HistoryPayload{ConversationID: conversationID, AllTasks: true, Limit: 500})
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		return nil, err
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		return nil, err
-	}
-	if !rp.OK {
-		return nil, fmt.Errorf("history 失败: %s", rp.Error)
-	}
 	var out struct {
 		Messages []HistoryEntry `msgpack:"messages"`
 	}
-	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
-		return nil, err
+	if err := c.CallDecode(ctx, call, &out); err != nil {
+		return nil, fmt.Errorf("history 失败: %w", err)
 	}
 	return out.Messages, nil
 }
 
 // Send 向 reasoner 发一条用户消息（评测的入口动作）。
+// SPv2 没有 boss 字段：发件方（from.id）就是结果归属方，所以这里用 eval-boss 身份发起。
 func (s *Stack) Send(conversationID, text string) error {
-	c, err := protocol.Dial(s.ReasonerURL, nil)
+	c, err := spv2.Dial(context.Background(), s.ReasonerURL)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	raw, err := protocol.EncodePayload(map[string]any{"text": text, "conversation_id": conversationID})
+	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef("eval-boss"), spv2.ServiceRef("reasoner"), "user_message",
+		map[string]any{"text": text, "conversation_id": conversationID})
 	if err != nil {
 		return err
 	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "eval", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		return err
-	}
-	env.Boss = "eval-boss"
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		return err
+	var out struct {
+		Status string `msgpack:"status"`
 	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		return err
+	if err := c.CallDecode(ctx, call, &out); err != nil {
+		return fmt.Errorf("user_message 未被受理: %w", err)
 	}
-	if !rp.OK {
-		return fmt.Errorf("user_message 未被受理: %s", rp.Error)
+	if out.Status == "" {
+		return fmt.Errorf("user_message 未被受理: 回执缺少 status")
 	}
 	return nil
 }

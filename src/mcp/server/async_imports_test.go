@@ -15,39 +15,39 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type receivedImportReport struct {
-	env    protocol.Envelope
+	frame  spv2.Frame
 	result protocol.AsyncResultPayload
 }
 
 func asyncImportGateway(t *testing.T, endpoint string, cfg Config) (*Server, <-chan receivedImportReport) {
 	t.Helper()
 	reports := make(chan receivedImportReport, 16)
-	caller := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
-		var jump protocol.JumpPayload
-		if err := env.DecodePayload(&jump); err != nil || jump.Action != "report_result" {
+	caller := newNativePeer(t, "reasoner", []string{"report_result"}, func(call *spv2.Call) (any, error) {
+		if call.Frame.Method != "report_result" {
 			return nil, errors.New("expected report_result")
 		}
 		var result protocol.AsyncResultPayload
-		if err := protocol.DecodeRaw(jump.Input, &result); err != nil {
+		if err := call.Frame.DecodeBody(&result); err != nil {
 			return nil, err
 		}
-		reports <- receivedImportReport{env: env, result: result}
+		reports <- receivedImportReport{frame: call.Frame, result: result}
 		return map[string]any{"received": true}, nil
 	})
 	c := lookupImport()
 	c.Async = true
 	policy, _ := json.Marshal(exportPolicy{Exports: []string{}, Remotes: []RemoteConfig{{ID: "demo", URL: endpoint}}, Imports: []ImportConfig{c}})
-	s := startGateway(t, cfg, []protocol.ServiceCard{{Name: "reasoner", Addr: caller}}, string(policy))
+	s := startGateway(t, cfg, []protocol.ServiceCard{{Name: "reasoner", Addr: caller.URL()}}, string(policy))
 	return s, reports
 }
 
 func submitAsyncImport(s *Server, ctx context.Context, key any) (importReceipt, error) {
 	raw, _ := protocol.EncodePayload(map[string]any{"key": key})
-	result, err := s.handleImport(ctx, protocol.Envelope{From: "reasoner", To: "mcp", Trace: "shared-trace", Boss: "portal"}, protocol.JumpPayload{Action: "remote_lookup", Input: raw})
+	result, err := s.importCall(ctx, "remote_lookup", raw, "reasoner", "shared-trace")
 	if err != nil {
 		return importReceipt{}, err
 	}
@@ -62,8 +62,9 @@ func receiveImportReport(t *testing.T, reports <-chan receivedImportReport) rece
 	t.Helper()
 	select {
 	case report := <-reports:
-		if report.env.From != "mcp" || report.env.To != "reasoner" || report.env.Trace != "shared-trace" || report.env.Boss != "portal" {
-			t.Fatalf("report lost routing association: %+v", report.env)
+		// 原生帧没有独立的 boss 字段：投递目标是调用方，来源是 mcp 自己。
+		if report.frame.From.ID != "mcp" || report.frame.To.ID != "reasoner" || report.frame.Work != "shared-trace" {
+			t.Fatalf("report lost routing association: %+v", report.frame)
 		}
 		if !report.result.Final || report.result.Text == "" {
 			t.Fatalf("report lacks readable final result: %+v", report.result)
@@ -209,7 +210,7 @@ func TestAsyncImportsCancellationIsOwnerScopedAndNotRemoteStop(t *testing.T) {
 	raw, _ := protocol.EncodePayload(map[string]any{"item_id": receipt.ItemID})
 	cancelCall := func(from string) map[string]any {
 		t.Helper()
-		out, err := s.handleCancelImport(t.Context(), protocol.Envelope{From: from}, protocol.JumpPayload{Input: raw})
+		out, err := s.cancelImport(raw, from)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -278,17 +279,16 @@ func TestPreparedImportsReserveBeforeAcceptanceAndDoNotReplay(t *testing.T) {
 	})
 	i := newTestImports(t, remote.URL, time.Second, 16384, nil)
 	raw, _ := protocol.EncodePayload(map[string]any{"key": "x"})
-	input := protocol.JumpPayload{Action: "remote_lookup", Input: raw}
 	var prepared []*preparedImport
 	for n := 0; n < 4; n++ {
-		p, err := i.Prepare(input)
+		p, err := i.PrepareBody("remote_lookup", raw)
 		if err != nil {
 			t.Fatal(err)
 		}
 		prepared = append(prepared, p)
 		defer p.Close()
 	}
-	if _, err := i.Prepare(input); err == nil {
+	if _, err := i.PrepareBody("remote_lookup", raw); err == nil {
 		t.Fatal("remote capacity not reserved before acceptance")
 	}
 	if calls.Load() != 0 {
@@ -302,7 +302,7 @@ func TestPreparedImportsReserveBeforeAcceptanceAndDoNotReplay(t *testing.T) {
 	}
 	prepared[0].Close()
 	prepared[0].Close()
-	p, err := i.Prepare(input)
+	p, err := i.PrepareBody("remote_lookup", raw)
 	if err != nil {
 		t.Fatal("reservation was not released", err)
 	}
@@ -356,9 +356,8 @@ func TestAsyncImportsDeliveryFailureReportsWithoutReplayingBusiness(t *testing.T
 				executions.Add(1)
 				return &mcp.CallToolResult{StructuredContent: map[string]any{"value": "executed"}}, nil
 			})
-			caller := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
-				var jump protocol.JumpPayload
-				if err := env.DecodePayload(&jump); err != nil || jump.Action != "report_result" {
+			caller := newNativePeer(t, "reasoner", []string{"report_result"}, func(call *spv2.Call) (any, error) {
+				if call.Frame.Method != "report_result" {
 					return nil, errors.New("expected final report")
 				}
 				deliveries.Add(1)
@@ -374,19 +373,16 @@ func TestAsyncImportsDeliveryFailureReportsWithoutReplayingBusiness(t *testing.T
 				}
 			})
 			failures := make(chan protocol.ReportPayload, 4)
-			center := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
-				if env.Type == protocol.TypeRegister {
-					return protocol.RosterPayload{Services: []protocol.ServiceCard{{Name: "reasoner", Addr: caller}}, Revision: 1}, nil
-				}
-				var jump protocol.JumpPayload
-				if env.Type == protocol.TypeJump && env.DecodePayload(&jump) == nil && jump.Action == "report" {
+			center := newNativePeer(t, "settings-center", []string{"register", "report"}, func(call *spv2.Call) (any, error) {
+				if call.Frame.Method == "report" {
 					var report protocol.ReportPayload
-					if err := protocol.DecodeRaw(jump.Input, &report); err != nil {
+					if err := call.Frame.DecodeBody(&report); err != nil {
 						return nil, err
 					}
 					failures <- report
+					return map[string]any{"ok": true}, nil
 				}
-				return protocol.SettingsResult{}, nil
+				return protocol.RosterPayload{Services: []protocol.ServiceCard{{Name: "reasoner", Addr: caller.URL()}}, Revision: 1}, nil
 			})
 			dir := t.TempDir()
 			c := lookupImport()
@@ -396,7 +392,7 @@ func TestAsyncImportsDeliveryFailureReportsWithoutReplayingBusiness(t *testing.T
 			if err := os.WriteFile(policyPath, policy, 0600); err != nil {
 				t.Fatal(err)
 			}
-			s, err := New(Config{Listen: "127.0.0.1:0", Center: center, HTTP: HTTPOptions{Listen: "127.0.0.1:0"}, ConfigPath: policyPath, SecretFile: filepath.Join(dir, "secrets.json"), Logger: log.New(io.Discard, "", 0), DeliveryTimeout: time.Second})
+			s, err := New(Config{Listen: "127.0.0.1:0", Center: center.URL(), HTTP: HTTPOptions{Listen: "127.0.0.1:0"}, ConfigPath: policyPath, SecretFile: filepath.Join(dir, "secrets.json"), Logger: log.New(io.Discard, "", 0), DeliveryTimeout: time.Second})
 			if err != nil {
 				t.Fatal(err)
 			}

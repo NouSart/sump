@@ -15,6 +15,7 @@ import (
 
 	"github.com/NouSart/sump/memory/compose"
 	"github.com/NouSart/sump/memory/longterm"
+	"github.com/NouSart/sump/memory/redact"
 	"github.com/NouSart/sump/memory/shared"
 	"github.com/NouSart/sump/memory/store"
 	"github.com/NouSart/sump/protocol"
@@ -135,7 +136,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "shared_sessions", Tool: true, Input: "{limit?, exclude?, query?}（别的会话在做什么的摘要；看不到它们的对话）", Output: "{sessions:[{entry, title, tasks:[{title, goal, outcome, capabilities, created_at}]}]}"},
 			{Action: "shared_forget", Input: "{session_id?, task_id?}（删共享物；不暴露给模型）", Output: "{sessions, tasks}"},
 			{Action: "conversation_open", Input: "{id, title?, entry?}（幂等建会话；不暴露给模型）", Output: "{conversation}"},
-			{Action: "conversation_archive", Input: "{id, archived}（归档 = 只读；不暴露给模型）", Output: "{conversation}"},
+			{Action: "conversation_archive", Input: "{id, archived}（归档 = 不进默认列表，不拦写入；不暴露给模型）", Output: "{conversation}"},
 			// 任务面：reasoner 与门户按名字调用这些（`task_finish` / `task_resume` 就在交付与恢复路径上）。
 			// 不声明它们的后果是"协议面看不到"：第三方按名册实现 memory 时，永远不知道要实现它们。
 			{Action: "task_current", Input: "{conversation_id}", Output: "{task?}（最近活跃的 active 任务；没有就是空）"},
@@ -214,31 +215,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Hint("相关记忆太多会挤占对话空间，这里卡一个总字数"),
 		service.As("number"),
 		service.Unit("chars"))
-	s.Handle("recall", s.actionRecall)
-	s.Handle("store", s.actionStore)
-	s.Handle("history", s.actionHistory)
-	s.Handle("conversation_list", s.actionConversationList)
-	s.Handle("conversation_rename", s.actionConversationRename)
-	s.Handle("note", s.actionNote)
-	s.Handle("dig", s.actionDig)
-	s.Handle("lineheads", s.actionLineHeads)
-	s.Handle("prune", s.actionNetPrune)
-	s.Handle("remember", s.actionRemember)
-	s.Handle("forget", s.actionForget)
-	// 共享经验库：跨会话只共享提炼物（另一个库文件；会话流水不在这里）。
-	s.Handle("publish_session", s.actionPublishSession)
-	s.Handle("shared_sessions", s.actionSharedSessions)
-	s.Handle("shared_forget", s.actionSharedForget)
-	s.Handle("conversation_open", s.actionConversationOpen)
-	s.Handle("conversation_archive", s.actionConversationArchive)
-	// 任务：会话的结构（agent 在任务里工作；没有任务就没有上下文可取）。
-	s.Handle("task_current", s.actionTaskCurrent)
-	s.Handle("task_open", s.actionTaskOpen)
-	s.Handle("task_finish", s.actionTaskFinish)
-	s.Handle("task_resume", s.actionTaskResume)
-	s.Handle("task_rename", s.actionTaskRename)
-	s.Handle("task_list", s.actionTaskList)
-	// 同名动作的 SPv2.1 原生入口（/spv2 直接解 body，不再合成 v1 信封）。
+	// 全部动作的 SPv2.1 原生入口（/spv2 直接解 body）。
 	s.registerNative()
 	// embedding 服务名：热改（空 = 关闭语义召回，静默回落 bigram）。
 	s.HandleSetting("recall.embedding", cfg.Embedding, func(v string) error {
@@ -303,21 +280,16 @@ func (s *Server) limits() (history, core, coreChars, rel, relChars int) {
 
 // ---------- 动作 ----------
 
-// callMeta 是动作需要的调用元信息：v1 从信封取，SPv2 从帧取，
-// 共享实现不依赖任何一种包装。
+// callMeta 是动作需要的调用元信息：SPv2 从帧取，
+// 共享实现不依赖包装。
 type callMeta struct {
 	from  string // 调用方（长期记忆来源 / recall 回发目标）
 	trace string // 链路 id
 }
 
-// actionStore 记一条会话记录（对话消息幂等：与上一条完全相同时跳过）。
+// store 记一条会话记录（对话消息幂等：与上一条完全相同时跳过）。
 // Kind 为空按 Role 推断；新类型（reasoning/tool_call/tool_result）不去重也不进 LLM 上下文。
 // 记录必须归属某个任务：调用方没给就归到当前进行中的任务（没有就现建一个）。
-func (s *Server) actionStore(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.store(in.Input)
-}
-
-// store 记一条会话记录（v1 / SPv2 共用）。
 func (s *Server) store(body []byte) (any, error) {
 	var p protocol.StorePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -375,13 +347,8 @@ func taskNameFrom(text string) string {
 	return name
 }
 
-// actionHistory 把某会话最近的记录原样交还（界面回填用：不做记忆组装、不碰长期记忆、不改上下文）。
+// history 把某会话最近的记录原样交还（界面回填用：不做记忆组装、不碰长期记忆、不改上下文）。
 // TaskID 为空时给"当前任务"的记录；连进行中的任务都没有时退回最近一个任务。
-func (s *Server) actionHistory(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.history(in.Input)
-}
-
-// history 把某会话最近的记录原样交还（v1 / SPv2 共用）。
 func (s *Server) history(body []byte) (any, error) {
 	var p protocol.HistoryPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -413,13 +380,8 @@ func (s *Server) history(body []byte) (any, error) {
 	return protocol.HistoryResult{ConversationID: cid, Messages: msgs}, nil
 }
 
-// actionConversationList 列会话（给门户的历史记录页分行）。
+// conversationList 列会话（给门户的历史记录页分行）。
 // 不暴露给模型：这是界面导航，不是模型该自己调的决策。
-func (s *Server) actionConversationList(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.conversationList(in.Input)
-}
-
-// conversationList 列会话（v1 / SPv2 共用）。
 func (s *Server) conversationList(body []byte) (any, error) {
 	var p protocol.ConversationListPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -432,12 +394,7 @@ func (s *Server) conversationList(body []byte) (any, error) {
 	return protocol.ConversationListResult{Conversations: list}, nil
 }
 
-// actionConversationRename 改会话名（空标题 = 清掉名字）。不暴露给模型：起名是人的事。
-func (s *Server) actionConversationRename(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.conversationRename(in.Input)
-}
-
-// conversationRename 改会话名（v1 / SPv2 共用）。
+// conversationRename 改会话名（空标题 = 清掉名字）。不暴露给模型：起名是人的事。
 func (s *Server) conversationRename(body []byte) (any, error) {
 	var p protocol.ConversationRenamePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -452,12 +409,7 @@ func (s *Server) conversationRename(body []byte) (any, error) {
 
 // ---------- 任务 ----------
 
-// actionTaskCurrent 取当前任务（没有就返回 nil——调用方据此决定要不要建）。
-func (s *Server) actionTaskCurrent(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.taskCurrent(in.Input)
-}
-
-// taskCurrent 取当前任务（v1 / SPv2 共用）。
+// taskCurrent 取当前任务（没有就返回 nil——调用方据此决定要不要建）。
 func (s *Server) taskCurrent(body []byte) (any, error) {
 	var p protocol.TaskCurrentPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -477,12 +429,7 @@ func (s *Server) taskCurrent(body []byte) (any, error) {
 	return protocol.TaskResult{Task: &t}, nil
 }
 
-// actionTaskOpen 新开一个进行中的任务。
-func (s *Server) actionTaskOpen(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.taskOpen(in.Input)
-}
-
-// taskOpen 新开一个进行中的任务（v1 / SPv2 共用）。
+// taskOpen 新开一个进行中的任务。
 func (s *Server) taskOpen(body []byte) (any, error) {
 	var p protocol.TaskOpenPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -500,12 +447,7 @@ func (s *Server) taskOpen(body []byte) (any, error) {
 	return protocol.TaskResult{Task: &t}, nil
 }
 
-// actionTaskFinish 完结任务（判定权在 reasoner，这里只记账）。
-func (s *Server) actionTaskFinish(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.taskFinish(in.Input)
-}
-
-// taskFinish 完结任务（v1 / SPv2 共用）。
+// taskFinish 完结任务（判定权在 reasoner，这里只记账）。
 func (s *Server) taskFinish(body []byte) (any, error) {
 	var p protocol.TaskFinishPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -522,12 +464,7 @@ func (s *Server) taskFinish(body []byte) (any, error) {
 	return protocol.TaskResult{Task: &t}, nil
 }
 
-// actionTaskResume 恢复一个未完结任务：顶成当前任务，并把它这一段的记录一并带走。
-func (s *Server) actionTaskResume(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.taskResume(in.Input)
-}
-
-// taskResume 恢复一个未完结任务（v1 / SPv2 共用）。
+// taskResume 恢复一个未完结任务：顶成当前任务，并把它这一段的记录一并带走。
 func (s *Server) taskResume(body []byte) (any, error) {
 	var p protocol.TaskResumePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -555,12 +492,7 @@ func (s *Server) taskResume(body []byte) (any, error) {
 	return protocol.TaskResumeResult{Task: t, Messages: msgs}, nil
 }
 
-// actionTaskRename 改任务名（判定时顺手把标题写准；不改状态）。
-func (s *Server) actionTaskRename(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.taskRename(in.Input)
-}
-
-// taskRename 改任务名（v1 / SPv2 共用）。
+// taskRename 改任务名（判定时顺手把标题写准；不改状态）。
 func (s *Server) taskRename(body []byte) (any, error) {
 	var p protocol.TaskRenamePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -577,12 +509,7 @@ func (s *Server) taskRename(body []byte) (any, error) {
 	return protocol.TaskResult{Task: &t}, nil
 }
 
-// actionTaskList 列出会话的任务（最近活跃在前）。
-func (s *Server) actionTaskList(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.taskList(in.Input)
-}
-
-// taskList 列出会话的任务（v1 / SPv2 共用）。
+// taskList 列出会话的任务（最近活跃在前）。
 func (s *Server) taskList(body []byte) (any, error) {
 	var p protocol.TaskListPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -602,13 +529,8 @@ func (s *Server) taskList(body []byte) (any, error) {
 // nowFunc 统一取时间：便于测试替换（经验网的遗忘曲线全看它）。
 var nowFunc = time.Now
 
-// actionRemember 写一条长期记忆（内容重复时幂等跳过）；来源记调用方服务名。
+// remember 写一条长期记忆（内容重复时幂等跳过）；来源记调用方服务名。
 // 新建条目顺带算一次向量（派生数据；失败仅记日志——召回时会懒补齐）。
-func (s *Server) actionRemember(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.remember(ctx, in.Input, callMeta{from: env.From, trace: env.Trace})
-}
-
-// remember 写一条长期记忆（v1 / SPv2 共用）。
 func (s *Server) remember(ctx context.Context, body []byte, meta callMeta) (any, error) {
 	var p protocol.RememberPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -617,12 +539,16 @@ func (s *Server) remember(ctx context.Context, body []byte, meta callMeta) (any,
 	if s.longterm() == nil {
 		return nil, errors.New("长期记忆未启用")
 	}
-	id, created, err := s.longterm().Add(p.Kind, p.Content, p.Priority, p.ConversationID, meta.from)
+	// 向量算的是"库里那行字"：Add 会在写入边界脱敏，这里先脱敏一次拿到同一份文本，
+	// 免得当场算的对应原文、懒补齐算的对应掩码（Text 可重复作用）。
+	content := redact.Text(p.Content)
+	id, created, err := s.longterm().Add(p.Kind, content, p.Priority, p.ConversationID, meta.from)
 	if err != nil {
 		return nil, fmt.Errorf("remember: %w", err)
 	}
 	if created {
-		if vecs, model, err := s.embedTexts(ctx, meta.trace, []string{p.Content}, false); err != nil {
+		vecs, model, err := s.embedTexts(ctx, meta.trace, []string{content}, false)
+		if err != nil {
 			s.logger.Printf("remember 向量化失败（召回时将懒补齐）: %v", err)
 		} else if err := s.longterm().SetEmbedding(id, vecs[0], model); err != nil {
 			s.logger.Printf("remember 向量落库失败（召回时将懒补齐）: %v", err)
@@ -631,12 +557,7 @@ func (s *Server) remember(ctx context.Context, body []byte, meta callMeta) (any,
 	return protocol.RememberResult{ID: id, Created: created}, nil
 }
 
-// actionForget 软删一条长期记忆（不暴露给模型——不给 LLM 删记忆的按钮；手动 / 直接跳转调用）。
-func (s *Server) actionForget(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.forget(in.Input)
-}
-
-// forget 软删一条长期记忆（v1 / SPv2 共用）。
+// forget 软删一条长期记忆（不暴露给模型——不给 LLM 删记忆的按钮；手动 / 直接跳转调用）。
 func (s *Server) forget(body []byte) (any, error) {
 	var p protocol.ForgetPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -668,12 +589,7 @@ func recallQuery(messages []protocol.Message) string {
 	return ""
 }
 
-// actionRecall 是“完全启动”链的上半段：收下任务上下文 → 组装（注入记忆）→ 以 resume 发回调用方。
-func (s *Server) actionRecall(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.recall(ctx, in.Input, callMeta{from: env.From, trace: env.Trace})
-}
-
-// recall 是“完全启动”链的上半段（v1 / SPv2 共用）：收下任务上下文 → 组装（注入记忆）→ 以 resume 发回调用方。
+// recall 是“完全启动”链的上半段：收下任务上下文 → 组装（注入记忆）→ 以 resume 发回调用方。
 func (s *Server) recall(ctx context.Context, body []byte, meta callMeta) (any, error) {
 	var p protocol.RecallPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -833,7 +749,7 @@ func (s *Server) embedTexts(ctx context.Context, trace string, texts []string, q
 	}
 	cctx, cancel := context.WithTimeout(ctx, embedTimeout)
 	defer cancel()
-	data, err := s.Call(cctx, name, "embed", protocol.EmbedPayload{Texts: texts, Query: query}, trace, s.cfg.Name)
+	data, err := s.Call(cctx, name, "embed", protocol.EmbedPayload{Texts: texts, Query: query}, trace)
 	if err != nil {
 		return nil, "", err
 	}
@@ -864,6 +780,6 @@ func (s *Server) fireResume(from, trace string, payload any) error {
 	if _, _, err := s.Resolve(from); err != nil {
 		return err
 	}
-	s.Fire(from, "resume", payload, trace, from)
+	s.Fire(from, "resume", payload, trace)
 	return nil
 }

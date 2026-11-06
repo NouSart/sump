@@ -14,85 +14,60 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/settings-center/server"
+	"github.com/NouSart/sump/spv2"
 )
 
-// stubService 是接收 configure 的最小服务替身：一个 WS 服务端。
+// stubService 是接收 configure 的最小服务替身：一个 SPv2 服务端。
 type stubService struct {
 	ln  net.Listener
 	srv *http.Server
 
-	reject atomic.Bool // 为真时对 configure 回 ok=false（模拟服务拒绝）
+	reject atomic.Bool // 为真时对 configure 回错误（模拟服务拒绝）
 
 	mu  sync.Mutex
 	got []protocol.ConfigurePayload
 }
 
-func startStubService(t *testing.T) *stubService {
+func startStubService(t *testing.T, name string) *stubService {
 	t.Helper()
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: name, Actor: spv2.ServiceRef(name),
+		Version: "stub/1", Methods: []spv2.Method{{Name: "configure", Shape: spv2.ShapeCall}},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &stubService{}
+	srv.Handle("configure", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.ConfigurePayload
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		st.mu.Lock()
+		st.got = append(st.got, p)
+		st.mu.Unlock()
+		if st.reject.Load() {
+			return call.ReplyError(spv2.CodeInvalidArgument, "configure: 未声明的设置项 \"tool.notify_mode\"", false, nil)
+		}
+		return call.Reply(map[string]any{"ok": true})
+	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := &stubService{ln: ln}
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	st.ln = ln
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		ws, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer ws.Close()
-		for {
-			_, data, err := ws.ReadMessage()
-			if err != nil {
-				return
-			}
-			env, err := protocol.Unmarshal(data)
-			if err != nil || env.Type != protocol.TypeJump {
-				continue
-			}
-			var jp protocol.JumpPayload
-			if err := env.DecodePayload(&jp); err != nil {
-				continue
-			}
-			if jp.Action == "configure" {
-				var p protocol.ConfigurePayload
-				if err := protocol.DecodeRaw(jp.Input, &p); err == nil {
-					st.mu.Lock()
-					st.got = append(st.got, p)
-					st.mu.Unlock()
-				}
-			}
-			if jp.Action == "configure" && st.reject.Load() {
-				resp, err := protocol.NewResponse(env, "stub-svc", protocol.ResponsePayload{OK: false, Error: `configure: 未声明的设置项 "tool.notify_mode"`})
-				if err != nil {
-					continue
-				}
-				if out, err := protocol.Marshal(resp); err == nil {
-					_ = ws.WriteMessage(websocket.BinaryMessage, out)
-				}
-				continue
-			}
-			resp, err := protocol.NewResponse(env, "stub-svc", protocol.ResponsePayload{OK: true})
-			if err != nil {
-				continue
-			}
-			if out, err := protocol.Marshal(resp); err == nil {
-				_ = ws.WriteMessage(websocket.BinaryMessage, out)
-			}
-		}
-	})
+	mux.Handle("/spv2", srv.Handler())
 	st.srv = &http.Server{Handler: mux}
 	go func() { _ = st.srv.Serve(ln) }()
 	t.Cleanup(func() { _ = st.srv.Close() })
 	return st
 }
 
-func (s *stubService) URL() string { return "ws://" + s.ln.Addr().String() + "/ws" }
+func (s *stubService) URL() string { return "ws://" + s.ln.Addr().String() + "/spv2" }
 
 // waitGot 等待至少 n 条 configure（超时失败）。
 func (s *stubService) waitGot(t *testing.T, n int, timeout time.Duration) []protocol.ConfigurePayload {
@@ -117,12 +92,12 @@ type eventRecorder struct {
 	events []protocol.SettingsEventPayload
 }
 
-func (ev *eventRecorder) onEvent(env protocol.Envelope) {
-	if env.Type != protocol.TypeSettings {
+func (ev *eventRecorder) onEvent(f spv2.Frame) {
+	if f.Type != spv2.TypeEvent || f.Method != protocol.TypeSettings {
 		return
 	}
 	var p protocol.SettingsEventPayload
-	if err := env.DecodePayload(&p); err != nil {
+	if err := f.DecodeBody(&p); err != nil {
 		return
 	}
 	ev.mu.Lock()
@@ -147,30 +122,11 @@ func (ev *eventRecorder) wait(t *testing.T, n int, timeout time.Duration) []prot
 }
 
 // registerService 注册一个服务并收集中心广播的 settings 事件。
-func registerService(t *testing.T, wsURL, name, addr string, settings []protocol.Setting) (*protocol.Client, *eventRecorder) {
+func registerService(t *testing.T, url, name, addr string, settings []protocol.Setting) (*spv2.Client, *eventRecorder) {
 	t.Helper()
 	events := &eventRecorder{}
-	c, err := protocol.Dial(wsURL, events.onEvent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = c.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	reg, err := protocol.NewEnvelope(protocol.TypeRegister, name, "settings-center", "", protocol.RegisterPayload{
-		Name: name, Addr: addr, Description: "事件观察测试服务", Settings: settings,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := c.Call(ctx, reg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil || !rp.OK {
-		t.Fatalf("注册失败: %v / %s", err, rp.Error)
-	}
+	c := dialCenter(t, url, spv2.WithOnEvent(events.onEvent))
+	registerNative(t, c, name, addr, "事件观察测试服务", settings)
 	return c, events
 }
 
@@ -182,10 +138,10 @@ func TestConfigurePush(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Shutdown() })
-	wsURL := "ws://" + s.Addr() + "/ws"
+	url := centerURL(s)
 
-	stub := startStubService(t)
-	_, events := registerService(t, wsURL, "svc-c", stub.URL(), []protocol.Setting{{Key: "tool.notify_mode", Default: "each"}})
+	stub := startStubService(t, "svc-c")
+	_, events := registerService(t, url, "svc-c", stub.URL(), []protocol.Setting{{Key: "tool.notify_mode", Default: "each"}})
 
 	// 注册即下发：预设值（未覆盖）。
 	got := stub.waitGot(t, 1, 5*time.Second)
@@ -198,7 +154,7 @@ func TestConfigurePush(t *testing.T) {
 	}
 
 	// set_setting → configure（覆盖值 batch）+ 事件（cause=set_setting）
-	if _, msg := callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{Service: "svc-c", Key: "tool.notify_mode", Value: "batch"}); msg != "" {
+	if _, msg := callSettings(t, url, "set_setting", protocol.SetSettingPayload{Service: "svc-c", Key: "tool.notify_mode", Value: "batch"}); msg != "" {
 		t.Fatalf("set_setting 失败: %s", msg)
 	}
 	got = stub.waitGot(t, 2, 5*time.Second)
@@ -211,7 +167,7 @@ func TestConfigurePush(t *testing.T) {
 	}
 
 	// reset_setting → configure（回落预设 each）
-	if _, msg := callSettings(t, wsURL, "reset_setting", protocol.ResetSettingPayload{Service: "svc-c", Key: "tool.notify_mode"}); msg != "" {
+	if _, msg := callSettings(t, url, "reset_setting", protocol.ResetSettingPayload{Service: "svc-c", Key: "tool.notify_mode"}); msg != "" {
 		t.Fatalf("reset_setting 失败: %s", msg)
 	}
 	got = stub.waitGot(t, 3, 5*time.Second)
@@ -231,28 +187,28 @@ func TestRegisterPushAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Shutdown() })
-	wsURL := "ws://" + s.Addr() + "/ws"
+	url := centerURL(s)
 
-	stub := startStubService(t)
+	stub := startStubService(t, "svc-p")
 	settings := []protocol.Setting{
 		{Key: "tool.notify_mode", Default: "each"},
 		{Key: "tool.timeout_ms", Default: "60000"},
 	}
-	c1, _ := registerService(t, wsURL, "svc-p", stub.URL(), settings)
+	c1, _ := registerService(t, url, "svc-p", stub.URL(), settings)
 	got := stub.waitGot(t, 2, 5*time.Second)
 	if got[0].Key != "tool.notify_mode" || got[0].Value != "each" || got[1].Key != "tool.timeout_ms" || got[1].Value != "60000" {
 		t.Fatalf("首次注册应全量下发预设值: %+v", got)
 	}
 
 	// 写覆盖：mode=batch（触发单键下发）。
-	if _, msg := callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{Service: "svc-p", Key: "tool.notify_mode", Value: "batch"}); msg != "" {
+	if _, msg := callSettings(t, url, "set_setting", protocol.SetSettingPayload{Service: "svc-p", Key: "tool.notify_mode", Value: "batch"}); msg != "" {
 		t.Fatalf("set_setting 失败: %s", msg)
 	}
 	stub.waitGot(t, 3, 5*time.Second)
 
 	// 模拟重启：断开旧连接、重新注册（名片与声明都不变）→ 仍应全量下发生效值。
-	c1.Close()
-	registerService(t, wsURL, "svc-p", stub.URL(), settings)
+	_ = c1.Close()
+	registerService(t, url, "svc-p", stub.URL(), settings)
 	got = stub.waitGot(t, 5, 5*time.Second)
 	if got[3].Key != "tool.notify_mode" || got[3].Value != "batch" || !got[3].Overridden {
 		t.Fatalf("重注册应下发覆盖值: %+v", got[3])
@@ -270,12 +226,12 @@ func TestSelfSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Shutdown() })
-	wsURL := "ws://" + s.Addr() + "/ws"
+	url := centerURL(s)
 
 	// 未注册的连接收不到广播：用注册服务作为观察者。
-	_, events := registerService(t, wsURL, "svc-obs", "ws://127.0.0.1:1/ws", nil)
+	_, events := registerService(t, url, "svc-obs", "ws://127.0.0.1:1/spv2", nil)
 
-	res, msg := callSettings(t, wsURL, "list_settings", protocol.SettingsListPayload{Service: "settings-center"})
+	res, msg := callSettings(t, url, "list_settings", protocol.SettingsListPayload{Service: "settings-center"})
 	if msg != "" {
 		t.Fatalf("list_settings 失败: %s", msg)
 	}
@@ -297,12 +253,12 @@ func TestSelfSettings(t *testing.T) {
 	if it := res.Services[0].Settings[2]; it.Key != "addr" || it.Value != "127.0.0.1:0" {
 		t.Fatalf("addr 只读项应显示启动值: %+v", it)
 	}
-	if _, msg := callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{Service: "settings-center", Key: "addr", Value: "0.0.0.0:1"}); msg == "" || !strings.Contains(msg, "只读") {
+	if _, msg := callSettings(t, url, "set_setting", protocol.SetSettingPayload{Service: "settings-center", Key: "addr", Value: "0.0.0.0:1"}); msg == "" || !strings.Contains(msg, "只读") {
 		t.Fatalf("改中心的只读项应被拒: %s", msg)
 	}
 
 	// 非法值：写入成功（受理回执），但本地应用失败 → 事件 ok=false。
-	if _, msg := callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{Service: "settings-center", Key: "sweep_ms", Value: "abc"}); msg != "" {
+	if _, msg := callSettings(t, url, "set_setting", protocol.SetSettingPayload{Service: "settings-center", Key: "sweep_ms", Value: "abc"}); msg != "" {
 		t.Fatalf("set_setting 本身应成功（应用结果走事件）: %s", msg)
 	}
 	ev := events.wait(t, 1, 5*time.Second)
@@ -311,14 +267,14 @@ func TestSelfSettings(t *testing.T) {
 	}
 
 	// 合法值：本地生效。
-	if _, msg := callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{Service: "settings-center", Key: "sweep_ms", Value: "250"}); msg != "" {
+	if _, msg := callSettings(t, url, "set_setting", protocol.SetSettingPayload{Service: "settings-center", Key: "sweep_ms", Value: "250"}); msg != "" {
 		t.Fatalf("set_setting 失败: %s", msg)
 	}
 	ev = events.wait(t, 2, 5*time.Second)
 	if !ev[1].Results[0].OK || ev[1].Results[0].Value != "250" {
 		t.Fatalf("合法值应回 ok=true: %+v", ev[1])
 	}
-	res, msg = callSettings(t, wsURL, "list_settings", protocol.SettingsListPayload{Service: "settings-center"})
+	res, msg = callSettings(t, url, "list_settings", protocol.SettingsListPayload{Service: "settings-center"})
 	if msg != "" || res.Services[0].Settings[0].Value != "250" || !res.Services[0].Settings[0].Overridden {
 		t.Fatalf("中心设置视图应显示覆盖: %+v / %s", res, msg)
 	}
@@ -342,7 +298,7 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-// TestConfigurePushRejected 验证：服务对 configure 回 ok=false（明确拒绝）时，
+// TestConfigurePushRejected 验证：服务对 configure 回错误（明确拒绝）时，
 // 中心把这次下发记为“未生效”（原因是服务的拒绝理由、不重试）；
 // set_setting 本身仍成功（受理回执不等待送达结果）。
 func TestConfigurePushRejected(t *testing.T) {
@@ -352,15 +308,15 @@ func TestConfigurePushRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Shutdown() })
-	wsURL := "ws://" + s.Addr() + "/ws"
+	url := centerURL(s)
 
-	stub := startStubService(t)
-	registerService(t, wsURL, "svc-r", stub.URL(), []protocol.Setting{{Key: "tool.notify_mode", Default: "each"}})
+	stub := startStubService(t, "svc-r")
+	registerService(t, url, "svc-r", stub.URL(), []protocol.Setting{{Key: "tool.notify_mode", Default: "each"}})
 	stub.waitGot(t, 1, 5*time.Second) // 注册全量下发先成功（此时未拒绝）
 
 	// 之后服务开始拒绝：中心接受写入（受理回执不等待送达），下发记为未生效。
 	stub.reject.Store(true)
-	if _, msg := callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{Service: "svc-r", Key: "tool.notify_mode", Value: "batch"}); msg != "" {
+	if _, msg := callSettings(t, url, "set_setting", protocol.SetSettingPayload{Service: "svc-r", Key: "tool.notify_mode", Value: "batch"}); msg != "" {
 		t.Fatalf("set_setting 应成功（受理回执不等待送达）: %s", msg)
 	}
 	stub.waitGot(t, 2, 5*time.Second)
@@ -385,10 +341,10 @@ func TestSetWhenOffline(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Shutdown() })
-	wsURL := "ws://" + s.Addr() + "/ws"
+	url := centerURL(s)
 
 	// 名片地址指向死端口：中心一切下发都会失败（服务自身连接仍正常）。
-	_, events := registerService(t, wsURL, "svc-off", "ws://127.0.0.1:1/ws", []protocol.Setting{{Key: "k", Default: "d"}})
+	_, events := registerService(t, url, "svc-off", "ws://127.0.0.1:1/spv2", []protocol.Setting{{Key: "k", Default: "d"}})
 
 	// 1) 注册下发经重试后失败 → 事件 ok=false（未送达）。
 	ev := events.wait(t, 1, 15*time.Second)
@@ -398,7 +354,7 @@ func TestSetWhenOffline(t *testing.T) {
 
 	// 2) set：受理回执立即返回（远早于下发重试链），视图显示覆盖已落盘。
 	start := time.Now()
-	res, msg := callSettings(t, wsURL, "set_setting", protocol.SetSettingPayload{Service: "svc-off", Key: "k", Value: "v"})
+	res, msg := callSettings(t, url, "set_setting", protocol.SetSettingPayload{Service: "svc-off", Key: "k", Value: "v"})
 	elapsed := time.Since(start)
 	if msg != "" {
 		t.Fatalf("set_setting 应被受理（不等待送达）: %s", msg)

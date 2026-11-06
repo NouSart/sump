@@ -19,7 +19,7 @@
 
 克隆、起全栈、跑测试的完整步骤见 [docs/quickstart.md](./docs/quickstart.md)。
 
-单模块测试的通用形式：`cd <模块>; go test ./... -count=1`。Go 模块 15 个：protocol / service / settings-center / reasoner / memory / images / files / qq / shell / timer / batch / tests / approval / approval-integration / mcp；另有 embedding（Python，`cd embedding; python -m pytest tests -q`）与 frontend（TS，`cd frontend; npm test`）。
+单模块测试的通用形式：`cd <模块>; go test ./... -count=1`。Go 模块 17 个（即 `go.work` 登记的全部）：protocol / spv2 / service / settings-center / reasoner / memory / images / files / qq / shell / timer / batch / approval / mcp / tests / evals / approval-integration；另有 embedding（Python，`cd embedding; python -m pytest tests -q`）与 frontend（TS，`cd frontend; npm test`）。`experiments/judgeexp` 有独立 go.mod 但不在 `go.work` 里，也不进 CI。
 
 测试**不依赖外网**（LLM 用假客户端；真模型冒烟测试仅在显式开关下跑）。
 

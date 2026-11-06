@@ -1,6 +1,6 @@
 # 命令审批
 
-> **读者**：要改审批规则、接入 shell、或排查「命令为什么没执行」的人 ｜ **读完能做**：读懂一份裁决包、加一条规则、判断边界在哪 ｜ **状态**：第一层已实现，第二层已实现，解释与富通知未实现 ｜ **最后校验**：2026-10-30
+> **读者**：要改审批规则、接入 shell、或排查「命令为什么没执行」的人 ｜ **读完能做**：读懂一份裁决包、加一条规则、判断边界在哪 ｜ **状态**：第一层已实现，第二层已实现，解释与富通知未实现 ｜ **最后校验**：2026-11-06
 
 公共类型的权威定义在 `src/protocol/approval.go`；服务实现在 [approval/](../../src/approval)。
 
@@ -26,7 +26,7 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 
 ## 3. 服务与输入
 
-服务名默认 `approval`，动作 `approval_request`。使用 `jump` 信封，载荷 MessagePack；`trace`、`boss` 沿用，业务关联用 `item_id`。**approval 不接受请求指定任意程序充当解析器。**
+服务名默认 `approval`，method `approval_request`。用 `call` 调用，body 为 MessagePack；`work` 当链路 id、结果归属用帧头 `from`（SPv2 没有 `boss` 字段），业务关联用 `item_id`。**approval 不接受请求指定任意程序充当解析器。**
 
 ```json
 {
@@ -55,7 +55,7 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 
 ## 4. 裁决包
 
-成功处理时 `ResponsePayload.ok=true`，`data` 包含：
+成功处理时 `reply.status=ok`，body 即裁决包 `CommandApprovalResult`，包含：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -121,7 +121,7 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 | 门户 → approval | `approval_list` | `{}` → `{items: [...]}`（门户重启后拉回待审列表） |
 
 - **只接受门户裁决**：`approval_decide` / `approval_list` 的 `from` 必须是 `-portal` 指定的服务名（默认 `frontend`），别的服务调一律拒。
-- **挂起的是这条命令，不是审批服务**：每条 jump 独立 goroutine；并发槽只在解析 / 裁决期间占用，等待用户时释放。
+- **挂起的是这条命令，不是审批服务**：每次 call 独立 goroutine；并发槽只在解析 / 裁决期间占用，等待用户时释放。
 - **TTL**（`-review-ttl`，默认 60 秒）：到期按 `review` 原样返回（不执行），待审项消失。**必须与 shell 的 `approval.timeout_ms` 一致** —— shell 先放弃、approval 还挂着的话，用户点的「批准」是一条不会执行的命令。
 - **门户不在名册**：不挂起，立即按 `review` 返回（不浪费调用方等一个不会来的裁决）。
 - **队列满**（`-max-pending`，默认 32）：按 `review` 返回，不排队。
@@ -164,7 +164,7 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 ```
 
 - 工作目录 `command-work/`，设置与日志在 `command-runtime/`；停止按 `Ctrl+C`。
-- 三个端口均可通过启动参数修改；改中心端口时提交要同步 `-Center ws://127.0.0.1:新端口/ws`。
+- 三个端口均可通过启动参数修改；改中心端口时提交要同步 `-Center ws://127.0.0.1:新端口/spv2`。
 - `shell` 的 `approval.service` 必须指向 `approval`；中心地址/名字对不上时 shell 会报 `RUNTIME_MISMATCH`，此时统一这两处配置即可（既有中心覆盖值优先于启动默认值）。
 - 停止启动器会停止三个服务，但**已经启动的命令子进程不保证同时终止**——长时间操作的停止与恢复需另行处理。
 - 若执行策略阻止 `.ps1`：`powershell -NoProfile -ExecutionPolicy Bypass -File .\start-command-approval.ps1`（不修改系统策略）。

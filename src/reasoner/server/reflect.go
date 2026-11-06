@@ -137,7 +137,7 @@ func (s *Server) reflectOnTask(st *taskState, finalAnswer string) {
 				Outcome:        digest.Outcome,
 				Capabilities:   capabilitiesOf(msgs),
 				Private:        digest.Private,
-			}, trace, s.cfg.Name)
+			}, trace)
 		}
 		if len(notes) == 0 {
 			s.logger.Printf("会话 %s：复盘完成，没有值得记的经验", cid)
@@ -149,7 +149,7 @@ func (s *Server) reflectOnTask(st *taskState, finalAnswer string) {
 				ConversationID: cid,
 				TaskID:         taskID,
 				Durability:     n.Durability,
-			}, trace, s.cfg.Name)
+			}, trace)
 		}
 		s.logger.Printf("会话 %s：复盘写回 %d 条经验", cid, len(notes))
 	}()

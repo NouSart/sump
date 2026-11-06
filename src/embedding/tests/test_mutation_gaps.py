@@ -48,8 +48,8 @@ def test_frame_body_must_be_bin() -> None:
 def test_roster_skips_non_dict_cards() -> None:
     link = CenterLink(
         name="embedding",
-        center_url="ws://127.0.0.1:1/ws",
-        self_url="ws://127.0.0.1:2/ws",
+        center_url="ws://127.0.0.1:1/spv2",
+        self_url="ws://127.0.0.1:2/spv2",
         description="x",
         provides=[],
         settings=[],
@@ -61,9 +61,9 @@ def test_roster_skips_non_dict_cards() -> None:
 
 
 def test_center_spv2_url_rules() -> None:
-    assert center_spv2_url("ws://h:1/ws") == "ws://h:1/spv2"
     assert center_spv2_url("ws://h:1/spv2") == "ws://h:1/spv2"
     assert center_spv2_url("ws://h:1") == "ws://h:1/spv2"
+    assert center_spv2_url("ws://h:1/") == "ws://h:1/spv2"
 
 
 def test_split_addr_rejects_bad_parts() -> None:
@@ -182,8 +182,8 @@ def test_embed_exact_max_batch_and_query_flag() -> None:
 def test_request_spv2_rejects_non_reply_frame() -> None:
     link = CenterLink(
         name="embedding",
-        center_url="ws://127.0.0.1:1/ws",
-        self_url="ws://127.0.0.1:2/ws",
+        center_url="ws://127.0.0.1:1/spv2",
+        self_url="ws://127.0.0.1:2/spv2",
         description="x",
         provides=[],
         settings=[],
@@ -206,7 +206,20 @@ def test_request_spv2_rejects_non_reply_frame() -> None:
     asyncio.run(run())
 
 
-def test_service_routes_spv2_path_with_query() -> None:
+def test_process_request_rejects_non_native_paths() -> None:
+    class FakeRequest:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+    svc = Service(Config(name="embedding", addr="127.0.0.1:0"), FakeBackend(), LOG)
+
+    assert svc._process_request(None, FakeRequest("/spv2?probe=1")) is None  # type: ignore[arg-type]
+    for path in ("/ws", "/", "/spv2/extra"):
+        resp = svc._process_request(None, FakeRequest(path))  # type: ignore[arg-type]
+        assert resp is not None and resp.status_code == 404, path
+
+
+def test_service_routes_only_spv2_path() -> None:
     class FakeRequest:
         def __init__(self, path: str) -> None:
             self.path = path
@@ -214,6 +227,10 @@ def test_service_routes_spv2_path_with_query() -> None:
     class FakeWS:
         def __init__(self, path: str) -> None:
             self.request = FakeRequest(path)
+            self.close_calls: list[tuple[int, str]] = []
+
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            self.close_calls.append((code, reason))
 
     svc = Service(Config(name="embedding", addr="127.0.0.1:0"), FakeBackend(), LOG)
     calls: list[str] = []
@@ -221,15 +238,14 @@ def test_service_routes_spv2_path_with_query() -> None:
     async def native(_ws: object) -> None:
         calls.append("native")
 
-    async def v1(_ws: object) -> None:
-        calls.append("v1")
-
     svc.native.handle_conn = native  # type: ignore[method-assign]
-    svc.endpoint.handle_conn = v1  # type: ignore[method-assign]
 
     async def run() -> None:
         await svc.handle_conn(FakeWS("/spv2?probe=1"))  # type: ignore[arg-type]
-        await svc.handle_conn(FakeWS("/ws"))  # type: ignore[arg-type]
+        for path in ("/ws", "/", "/spv2/extra"):
+            ws = FakeWS(path)
+            await svc.handle_conn(ws)  # type: ignore[arg-type]
+            assert ws.close_calls and ws.close_calls[0][0] == 1008, path
 
     asyncio.run(run())
-    assert calls == ["native", "v1"]
+    assert calls == ["native"]

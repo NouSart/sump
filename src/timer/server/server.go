@@ -174,9 +174,6 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Hint("最多同时有多少个等唤醒的定时，满了新请求会被拒绝"),
 		service.As("number"),
 		service.Unit("count"))
-	s.Handle("sleep", s.actionSleep)
-	s.Handle("cancel", s.actionCancel)
-	s.Handle("list", s.actionList)
 	s.HandleNative(spv2.Method{
 		Name: "sleep", Tool: true, LongRunning: true,
 		Description: "计时器：N 毫秒后唤醒调用方",
@@ -276,12 +273,7 @@ func (s *Server) StopAll() {
 
 // ---------- 动作 ----------
 
-// actionSleep 受理一次计时：立即回执，到点由 report_result 补报（处理函数里不等待）。
-func (s *Server) actionSleep(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.sleep(env.From, env.Trace, env.Boss, in.Input)
-}
-
-// nativeSleep 是 /spv2 的原生入口：直接解 body，不经过 v1 JumpPayload。
+// nativeSleep 受理一次计时：立即回执，到点由 report_result 补报（处理函数里不等待）。
 func (s *Server) nativeSleep(_ context.Context, call *spv2.Call) error {
 	out, err := s.sleep(call.Frame.From.ID, call.Frame.Work, call.Frame.From.ID, call.Frame.Body)
 	if err != nil {
@@ -336,13 +328,8 @@ func (s *Server) sleep(caller, trace, boss string, body []byte) (any, error) {
 	}, nil
 }
 
-// actionCancel 撤销一次已受理、尚未到点的计时；撤销即发一条 final 补报，
+// nativeCancel 撤销一次已受理、尚未到点的计时；撤销即发一条 final 补报，
 // 免得调用方那边的在途记账一直挂着（它靠 final 释放）。
-func (s *Server) actionCancel(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.cancel(in.Input)
-}
-
-// nativeCancel 是 /spv2 的原生入口。
 func (s *Server) nativeCancel(_ context.Context, call *spv2.Call) error {
 	out, err := s.cancel(call.Frame.Body)
 	if err != nil {
@@ -397,12 +384,7 @@ func (s *Server) fire(item string) {
 	s.logger.Printf("到点 %s（来自 %s，%dms）", t.item, t.caller, t.ms)
 }
 
-// actionList 回报当前在计时器（门户冷启动时拉一次；之后的变动由 pushPortalState 主动推）。
-func (s *Server) actionList(_ context.Context, _ protocol.Envelope, _ protocol.JumpPayload) (any, error) {
-	return s.list()
-}
-
-// nativeList 是 /spv2 的原生入口。
+// nativeList 回报当前在计时器（门户冷启动时拉一次；之后的变动由 pushPortalState 主动推）。
 func (s *Server) nativeList(_ context.Context, call *spv2.Call) error {
 	out, err := s.list()
 	if err != nil {
@@ -449,11 +431,11 @@ func (s *Server) pushPortalState(trace string) {
 	s.mu.Unlock()
 
 	for boss, items := range groups {
-		s.Fire(portal, "timer_state", protocol.TimerStatePayload{Boss: boss, Seq: seq, Timers: items}, trace, boss)
+		s.Fire(portal, "timer_state", protocol.TimerStatePayload{Boss: boss, Seq: seq, Timers: items}, trace)
 	}
 	for boss := range prev {
 		if !cur[boss] {
-			s.Fire(portal, "timer_state", protocol.TimerStatePayload{Boss: boss, Seq: seq}, trace, boss)
+			s.Fire(portal, "timer_state", protocol.TimerStatePayload{Boss: boss, Seq: seq}, trace)
 		}
 	}
 }
@@ -480,7 +462,7 @@ func (s *Server) report(t *timing, phase, text string, final bool) {
 		Phase:  phase,
 		Text:   text,
 		Final:  final,
-	}, t.trace, t.boss)
+	}, t.trace)
 }
 
 // wakeText 是到点补报注入调用方的那句话——调用方的模型看到的就是它。

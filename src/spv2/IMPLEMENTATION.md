@@ -1,7 +1,7 @@
 # SPv2.1 实现计划与状态
 
 > 读者：要接手 SPv2.1 实现的人。
-> 状态：协议核心 + 参考链路 + SQLite WorkStore 已实现；生产服务迁移未开始。
+> 状态：协议核心 + 参考链路 + SQLite WorkStore 已实现；生产服务已切换为 v2-only（只暴露 `/spv2` 原生 method）。本参考实现的 work/lease 模型尚未替换生产内部实现。
 > 规格：[docs/concepts/spv2.md](../../docs/concepts/spv2.md)。
 
 ## 1. 范围
@@ -13,10 +13,9 @@
 - hello / health / metrics；HTTP /healthz / readyz / metrics；
 - WorkStore：内存实现 + SQLite 实现（work/lease/queue/sweep/renew）；
 - 幂等缓存、authority 辅助、content_type 解码、错误终态 stream；
-- 参考链路：entry → reasoner → memory.context → tool → deliver；
-- v1 → SPv2.1 适配器。
+- 参考链路：entry → reasoner → memory.context → tool → deliver。
 
-不包含：生产 reasoner/memory/frontend 的替换、认证/tenant/capability、spawn/跨 owner、企业多实例。它们按 spec §18 标 not designed。
+不包含：生产服务内部改用本模块的 work/lease 模型、认证/tenant/capability、spawn/跨 owner、企业多实例。它们按 spec §18 标 not designed。
 
 ## 2. 文件地图
 
@@ -30,11 +29,10 @@
 | codec.go | msgpack/JSON/text/binary body 编解码 |
 | metrics.go | counter/gauge/histogram 注册表 |
 | client.go / server.go | WS 传输与 call/stream/event |
-| http.go | /ws /healthz /readyz /metrics |
+| http.go | /spv2 /healthz /readyz /metrics |
 | idempotency.go | 可选的 unary reply 幂等缓存 |
 | store.go | WorkStore 接口 + MemStore |
 | sqlitestore.go | WorkStore 的 SQLite 实现 |
-| adapter/v1.go | v1 jump/response ↔ SPv2 call/reply |
 | ref/ | 参考链路与 e2e |
 | *_test.go | 契约/传输/存储/参考链路测试 |
 
@@ -56,28 +54,25 @@
 - tool：echo；
 - e2e：真实 WS，不接 LLM。
 
-### P2 适配（已完成）
+### P2 v1 适配（已撤销）
 
-- v1 adapter：jump/response ↔ call/reply；
-- event/stream 明确不支持，不静默降级。
+- 曾经的 v1 adapter 已随 v2-only 切换删除；不再提供 jump/response ↔ call/reply 转换。
 
-### P3 生产接入（未开始）
+### P3 生产接入（v2-only 已完成；本参考模型未替换生产内部实现）
 
-- memory：用 SQLiteStore 落 works/work_participants/work_messages；
-- reasoner：用 message 替换 user_message，用 context 替换 recall/resume；
-- frontend/qq：用 SPv2 client，保留 deliver；
-- tools：method 卡 + schema，去掉中央动作表；
-- settings-center：卡片/名册/版本协商。
+- 生产 memory / reasoner / frontend / qq / tools / settings-center 已全部只暴露 `/spv2` 原生 method；
+- 本模块的 work/lease/authority 模型仍只用于参考链路，未替换生产 memory 的会话库与 reasoner 的黑板。
 
 ## 4. 验证
 
 在 src/spv2 下运行：go test ./... -count=1；go test -race ./... -count=1；gofmt -l .；go vet ./...。
 
-生产迁移后追加：一条链 e2e、v1 适配器对照、最小指标集契约、红队测试。
+生产侧：`testing/tests` 跨服务 e2e 直接打 `/spv2`；v1 适配器对照已随 adapter 删除。
 
 ## 5. 已知未做
 
-- 生产 reasoner/memory/frontend 迁移；
+- `/readyz` 还没有就绪语义：`http.go` 的 `handleReadyHTTP` 与 `/healthz` 完全一致，`HealthResponse.Checks` 恒为 nil；[spec §7.6](../../docs/concepts/spv2.md) 写的 `checks[]`（center / db 探针）未实现，见 `README.md` 的「HTTP 观测」；
+- 本模块 work/lease 模型接入生产（未做，非本轮目标）；
 - auth/tenant/capability；
 - spawn/cross-owner；
 - stream credit window；

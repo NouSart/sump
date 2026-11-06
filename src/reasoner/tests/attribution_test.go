@@ -47,34 +47,13 @@ func startAttrEnv(t *testing.T, fake llm.Client) (*server.Server, *stubBoss, *st
 }
 
 // sendGroupUser 向 reasoner 发一条带来源标注的 user_message。
+// 会话号保持在群里；from=stub-boss 是这批测试的替身入口（deliver 的落点）——
+// SPv2 没有 boss 字段，from 既是入口也是结果归属方。
 func sendGroupUser(t *testing.T, s *server.Server, text string, sender protocol.Sender) {
 	t.Helper()
-	c := dialReasoner(t, s)
-	raw, err := protocol.EncodePayload(protocol.UserMessagePayload{
+	sendFrom(t, s, "stub-boss", protocol.UserMessagePayload{
 		Text: text, ConversationID: "qq:group:67890", Sender: &sender,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "qq", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// boss 是这批测试的替身入口（deliver 的落点）；会话号保持在群里。
-	req.Boss = "stub-boss"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := c.Call(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack protocol.ResponsePayload
-	if err := resp.DecodePayload(&ack); err != nil {
-		t.Fatal(err)
-	}
-	if !ack.OK {
-		t.Fatalf("user_message 未被受理: %s", ack.Error)
-	}
 }
 
 // waitStoreContaining 等一条内容里含 marker 的 store 记录。
@@ -250,8 +229,19 @@ func TestSilentIsNotStickyAcrossMessages(t *testing.T) {
 	sendGroupUser(t, s, "第二条", protocol.Sender{Channel: "group", ID: "1", GroupID: "67890", GroupSize: 5})
 	select {
 	case d := <-boss.delivered:
+		// 正向断言：静默不粘性 ≠ 「发出去的不是第一轮那句」——只断不等号的话，
+		// 第二轮返回空串 / 乱码 / 第三句同样绿。这里钉住交付的就是第二轮那句话本身。
 		if d.Text == "（第一轮不该发）" {
 			t.Fatal("静默状态被读成了粘性：第一轮的文本被发出去了")
+		}
+		if d.Text == "" {
+			t.Fatalf("第二轮交付了空文本（静默作废不等于可以发一句废话）: %+v", d)
+		}
+		if d.Text != "这句要发" {
+			t.Fatalf("第二轮交付的文本不符: %q（应为「这句要发」）", d.Text)
+		}
+		if d.ConversationID != "qq:group:67890" {
+			t.Fatalf("交付应回到同一个群会话: %+v", d)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("超时：第二轮应正常交付")

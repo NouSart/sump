@@ -2,11 +2,9 @@ package service
 
 import (
 	"context"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
@@ -18,8 +16,8 @@ func bridgePeerCard(name string) []protocol.Provide {
 
 func TestSPv2Addr(t *testing.T) {
 	cases := map[string]string{
-		"ws://h:1/ws":   "ws://h:1/spv2",
 		"ws://h:1":      "ws://h:1/spv2",
+		"ws://h:1/":     "ws://h:1/spv2",
 		"ws://h:1/spv2": "ws://h:1/spv2",
 	}
 	for in, want := range cases {
@@ -29,17 +27,21 @@ func TestSPv2Addr(t *testing.T) {
 	}
 }
 
-func TestSPv2BridgeInbound(t *testing.T) {
-	peer := New(Config{Name: "peer", SPV2: true, Provides: bridgePeerCard("peer"), SecretFile: "-"})
-	peer.Handle("echo", func(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-		if env.Boss != "caller" || env.Trace != "w1" {
-			t.Errorf("synthesized env = %+v", env)
+func TestNativeMethodInbound(t *testing.T) {
+	peer := New(Config{Name: "peer", Provides: bridgePeerCard("peer"), SecretFile: "-"})
+	peer.HandleNative(spv2.Method{
+		Name: "echo", Tool: true,
+		Input:  map[string]any{"type": "object"},
+		Output: map[string]any{"type": "object"},
+	}, func(_ context.Context, call *spv2.Call) error {
+		if call.Frame.From.ID != "caller" || call.Frame.Work != "w1" {
+			t.Errorf("frame from/work = %+v", call.Frame)
 		}
 		var text string
-		if err := protocol.DecodeRaw(in.Input, &text); err != nil {
-			return nil, err
+		if err := call.Frame.DecodeBody(&text); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 		}
-		return "echo:" + text, nil
+		return call.Reply("echo:" + text)
 	})
 	if err := peer.buildSPv2(); err != nil {
 		t.Fatal(err)
@@ -64,26 +66,26 @@ func TestSPv2BridgeInbound(t *testing.T) {
 	}
 }
 
-func TestSPv2BridgeOutboundAndFallback(t *testing.T) {
-	// 目标同时有 /ws(v1) 与 /spv2(SPv2)；SPv2 优先。
-	peer := New(Config{Name: "peer", SPV2: true, Provides: bridgePeerCard("peer"), SecretFile: "-"})
-	peer.Handle("echo", func(_ context.Context, _ protocol.Envelope, _ protocol.JumpPayload) (any, error) {
-		return "from-spv2", nil
+func TestCallOutbound(t *testing.T) {
+	peer := New(Config{Name: "peer", Provides: bridgePeerCard("peer"), SecretFile: "-"})
+	peer.HandleNative(spv2.Method{
+		Name: "echo", Tool: true,
+		Input:  map[string]any{"type": "object"},
+		Output: map[string]any{"type": "object"},
+	}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply("from-spv2")
 	})
 	if err := peer.buildSPv2(); err != nil {
 		t.Fatal(err)
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/spv2", peer.spv2Srv.Handler())
-	mux.HandleFunc("/ws", peer.handleWS)
-	ts := httptest.NewServer(mux)
+	ts := httptest.NewServer(peer.spv2Srv.Handler())
 	defer ts.Close()
 
-	caller := New(Config{Name: "caller", SPV2: true, SecretFile: "-"})
+	caller := New(Config{Name: "caller", SecretFile: "-"})
 	caller.setRoster(protocol.RosterPayload{Services: []protocol.ServiceCard{{
-		Name: "peer", Addr: "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws",
+		Name: "peer", Addr: "ws" + strings.TrimPrefix(ts.URL, "http") + "/spv2",
 	}}})
-	raw, err := caller.Call(context.Background(), "peer", "echo", "hi", "w1", "boss")
+	raw, err := caller.Call(context.Background(), "peer", "echo", "hi", "w1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,35 +96,29 @@ func TestSPv2BridgeOutboundAndFallback(t *testing.T) {
 	if out != "from-spv2" {
 		t.Fatalf("out = %q", out)
 	}
+}
 
-	// 只有 v1 的目标：/spv2 不可达，回退 v1。
-	v1peer := New(Config{Name: "v1peer", SecretFile: "-"})
-	v1peer.Handle("read", func(_ context.Context, _ protocol.Envelope, _ protocol.JumpPayload) (any, error) {
-		return "from-v1", nil
-	})
-	v1mux := http.NewServeMux()
-	v1mux.HandleFunc("/ws", v1peer.handleWS)
-	v1ts := httptest.NewServer(v1mux)
-	defer v1ts.Close()
-	caller.setRoster(protocol.RosterPayload{Services: []protocol.ServiceCard{{
-		Name: "v1peer", Addr: "ws" + strings.TrimPrefix(v1ts.URL, "http") + "/ws",
-	}}})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	raw, err = caller.Call(ctx, "v1peer", "read", "hi", "w2", "boss")
-	if err != nil {
+// TestBuildSPv2Card 验证服务卡只有原生 method + 骨架方法，没有 v1 动作合成的条目。
+func TestBuildSPv2Card(t *testing.T) {
+	peer := New(Config{Name: "peer", Provides: bridgePeerCard("peer"), SecretFile: "-"})
+	peer.HandleNative(spv2.Method{Name: "echo", Tool: true}, func(_ context.Context, _ *spv2.Call) error { return nil })
+	if err := peer.buildSPv2(); err != nil {
 		t.Fatal(err)
 	}
-	if err := protocol.DecodeRaw(raw, &out); err != nil {
-		t.Fatal(err)
+	card := peer.spv2Srv.Card()
+	names := map[string]bool{}
+	for _, m := range card.Methods {
+		names[m.Name] = true
 	}
-	if out != "from-v1" {
-		t.Fatalf("fallback out = %q", out)
+	for _, want := range []string{"echo", "configure", "hello", "health", "metrics"} {
+		if !names[want] {
+			t.Errorf("服务卡缺少 method %q: %+v", want, names)
+		}
 	}
 }
 
 func TestSPv2NativeHandler(t *testing.T) {
-	peer := New(Config{Name: "peer", SPV2: true, SecretFile: "-", Provides: bridgePeerCard("peer")})
+	peer := New(Config{Name: "peer", SecretFile: "-", Provides: bridgePeerCard("peer")})
 	peer.HandleNative(spv2.Method{
 		Name: "native_echo", Tool: true,
 		Input:  map[string]any{"type": "object", "properties": map[string]any{"text": map[string]any{"type": "string"}}},

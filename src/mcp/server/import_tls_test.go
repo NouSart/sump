@@ -55,7 +55,7 @@ func TestImportsTLSExplicitRootsAreDestinationScoped(t *testing.T) {
 		t.Fatalf("trusted TLS call: %v (%d)", err, calls.Load())
 	}
 	raw, _ := protocol.EncodePayload(map[string]any{"key": "x"})
-	if _, err = i.Handle(t.Context(), protocol.Envelope{}, protocol.JumpPayload{Action: "system_lookup", Input: raw}); err == nil || calls.Load() != 1 {
+	if _, err = i.HandleBody(t.Context(), "system_lookup", raw); err == nil || calls.Load() != 1 {
 		t.Fatal("unknown authority reached tool")
 	}
 	if i.remotes["demo"].transport == i.remotes["system"].transport || i.remotes["system"].transport.TLSClientConfig.RootCAs != nil || i.remotes["demo"].transport.TLSClientConfig.InsecureSkipVerify {

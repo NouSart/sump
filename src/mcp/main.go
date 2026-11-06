@@ -18,7 +18,7 @@ func main() {
 	var cfg server.Config
 	var checkRemotes bool
 	flag.StringVar(&cfg.Listen, "addr", "127.0.0.1:9902", "SUMP WebSocket listen address")
-	flag.StringVar(&cfg.Center, "center", "ws://127.0.0.1:9000/ws", "settings center WebSocket URL")
+	flag.StringVar(&cfg.Center, "center", "ws://127.0.0.1:9000/spv2", "settings center WebSocket URL")
 	flag.StringVar(&cfg.HTTP.Listen, "http-addr", "127.0.0.1:9903", "MCP Streamable HTTP listen address")
 	flag.StringVar(&cfg.ConfigPath, "config", "data/mcp.json", "explicit imports and exports configuration")
 	flag.StringVar(&cfg.SecretFile, "secret-file", "data/mcp-secret.json", "service-owned secret file")

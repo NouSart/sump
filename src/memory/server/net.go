@@ -1,7 +1,8 @@
 // 经验网的接缝：把 memnet 包接进记忆服务的动作表与 recall。
 //
-// 边界：这里只做"取向量 / 拼文本"的事——网的形状、阈值、遗忘全在 memnet 包里，
-// 那一块不 import 本仓库任何包，将来能整块搬走（独立仓库 / 独立服务）。
+// 边界：这里只做"取向量 / 拼文本"的事——网的形状、阈值、遗忘全在 memnet 包里。
+// memnet 只依赖标准库和 redact 叶子包（脱敏与标识收口的唯一规则源），
+// 两块一起搬走就能整块独立成服务。
 package server
 
 import (
@@ -13,6 +14,7 @@ import (
 
 	"github.com/NouSart/sump/memory/longterm"
 	"github.com/NouSart/sump/memory/memnet"
+	"github.com/NouSart/sump/memory/redact"
 	"github.com/NouSart/sump/protocol"
 )
 
@@ -116,13 +118,8 @@ func (s *Server) experienceLines(ctx context.Context, trace, query string) []str
 	return out
 }
 
-// actionNote 写一条经验（整理时机由调用方决定：收尾后、定时、手动都行）。
+// note 写一条经验（整理时机由调用方决定：收尾后、定时、手动都行）。
 // 不进 provides：不给 LLM 随手记东西的按钮——记错的"经验"比没记更糟。
-func (s *Server) actionNote(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.note(ctx, in.Input, callMeta{from: env.From, trace: env.Trace})
-}
-
-// note 写一条经验（v1 / SPv2 共用）。
 func (s *Server) note(ctx context.Context, body []byte, meta callMeta) (any, error) {
 	var p protocol.NotePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -132,7 +129,9 @@ func (s *Server) note(ctx context.Context, body []byte, meta callMeta) (any, err
 		return nil, errors.New("经验网未启用")
 	}
 	s.ensureNetCentroids(ctx, meta.trace)
-	content := strings.TrimSpace(p.Content)
+	// 先按写入边界脱敏，再拿这份文本去算向量：向量的权威定义是"库里那行字"，
+	// 否则当场算的向量对应原文、补齐时算的向量对应脱敏文，同一条经验两套坐标。
+	content := redact.Text(p.Content)
 	if content == "" {
 		return nil, errors.New("note: content 必填")
 	}
@@ -158,14 +157,9 @@ func (s *Server) note(ctx context.Context, body []byte, meta callMeta) (any, err
 	}, nil
 }
 
-// actionDig 顺着线头往下扒：
+// dig 顺着线头往下扒：
 //   - 给 entry_id：翻出这条经验同一大类里够近的兄弟（"还有没有类似的"）；
 //   - 给 node_id：展开整个大类（"这一类都有什么"）。
-func (s *Server) actionDig(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.dig(in.Input)
-}
-
-// dig 顺着线头往下扒（v1 / SPv2 共用）。
 func (s *Server) dig(body []byte) (any, error) {
 	var p protocol.DigPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -204,12 +198,7 @@ func (s *Server) dig(body []byte) (any, error) {
 	}
 }
 
-// actionLineHeads 直接要线头（门户/调试用；recall 里是自动带的）。
-func (s *Server) actionLineHeads(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.lineHeads(ctx, in.Input, callMeta{from: env.From, trace: env.Trace})
-}
-
-// lineHeads 直接要线头（v1 / SPv2 共用）。
+// lineHeads 直接要线头（门户/调试用；recall 里是自动带的）。
 func (s *Server) lineHeads(ctx context.Context, body []byte, meta callMeta) (any, error) {
 	var p protocol.LineHeadsPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -241,13 +230,8 @@ func (s *Server) lineHeads(ctx context.Context, body []byte, meta callMeta) (any
 	return protocol.LineHeadsResult{Heads: out}, nil
 }
 
-// actionNetPrune 维护：软剪枝（只标状态、只断干枯的线，不删行）。
+// netPrune 软剪枝（只标状态、只断干枯的线，不删行）。
 // 不绑时机——谁调都行（收尾后 / 定时 / 门户手动）。
-func (s *Server) actionNetPrune(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.netPrune(in.Input)
-}
-
-// netPrune 软剪枝（v1 / SPv2 共用；输入为空）。
 func (s *Server) netPrune(_ []byte) (any, error) {
 	if s.net() == nil {
 		return nil, errors.New("经验网未启用")

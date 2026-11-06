@@ -12,10 +12,33 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
-// Async report_result uses the same inbound WS path as ordinary actions. An
-// oversized report must be rejected before dispatch to the action handler.
+const defaultMessageBytes = 1 << 20
+
+func startNativeService(t *testing.T, s *Service) *httptest.Server {
+	t.Helper()
+	if err := s.buildSPv2(); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(s.spv2Srv.Handler())
+	t.Cleanup(server.Close)
+	return server
+}
+
+func nativeURL(server *httptest.Server) string {
+	return "ws" + strings.TrimPrefix(server.URL, "http") + "/spv2"
+}
+
+func effectiveLimit(limit int64) int64 {
+	if limit > 0 {
+		return limit
+	}
+	return defaultMessageBytes
+}
+
+// 补报入站与普通 call 走同一条 /spv2 路径；超限帧必须在分发到 handler 前被拒绝。
 func TestMaxMessageBytesInboundReport(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -25,38 +48,42 @@ func TestMaxMessageBytesInboundReport(t *testing.T) {
 	}{
 		{name: "normal", limit: 1024, size: 16},
 		{name: "oversized", limit: 1024, size: 4096, reject: true},
-		{name: "zero_is_unlimited", size: 65536},
+		{name: "zero_uses_default", size: 65536},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := New(Config{Name: "receiver", MaxMessageBytes: tc.limit})
+			s := New(Config{Name: "receiver", MaxMessageBytes: tc.limit, SecretFile: "-"})
 			handled := make(chan int, 1)
-			s.Handle("report_result", func(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+			s.HandleNative(spv2.Method{Name: "report_result", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
 				var data string
-				if err := protocol.DecodeRaw(in.Input, &data); err != nil {
-					return nil, err
+				if err := call.Frame.DecodeBody(&data); err != nil {
+					return err
 				}
 				handled <- len(data)
-				return "ok", nil
+				return call.Reply("ok")
 			})
-			server := httptest.NewServer(http.HandlerFunc(s.handleWS))
-			defer server.Close()
-			client, err := protocol.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+			server := startNativeService(t, s)
+			if got := s.spv2Srv.Card().Limits.MaxBody; got != effectiveLimit(tc.limit) {
+				t.Fatalf("card max_body = %d, want %d", got, effectiveLimit(tc.limit))
+			}
+			client, err := spv2.Dial(context.Background(), nativeURL(server))
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer client.Close()
-			raw, _ := protocol.EncodePayload(strings.Repeat("x", tc.size))
-			req, _ := protocol.NewEnvelope(protocol.TypeJump, "worker", "receiver", "", protocol.JumpPayload{Action: "report_result", Input: raw})
+			frame, err := spv2.NewCall("trace-report", spv2.ServiceRef("worker"), spv2.ServiceRef("receiver"), "report_result", strings.Repeat("x", tc.size))
+			if err != nil {
+				t.Fatal(err)
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, err = client.Call(ctx, req)
+			_, err = client.Call(ctx, frame)
 			if tc.reject {
-				if !errors.Is(err, protocol.ErrConnClosed) {
+				if !errors.Is(err, spv2.ErrConnClosed) {
 					t.Fatalf("oversized report: got %v, want ErrConnClosed", err)
 				}
 				select {
 				case <-handled:
-					t.Fatal("oversized report reached action handler")
+					t.Fatal("oversized report reached method handler")
 				default:
 				}
 			} else {
@@ -85,22 +112,21 @@ func TestMaxMessageBytesOutboundCall(t *testing.T) {
 	}{
 		{name: "normal", limit: 1024, size: 16},
 		{name: "oversized", limit: 1024, size: 4096, reject: true},
-		{name: "zero_is_unlimited", size: 65536},
+		{name: "zero_uses_default", size: 65536},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			peer := New(Config{Name: "peer"})
-			peer.Handle("read", func(context.Context, protocol.Envelope, protocol.JumpPayload) (any, error) {
-				return strings.Repeat("x", tc.size), nil
+			peer := New(Config{Name: "peer", SecretFile: "-"})
+			peer.HandleNative(spv2.Method{Name: "read", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+				return call.Reply(strings.Repeat("x", tc.size))
 			})
-			server := httptest.NewServer(http.HandlerFunc(peer.handleWS))
-			defer server.Close()
-			s := New(Config{Name: "caller", MaxMessageBytes: tc.limit})
-			s.setRoster(protocol.RosterPayload{Services: []protocol.ServiceCard{{Name: "peer", Addr: "ws" + strings.TrimPrefix(server.URL, "http")}}})
+			server := startNativeService(t, peer)
+			s := New(Config{Name: "caller", MaxMessageBytes: tc.limit, SecretFile: "-"})
+			s.setRoster(protocol.RosterPayload{Services: []protocol.ServiceCard{{Name: "peer", Addr: nativeURL(server)}}})
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			raw, err := s.Call(ctx, "peer", "read", nil, "", "caller")
+			raw, err := s.Call(ctx, "peer", "read", nil, "")
 			if tc.reject {
-				if !errors.Is(err, protocol.ErrConnClosed) {
+				if !errors.Is(err, spv2.ErrConnClosed) {
 					t.Fatalf("oversized response: got %v, want ErrConnClosed", err)
 				}
 			} else {
@@ -117,8 +143,7 @@ func TestMaxMessageBytesOutboundCall(t *testing.T) {
 }
 
 func TestMaxMessageBytesCenterRegistration(t *testing.T) {
-	// This peer sends a valid, oversized roster response to registration.
-	// Startup must fail rather than accepting a response outside its own limit.
+	// 这个对端在注册响应里塞了一份超限名册：启动必须失败，而不是接受超出自身上限的响应。
 	u := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := u.Upgrade(w, r, nil)
@@ -131,22 +156,33 @@ func TestMaxMessageBytesCenterRegistration(t *testing.T) {
 		if err != nil {
 			return
 		}
-		req, err := protocol.Unmarshal(data)
+		req, err := spv2.Unmarshal(data)
 		if err != nil {
 			return
 		}
-		raw, _ := protocol.EncodePayload(protocol.RosterPayload{Services: []protocol.ServiceCard{{Name: "large", Description: strings.Repeat("x", 4096)}}})
-		resp, _ := protocol.NewResponse(req, "settings-center", protocol.ResponsePayload{OK: true, Data: raw})
-		encoded, _ := protocol.Marshal(resp)
+		resp, err := spv2.NewReply(req, spv2.ServiceRef("settings-center"), protocol.RosterPayload{
+			Services: []protocol.ServiceCard{{Name: "large", Description: strings.Repeat("x", 4096)}},
+		})
+		if err != nil {
+			return
+		}
+		encoded, err := spv2.Marshal(resp)
+		if err != nil {
+			return
+		}
 		_ = ws.WriteMessage(websocket.BinaryMessage, encoded)
 		_, _, _ = ws.ReadMessage()
 	}))
 	defer server.Close()
-	s := New(Config{Name: "limited", Listen: "127.0.0.1:0", Center: "ws" + strings.TrimPrefix(server.URL, "http"), MaxMessageBytes: 1024, SecretFile: "-"})
+	s := New(Config{
+		Name: "limited", Listen: "127.0.0.1:0",
+		Center:          "ws" + strings.TrimPrefix(server.URL, "http") + "/spv2",
+		MaxMessageBytes: 1024, SecretFile: "-",
+	})
 	defer s.Shutdown()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.Start(ctx); !errors.Is(err, protocol.ErrConnClosed) {
+	if err := s.Start(ctx); !errors.Is(err, spv2.ErrConnClosed) {
 		t.Fatalf("oversized registration response: got %v, want ErrConnClosed", err)
 	}
 }

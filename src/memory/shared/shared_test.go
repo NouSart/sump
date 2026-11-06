@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/NouSart/sump/memory/redact"
 )
 
 func TestSanitize(t *testing.T) {
@@ -153,8 +155,13 @@ func TestPublishKeepsLatestTasks(t *testing.T) {
 	}
 
 	// 库里的行数也要被裁到上限：List 自己就带 LIMIT，只看列表看不出"根本没删"。
+	// 键是收口后的会话 id（库里不留 `qq:private:<号>` 这种账号形状）。
+	opaque, err := redact.SessionID("qq:private:1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var rows int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM shared_tasks WHERE session_id = ?`, "qq:private:1").Scan(&rows); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM shared_tasks WHERE session_id = ?`, opaque).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
 	if rows != MaxTasksPerSession {
@@ -202,7 +209,7 @@ func TestListQueryFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].ID != "web:a" {
+	if len(list) != 1 || list[0].ID != mustOpaque(t, "web:a") {
 		t.Fatalf("过滤结果 = %+v", list)
 	}
 }

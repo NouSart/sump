@@ -11,8 +11,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
+
+	"github.com/NouSart/sump/memory/redact"
 )
 
 // PublishInput 是一条待发布的摘要（已由调用方从模型输出里取好）。
@@ -52,8 +55,16 @@ type Session struct {
 // private = 这个任务不适合进目录：**什么都不写**（连会话行也不碰），
 // 已经发布过的旧摘要也不删——是否撤回由调用方显式 Forget 决定。
 func (s *Store) Publish(now time.Time, in PublishInput) (bool, error) {
-	sessionID := strings.TrimSpace(in.SessionID)
-	taskID := strings.TrimSpace(in.TaskID)
+	// 标识列也走写入边界：会话 id 的尾巴是真实账号（qq:private:<号>），
+	// 目录按会话归并需要它，所以收成「入口 + 单向摘要」而不是原样落库。
+	sessionID, err := redact.SessionID(in.SessionID)
+	if err != nil {
+		return false, fmt.Errorf("publish_session: %w", err)
+	}
+	taskID, err := redact.RefID(in.TaskID, "publish_session.task_id")
+	if err != nil {
+		return false, err
+	}
 	if sessionID == "" {
 		return false, errors.New("publish_session: conversation_id 必填")
 	}
@@ -124,6 +135,9 @@ func (s *Store) Publish(now time.Time, in PublishInput) (bool, error) {
 }
 
 // List 取会话目录：最近活跃在前，排除 exclude（通常是调用方自己），可选的 query 只做子串过滤。
+//
+// exclude 收口成与库里一致的形状再比：调用方手里的会话 id 是原值（`qq:private:<号>`），
+// 库里存的是摘要，不归一化就永远排除不掉自己。
 func (s *Store) List(limit int, exclude, query string) ([]Session, error) {
 	if limit <= 0 {
 		limit = 5
@@ -134,8 +148,12 @@ func (s *Store) List(limit int, exclude, query string) ([]Session, error) {
 	q := `SELECT id, entry, title, updated_at FROM shared_sessions WHERE private = 0`
 	args := []any{}
 	if strings.TrimSpace(exclude) != "" {
+		opaque, err := redact.SessionID(exclude)
+		if err != nil {
+			return nil, fmt.Errorf("shared_list: %w", err)
+		}
 		q += ` AND id <> ?`
-		args = append(args, exclude)
+		args = append(args, opaque)
 	}
 	if like := strings.TrimSpace(query); like != "" {
 		q += ` AND id IN (SELECT session_id FROM shared_tasks WHERE title LIKE ? OR goal LIKE ? OR outcome LIKE ?)`
@@ -211,10 +229,19 @@ type ForgetResult struct {
 }
 
 // Forget 删共享物：给 TaskID 只删那一条（删空则该会话也不再列出）；给 SessionID 删整个会话。
-func (s *Store) Forget(sessionID, taskID string) (ForgetResult, error) {
-	sessionID = strings.TrimSpace(sessionID)
-	taskID = strings.TrimSpace(taskID)
+//
+// 入参同样收口：门户拿到的 session_id 已经是摘要形状（可重复作用），
+// 复盘/脚本传原值也能删到同一条——两种写法归一成同一个键。
+func (s *Store) Forget(rawSessionID, rawTaskID string) (ForgetResult, error) {
 	var res ForgetResult
+	sessionID, err := redact.SessionID(rawSessionID)
+	if err != nil {
+		return res, fmt.Errorf("shared_forget: %w", err)
+	}
+	taskID, err := redact.RefID(rawTaskID, "shared_forget.task_id")
+	if err != nil {
+		return res, err
+	}
 	switch {
 	case taskID != "":
 		tx, err := s.db.Begin()

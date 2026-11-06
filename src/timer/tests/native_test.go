@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,9 +12,8 @@ import (
 	"github.com/NouSart/sump/timer/server"
 )
 
-// TestTimerNativeSPv2 直接打 timer 的 /spv2，确认 sleep/list/cancel 不再经过 v1 合成信封。
+// TestTimerNativeSPv2 直接打 timer 的 /spv2，确认 sleep/list/cancel 走原生方法。
 func TestTimerNativeSPv2(t *testing.T) {
-	t.Setenv("SUMP_SPV2", "1")
 	sc := startStubCenter(t)
 	logger := log.New(io.Discard, "", 0)
 	s := server.New(server.Config{
@@ -28,7 +26,7 @@ func TestTimerNativeSPv2(t *testing.T) {
 	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	addr := strings.TrimSuffix(s.WsURL(), "/ws") + "/spv2"
+	addr := s.WsURL()
 	c, err := spv2.Dial(ctx, addr)
 	if err != nil {
 		t.Fatal(err)

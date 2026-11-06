@@ -16,7 +16,7 @@ import (
 func main() {
 	name := flag.String("name", "timer", "服务名")
 	addr := flag.String("addr", "127.0.0.1:9801", "监听地址（host:port）")
-	center := flag.String("center", "ws://127.0.0.1:9000/ws", "设置中心 WS 地址")
+	center := flag.String("center", "ws://127.0.0.1:9000/spv2", "设置中心 WS 地址")
 	portal := flag.String("portal", "frontend", "门户服务名（在计时器推给它展示倒计时；留空 = 不推）")
 	maxMS := flag.Int64("max-ms", 3600000, "单次计时上限（毫秒；默认 1 小时，天花板 23 小时）")
 	maxPending := flag.Int("max-pending", 64, "在计时器上限（满即拒，不排队）")

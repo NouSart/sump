@@ -1,9 +1,9 @@
 package server
 
-// SPv2.1 原生入口：/spv2 的 call 直接解 body，调用与 v1 action 共用的实现。
+// SPv2.1 原生入口：/spv2 的 call 直接解 body，调用与共享实现。
 //
 // 这里不合成 v1 信封、也不构造跳转载荷：入参就是帧的 body，
-// 出参走 call.Reply / call.ReplyError。v1 的 s.Handle 仍保留给 /ws 兼容边缘。
+// 出参走 call.Reply / call.ReplyError。
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"github.com/NouSart/sump/spv2"
 )
 
-// registerNative 注册与 v1 动作同名的原生 method（New 里、s.Handle 之后调用）。
+// registerNative 注册全部动作的原生 method（New 里调用）。
 // Tool 与 provides 里的 Tool 对齐：只有 dig / remember / shared_sessions 是工具。
 func (s *Server) registerNative() {
 	s.HandleNative(spv2.Method{
@@ -176,7 +176,7 @@ func (s *Server) registerNative() {
 	}, s.nativeConversationOpen)
 	s.HandleNative(spv2.Method{
 		Name:        "conversation_archive",
-		Description: "归档 / 取消归档会话（归档 = 只读；不暴露给模型）",
+		Description: "归档 / 取消归档会话（归档 = 不进默认列表，不拦写入；不暴露给模型）",
 		Input: objectSchema(map[string]any{
 			"id":       stringSchema(),
 			"archived": booleanSchema(),

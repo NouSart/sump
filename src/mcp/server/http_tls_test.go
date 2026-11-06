@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // All keys and trust roots are test-local. Nothing is installed in Windows or
@@ -106,15 +107,15 @@ func TestHTTPTLSConfiguration(t *testing.T) {
 
 func TestRemoteTLSRequiresSecretBeforeBinding(t *testing.T) {
 	certFile, keyFile, _ := httpTLSFiles(t)
-	center := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
-		if env.Type == protocol.TypeRegister {
+	center := newNativePeer(t, "settings-center", []string{"register", "report"}, func(call *spv2.Call) (any, error) {
+		if call.Frame.Method == "register" {
 			return protocol.RosterPayload{Revision: 1}, nil
 		}
-		return protocol.SettingsResult{}, nil
+		return map[string]any{"ok": true}, nil
 	})
 	dir := t.TempDir()
 	s, err := New(Config{
-		Listen: "127.0.0.1:0", Center: center,
+		Listen: "127.0.0.1:0", Center: center.URL(),
 		ConfigPath: filepath.Join(dir, "absent-policy.json"), SecretFile: "-",
 		Logger: log.New(io.Discard, "", 0),
 		HTTP:   HTTPOptions{Listen: "192.0.2.1:9903", AllowRemote: true, TLSCertFile: certFile, TLSKeyFile: keyFile},

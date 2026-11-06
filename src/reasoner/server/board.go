@@ -145,12 +145,12 @@ func (s *Server) boardKick(st *taskState) {
 // fireStep 自跳推进下一轮（发出即完；信纸只带会话号）。
 func (s *Server) fireStep(st *taskState) {
 	st.mu.Lock()
-	cid, trace, boss, closed := st.cid, st.trace, st.boss, st.closed
+	cid, trace, closed := st.cid, st.trace, st.closed
 	st.mu.Unlock()
 	if closed {
 		return
 	}
-	s.Fire("self", "step", stepPayload{ConversationID: cid}, trace, boss)
+	s.Fire("self", "step", stepPayload{ConversationID: cid}, trace)
 }
 
 // ---------- 轮次 ----------
@@ -467,7 +467,7 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 
 	s.Fire(s.memoryName(), "store", protocol.StorePayload{
 		ConversationID: st.cid, Boss: st.boss, Role: "assistant", Content: text, Kind: "assistant", Seq: s.nextSeq(), TaskID: st.taskID,
-	}, st.trace, s.cfg.Name)
+	}, st.trace)
 	// 答复已经送达：这一轮的判定在这里落库（done → 完结；否则只改名）。
 	// 交付失败时不会走到这里——任务保持进行中，下一次事件/重试再说。
 	s.commitJudgement(st, st.trace)
@@ -499,20 +499,15 @@ func (s *Server) notifyRoundFailure(st *taskState, cause error) {
 	text := fmt.Sprintf("⚠️ 本轮推理失败：%v\n任务还开着（没有关闭）：可以点「重试」再跑一次，或直接发新消息。", cause)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := s.Call(ctx, boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: cid, TaskID: taskID}, trace, ""); err != nil {
+	if _, err := s.Call(ctx, boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: cid, TaskID: taskID}, trace); err != nil {
 		s.logger.Printf("会话 %s：失败说明没能送达 boss(%s): %v", cid, boss, err)
 	}
 }
 
-// actionRetry 让门户对「上一轮失败、任务还开着」的任务再跑一轮。
+// retry 让门户对「上一轮失败、任务还开着」的任务再跑一轮。
 //
 // 只认门户：重试是对用户意图的重放，不该让任意服务替用户按下这个按钮。
-func (s *Server) actionRetry(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.retry(env.From, in.Input)
-}
-
-// retry 让来源为门户的调用对“上一轮失败、任务还开着”的会话再跑一轮。
-// v1 从信封取 from，原生取 Frame.From.ID；来源不符时回 permissionError。
+// from 取自帧头 Frame.From.ID；来源不符时回 permissionError。
 func (s *Server) retry(from string, body []byte) (any, error) {
 	var allowed bool
 	if s.retryFrom != nil {
@@ -568,54 +563,18 @@ func isPortalFrom(name string, cards []protocol.ServiceCard) bool {
 	return false
 }
 
-// deliverToBoss 把最终结果直达 boss（短响应；Call 内部只对“拨号失败”安全重试）。
-// 送不出去时给**入口方**补一条失败信息——boss 认错了/丢了的时候，那条是唯一的回声。
+// deliverToBoss 把最终结果直达结果归属方（短响应；Call 内部只对“拨号失败”安全重试）。
+// 送不出去时返回错误，由上层记录日志并按“送达后不重试”原则停住。
 func (s *Server) deliverToBoss(st *taskState, text string) error {
 	if st.boss == "" {
-		return s.notifyDeliveryFailure(st, errors.New("无 boss，结果无法交付"))
+		return errors.New("无 boss，结果无法交付")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := s.Call(ctx, st.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: st.cid, TaskID: st.taskID}, st.trace, ""); err != nil {
-		return s.notifyDeliveryFailure(st, fmt.Errorf("交付 boss(%s) 失败: %w", st.boss, err))
+	if _, err := s.Call(ctx, st.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: st.cid, TaskID: st.taskID}, st.trace); err != nil {
+		return fmt.Errorf("交付 boss(%s) 失败: %w", st.boss, err)
 	}
 	return nil
-}
-
-// noteEntry 记下会话的入口服务（user_message 的 from）——交付失败时的另一条回家路。
-func (s *Server) noteEntry(cid, from string) {
-	if cid == "" || from == "" {
-		return
-	}
-	s.entryMu.Lock()
-	s.entries[cid] = from
-	s.entryMu.Unlock()
-}
-
-// entryOf 返回会话的入口服务名（没记过返回空）。
-func (s *Server) entryOf(cid string) string {
-	s.entryMu.Lock()
-	defer s.entryMu.Unlock()
-	return s.entries[cid]
-}
-
-// notifyDeliveryFailure 交付失败时按“最后失败了再补一条给 A”的规矩通知入口方：
-// 入口就是 boss 时没必要重试同一地址（刚报过），但 boss 认错/丢了时这条是唯一能让用户
-// 看见“任务失败了”的信息。它不改交付结果——失败仍是失败（返回 cause 供上层记日志）。
-func (s *Server) notifyDeliveryFailure(st *taskState, cause error) error {
-	entry := s.entryOf(st.cid)
-	if entry == "" || entry == st.boss {
-		return cause
-	}
-	text := fmt.Sprintf("[交付失败] 上一轮任务的结果没能送回来：%v", cause)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := s.Call(ctx, entry, "deliver", protocol.DeliverPayload{Text: text, ConversationID: st.cid}, st.trace, ""); err != nil {
-		s.logger.Printf("会话 %s：失败补报也送不出去（入口 %s）: %v", st.cid, entry, err)
-		return cause
-	}
-	s.logger.Printf("会话 %s：交付失败已补报给入口 %s", st.cid, entry)
-	return cause
 }
 
 // ---------- 自跳入口 ----------
@@ -623,11 +582,6 @@ func (s *Server) notifyDeliveryFailure(st *taskState, cause error) error {
 // stepPayload 是自跳（step）的 payload：只带会话号（上下文在黑板里）。
 type stepPayload struct {
 	ConversationID string `msgpack:"conversation_id,omitempty"`
-}
-
-// actionStep 承接自跳：把黑板上的任务推进到下一轮。
-func (s *Server) actionStep(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.step(in.Input)
 }
 
 // step 承接自跳的共享实现：把黑板上的任务推进到下一轮（没有进行中的任务就忽略）。

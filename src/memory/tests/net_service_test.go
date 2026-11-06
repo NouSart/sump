@@ -42,7 +42,7 @@ func TestNetActionsServiceLevel(t *testing.T) {
 	caller := startStubCaller(t, sc.URL())
 	waitRosterName(t, srv, "embedding")
 
-	note := func(content, durability string) protocol.ResponsePayload {
+	note := func(content, durability string) callResult {
 		return caller.call(t, srv.WsURL(), "note", protocol.NotePayload{
 			Content: content, ConversationID: "c-net", TaskID: "task-net", Durability: durability,
 		})

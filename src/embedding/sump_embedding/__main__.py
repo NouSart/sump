@@ -1,7 +1,7 @@
 """embedding 服务入口：python -m sump_embedding [flags]（Go 风格单横线参数）。
 
 用法（与其余服务一致的引导配置）：
-    python -m sump_embedding -addr 127.0.0.1:9601 -center ws://127.0.0.1:9000/ws
+    python -m sump_embedding -addr 127.0.0.1:9601 -center ws://127.0.0.1:9000/spv2
                             -backend onnx -model-dir data/models/bge-small-zh-v1.5
     python -m sump_embedding -backend fake        # 测试/CI：确定性伪向量，无模型依赖
 """
@@ -26,7 +26,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="sump-embedding", description="SUMP v2 embedding 服务（文本 → 向量）")
     parser.add_argument("-name", "--name", default="embedding", help="服务名（注册用）")
     parser.add_argument("-addr", "--addr", default="127.0.0.1:9601", help="监听地址（host:port）")
-    parser.add_argument("-center", "--center", default="ws://127.0.0.1:9000/ws", help="设置中心 WS 地址")
+    parser.add_argument("-center", "--center", default="ws://127.0.0.1:9000/spv2", help="设置中心原生 WS 地址（/spv2）")
     parser.add_argument("-backend", "--backend", choices=["onnx", "fake"], default="onnx", help="向量后端")
     parser.add_argument("-model-dir", "--model-dir", default="data/models/bge-small-zh-v1.5", help="模型目录")
     parser.add_argument("-model-file", "--model-file", default="", help="onnx 文件名（默认自动探测）")

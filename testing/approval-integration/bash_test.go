@@ -12,6 +12,7 @@ import (
 	"github.com/NouSart/sump/approval/analysis"
 	"github.com/NouSart/sump/protocol"
 	shell "github.com/NouSart/sump/shell/server"
+	"github.com/NouSart/sump/spv2"
 )
 
 // findPOSIXShell 找一个可用的 POSIX shell；没有就跳过。
@@ -54,13 +55,13 @@ func TestBashReadOnlyAutoApprovedAndPathBoundary(t *testing.T) {
 
 	events := make(chan protocol.AsyncResultPayload, 16)
 	c := f.client(t, "observer")
-	c.Handle("report_result", func(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	c.HandleNative(spv2.Method{Name: "report_result", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
 		var r protocol.AsyncResultPayload
-		if err := protocol.DecodeRaw(in.Input, &r); err != nil {
-			return nil, err
+		if err := call.Frame.DecodeBody(&r); err != nil {
+			return err
 		}
 		events <- r
-		return map[string]string{"status": "accepted"}, nil
+		return call.Reply(map[string]string{"status": "accepted"})
 	})
 	f.start(t, c)
 
@@ -70,7 +71,7 @@ func TestBashReadOnlyAutoApprovedAndPathBoundary(t *testing.T) {
 		{"write_command", "touch should-not-exist.txt", "review", "rejected"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			raw, err := c.Call(f.ctx, "shell", "run", protocol.ShellRunPayload{Command: tc.command}, "", "observer")
+			raw, err := c.Call(f.ctx, "shell", "run", protocol.ShellRunPayload{Command: tc.command}, "")
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	// ConversationActive 是正常可用的会话；ConversationArchived 是收起来的（只读）。
+	// ConversationActive 是正常可用的会话；ConversationArchived 是收起来的（不进默认列表）。
+	// 归档**不是只读**：写入那条边界写在 Record 的注释里。
 	ConversationActive   = "active"
 	ConversationArchived = "archived"
 
@@ -114,7 +115,7 @@ func (s *Store) ConversationByID(id string) (protocol.Conversation, error) {
 	return c, err
 }
 
-// SetConversationStatus 归档 / 取消归档（归档 = 只读，默认列表不显示）。
+// SetConversationStatus 归档 / 取消归档（只把它移出 / 放回默认列表，不拦写入）。
 func (s *Store) SetConversationStatus(id string, archived bool) (protocol.Conversation, error) {
 	status := ConversationActive
 	if archived {

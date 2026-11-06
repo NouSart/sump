@@ -1,5 +1,11 @@
-// Package longterm 是记忆服务的长期记忆库（SQLite）：条目写入 / 软删 / 读取。
-// 与 store（会话库）**共享同一个 *sql.DB 句柄**（同进程同库——将来跨表事务才有原子性）。
+// Package longterm 是共享经验库里的「偏好 / 事实」那一层（SQLite）：条目写入 / 软删 / 读取。
+// 生产里本包的实例只由 shared.Open 建出来，挂在共享经验库 data/experience.db 的句柄上，
+// 因此 Add 的脱敏与标识列收口是无条件的红线执行点，不是调用方可选项。
+//
+// 两个库的分工、句柄与「跨库不保证原子」是 shared 包的事实，写在 shared/db.go 的
+// 包注释里（一个事实只有一个家）——这里不复述，只说本包看到什么：
+// Open 收到哪个句柄就用哪个句柄。测试会把**会话库**（私有）的句柄递进来走旧库迁移路
+// （shared/migrate_test.go、redline_test.go），那是测试形态，不是生产接线。
 // 检索（bigram 打分）见 rank.go：纯函数，不碰库。
 package longterm
 
@@ -11,6 +17,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/NouSart/sump/memory/redact"
 )
 
 // Entry 是一条长期记忆条目。
@@ -34,7 +42,8 @@ type Store struct {
 	db *sql.DB
 }
 
-// Open 校验 / 建立 memories 表（db 由会话库提供——共享句柄是有意为之）。
+// Open 校验 / 建立 memories 表。db 由调用方给：生产里是共享经验库的句柄（shared.Open 递进来），
+// 会话库句柄只出现在旧库迁移的测试里——本包不判断句柄属于谁。
 func Open(db *sql.DB) (*Store, error) {
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
@@ -131,17 +140,29 @@ func (s *Store) tableColumns() (map[string]bool, error) {
 
 // Add 写入一条条目；已有相同（kind+content）的 active 条目时幂等跳过。
 // source 记录写入方（调用方服务名）。
+//
+// 写入边界强制：正文脱敏、conversation_id 收成「入口 + 摘要」、source 必须是
+// 不透明 id 形状。这里不检查也不会有下一道检查——remember 是 Tool:true，
+// 模型给的 content 直接落到共享库。
 func (s *Store) Add(kind, content string, priority int, conversationID, source string) (int64, bool, error) {
-	kind = strings.TrimSpace(kind)
-	content = strings.TrimSpace(content)
-	if kind == "" || content == "" {
+	kind = redact.Text(kind)
+	content = redact.Text(content)
+	if strings.TrimSpace(kind) == "" || strings.TrimSpace(content) == "" {
 		return 0, false, errors.New("kind 与 content 必填")
+	}
+	cid, err := redact.SessionID(conversationID)
+	if err != nil {
+		return 0, false, fmt.Errorf("memories.conversation_id: %w", err)
+	}
+	src, err := redact.RefID(source, "memories.source")
+	if err != nil {
+		return 0, false, err
 	}
 	if priority < 0 {
 		priority = 0
 	}
 	var id int64
-	err := s.db.QueryRow(
+	err = s.db.QueryRow(
 		`SELECT id FROM memories WHERE status='active' AND kind=? AND content=? LIMIT 1`,
 		kind, content,
 	).Scan(&id)
@@ -156,7 +177,7 @@ func (s *Store) Add(kind, content string, priority int, conversationID, source s
 	res, err := s.db.Exec(
 		`INSERT INTO memories(kind, content, priority, source, conversation_id, status, created_at, updated_at)
 		 VALUES(?,?,?,?,?,'active',?,?)`,
-		kind, content, priority, source, nullIfEmpty(conversationID), now, now,
+		kind, content, priority, src, nullIfEmpty(cid), now, now,
 	)
 	if err != nil {
 		return 0, false, err

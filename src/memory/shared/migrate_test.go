@@ -72,7 +72,8 @@ func TestMigrateFromLegacyMemoryDB(t *testing.T) {
 	}
 
 	var notes int
-	if err := sh.DB().QueryRow(`SELECT COUNT(*) FROM mem_entries WHERE conversation_id = ?`, "web:private:owner").Scan(&notes); err != nil {
+	// 键是收口后的会话 id：旧库里的 `web:private:owner` 不得原样搬进共享库（见 redline_test.go）。
+	if err := sh.DB().QueryRow(`SELECT COUNT(*) FROM mem_entries WHERE conversation_id = ?`, mustOpaque(t, "web:private:owner")).Scan(&notes); err != nil {
 		t.Fatal(err)
 	}
 	if notes != 1 {

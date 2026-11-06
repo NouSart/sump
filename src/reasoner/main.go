@@ -17,7 +17,7 @@ import (
 func main() {
 	name := flag.String("name", "reasoner", "服务名")
 	addr := flag.String("addr", "127.0.0.1:9101", "监听地址（host:port）")
-	center := flag.String("center", "ws://127.0.0.1:9000/ws", "设置中心 WS 地址")
+	center := flag.String("center", "ws://127.0.0.1:9000/spv2", "设置中心 WS 地址")
 	memorySvc := flag.String("memory", "memory", "记忆服务名（完全启动链的另一半）")
 	imagesSvc := flag.String("images", "images", "图片服务名（推理前取图内联）")
 	llmBase := flag.String("llm-base", "https://api.deepseek.com", "LLM API 地址（OpenAI 兼容；设置中心 llm.base 可热改）")

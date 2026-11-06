@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // findServiceSetting 从 list_settings 结果里取某服务的某一项。
@@ -33,7 +34,7 @@ func findServiceSetting(t *testing.T, res protocol.SettingsResult, service, key 
 }
 
 // listSettings 以观察者身份拉一次设置。
-func listSettings(t *testing.T, obs *protocol.Client, service string) protocol.SettingsResult {
+func listSettings(t *testing.T, obs *spv2.Client, service string) protocol.SettingsResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -49,7 +50,7 @@ func listSettings(t *testing.T, obs *protocol.Client, service string) protocol.S
 }
 
 // waitSecretFlag 轮询到某秘密项的「服务侧有值」标记变为 want。
-func waitSecretFlag(t *testing.T, obs *protocol.Client, service, key string, want bool, timeout time.Duration) {
+func waitSecretFlag(t *testing.T, obs *spv2.Client, service, key string, want bool, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -110,8 +111,8 @@ func TestSettingsSecretE2E(t *testing.T) {
 
 	scPort := freePort(t)
 	rsPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	reasonerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", rsPort)
+	centerURL := spv2URL(scPort)
+	reasonerURL := spv2URL(rsPort)
 
 	dir := t.TempDir()
 	centerFile := filepath.Join(dir, "settings.json")
@@ -232,7 +233,7 @@ func TestSettingsSecretE2E(t *testing.T) {
 
 	// 服务重启（同一条秘密文件路径）：值由服务自己带回来，中心始终没有值可下发
 	rsPort2 := freePort(t)
-	reasonerURL2 := fmt.Sprintf("ws://127.0.0.1:%d/ws", rsPort2)
+	reasonerURL2 := spv2URL(rsPort2)
 	startProc(t, rsBin,
 		"-addr", fmt.Sprintf("127.0.0.1:%d", rsPort2), "-center", centerURL,
 		"-secret-file", secretFile)

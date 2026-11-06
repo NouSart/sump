@@ -5,7 +5,7 @@
 
 > **v0.0.1-beta.2** · Apache-2.0 · *SUMP is a service-mesh style agent runtime: every capability is an independent process with its own database and address, and the agent loop lives only in the network.*
 
-SUMP 是「服务的互联网」式智能体系统：每个能力是**独立进程**（独立数据库、任意语言），按地址互相访问；智能体循环不存在于任何服务内部，而是 LLM 服务在网络上的自我跳转链。
+SUMP 是「服务的互联网」式智能体系统：每个能力是**独立进程**（独立数据库、任意语言），按地址互相访问（每服务只暴露 `/spv2`）；智能体循环不存在于任何服务内部，而是 LLM 服务在网络上的自我调用链。
 
 ## 三条路径
 
@@ -65,7 +65,7 @@ go.work       把 src/ 与 testing/ 下的 16 个模块串成一个工作区
 | 4.1 | 群聊的授权粒度只到「策略档位」 | `group.mode` 是全群一刀（观察 / 仅@ / 判断），没有按群的授权白名单（哪个群可以调工具、可以外发文件）；「非主人的话不能当授权」「群里拿不准就不说」靠 system prompt 约束 + `task_status.silent`，**不是强制的权限检查** |
 | 5 | 审批第二层只有「批准 / 拒绝」 | 解释（LLM 解读命令）与富通知未做；用户批准后 30 秒内必须执行（排队过期即作废） |
 | 6 | 跨会话共享靠「复盘」撑着 | 别的会话看到的只是**摘要**（在做什么 / 做到哪了 / 用过哪些能力），不是对话原文；摘要由复盘那次模型调用顺带产出——关掉 `reflect.on` 就没有新摘要，目录会停在最后一条。整机可用 `share.on` 关掉发布，单个任务可标 `private` |
-| 6.1 | 共享摘要可能带出不该带的东西 | 提示词禁止写路径 / 命令 / 账号，库侧再脱敏一层（链接、路径、邮箱、密钥形状、手机号），但**这是尽力而为**：任务标题由模型给，敏感场合请用 `private` |
+| 6.1 | 共享摘要可能带出不该带的东西 | 共享库每格落库前都过写入边界：正文掩码（链接、路径、邮箱、密钥形状、手机号）+ 标识列 fail-closed（规则见 [src/memory/redact/redact.go](./src/memory/redact/redact.go)），存量另有 `src/memory/cmd/sump-repair` 一次性清理；但拦的是**形状**不是**语义**——标题与经验内容仍由模型给，敏感场合请用 `private` |
 | 7 | 审批档位对 PowerShell 不生效 | `auto_approve` 只在 bash 侧被读取（`engine.Tier()` 的唯一调用点），面板上改档位对 PowerShell 命令没有效果 —— [#31](https://github.com/NouSart/sump/issues/31) |
 | 8 | 每条命令的审批解析约 276ms | 每次评估都起一个 `pwsh` 子进程做 AST 解析（p50 276ms / p95 293ms）；它落在每条命令的必经路径上 —— [#33](https://github.com/NouSart/sump/issues/33) |
 | 9 | 门户终端不是 PTY | 输入框里的终端能真执行命令（经 shell，走同一套审批，结果把 `$ 命令 / 输出 / exit N` 写回会话记录），但 shell 只有 `run`：没有交互程序（vim / top）、没有 Ctrl+C、没有流式输出——输出在命令结束时一次到达 |
@@ -79,7 +79,7 @@ go.work       把 src/ 与 testing/ 下的 16 个模块串成一个工作区
 | [docs/quickstart.md](./docs/quickstart.md) | 快速开始：依赖、一键启动、端口、测试、长期运行 |
 | [docs/concepts/architecture.md](./docs/concepts/architecture.md) | 架构：服务清单、一次对话怎么流动、数据归属、刻意不做的事 |
 | [docs/concepts/agent-loop.md](./docs/concepts/agent-loop.md) | 运行时语义：工具异步、会话记录、任务、经验网、复盘 |
-| [docs/concepts/protocol.md](./docs/concepts/protocol.md) | 协议契约：独立性约束、生命周期、帧与信封、动作与暴露、异步补报、链机制、命名基线 |
+| [docs/concepts/protocol.md](./docs/concepts/protocol.md) | 协议契约：独立性约束、生命周期、SPv2.1 帧与控制面、method 与暴露、异步补报、链机制、命名基线 |
 | [docs/concepts/approval.md](./docs/concepts/approval.md) | 命令审批：一条命令怎么走完、裁决包、限额、用户裁决、边界 |
 | [docs/concepts/roadmap.md](./docs/concepts/roadmap.md) | 路线与失败条件：三步走、现在在哪、什么情况下该停 |
 | [docs/guides/add-a-service.md](./docs/guides/add-a-service.md) | 写一个服务：名片字段、三类设置项与下发、服务自报、测试要求 |

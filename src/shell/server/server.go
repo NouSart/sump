@@ -87,7 +87,6 @@ type job struct {
 	item          string // 受理句柄（补报原样带回）
 	caller        string // 受理时的调用方（补报目标）
 	trace         string // 链路 id（原样沿用）
-	boss          string // 受理时的 boss（原样沿用）
 	command       string
 	workDir       string
 	plan          *protocol.ExecutionPlan
@@ -257,8 +256,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.As("number"),
 		service.Unit("ms"))
 
-	s.Handle("run", s.actionRun)
-	// /spv2 原生 method：同一业务实体（s.run），body 直接是 ShellRunPayload，
+	// 原生 SPv2.1 method：同一业务实体（s.run），body 直接是 ShellRunPayload，
 	// 元数据取自帧（work = 链路 id，from.id = 调用方/结果归属）。
 	s.HandleNative(spv2.Method{
 		Name: "run", Tool: true, LongRunning: true,
@@ -296,16 +294,11 @@ func (s *Server) RunningCount() int {
 
 // ---------- 受理 ----------
 
-// actionRun 是 v1（/ws 的 JumpPayload）兼容边缘：只把信封里的元数据交给共享实现。
-func (s *Server) actionRun(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.run(env.From, env.Trace, env.Boss, in.Input)
-}
-
-// nativeRun 是 /spv2 的原生入口：body 直接就是 ShellRunPayload，元数据取自帧
-// （from.id = 调用方、work = 链路 id），不合成 v1 的 JumpPayload / Envelope。
+// nativeRun 是 run 的原生入口：body 直接就是 ShellRunPayload，元数据取自帧
+// （from.id = 调用方、work = 链路 id）。
 // 帧没有 boss 字段：结果归属按 from 记（与 timer 的约定一致）。
 func (s *Server) nativeRun(_ context.Context, call *spv2.Call) error {
-	out, err := s.run(call.Frame.From.ID, call.Frame.Work, call.Frame.From.ID, call.Frame.Body)
+	out, err := s.run(call.Frame.From.ID, call.Frame.Work, call.Frame.Body)
 	if err != nil {
 		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
@@ -313,14 +306,14 @@ func (s *Server) nativeRun(_ context.Context, call *spv2.Call) error {
 }
 
 // run 受理一条命令：立即回执（不等审批、不等执行，后续由 report_result 补报）。
-// 这是业务实体：v1 边缘（actionRun）与原生 method（nativeRun）都只调它，不各写一遍。
+// 这是业务实体：唯一的入口（nativeRun）只调它，不另写一遍。
 //
 // 同步拒绝的只有两类：请求本身不合法（命令为空 / 工作目录越界），以及**同时在跑的命令已达上限**。
 // 后者是熔断不是调度：满了就明确告诉你"这次没执行"，绝不返回"已排队"这种要你干等的回执。
 //
 // 并行还是串行由调用方决定（一次派发几条）。服务不维护窗口、不排队、不做顺序承诺——
 // 那是调度，属于调用方；执行器只负责执行。要串行就等上一条的补报再发下一条。
-func (s *Server) run(caller, trace, boss string, body []byte) (any, error) {
+func (s *Server) run(caller, trace string, body []byte) (any, error) {
 	if len(body) > 64<<10 {
 		return nil, errors.New("run: 请求超过 64 KiB")
 	}
@@ -352,7 +345,6 @@ func (s *Server) run(caller, trace, boss string, body []byte) (any, error) {
 		item:          protocol.NewID(),
 		caller:        caller,
 		trace:         trace,
-		boss:          boss,
 		command:       p.Command,
 		workDir:       dir,
 		progressReady: make(chan struct{}),
@@ -492,7 +484,7 @@ func (s *Server) report(j *job, phase, text string, data protocol.ShellEventData
 func (s *Server) deliverReport(ctx context.Context, j *job, p protocol.AsyncResultPayload) error {
 	delay := 50 * time.Millisecond
 	for {
-		raw, err := s.Call(ctx, j.caller, "report_result", p, j.trace, j.boss)
+		raw, err := s.Call(ctx, j.caller, "report_result", p, j.trace)
 		if err != nil {
 			return err
 		}

@@ -1,8 +1,8 @@
-"""SPv2.1 原生端点集成测试：真 WS + 假中心 + FakeBackend。
+"""SPv2.1 原生端点集成测试：真 WS + 假中心（/spv2）+ FakeBackend。
 
 覆盖 /spv2 的 embed 成功路径（reply 配对 / vectors / dim / model）、unknown method
 （not_found）、坏 body / 错版本 / 空 body / 非 map（invalid_argument）、hello/health，
-以及 /ws 的 v1 兼容边缘仍原样可用。
+以及原生端点的连接隔离（一条连接断开只取消它自己在飞的动作）。
 """
 
 from __future__ import annotations
@@ -17,9 +17,6 @@ import websockets
 
 from sump_embedding import spv2
 from sump_embedding.backends import FakeBackend
-from sump_embedding.protocol import decode as decode_v1
-from sump_embedding.protocol import encode as encode_v1
-from sump_embedding.protocol import new_envelope, new_response
 from sump_embedding.service import Config, Service
 
 TIMEOUT = 15.0
@@ -29,7 +26,7 @@ CLIENT = spv2.Ref(kind="service", id="probe", authority=spv2.AUTHORITY_NONE)
 
 
 class StubCenter:
-    """最小假中心：注册回名册、心跳 / bye 收下即可（本文件不测自愈）。"""
+    """最小原生假中心：register call 回名册；心跳 / bye 收下即可（本文件不测自愈）。"""
 
     def __init__(self) -> None:
         self._server: websockets.Server | None = None
@@ -39,17 +36,19 @@ class StubCenter:
     async def start(self) -> str:
         self._server = await websockets.serve(self._handler, "127.0.0.1", 0, max_size=None)
         port = self._server.sockets[0].getsockname()[1]
-        self.url = f"ws://127.0.0.1:{port}/ws"
+        self.url = f"ws://127.0.0.1:{port}/spv2"
         return self.url
 
     async def _handler(self, ws: websockets.ServerConnection) -> None:
         try:
             async for raw in ws:
-                env = decode_v1(raw)
-                if env["type"] == "register":
+                frame = spv2.decode(raw)
+                if frame.type == spv2.TYPE_CALL and frame.method == "register":
                     self.registrations += 1
                     roster = {"services": [], "revision": 1}
-                    await ws.send(encode_v1(new_response(env, "settings-center", {"ok": True, "data": roster})))
+                    await ws.send(
+                        spv2.encode(spv2.new_reply(frame, spv2.service_ref("settings-center"), roster))
+                    )
         except websockets.ConnectionClosed:
             pass
 
@@ -134,7 +133,7 @@ def test_frame_wire_shape() -> None:
 # ---------- /spv2 成功路径 ----------
 
 
-def test_embed_native_reply_and_v1_compat() -> None:
+def test_embed_native_reply() -> None:
     async def scenario() -> None:
         async with running_service() as svc:
             call, reply = await call_spv2(svc.addr, "embed", {"texts": ["苹果", "爱吃苹果"]})
@@ -152,16 +151,6 @@ def test_embed_native_reply_and_v1_compat() -> None:
             # query 标志走同一条原生路径
             _, reply2 = await call_spv2(svc.addr, "embed", {"texts": ["苹果"], "query": True})
             assert reply2.status == spv2.STATUS_OK
-
-            # /ws 的 v1 兼容边缘不受影响
-            async with websockets.connect(f"ws://{svc.addr}/ws", max_size=None) as ws:
-                env = new_envelope(
-                    "jump", "probe", "embedding", "T-PROBE", {"action": "embed", "input": {"texts": ["苹果"]}}
-                )
-                await ws.send(encode_v1(env))
-                payload = decode_v1(await asyncio.wait_for(ws.recv(), TIMEOUT))["payload"]
-            assert payload["ok"] is True
-            assert payload["data"]["dim"] == 32
 
     run(scenario)
 
@@ -241,3 +230,103 @@ def test_hello_and_health() -> None:
             assert isinstance(health["uptime_ms"], int)
 
     run(scenario)
+
+
+# ---------- 原生端点连接隔离 ----------
+
+
+class Harness:
+    """动作替身：slow 停在闸门上等测试放行，并记录自己是否被取消。"""
+
+    def __init__(self) -> None:
+        self.gate = asyncio.Event()
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def slow(self, _body: bytes) -> object:
+        self.started.set()
+        try:
+            await self.gate.wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        return {"slow": True}
+
+    async def work(self, _body: bytes) -> object:
+        return {"work": True}
+
+
+async def start_native_endpoint(h: Harness) -> tuple[websockets.Server, str]:
+    ep = spv2.NativeEndpoint(
+        name="probe",
+        methods=[
+            spv2.MethodSpec(name="slow", handler=h.slow),
+            spv2.MethodSpec(name="work", handler=h.work),
+        ],
+        action_timeout=10.0,
+        log=log,
+        version="test",
+    )
+    server = await websockets.serve(ep.handle_conn, "127.0.0.1", 0, max_size=None)
+    port = server.sockets[0].getsockname()[1]
+    return server, f"ws://127.0.0.1:{port}/spv2"
+
+
+async def send_native_call(ws: websockets.ClientConnection, method: str) -> None:
+    frame = spv2.new_call(
+        work=spv2.new_id(),
+        from_=CLIENT,
+        to=spv2.service_ref("probe"),
+        method=method,
+    )
+    await ws.send(spv2.encode(frame))
+
+
+def test_closing_one_native_connection_does_not_cancel_other_inflight() -> None:
+    """A 收到回执后关闭连接（= 调用方每次短连接）→ B 在飞的动作继续跑完并拿到响应。"""
+
+    async def scenario() -> None:
+        h = Harness()
+        server, url = await start_native_endpoint(h)
+        try:
+            conn_b = await websockets.connect(url)
+            await send_native_call(conn_b, "slow")
+            await asyncio.wait_for(h.started.wait(), 2.0)
+
+            conn_a = await websockets.connect(url)
+            await send_native_call(conn_a, "work")
+            reply = spv2.decode(await asyncio.wait_for(conn_a.recv(), 2.0))
+            assert reply.status == spv2.STATUS_OK, reply.error
+            await conn_a.close()
+            await asyncio.sleep(0.2)
+
+            assert not h.cancelled.is_set(), "B 在飞的动作被另一条连接的断开连坐取消了"
+            h.gate.set()
+            reply_b = spv2.decode(await asyncio.wait_for(conn_b.recv(), 3.0))
+            assert reply_b.status == spv2.STATUS_OK, reply_b.error
+            assert spv2.decode_body(reply_b.body) == {"slow": True}
+            await conn_b.close()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(asyncio.wait_for(scenario(), TIMEOUT))
+
+
+def test_closing_native_connection_cancels_its_own_inflight() -> None:
+    """连接断开 → 它自己在飞的动作被取消（这半边行为要有，不能因为修 bug 一起丢了）。"""
+
+    async def scenario() -> None:
+        h = Harness()
+        server, url = await start_native_endpoint(h)
+        try:
+            conn = await websockets.connect(url)
+            await send_native_call(conn, "slow")
+            await asyncio.wait_for(h.started.wait(), 2.0)
+            await conn.close()
+            await asyncio.wait_for(h.cancelled.wait(), 2.0)
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(asyncio.wait_for(scenario(), TIMEOUT))

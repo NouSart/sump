@@ -14,7 +14,8 @@ import (
 )
 
 func nativeServerURL(s *Server) string {
-	return strings.TrimSuffix(s.WsURL(), "/ws") + "/spv2"
+	// 骨架的 WsURL 已经以 /spv2 结尾，不再需要拼路径。
+	return s.WsURL()
 }
 
 func dialNativeMCP(t *testing.T, s *Server) *spv2.Client {
@@ -31,7 +32,6 @@ func dialNativeMCP(t *testing.T, s *Server) *spv2.Client {
 
 // /spv2 的 import method 直接解 Frame.Body，卡片声明来自动态 provides。
 func TestNativeImportMethodAndCall(t *testing.T) {
-	t.Setenv("SUMP_SPV2", "1")
 	remote := importFixture(t, lookupTool(), func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			Key string `json:"key"`
@@ -80,7 +80,6 @@ func TestNativeImportMethodAndCall(t *testing.T) {
 
 // report_result / cancel_import 同样走原生 method，不合成 v1 信封。
 func TestNativeReportAndCancelImport(t *testing.T) {
-	t.Setenv("SUMP_SPV2", "1")
 	s := startGateway(t, Config{}, nil, `{}`)
 	c := dialNativeMCP(t, s)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -120,18 +119,16 @@ func TestNativeReportAndCancelImport(t *testing.T) {
 
 // 原生异步 import 只回受理回执，最终结果仍按 trace 发回原调用方。
 func TestNativeAsyncImportReceiptAndReport(t *testing.T) {
-	t.Setenv("SUMP_SPV2", "1")
 	reports := make(chan receivedImportReport, 1)
-	caller := gatewayPeer(t, func(env protocol.Envelope) (any, error) {
-		var jump protocol.JumpPayload
-		if err := env.DecodePayload(&jump); err != nil || jump.Action != "report_result" {
+	caller := newNativePeer(t, "reasoner", []string{"report_result"}, func(call *spv2.Call) (any, error) {
+		if call.Frame.Method != "report_result" {
 			return nil, errors.New("expected report_result")
 		}
 		var result protocol.AsyncResultPayload
-		if err := protocol.DecodeRaw(jump.Input, &result); err != nil {
+		if err := call.Frame.DecodeBody(&result); err != nil {
 			return nil, err
 		}
-		reports <- receivedImportReport{env: env, result: result}
+		reports <- receivedImportReport{frame: call.Frame, result: result}
 		return map[string]any{"received": true}, nil
 	})
 	remote := importFixture(t, lookupTool(), func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -144,7 +141,7 @@ func TestNativeAsyncImportReceiptAndReport(t *testing.T) {
 	config := lookupImport()
 	config.Async = true
 	policy, _ := json.Marshal(exportPolicy{Exports: []string{}, Remotes: []RemoteConfig{{ID: "demo", URL: remote.URL}}, Imports: []ImportConfig{config}})
-	s := startGateway(t, Config{AsyncTimeout: 5 * time.Second}, []protocol.ServiceCard{{Name: "reasoner", Addr: caller}}, string(policy))
+	s := startGateway(t, Config{AsyncTimeout: 5 * time.Second}, []protocol.ServiceCard{{Name: "reasoner", Addr: caller.URL()}}, string(policy))
 	c := dialNativeMCP(t, s)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -159,8 +156,9 @@ func TestNativeAsyncImportReceiptAndReport(t *testing.T) {
 	}
 	select {
 	case report := <-reports:
-		if report.env.From != "mcp" || report.env.To != "reasoner" || report.env.Trace != "work-async-native" || report.env.Boss != "reasoner" {
-			t.Fatalf("原生异步补报丢失关联: %+v", report.env)
+		// 原生帧的来源即本跳的 boss：mcp 把结果按原 trace 送回调用方。
+		if report.frame.From.ID != "mcp" || report.frame.To.ID != "reasoner" || report.frame.Work != "work-async-native" {
+			t.Fatalf("原生异步补报丢失关联: %+v", report.frame)
 		}
 		if report.result.ItemID != receipt.ItemID || report.result.Phase != "completed" || !strings.Contains(report.result.Text, "async:x") {
 			t.Fatalf("原生异步补报错误: %+v", report.result)

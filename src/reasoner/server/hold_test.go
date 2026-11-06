@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"io"
 	"log"
 	"strings"
@@ -40,7 +39,7 @@ func hold(t *testing.T, s *Server, p protocol.UserHoldPayload) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.actionUserHold(context.Background(), protocol.Envelope{}, protocol.JumpPayload{Input: raw})
+	out, err := s.userHold(raw)
 	if err != nil {
 		t.Fatalf("user_hold 失败: %v", err)
 	}
@@ -84,11 +83,11 @@ func TestHoldPrimaryNotDowngraded(t *testing.T) {
 func TestHoldRejectsBadInput(t *testing.T) {
 	s := newHoldServer()
 	raw, _ := protocol.EncodePayload(protocol.UserHoldPayload{Hold: protocol.UserHoldPrimary})
-	if _, err := s.actionUserHold(context.Background(), protocol.Envelope{}, protocol.JumpPayload{Input: raw}); err == nil {
+	if _, err := s.userHold(raw); err == nil {
 		t.Fatal("缺 conversation_id 应报错")
 	}
 	raw, _ = protocol.EncodePayload(protocol.UserHoldPayload{ConversationID: "c1", Hold: "maybe"})
-	if _, err := s.actionUserHold(context.Background(), protocol.Envelope{}, protocol.JumpPayload{Input: raw}); err == nil {
+	if _, err := s.userHold(raw); err == nil {
 		t.Fatal("非法档位应报错")
 	}
 	if s.heldFor("c1") {

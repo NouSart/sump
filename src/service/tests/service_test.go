@@ -12,28 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
 )
 
-// ---------- 设置中心替身 ----------
-
-type stubConn struct {
-	ws *websocket.Conn
-	mu sync.Mutex
-}
-
-func (c *stubConn) send(env protocol.Envelope) {
-	data, err := protocol.Marshal(env)
-	if err != nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.ws.WriteMessage(websocket.BinaryMessage, data)
-}
+// ---------- 设置中心替身（原生 /spv2 控制面） ----------
 
 type stubCenter struct {
 	ln  net.Listener
@@ -42,7 +26,7 @@ type stubCenter struct {
 	mu       sync.Mutex
 	regs     []protocol.RegisterPayload
 	byes     int
-	conns    map[*stubConn]struct{}
+	conns    map[*spv2.Call]struct{}
 	reports  []reportRecord
 	announce []announceRecord        // 收到的设置回传（report_setting）
 	settings protocol.SettingsResult // list_settings 的应答
@@ -60,106 +44,98 @@ type reportRecord struct {
 	P    protocol.ReportPayload
 }
 
-var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-
 func startStubCenter(t *testing.T) *stubCenter {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	sc := &stubCenter{ln: ln, conns: map[*stubConn]struct{}{}}
+	sc := &stubCenter{ln: ln, conns: map[*spv2.Call]struct{}{}}
+	card := spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "settings-center", Actor: spv2.ServiceRef("settings-center"),
+		Version: "stub-center/0.1",
+		Methods: []spv2.Method{
+			{Name: "register", Shape: spv2.ShapeCall, Version: 1},
+			{Name: "heartbeat", Shape: spv2.ShapeEvent, Version: 1},
+			{Name: "report", Shape: spv2.ShapeCall, Version: 1},
+			{Name: "report_setting", Shape: spv2.ShapeCall, Version: 1},
+			{Name: "list_settings", Shape: spv2.ShapeCall, Version: 1},
+		},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	}
+	srv, err := spv2.NewServer(card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.Handle("register", sc.handleRegister)
+	srv.Handle("heartbeat", sc.handleHeartbeat)
+	srv.Handle("report", sc.handleReport)
+	srv.Handle("report_setting", sc.handleReportSetting)
+	srv.Handle("list_settings", sc.handleListSettings)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", sc.handleWS)
+	mux.Handle("/spv2", srv.Handler())
 	sc.srv = &http.Server{Handler: mux}
 	go func() { _ = sc.srv.Serve(ln) }()
 	t.Cleanup(func() { _ = sc.srv.Close() })
 	return sc
 }
 
-func (sc *stubCenter) URL() string { return "ws://" + sc.ln.Addr().String() + "/ws" }
+func (sc *stubCenter) URL() string { return "ws://" + sc.ln.Addr().String() + "/spv2" }
 
-func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
+func (sc *stubCenter) handleRegister(_ context.Context, call *spv2.Call) error {
+	var reg protocol.RegisterPayload
+	if err := call.Frame.DecodeBody(&reg); err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
-	c := &stubConn{ws: ws}
 	sc.mu.Lock()
-	sc.conns[c] = struct{}{}
+	sc.regs = append(sc.regs, reg)
+	sc.conns[call] = struct{}{}
 	sc.mu.Unlock()
-	defer func() {
-		sc.mu.Lock()
-		delete(sc.conns, c)
-		sc.mu.Unlock()
-		_ = ws.Close()
-	}()
+	return call.Reply(protocol.RosterPayload{
+		Services: []protocol.ServiceCard{{Name: "settings-center", Addr: sc.URL()}},
+		Revision: 1,
+	})
+}
 
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		switch env.Type {
-		case protocol.TypeRegister:
-			var reg protocol.RegisterPayload
-			if err := env.DecodePayload(&reg); err != nil {
-				continue
-			}
-			sc.mu.Lock()
-			sc.regs = append(sc.regs, reg)
-			sc.mu.Unlock()
-			roster := protocol.RosterPayload{
-				Services: []protocol.ServiceCard{{Name: "settings-center", Addr: sc.URL()}},
-				Revision: 1,
-			}
-			respData, _ := protocol.EncodePayload(roster)
-			resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true, Data: respData})
-			c.send(resp)
-		case protocol.TypeHeartbeat:
-			var hb protocol.HeartbeatPayload
-			_ = env.DecodePayload(&hb)
-			if hb.Status == "bye" {
-				sc.mu.Lock()
-				sc.byes++
-				sc.mu.Unlock()
-			}
-		case protocol.TypeJump:
-			var jp protocol.JumpPayload
-			if err := env.DecodePayload(&jp); err != nil {
-				continue
-			}
-			switch jp.Action {
-			case "report":
-				var p protocol.ReportPayload
-				if err := protocol.DecodeRaw(jp.Input, &p); err == nil {
-					sc.mu.Lock()
-					sc.reports = append(sc.reports, reportRecord{From: env.From, P: p})
-					sc.mu.Unlock()
-				}
-				resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true})
-				c.send(resp)
-			case "report_setting":
-				var p protocol.ReportSettingPayload
-				if err := protocol.DecodeRaw(jp.Input, &p); err == nil {
-					sc.mu.Lock()
-					sc.announce = append(sc.announce, announceRecord{From: env.From, P: p})
-					sc.mu.Unlock()
-				}
-			case "list_settings":
-				sc.mu.Lock()
-				res := sc.settings
-				sc.mu.Unlock()
-				data, _ := protocol.EncodePayload(res)
-				resp, _ := protocol.NewResponse(env, "settings-center", protocol.ResponsePayload{OK: true, Data: data})
-				c.send(resp)
-			}
-		}
+func (sc *stubCenter) handleHeartbeat(_ context.Context, call *spv2.Call) error {
+	var hb protocol.HeartbeatPayload
+	_ = call.Frame.DecodeBody(&hb)
+	if hb.Status == "bye" {
+		sc.mu.Lock()
+		sc.byes++
+		sc.mu.Unlock()
 	}
+	return nil
+}
+
+func (sc *stubCenter) handleReport(_ context.Context, call *spv2.Call) error {
+	var p protocol.ReportPayload
+	if err := call.Frame.DecodeBody(&p); err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+	}
+	sc.mu.Lock()
+	sc.reports = append(sc.reports, reportRecord{From: call.Frame.From.ID, P: p})
+	sc.mu.Unlock()
+	return call.Reply(map[string]any{"status": "ok"})
+}
+
+func (sc *stubCenter) handleReportSetting(_ context.Context, call *spv2.Call) error {
+	var p protocol.ReportSettingPayload
+	if err := call.Frame.DecodeBody(&p); err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+	}
+	sc.mu.Lock()
+	sc.announce = append(sc.announce, announceRecord{From: call.Frame.From.ID, P: p})
+	sc.mu.Unlock()
+	return call.Reply(map[string]any{"status": "ok"})
+}
+
+func (sc *stubCenter) handleListSettings(_ context.Context, call *spv2.Call) error {
+	sc.mu.Lock()
+	res := sc.settings
+	sc.mu.Unlock()
+	return call.Reply(res)
 }
 
 // Registers 返回已收到的注册快照。
@@ -206,16 +182,13 @@ func (sc *stubCenter) SetSettings(res protocol.SettingsResult) {
 // Broadcast 向所有已连接服务广播一条事件（测试骨架对已知 / 未知事件的处理）。
 func (sc *stubCenter) Broadcast(typ string, payload any) {
 	sc.mu.Lock()
-	targets := make([]*stubConn, 0, len(sc.conns))
+	targets := make([]*spv2.Call, 0, len(sc.conns))
 	for c := range sc.conns {
 		targets = append(targets, c)
 	}
 	sc.mu.Unlock()
 	for _, c := range targets {
-		env, err := protocol.NewEnvelope(typ, "settings-center", "", "", payload)
-		if err == nil {
-			c.send(env)
-		}
+		_ = c.SendEvent(typ, payload)
 	}
 }
 
@@ -236,13 +209,13 @@ func (sc *stubCenter) waitReports(t *testing.T, n int, timeout time.Duration) []
 // DropConnections 模拟链路断开（如设置中心侧关闭全部连接）。
 func (sc *stubCenter) DropConnections() {
 	sc.mu.Lock()
-	targets := make([]*stubConn, 0, len(sc.conns))
+	targets := make([]*spv2.Call, 0, len(sc.conns))
 	for c := range sc.conns {
 		targets = append(targets, c)
 	}
 	sc.mu.Unlock()
 	for _, c := range targets {
-		_ = c.ws.Close()
+		_ = c.Close()
 	}
 }
 
@@ -275,6 +248,9 @@ func TestRegisterReconnectBye(t *testing.T) {
 	}
 	if regs[0].Name != "svc-t" || regs[0].HeartbeatMS != 100 {
 		t.Fatalf("注册名片不符: %+v", regs[0])
+	}
+	if !strings.HasSuffix(regs[0].Addr, "/spv2") {
+		t.Fatalf("注册地址应指向 /spv2: %q", regs[0].Addr)
 	}
 
 	// 断线 → 应自动重连并重新注册
@@ -319,7 +295,7 @@ func TestErrorReport(t *testing.T) {
 	t.Cleanup(s.Shutdown)
 
 	// Fire 到未知服务 → "未送达" → 骨架自动上报。
-	s.Fire("no-such-svc", "act", map[string]any{"x": 1}, "", "")
+	s.Fire("no-such-svc", "act", map[string]any{"x": 1}, "")
 	got := sc.waitReports(t, 1, 5*time.Second)
 	if got[0].From != "svc-r" || got[0].P.Kind != "fire" || !strings.Contains(got[0].P.Message, "no-such-svc") {
 		t.Fatalf("上报内容不符: %+v", got[0])
@@ -367,7 +343,7 @@ func TestShutdownStopsBackgroundLogging(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Shutdown()
-	// watchCenter 由 c.Done() 唤醒：旧实现会在此后打"1s 后重连"。
+	// watchCenter 由连接关闭信号唤醒：旧实现会在此后打"1s 后重连"。
 	time.Sleep(300 * time.Millisecond)
 	if logs := lb.String(); strings.Contains(logs, "重连") {
 		t.Fatalf("Shutdown 后仍有重连日志:\n%s", logs)

@@ -7,15 +7,16 @@ package tests
 // 当成主人的指令，或者把该保密的回复发进群。
 
 import (
+	"context"
 	"encoding/json"
-	"net"
-	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // ---------- stub memory ----------
@@ -26,94 +27,70 @@ type memoryStore struct {
 }
 
 type stubMemory struct {
-	ln        net.Listener
-	srv       *http.Server
+	srv       *spv2.Server
+	http      *httptest.Server
 	mu        sync.Mutex
 	stores    []memoryStore
 	opens     []protocol.ConversationOpenPayload
-	failOpen  bool          // 让 conversation_open 回 ok:false（验证起名失败的处理）
+	failOpen  bool          // 让 conversation_open 回错（验证起名失败的处理）
 	openDelay time.Duration // 让 conversation_open 慢一点（验证起名不挡消息的路）
 }
 
 func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	sm := &stubMemory{}
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "memory", Actor: spv2.ServiceRef("memory"),
+		Version: "stub/1", Methods: []spv2.Method{
+			{Name: "store", Shape: spv2.ShapeCall},
+			{Name: "conversation_open", Shape: spv2.ShapeCall},
+		},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sm := &stubMemory{ln: ln}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", sm.handleWS)
-	sm.srv = &http.Server{Handler: mux}
-	go func() { _ = sm.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = sm.srv.Close() })
-
-	center.mu.Lock()
-	center.cards["memory"] = protocol.ServiceCard{Name: "memory", Addr: sm.URL(), Description: "记忆测试替身"}
-	center.mu.Unlock()
+	sm.srv = srv
+	srv.Handle("store", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.StorePayload
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		rec := memoryStore{Payload: p}
+		if p.Meta != "" {
+			_ = json.Unmarshal([]byte(p.Meta), &rec.Meta)
+		}
+		sm.mu.Lock()
+		sm.stores = append(sm.stores, rec)
+		sm.mu.Unlock()
+		return call.Reply(map[string]any{"ok": true})
+	})
+	srv.Handle("conversation_open", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.ConversationOpenPayload
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		sm.mu.Lock()
+		sm.opens = append(sm.opens, p)
+		fail := sm.failOpen
+		delay := sm.openDelay
+		sm.mu.Unlock()
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		if fail {
+			return call.ReplyError(spv2.CodeInternal, "记忆写不进去", false, nil)
+		}
+		return call.Reply(map[string]any{"ok": true})
+	})
+	sm.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(sm.http.Close)
+	registerService(t, center, "memory", sm.URL())
 	return sm
 }
 
-func (sm *stubMemory) URL() string { return "ws://" + sm.ln.Addr().String() + "/ws" }
-
-func (sm *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := wsUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	c := &stubConn{ws: ws}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		if env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		switch jp.Action {
-		case "store":
-			var p protocol.StorePayload
-			_ = protocol.DecodeRaw(jp.Input, &p)
-			rec := memoryStore{Payload: p}
-			if p.Meta != "" {
-				_ = json.Unmarshal([]byte(p.Meta), &rec.Meta)
-			}
-			sm.mu.Lock()
-			sm.stores = append(sm.stores, rec)
-			sm.mu.Unlock()
-		case "conversation_open":
-			var p protocol.ConversationOpenPayload
-			_ = protocol.DecodeRaw(jp.Input, &p)
-			sm.mu.Lock()
-			sm.opens = append(sm.opens, p)
-			fail := sm.failOpen
-			delay := sm.openDelay
-			sm.mu.Unlock()
-			if delay > 0 {
-				time.Sleep(delay)
-			}
-			if fail {
-				resp, _ := protocol.NewResponse(env, "memory", protocol.ResponsePayload{OK: false, Error: "记忆写不进去"})
-				c.send(resp)
-				continue
-			}
-		default:
-			resp, _ := protocol.NewResponse(env, "memory", protocol.ResponsePayload{OK: false, Error: "unknown action: " + jp.Action})
-			c.send(resp)
-			continue
-		}
-		resp, _ := protocol.NewResponse(env, "memory", protocol.ResponsePayload{OK: true})
-		c.send(resp)
-	}
+func (sm *stubMemory) URL() string {
+	return "ws" + strings.TrimPrefix(sm.http.URL, "http") + "/spv2"
 }
 
 func (sm *stubMemory) storesLen() int {

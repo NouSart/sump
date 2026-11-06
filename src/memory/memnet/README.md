@@ -126,9 +126,14 @@ S = S₀ × growth^(hits-1)      R = exp(-Δt / S)      score = cos × R
 
 | 档 | 衰减 | 例子 |
 |---|---|---|
-| `core` | 不衰减 | 用户身份、硬约束 |
-| `durable` | 遗忘曲线（默认 S₀=30 天、×2） | 技术、坑、偏好、取舍 |
+| `core` | 不衰减 | 用户身份、硬约束、用户偏好 |
+| `durable` | 遗忘曲线（默认 S₀=30 天、×2） | 技术、坑、取舍 |
 | `transient` | **不进网** | "他现在很烦""这次先这样" |
+
+**哪条经验进哪一档不由本包决定**：复盘那一次模型调用之后，由 reasoner 按 kind 归类
+（`src/reasoner/server/reflect.go`：kind 里出现「偏好」→ `core`，其余一律 `durable`；
+不让模型自己挑，它会把每条都标成 core），口径由 `reflect_test.go` 与 `tests/reflect_think_test.go` 钉住。
+本包只按档执行衰减——过去这张表把「偏好」列在 durable 一栏，与实现相反。
 
 - **复现靠"又被观察到"，不靠被召回**：召回本身不加粗，否则越常想起越忘不掉，形成回音室。
 - **软剪枝**：`R < PruneRetain` 只标 `pruned`（不删行、不删向量、留着 S），重新遇到能复活
@@ -141,7 +146,7 @@ S = S₀ × growth^(hits-1)      R = exp(-Δt / S)      score = cos × R
 | 字段 | 默认 | 作用 |
 |---|---|---|
 | `MaxLinks` | 3 | 一条经验最多挂几个大类（1 = 单父树） |
-| `LinkL1` | 0.25 | 除 argmax 外，额外大类要够的相似度（中心化后带宽） |
+| `LinkL1` | 0.15 | 除 argmax 外，额外大类要够的相似度（中心化后带宽） |
 | `NeighborSim` | 0.30 | 两条经验算"同一簇"的线 |
 | `NearDup` | 0.62 | "同一件事"的判定线（中心化后：同义 0.43~0.87、无关 ≤0.21） |
 | `BaseStable` | 30 天 | 遗忘曲线 S₀ |
@@ -151,6 +156,9 @@ S = S₀ × growth^(hits-1)      R = exp(-Δt / S)      score = cos × R
 
 标定方法：拿一批**真经验 + 手写改写对**（同一件事的两种说法），量"同义最小 vs 无关最大"的间隔，
 扫阈值看树形（枝数 / 最大成员 / 单例数）。别拍脑袋——上面每个默认值都是这么来的。
+
+本表的默认值由 `memnet_test.go` 的 `TestDefaultTuningMatchesDocTable` 与代码里的 `DefaultTuning()` 钉住：
+改任何一边（文档 or 出厂值）都会红——这张表不许靠人记得同步。
 
 ---
 

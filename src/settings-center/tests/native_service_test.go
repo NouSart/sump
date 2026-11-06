@@ -26,8 +26,8 @@ func TestServiceRegistersOverNativeCenter(t *testing.T) {
 
 	applied := make(chan string, 1)
 	svc := service.New(service.Config{
-		Name: "native-peer", Listen: "127.0.0.1:0", Center: "ws://" + center.Addr() + "/ws",
-		SPV2: true, SecretFile: "-", Logger: log.New(io.Discard, "", 0),
+		Name: "native-peer", Listen: "127.0.0.1:0", Center: "ws://" + center.Addr() + "/spv2",
+		SecretFile: "-", Logger: log.New(io.Discard, "", 0),
 	})
 	svc.HandleSetting("msg", "default", func(v string) error {
 		select {

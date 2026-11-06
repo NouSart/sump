@@ -20,11 +20,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-
-	"github.com/NouSart/sump/protocol"
 )
 
-// ---------- stub NapCat（模拟正向 WS 服务端） ----------
+// ---------- stub NapCat（模拟正向 WS 服务端；OneBot 自己的 /ws，不是 SUMP 端点） ----------
+
+var napcatUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
 type napcatStub struct {
 	ln      net.Listener
@@ -53,7 +53,7 @@ func startNapCatStub(t *testing.T) *napcatStub {
 func (n *napcatStub) URL() string { return "ws://" + n.ln.Addr().String() + "/ws" }
 
 func (n *napcatStub) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := bossUpgrader.Upgrade(w, r, nil)
+	ws, err := napcatUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
@@ -191,11 +191,11 @@ func TestQQFullChainE2E(t *testing.T) {
 	imgPort := freePort(t)
 	alPort := freePort(t)
 	qqPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	memURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", memPort)
-	imgURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", imgPort)
-	alURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", alPort)
-	qqURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", qqPort)
+	centerURL := spv2URL(scPort)
+	memURL := spv2URL(memPort)
+	imgURL := spv2URL(imgPort)
+	alURL := spv2URL(alPort)
+	qqURL := spv2URL(qqPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
@@ -212,6 +212,9 @@ func TestQQFullChainE2E(t *testing.T) {
 		"-center", centerURL,
 		"-db", filepath.Join(t.TempDir(), "images.db"),
 		"-dir", t.TempDir(),
+		// 被下载的图来自本机 httptest：不加这个开关，下载守卫会按生产口径拒掉环回地址。
+		// 只放开首个地址，重定向仍严格检查，所以它不构成守卫的绕行。
+		"-fetch-allow-loopback",
 	)
 	waitWSReady(t, imgURL, 60*time.Second)
 
@@ -234,11 +237,7 @@ func TestQQFullChainE2E(t *testing.T) {
 	waitWSReady(t, qqURL, 60*time.Second)
 
 	// 等名册齐全。
-	obs, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = obs.Close() })
+	obs := dialSPV2(t, centerURL)
 	for _, name := range []string{"memory", "images", "reasoner", "qq"} {
 		waitRosterHas(t, obs, name, 60*time.Second)
 	}

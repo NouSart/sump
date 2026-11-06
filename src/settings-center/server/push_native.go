@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -10,13 +11,14 @@ import (
 	"github.com/NouSart/sump/spv2"
 )
 
-// pushAttemptSPv2 优先用目标 /spv2 下发 configure；目标没有原生入口时返回 handled=false 回退 v1。
-func (s *Server) pushAttemptSPv2(service string, card protocol.ServiceCard, items []protocol.SettingView, idxs []int, results []protocol.SettingResult) ([]int, bool, error) {
+// pushAttemptSPv2 用目标卡片的 /spv2 地址逐键下发 configure；
+// 返回仍未送达的下标（服务明确拒绝记为结果，不重试）。
+func (s *Server) pushAttemptSPv2(service string, card protocol.ServiceCard, items []protocol.SettingView, idxs []int, results []protocol.SettingResult) ([]int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	c, err := spv2.Dial(ctx, spv2PushAddr(card.Addr))
 	if err != nil {
-		return nil, false, nil
+		return idxs, fmt.Errorf("拨号失败: %v", err)
 	}
 	defer c.Close()
 
@@ -32,8 +34,8 @@ func (s *Server) pushAttemptSPv2(service string, card protocol.ServiceCard, item
 		}
 		if _, err := c.Call(ctx, call); err != nil {
 			if spv2.IsCode(err, spv2.CodeNotFound) {
-				// 目标有 /spv2 但没实现 configure：回退整套 v1 下发，避免把"方法不支持"记成设置失败。
-				return nil, false, nil
+				results[i].Error = err.Error()
+				continue
 			}
 			if errors.Is(err, spv2.ErrConnClosed) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				remaining = append(remaining, i)
@@ -48,13 +50,10 @@ func (s *Server) pushAttemptSPv2(service string, card protocol.ServiceCard, item
 			results[i].Value = it.Value
 		}
 	}
-	return remaining, true, lastErr
+	return remaining, lastErr
 }
 
 func spv2PushAddr(addr string) string {
-	if strings.HasSuffix(addr, "/ws") {
-		return strings.TrimSuffix(addr, "/ws") + "/spv2"
-	}
 	if strings.HasSuffix(addr, "/spv2") {
 		return addr
 	}

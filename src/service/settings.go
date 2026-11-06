@@ -219,7 +219,7 @@ func (s *Service) AnnounceSetting(key string) {
 		s.logger.Printf("AnnounceSetting 忽略：未声明的设置项 %s", key)
 		return
 	}
-	s.Fire("settings-center", "report_setting", p, "", "")
+	s.Fire("settings-center", "report_setting", p, "")
 }
 
 // declarations 返回名片用的设置声明（按声明顺序）。
@@ -247,12 +247,7 @@ func (s *Service) declarations() []protocol.Setting {
 	return out
 }
 
-// actionConfigure 承接设置中心下发的设置变更（configure）：立即校验并应用（不等重启）。
-func (s *Service) actionConfigure(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.configure(in.Input)
-}
-
-// configure 是 v1 action 与原生 /spv2 configure 共用的业务实现。
+// configure 承接设置中心下发的设置变更：立即校验并应用（不等重启）。
 func (s *Service) configure(body []byte) (any, error) {
 	var p protocol.ConfigurePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -387,7 +382,7 @@ func (s *Service) refreshSettings(ctx context.Context) {
 	}
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	data, err := s.Call(cctx, "settings-center", "list_settings", protocol.SettingsListPayload{Service: s.cfg.Name}, s.cfg.Name, "")
+	data, err := s.Call(cctx, "settings-center", "list_settings", protocol.SettingsListPayload{Service: s.cfg.Name}, s.cfg.Name)
 	if err != nil {
 		if cctx.Err() != nil || s.isClosed() {
 			return

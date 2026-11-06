@@ -19,6 +19,7 @@ import (
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/reasoner/llm"
 	"github.com/NouSart/sump/reasoner/server"
+	"github.com/NouSart/sump/spv2"
 )
 
 // failLLM 每次调用都失败，并记下调用次数（用来验证 retry 真的把轮次重跑了一遍）。
@@ -55,33 +56,17 @@ func startEnvWithLLM(t *testing.T, sc *stubCenter, client llm.Client) (*server.S
 	return s, boss, mem
 }
 
-// callAction 以 name 的身份向 reasoner 发一个动作，返回回执。
-func callAction(t *testing.T, c *protocol.Client, ctx context.Context, name, action string, in any) protocol.ResponsePayload {
+// callAction 以 name 的身份向 reasoner 发一个原生 call，返回回执。
+func callAction(t *testing.T, c *spv2.Client, ctx context.Context, name, action string, in any) outcome {
 	t.Helper()
-	raw, err := protocol.EncodePayload(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, name, "reasoner", "", protocol.JumpPayload{Action: action, Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatalf("%s: %v", action, err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	return rp
+	return callFrom(t, c, name, "w-test", action, in, ctx)
 }
 
 func TestRoundFailureNotifiesBossAndKeepsTask(t *testing.T) {
 	sc := startStubCenter(t)
 	// 门户名片先进名册：retry 只认门户（frontend / qq），且要求它在名册里。
 	sc.mu.Lock()
-	sc.cards["frontend"] = protocol.ServiceCard{Name: "frontend", Addr: "ws://127.0.0.1:1/ws", Description: "门户测试替身"}
+	sc.cards["frontend"] = protocol.ServiceCard{Name: "frontend", Addr: "ws://127.0.0.1:1/spv2", Description: "门户测试替身"}
 	sc.mu.Unlock()
 
 	fake := &failLLM{err: errors.New("LLM 连接被重置")}
@@ -91,26 +76,7 @@ func TestRoundFailureNotifiesBossAndKeepsTask(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	raw, err := protocol.EncodePayload(map[string]any{"text": "现在几点了"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	env.Boss = "stub-boss"
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack protocol.ResponsePayload
-	if err := resp.DecodePayload(&ack); err != nil {
-		t.Fatal(err)
-	}
-	if !ack.OK {
-		t.Fatalf("user_message 未被受理: %s", ack.Error)
-	}
+	sendFrom(t, s, "stub-boss", map[string]any{"text": "现在几点了"})
 
 	var failure protocol.DeliverPayload
 	select {

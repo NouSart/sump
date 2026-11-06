@@ -67,8 +67,8 @@ func TestSecretAndReadOnly(t *testing.T) {
 	}
 
 	// 秘密下发：回调拿到值、服务侧读得到、落盘（中心那边没有值，服务重启只能靠自己）
-	if rp := pushConfigure(t, s.WsURL(), protocol.ConfigurePayload{Key: "llm.key", Value: "sk-1"}); !rp.OK {
-		t.Fatalf("秘密下发应成功: %+v", rp)
+	if err := pushConfigure(t, s.WsURL(), "svc-s", protocol.ConfigurePayload{Key: "llm.key", Value: "sk-1"}); err != nil {
+		t.Fatalf("秘密下发应成功: %v", err)
 	}
 	if v := s.SettingValue("llm.key"); v != "sk-1" {
 		t.Fatalf("服务侧应持有秘密，实际 %q", v)
@@ -82,17 +82,17 @@ func TestSecretAndReadOnly(t *testing.T) {
 	}
 
 	// 只读项：明确拒绝，生效值不动
-	rp := pushConfigure(t, s.WsURL(), protocol.ConfigurePayload{Key: "addr", Value: "0.0.0.0:1"})
-	if rp.OK || !strings.Contains(rp.Error, "只读") {
-		t.Fatalf("只读项应被拒绝: %+v", rp)
+	err = pushConfigure(t, s.WsURL(), "svc-s", protocol.ConfigurePayload{Key: "addr", Value: "0.0.0.0:1"})
+	if err == nil || !strings.Contains(err.Error(), "只读") {
+		t.Fatalf("只读项应被拒绝: %v", err)
 	}
 	if v := s.SettingValue("addr"); v != "127.0.0.1:9101" {
 		t.Fatalf("只读值不该变，实际 %q", v)
 	}
 
 	// 空值 = 清除（面板的「清空」走这条）：文件里也不该再留着
-	if rp := pushConfigure(t, s.WsURL(), protocol.ConfigurePayload{Key: "llm.key", Value: ""}); !rp.OK {
-		t.Fatalf("清空秘密应成功: %+v", rp)
+	if err := pushConfigure(t, s.WsURL(), "svc-s", protocol.ConfigurePayload{Key: "llm.key", Value: ""}); err != nil {
+		t.Fatalf("清空秘密应成功: %v", err)
 	}
 	if v := s.SettingValue("llm.key"); v != "" {
 		t.Fatalf("清空后生效值应为空，实际 %q", v)
@@ -102,8 +102,8 @@ func TestSecretAndReadOnly(t *testing.T) {
 	}
 
 	// 再设置一次，然后重启（同一个秘密文件）：Start 时把值带起来并应用
-	if rp := pushConfigure(t, s.WsURL(), protocol.ConfigurePayload{Key: "llm.key", Value: "sk-2"}); !rp.OK {
-		t.Fatalf("秘密下发应成功: %+v", rp)
+	if err := pushConfigure(t, s.WsURL(), "svc-s", protocol.ConfigurePayload{Key: "llm.key", Value: "sk-2"}); err != nil {
+		t.Fatalf("秘密下发应成功: %v", err)
 	}
 	s.Shutdown()
 

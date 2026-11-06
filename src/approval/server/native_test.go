@@ -9,15 +9,13 @@ import (
 	"errors"
 	"io"
 	"log"
-	"net"
-	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
-
-	"github.com/gorilla/websocket"
 
 	"github.com/NouSart/sump/approval/engine"
 	"github.com/NouSart/sump/approval/policy"
@@ -25,94 +23,66 @@ import (
 	"github.com/NouSart/sump/spv2"
 )
 
-var nativeTestUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-
-// nativeTestCenter 是只做注册、名册与 list_settings 的最小设置中心替身。
+// nativeTestCenter 是只做注册、名册与 list_settings 的最小设置中心替身（全走 /spv2）。
 type nativeTestCenter struct {
-	ln  net.Listener
-	srv *http.Server
+	srv  *spv2.Server
+	http *httptest.Server
+
+	mu    sync.Mutex
+	cards map[string]protocol.ServiceCard
 }
 
 func startNativeTestCenter(t *testing.T) *nativeTestCenter {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "settings-center", Actor: spv2.ServiceRef("settings-center"),
+		Version: "stub/1", Methods: []spv2.Method{
+			{Name: "register", Shape: spv2.ShapeCall},
+			{Name: "list_settings", Shape: spv2.ShapeCall},
+			{Name: "heartbeat", Shape: spv2.ShapeEvent},
+		},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &nativeTestCenter{ln: ln}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", c.handleWS)
-	c.srv = &http.Server{Handler: mux}
-	go func() { _ = c.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = c.srv.Close() })
+	c := &nativeTestCenter{srv: srv, cards: map[string]protocol.ServiceCard{}}
+	srv.Handle("register", c.handleRegister)
+	srv.Handle("list_settings", func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(protocol.SettingsResult{})
+	})
+	// 心跳是事件，没有回执可发；收下即可。
+	srv.Handle("heartbeat", func(context.Context, *spv2.Call) error { return nil })
+	c.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(c.http.Close)
+	c.cards["settings-center"] = protocol.ServiceCard{
+		Name: "settings-center", Addr: c.URL(), Description: "设置中心替身",
+		Provides: []protocol.Provide{{Action: "list_settings"}, {Action: "roster"}},
+	}
 	return c
 }
 
-func (c *nativeTestCenter) URL() string { return "ws://" + c.ln.Addr().String() + "/ws" }
+func (c *nativeTestCenter) URL() string {
+	return "ws" + strings.TrimPrefix(c.http.URL, "http") + "/spv2"
+}
 
-func (c *nativeTestCenter) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := nativeTestUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
+func (c *nativeTestCenter) handleRegister(_ context.Context, call *spv2.Call) error {
+	var reg protocol.RegisterPayload
+	if err := call.Frame.DecodeBody(&reg); err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
-	defer ws.Close()
-	cards := map[string]protocol.ServiceCard{
-		"settings-center": {Name: "settings-center", Addr: c.URL(), Provides: []protocol.Provide{{Action: "list_settings"}}},
+	c.mu.Lock()
+	c.cards[reg.Name] = reg.Card()
+	services := make([]protocol.ServiceCard, 0, len(c.cards))
+	for _, card := range c.cards {
+		services = append(services, card)
 	}
-	send := func(env protocol.Envelope, payload any) {
-		data, err := protocol.EncodePayload(payload)
-		if err != nil {
-			return
-		}
-		resp, err := protocol.NewResponse(env, "settings-center", protocol.ResponsePayload{OK: true, Data: data})
-		if err != nil {
-			return
-		}
-		raw, err := protocol.Marshal(resp)
-		if err != nil {
-			return
-		}
-		_ = ws.WriteMessage(websocket.BinaryMessage, raw)
-	}
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		switch env.Type {
-		case protocol.TypeRegister:
-			var reg protocol.RegisterPayload
-			if err := env.DecodePayload(&reg); err != nil {
-				continue
-			}
-			cards[reg.Name] = reg.Card()
-			services := make([]protocol.ServiceCard, 0, len(cards))
-			for _, card := range cards {
-				services = append(services, card)
-			}
-			send(env, protocol.RosterPayload{Services: services, Revision: 1})
-		case protocol.TypeJump:
-			// 设置中心替身只认 list_settings 一个动作；这里只看动作名，不引入 v1 跳转类型。
-			var jp struct {
-				Action string `msgpack:"action"`
-			}
-			if err := env.DecodePayload(&jp); err != nil {
-				continue
-			}
-			if jp.Action == "list_settings" {
-				send(env, protocol.SettingsResult{})
-			}
-		}
-	}
+	c.mu.Unlock()
+	return call.Reply(protocol.RosterPayload{Services: services, Revision: 1})
 }
 
 // TestNativeSPv2Methods 验证四条原生 method 的卡片与调用路径。
 func TestNativeSPv2Methods(t *testing.T) {
-	t.Setenv("SUMP_SPV2", "1")
 	center := startNativeTestCenter(t)
 	exe := filepath.Join(t.TempDir(), "pwsh.exe")
 	e, err := engine.New(echoParser{path: exe}, policy.DefaultJSON)
@@ -134,7 +104,7 @@ func TestNativeSPv2Methods(t *testing.T) {
 	}
 	defer s.Shutdown()
 
-	conn, err := spv2.Dial(ctx, strings.TrimSuffix(s.WsURL(), "/ws")+"/spv2")
+	conn, err := spv2.Dial(ctx, s.WsURL())
 	if err != nil {
 		t.Fatal(err)
 	}

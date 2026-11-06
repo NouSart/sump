@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/reasoner/llm"
 	"github.com/NouSart/sump/reasoner/server"
 )
@@ -56,29 +55,9 @@ func TestLiveDeepSeek(t *testing.T) {
 	t.Cleanup(s.Shutdown)
 	mem.setReasonerURL(s.WsURL())
 
-	c := dialReasoner(t, s)
-	raw, err := protocol.EncodePayload(map[string]any{
+	sendFrom(t, s, "stub-boss", map[string]any{
 		"text": "请先调用 stub-center__ping 工具，然后用一句话告诉我工具返回了什么。",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "live-test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Boss = "stub-boss"
-	resp, err := c.Call(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack protocol.ResponsePayload
-	if err := resp.DecodePayload(&ack); err != nil {
-		t.Fatal(err)
-	}
-	if !ack.OK {
-		t.Fatalf("user_message 未被受理: %s", ack.Error)
-	}
 
 	select {
 	case d := <-boss.delivered:

@@ -1,7 +1,6 @@
-// startFrontend 装配整个服务：HTTP 服务端（API + 静态面板）+ WS 端点（jump）+ 中心连接（注册 / 心跳 / 名册）。
+// startFrontend 装配整个服务：HTTP 服务端（API + 静态面板）+ 原生 /spv2 端点 + 中心连接（注册 / 心跳 / 名册）。
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { WebSocketServer } from 'ws';
 import { createRequestHandler } from './api.ts';
 import { CenterLink } from './center.ts';
 import {
@@ -16,7 +15,7 @@ import {
   type TerminalUpdate,
   type TrustConfig,
 } from './portal.ts';
-import { attachJumpEndpoint, parseTimerItems, portalProvides, portalSettings } from './service.ts';
+import { attachSPv2Endpoint, parseTimerItems, portalProvides, portalSettings } from './service.ts';
 import { createSPv2WSS } from './spv2.ts';
 
 export const frontendDescription =
@@ -125,7 +124,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
   });
   const actual = server.address() as AddressInfo;
   const addr = `${urlHost(actual.address)}:${actual.port}`;
-  const selfURL = `ws://${addr}/ws`;
+  const selfURL = `ws://${addr}/spv2`;
 
   const hub = createDeliverHub();
   const progress = createProgressHub();
@@ -199,23 +198,8 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
     if (u.final) recordTerminal(link, cfg.memory, u, conversationId, log);
     return true;
   };
-  const spv2Enabled = process.env.SUMP_SPV2 === '1';
-  const spv2Wss = spv2Enabled
-    ? createSPv2WSS(cfg.name, log, { onDeliver, onTimers, onApproval, onProgress, onTerminal })
-    : undefined;
-  const wss: WebSocketServer = attachJumpEndpoint(
-    server,
-    '/ws',
-    cfg.name,
-    log,
-    onDeliver,
-    onTimers,
-    onApproval,
-    onProgress,
-    onTerminal,
-    trust,
-    spv2Wss !== undefined ? { path: '/spv2', wss: spv2Wss } : undefined,
-  );
+  const spv2Wss = createSPv2WSS(cfg.name, log, { onDeliver, onTimers, onApproval, onProgress, onTerminal });
+  attachSPv2Endpoint(server, '/spv2', spv2Wss, trust, log);
   link.start();
 
   // 冷启动兜一次：门户重启后 timer 不会主动重推在计时器，这里拉一次 list 补上。
@@ -274,14 +258,8 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
     addr,
     close: async () => {
       link.stop();
-      for (const ws of wss.clients) ws.terminate();
-      if (spv2Wss !== undefined) {
-        for (const ws of spv2Wss.clients) ws.terminate();
-      }
-      await new Promise<void>((resolveClose) => wss.close(() => resolveClose()));
-      if (spv2Wss !== undefined) {
-        await new Promise<void>((resolveClose) => spv2Wss.close(() => resolveClose()));
-      }
+      for (const ws of spv2Wss.clients) ws.terminate();
+      await new Promise<void>((resolveClose) => spv2Wss.close(() => resolveClose()));
       await new Promise<void>((resolveClose) => {
         server.close(() => resolveClose());
         server.closeAllConnections();

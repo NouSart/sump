@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -138,16 +139,16 @@ func runMCPBidirectional(t *testing.T, useTLS bool) {
 	}
 	addr := func() string { return fmt.Sprintf("127.0.0.1:%d", freePort(t)) }
 	center, files, bridge, httpAddr, timer, batch := addr(), addr(), addr(), addr(), addr(), addr()
-	centerURL := "ws://" + center + "/ws"
+	centerURL := "ws://" + center + "/spv2"
 	secretFile := filepath.Join(dir, "mcp-secret.json")
 	start("settings-center", "-addr", center, "-settings", filepath.Join(dir, "settings.json"))
 	waitWSReady(t, centerURL, 15*time.Second)
 	start("files", "-addr", files, "-center", centerURL, "-db", filepath.Join(dir, "files.db"), "-dir", filepath.Join(dir, "files"))
 	start("timer", "-addr", timer, "-center", centerURL)
 	start("mcp", "-addr", bridge, "-center", centerURL, "-http-addr", httpAddr, "-config", policyFile, "-secret-file", secretFile)
-	waitWSReady(t, "ws://"+bridge+"/ws", 15*time.Second)
+	waitWSReady(t, "ws://"+bridge+"/spv2", 15*time.Second)
 	start("batch", "-addr", batch, "-center", centerURL, "-db", filepath.Join(dir, "batch.db"))
-	waitWSReady(t, "ws://"+batch+"/ws", 15*time.Second)
+	waitWSReady(t, "ws://"+batch+"/spv2", 15*time.Second)
 	obs, rec := registerObserver(t, centerURL)
 	probe := startReportProbe(t, centerURL)
 	for _, name := range []string{"files", "timer", "batch", "mcp", "e2e-observer"} {
@@ -172,11 +173,7 @@ func runMCPBidirectional(t *testing.T, useTLS bool) {
 	// Batch admission is separate from Tool and Async. The translator has not
 	// declared imported capabilities batchable: an accepted async receipt must
 	// never be counted by batch as a completed remote operation.
-	batchClient, err := protocol.Dial("ws://"+batch+"/ws", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer batchClient.Close()
+	batchClient := dialSPV2(t, "ws://"+batch+"/spv2")
 	batchInput, err := protocol.EncodePayload(map[string]any{"query": "must-not-execute"})
 	if err != nil {
 		t.Fatal(err)
@@ -261,11 +258,7 @@ func runMCPBidirectional(t *testing.T, useTLS bool) {
 	if len(tools) != 3 || tools[0].(map[string]any)["name"] != "files__read" || tools[1].(map[string]any)["name"] != "timer__cancel" || tools[2].(map[string]any)["name"] != "timer__sleep" {
 		t.Fatalf("imports leaked through exports: %+v", tools)
 	}
-	fc, err := protocol.Dial("ws://"+files+"/ws", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fc.Close()
+	fc := dialSPV2(t, "ws://"+files+"/spv2")
 	const sample = "真实文件 hello 世界"
 	savedReply := callJump(t, fc, "files", "save", protocol.FileSavePayload{Filename: "sample.txt", Data: base64.StdEncoding.EncodeToString([]byte(sample))}, ctx)
 	if !savedReply.OK {
@@ -280,32 +273,26 @@ func runMCPBidirectional(t *testing.T, useTLS bool) {
 	if result["isError"] == true || result["structuredContent"].(map[string]any)["text"] != sample {
 		t.Fatalf("file translation failed: %+v", result)
 	}
-	bc, err := protocol.Dial("ws://"+bridge+"/ws", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer bc.Close()
+	bc := dialSPV2(t, "ws://"+bridge+"/spv2")
 	callLookup := func(query string) {
 		t.Helper()
-		raw, _ := protocol.EncodePayload(map[string]any{"query": query})
-		env, _ := protocol.NewEnvelope(protocol.TypeJump, "e2e-caller", "mcp", "trace-lookup", protocol.JumpPayload{Action: "lookup", Input: raw})
-		reply, err := bc.Call(ctx, env)
+		call, err := spv2.NewCall("trace-lookup", spv2.ServiceRef("e2e-caller"), spv2.ServiceRef("mcp"), "lookup", map[string]any{"query": query})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if reply.ID != env.ID || reply.Trace != env.Trace || reply.To != env.From {
-			t.Fatalf("response association lost: %+v", reply)
+		reply, err := bc.Call(ctx, call)
+		if err != nil {
+			t.Fatal(err)
 		}
-		var rp protocol.ResponsePayload
-		if err = reply.DecodePayload(&rp); err != nil || !rp.OK {
-			t.Fatalf("import failed: %+v %v", rp, err)
+		if reply.ReplyTo != call.ID || reply.Work != call.Work || reply.To != call.From {
+			t.Fatalf("response association lost: %+v", reply)
 		}
 		var out struct {
 			Phase      string         `msgpack:"phase"`
 			IsError    bool           `msgpack:"is_error"`
 			Structured map[string]any `msgpack:"structured_content"`
 		}
-		if err = protocol.DecodeRaw(rp.Data, &out); err != nil || out.Phase != "completed" || out.IsError || out.Structured["value"] != "found:"+query {
+		if err = reply.DecodeBody(&out); err != nil || out.Phase != "completed" || out.IsError || out.Structured["value"] != "found:"+query {
 			t.Fatalf("import output: %+v %v", out, err)
 		}
 	}

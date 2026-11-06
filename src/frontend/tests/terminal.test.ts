@@ -8,21 +8,13 @@ import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { decode, encode } from '@msgpack/msgpack';
-import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { startFrontend, type FrontendHandle } from '../src/server/app.ts';
-import { StubCenter } from './stub-center.ts';
+import { dialSPv2Once } from '../src/server/spv2.ts';
+import { StubNativeCenter } from './stub-native-center.ts';
+import { StubNativeService, type NativeCall } from './stub-native-service.ts';
 import { waitFor } from './util.ts';
 
 const silent = (): void => {};
-
-interface Jump {
-  to: string;
-  action: string;
-  input: unknown;
-  from: string;
-  boss: string;
-}
 
 async function makeWebDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'sump-web-'));
@@ -30,56 +22,25 @@ async function makeWebDir(): Promise<string> {
   return dir;
 }
 
-// startStub：冒充 shell / memory（同一个 WS 端点，按 to 分辨），记录收到的 jump。
+// startStub：冒充 shell / memory（真 /spv2 端点，按 to 分辨），记录收到的 call。
 async function startStub(reply: { ok: boolean; data?: unknown; error?: string }): Promise<{
   url: string;
-  jumps: Jump[];
+  calls: NativeCall[];
   stop: () => Promise<void>;
 }> {
-  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
-  const jumps: Jump[] = [];
-  wss.on('connection', (ws) => {
-    ws.on('message', (data: RawData) => {
-      const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : new Uint8Array(data);
-      const env = decode(bytes) as {
-        id: string;
-        from: string;
-        to: string;
-        boss?: string;
-        payload?: { action?: string; input?: unknown };
-      };
-      if (env.payload === undefined) return;
-      jumps.push({
-        to: env.to,
-        action: env.payload.action ?? '',
-        input: env.payload.input,
-        from: env.from,
-        boss: env.boss ?? '',
-      });
-      ws.send(encode({ v: 1, id: env.id, type: 'response', from: env.to, to: env.from, payload: reply }));
-    });
-  });
-  await new Promise<void>((resolve) => wss.once('listening', () => resolve()));
-  const port = (wss.address() as { port: number }).port;
-  const url = `ws://127.0.0.1:${String(port)}/ws`;
-  return {
-    url,
-    jumps,
-    stop: () =>
-      new Promise<void>((resolve) => {
-        for (const c of wss.clients) c.terminate();
-        wss.close(() => resolve());
-      }),
-  };
+  const stub = new StubNativeService();
+  stub.replyFor = () => reply;
+  const url = await stub.start();
+  return { url, calls: stub.calls, stop: () => stub.stop() };
 }
 
 async function startPortal(
   roster: { name: string; addr: string }[],
   log: (m: string) => void = silent,
-): Promise<{ handle: FrontendHandle; stub: StubCenter }> {
-  const stub = new StubCenter();
+): Promise<{ handle: FrontendHandle; stub: StubNativeCenter }> {
+  const stub = new StubNativeCenter();
   const centerURL = await stub.start();
-  stub.roster = { services: [{ name: 'frontend', addr: 'ws://127.0.0.1:9/ws' }, ...roster], revision: 7 };
+  stub.roster = { services: [{ name: 'frontend', addr: 'ws://127.0.0.1:9/spv2' }, ...roster], revision: 7 };
   const handle = await startFrontend(
     {
       name: 'frontend',
@@ -139,32 +100,12 @@ function openSSE(addr: string, onEvent: (name: string, data: string) => void): P
   });
 }
 
-// fireReport 冒充 shell，向门户送一条 report_result。
+// fireReport 冒充 shell，向门户送一条原生 report_result call。
 async function fireReport(portalAddr: string, input: unknown): Promise<{ accepted: boolean }> {
-  const ws = new WebSocket(`ws://${portalAddr}/ws`);
-  await new Promise<void>((resolve, reject) => {
-    ws.once('open', () => { resolve(); });
-    ws.once('error', reject);
-  });
-  const env = encode({
-    v: 1,
-    id: 'r1',
-    type: 'jump',
-    from: 'shell',
-    to: 'frontend',
-    payload: { action: 'report_result', input },
-  });
-  const reply = await new Promise<{ ok?: boolean; data?: { accepted?: boolean }; error?: string }>((resolve, reject) => {
-    ws.once('message', (data: RawData) => {
-      const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : new Uint8Array(data);
-      const env2 = decode(bytes) as { payload?: { ok?: boolean; data?: { accepted?: boolean }; error?: string } };
-      resolve(env2.payload ?? {});
-    });
-    ws.once('error', reject);
-    ws.send(env);
-  });
-  ws.terminate();
-  return { accepted: reply.data?.accepted === true };
+  const reply = (await dialSPv2Once(`ws://${portalAddr}/spv2`, 'shell', 'frontend', 'report_result', input, 2000)) as {
+    accepted?: boolean;
+  };
+  return { accepted: reply?.accepted === true };
 }
 
 test('terminal：命令交给 shell，受理回执带回 item_id', async (t) => {
@@ -181,12 +122,12 @@ test('terminal：命令交给 shell，受理回执带回 item_id', async (t) => 
   const body = (await res.json()) as { itemId: string; phase: string };
   assert.equal(body.itemId, 'sh-1');
   assert.equal(body.phase, 'queued');
-  const sent = stub.jumps.at(-1);
+  const sent = stub.calls.at(-1);
   assert.equal(sent?.to, 'shell');
-  assert.equal(sent?.action, 'run');
+  assert.equal(sent?.method, 'run');
   assert.deepEqual(sent?.input, { command: 'echo hi' });
-  // boss 必须是门户自己：shell 的补报要靠它找回来路。
-  assert.equal(sent?.boss, 'frontend');
+  // from 必须是门户自己：shell 的补报要靠它找回来路（原生帧里没有单独的 boss 字段）。
+  assert.equal(sent?.from, 'frontend');
 });
 
 test('terminal：缺 command 400；空 item_id 502', async (t) => {
@@ -231,16 +172,16 @@ test('terminal：命令超过 16 KiB 400；work_dir 原样带给 shell', async (
   const tooLong = await postJSON(`http://${handle.addr}/api/terminal`, { command: 'x'.repeat(16 * 1024 + 1) });
   assert.equal(tooLong.status, 400);
   assert.match(((await tooLong.json()) as { error: string }).error, /16 KiB/);
-  assert.equal(stub.jumps.length, 0);
+  assert.equal(stub.calls.length, 0);
 
   const withDir = await postJSON(`http://${handle.addr}/api/terminal`, { command: 'pwd', work_dir: 'frontend' });
   assert.equal(withDir.status, 200);
-  assert.deepEqual(stub.jumps.at(-1)?.input, { command: 'pwd', work_dir: 'frontend' });
+  assert.deepEqual(stub.calls.at(-1)?.input, { command: 'pwd', work_dir: 'frontend' });
 
   // 空 work_dir 不塞进载荷（免得 shell 收到一个空字符串当目录）。
   const emptyDir = await postJSON(`http://${handle.addr}/api/terminal`, { command: 'pwd', work_dir: '   ' });
   assert.equal(emptyDir.status, 200);
-  assert.deepEqual(stub.jumps.at(-1)?.input, { command: 'pwd' });
+  assert.deepEqual(stub.calls.at(-1)?.input, { command: 'pwd' });
 });
 
 test('terminal：report_result 缺 item_id 或 phase 都不认领', async (t) => {
@@ -267,8 +208,8 @@ test('terminal：终态没有输出时入账写「无输出」，超长输出被
   });
 
   await fireReport(handle.addr, { item_id: 'sh-5', phase: 'done', final: true, data: { command: 'true', exit_code: 0 } });
-  await waitFor(() => stub.jumps.some((j) => j.action === 'store'), 3000, '入账');
-  const empty = stub.jumps.find((j) => j.action === 'store')?.input as { content: string };
+  await waitFor(() => stub.calls.some((j) => j.method === 'store'), 3000, '入账');
+  const empty = stub.calls.find((j) => j.method === 'store')?.input as { content: string };
   assert.equal(empty.content, '$ true\n（无输出，exit 0）');
 
   const long = 'y'.repeat(9000);
@@ -278,8 +219,8 @@ test('terminal：终态没有输出时入账写「无输出」，超长输出被
     final: true,
     data: { command: 'big', exit_code: 0, stdout: long, truncated: true },
   });
-  await waitFor(() => stub.jumps.filter((j) => j.action === 'store').length >= 2, 3000, '第二次入账');
-  const clipped = stub.jumps.filter((j) => j.action === 'store')[1]?.input as { content: string };
+  await waitFor(() => stub.calls.filter((j) => j.method === 'store').length >= 2, 3000, '第二次入账');
+  const clipped = stub.calls.filter((j) => j.method === 'store')[1]?.input as { content: string };
   assert.ok(clipped.content.length < 5000, `入账内容要剪短，实际 ${String(clipped.content.length)} 字符`);
   assert.match(clipped.content, /…（截断）/);
 });
@@ -382,7 +323,7 @@ test('terminal：过程态（approved）不算终态，也不入账', async (t) 
   assert.equal(update.final, false);
   await new Promise((r) => setTimeout(r, 200));
   assert.equal(
-    stub.jumps.some((j) => j.to === 'memory' && j.action === 'store'),
+    stub.calls.some((j) => j.to === 'memory' && j.method === 'store'),
     false,
     '过程态不该写进会话记录',
   );
@@ -435,11 +376,11 @@ test('terminal：report_result 经 SSE 推给浏览器，形状坏的被拒', as
 
   // 终态要进会话记录（终端与 agent 共享同一个工作现场）。
   await waitFor(
-    () => stub.jumps.some((j) => j.to === 'memory' && j.action === 'store'),
+    () => stub.calls.some((j) => j.to === 'memory' && j.method === 'store'),
     3000,
     '终端结果入账',
   );
-  const store = stub.jumps.find((j) => j.to === 'memory' && j.action === 'store');
+  const store = stub.calls.find((j) => j.to === 'memory' && j.method === 'store');
   const input = store?.input as { kind: string; role: string; content: string; conversation_id: string };
   assert.equal(input.kind, 'tool_result');
   assert.equal(input.role, 'tool');

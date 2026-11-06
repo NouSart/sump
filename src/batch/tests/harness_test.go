@@ -1,124 +1,86 @@
 // Package tests 是 batch 的服务内集成测试：最小"设置中心"替身 + 真 batch 实例 + 一个可批量
-// 的目标服务 + 一个"调用方"服务（它同时收补报），走真实 WS 通信。
+// 的目标服务 + 一个"调用方"服务（它同时收补报），全部走 /spv2 原生通信。
 package tests
 
 import (
 	"context"
-	"errors"
 	"log"
-	"net"
-	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/vmihailenco/msgpack/v5"
 
 	"github.com/NouSart/sump/batch/server"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
 )
 
-var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-
-// ---------- 设置中心替身 ----------
-
-type stubConn struct {
-	ws *websocket.Conn
-	mu sync.Mutex
-}
-
-func (c *stubConn) send(env protocol.Envelope) {
-	data, err := protocol.Marshal(env)
-	if err != nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.ws.WriteMessage(websocket.BinaryMessage, data)
-}
+// ---------- 设置中心替身（register 是 call、heartbeat 是 event、roster 是 event）----------
 
 type stubCenter struct {
-	ln  net.Listener
-	srv *http.Server
+	srv  *spv2.Server
+	http *httptest.Server
 
 	mu    sync.Mutex
 	cards map[string]protocol.ServiceCard
-	conns map[*stubConn]struct{}
+	calls map[string]*spv2.Call // 每个注册者的那条 register call（roster 事件沿它推回去）
 }
 
 func startStubCenter(t *testing.T) *stubCenter {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	card := spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "settings-center", Actor: spv2.ServiceRef("settings-center"),
+		Version: "stub/1", Methods: []spv2.Method{
+			{Name: "register", Shape: spv2.ShapeCall},
+			{Name: "list_settings", Shape: spv2.ShapeCall},
+			{Name: "heartbeat", Shape: spv2.ShapeEvent},
+		},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	}
+	srv, err := spv2.NewServer(card)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sc := &stubCenter{ln: ln, cards: map[string]protocol.ServiceCard{}, conns: map[*stubConn]struct{}{}}
+	sc := &stubCenter{srv: srv, cards: map[string]protocol.ServiceCard{}, calls: map[string]*spv2.Call{}}
+	srv.Handle("register", sc.handleRegister)
+	srv.Handle("list_settings", func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(protocol.SettingsResult{})
+	})
+	// 心跳是事件，没有回执可发；收下即可（连接还活着就是活着）。
+	srv.Handle("heartbeat", func(context.Context, *spv2.Call) error { return nil })
+	sc.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(sc.http.Close)
 	sc.cards["settings-center"] = protocol.ServiceCard{
 		Name: "settings-center", Addr: sc.URL(), Description: "设置中心替身",
 		Provides: []protocol.Provide{{Action: "list_settings"}, {Action: "roster"}},
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", sc.handleWS)
-	sc.srv = &http.Server{Handler: mux}
-	go func() { _ = sc.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = sc.srv.Close() })
 	return sc
 }
 
-func (sc *stubCenter) URL() string { return "ws://" + sc.ln.Addr().String() + "/ws" }
+func (sc *stubCenter) URL() string {
+	return "ws" + strings.TrimPrefix(sc.http.URL, "http") + "/spv2"
+}
 
-func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
+func (sc *stubCenter) handleRegister(_ context.Context, call *spv2.Call) error {
+	var reg protocol.RegisterPayload
+	if err := call.Frame.DecodeBody(&reg); err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
-	c := &stubConn{ws: ws}
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			sc.mu.Lock()
-			delete(sc.conns, c)
-			sc.mu.Unlock()
-			_ = ws.Close()
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		switch env.Type {
-		case protocol.TypeRegister:
-			var reg protocol.RegisterPayload
-			if err := env.DecodePayload(&reg); err != nil {
-				continue
-			}
-			sc.mu.Lock()
-			sc.cards[reg.Name] = reg.Card()
-			sc.conns[c] = struct{}{}
-			roster := sc.snapshotLocked()
-			sc.mu.Unlock()
-			respData, _ := protocol.EncodePayload(roster)
-			resp, _ := protocol.NewResponse(env, "settings-center", protocol.ResponsePayload{OK: true, Data: respData})
-			c.send(resp)
-			sc.broadcast(roster)
-		case protocol.TypeJump:
-			var jp protocol.JumpPayload
-			if err := env.DecodePayload(&jp); err != nil {
-				continue
-			}
-			if jp.Action == "list_settings" {
-				data, _ := protocol.EncodePayload(protocol.SettingsResult{})
-				resp, _ := protocol.NewResponse(env, "settings-center", protocol.ResponsePayload{OK: true, Data: data})
-				c.send(resp)
-			}
-		case protocol.TypeHeartbeat:
-			// 忽略
-		}
+	sc.mu.Lock()
+	sc.cards[reg.Name] = reg.Card()
+	sc.calls[reg.Name] = call
+	roster := sc.snapshotLocked()
+	sc.mu.Unlock()
+	if err := call.Reply(roster); err != nil {
+		return err
 	}
+	sc.broadcast(roster)
+	return nil
 }
 
 func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
@@ -136,16 +98,34 @@ func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
 
 func (sc *stubCenter) broadcast(roster protocol.RosterPayload) {
 	sc.mu.Lock()
-	targets := make([]*stubConn, 0, len(sc.conns))
-	for c := range sc.conns {
-		targets = append(targets, c)
+	targets := make([]*spv2.Call, 0, len(sc.calls))
+	for _, call := range sc.calls {
+		targets = append(targets, call)
 	}
 	sc.mu.Unlock()
-	for _, c := range targets {
-		env, err := protocol.NewEnvelope(protocol.TypeRoster, "settings-center", "", "", roster)
-		if err == nil {
-			c.send(env)
-		}
+	for _, call := range targets {
+		_ = call.SendEvent("roster", roster)
+	}
+}
+
+// registerService 用一个原生 register call 把替身登进名册（注册后连接即可关闭）。
+func registerService(t *testing.T, sc *stubCenter, name, addr string) {
+	t.Helper()
+	c, err := spv2.Dial(context.Background(), sc.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	call, err := spv2.NewCall("w-reg-"+name, spv2.ServiceRef(name), spv2.ServiceRef("settings-center"), "register",
+		protocol.RegisterPayload{Name: name, Addr: addr, Description: name + " 替身"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var roster protocol.RosterPayload
+	if err := c.CallDecode(ctx, call, &roster); err != nil {
+		t.Fatalf("%s 注册失败: %v", name, err)
 	}
 }
 
@@ -169,33 +149,33 @@ func startTarget(t *testing.T, sc *stubCenter) *target {
 			{Action: "plain", Tool: true}, // 没声明 Batchable
 		},
 	})
-	tg.Handle("ok", func(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	tg.HandleNative(spv2.Method{Name: "ok"}, func(_ context.Context, call *spv2.Call) error {
 		var p struct {
 			N int `msgpack:"n"`
 		}
-		_ = protocol.DecodeRaw(in.Input, &p)
+		_ = call.Frame.DecodeBody(&p)
 		tg.bump("ok")
-		return map[string]any{"n": p.N, "doubled": p.N * 2}, nil
+		return call.Reply(map[string]any{"n": p.N, "doubled": p.N * 2})
 	})
-	tg.Handle("fail", func(_ context.Context, _ protocol.Envelope, _ protocol.JumpPayload) (any, error) {
+	tg.HandleNative(spv2.Method{Name: "fail"}, func(_ context.Context, call *spv2.Call) error {
 		tg.bump("fail")
-		return nil, errors.New("目标说这个不行")
+		return call.ReplyError(spv2.CodeInvalidArgument, "目标说这个不行", false, nil)
 	})
-	tg.Handle("slow", func(ctx context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	tg.HandleNative(spv2.Method{Name: "slow"}, func(ctx context.Context, call *spv2.Call) error {
 		var p struct {
 			MS int `msgpack:"ms"`
 		}
-		_ = protocol.DecodeRaw(in.Input, &p)
+		_ = call.Frame.DecodeBody(&p)
 		tg.bump("slow")
 		select {
 		case <-time.After(time.Duration(p.MS) * time.Millisecond):
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return ctx.Err()
 		}
-		return map[string]any{"slept": p.MS}, nil
+		return call.Reply(map[string]any{"slept": p.MS})
 	})
-	tg.Handle("plain", func(_ context.Context, _ protocol.Envelope, _ protocol.JumpPayload) (any, error) {
-		return map[string]any{"ok": true}, nil
+	tg.HandleNative(spv2.Method{Name: "plain"}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]any{"ok": true})
 	})
 	if err := tg.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -224,13 +204,88 @@ func (w testWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// ---------- 调用方替身：直连 batch 的 /spv2 发调用，同时收 report_result ----------
+
+type caller struct {
+	name   string
+	srv    *spv2.Server
+	http   *httptest.Server
+	client *spv2.Client // 打 batch /spv2 的连接
+}
+
+func startCaller(t *testing.T, sc *stubCenter, name, batchURL string, reports chan protocol.AsyncResultPayload) *caller {
+	t.Helper()
+	c := &caller{name: name}
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: name, Actor: spv2.ServiceRef(name),
+		Version: "stub/1", Methods: []spv2.Method{{Name: "report_result", Shape: spv2.ShapeCall}},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.srv = srv
+	srv.Handle("report_result", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.AsyncResultPayload
+		if err := call.Frame.DecodeBody(&p); err == nil && reports != nil {
+			select {
+			case reports <- p:
+			default:
+			}
+		}
+		return call.Reply(map[string]string{"status": "accepted"})
+	})
+	c.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(c.http.Close)
+	registerService(t, sc, name, c.URL())
+	c.client = dial(t, batchURL)
+	return c
+}
+
+func (c *caller) URL() string {
+	return "ws" + strings.TrimPrefix(c.http.URL, "http") + "/spv2"
+}
+
+// call 以该调用方的名义对 batch 发起一次原生 call。
+func (c *caller) call(t *testing.T, action string, in any) ([]byte, error) {
+	t.Helper()
+	f, err := spv2.NewCall("trace-1", spv2.ServiceRef(c.name), spv2.ServiceRef("batch"), action, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := c.client.Call(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
+// close 断开打 batch 的连接并关掉补报接收端（模拟调用方下线）。
+func (c *caller) close() {
+	_ = c.client.Close()
+	c.http.Close()
+}
+
+// dial 建立一条到 /spv2 的连接。
+func dial(t *testing.T, url string) *spv2.Client {
+	t.Helper()
+	c, err := spv2.Dial(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
 // ---------- 夹具 ----------
 
 type fixture struct {
 	batch   *server.Server
 	target  *target
 	center  *stubCenter
-	probe   *service.Service
+	probe   *caller
 	reports chan protocol.AsyncResultPayload
 }
 
@@ -252,41 +307,8 @@ func startFixture(t *testing.T, over func(*server.Config)) *fixture {
 	t.Cleanup(b.Shutdown)
 
 	f := &fixture{batch: b, target: tg, center: sc, reports: make(chan protocol.AsyncResultPayload, 64)}
-	f.probe = service.New(service.Config{
-		Name: "probe", Listen: "127.0.0.1:0", Center: sc.URL(), Logger: log.New(testWriter{t}, "[probe] ", 0),
-	})
-	f.probe.Handle("report_result", func(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-		var p protocol.AsyncResultPayload
-		if err := protocol.DecodeRaw(in.Input, &p); err != nil {
-			return nil, err
-		}
-		select {
-		case f.reports <- p:
-		default:
-		}
-		return map[string]string{"status": "accepted"}, nil
-	})
-	if err := f.probe.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(f.probe.Shutdown)
-	waitRoster(t, f.probe, "batch")
-	waitRoster(t, f.probe, "worker")
+	f.probe = startCaller(t, sc, "probe", b.WsURL(), f.reports)
 	return f
-}
-
-func waitRoster(t *testing.T, s *service.Service, name string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		for _, c := range s.Roster() {
-			if c.Name == name {
-				return
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("名册里一直没出现 %s", name)
 }
 
 // next 等一条补报。
@@ -331,9 +353,7 @@ func items(n int) []protocol.BatchItem {
 
 func (f *fixture) callRun(t *testing.T, p protocol.BatchRunPayload) (protocol.BatchRunResult, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	raw, err := f.probe.Call(ctx, "batch", "run", p, "", "boss-1")
+	raw, err := f.probe.call(t, "run", p)
 	if err != nil {
 		return protocol.BatchRunResult{}, err
 	}
@@ -355,9 +375,7 @@ func (f *fixture) mustRun(t *testing.T, p protocol.BatchRunPayload) protocol.Bat
 
 func (f *fixture) call(t *testing.T, action string, in any) ([]byte, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return f.probe.Call(ctx, "batch", action, in, "", "boss-1")
+	return f.probe.call(t, action, in)
 }
 
 func decodeInto[T any](t *testing.T, raw []byte) T {

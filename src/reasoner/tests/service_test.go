@@ -1,149 +1,118 @@
 // Package tests 是 reasoner 的服务内集成测试：
-// 最小“设置中心”替身 + 真实 reasoner 实例，走真实 WS 通信。
+// 最小“设置中心”替身 + 真实 reasoner 实例，走真实 SPv2.1（/spv2）通信。
 package tests
 
 import (
 	"context"
 	"log"
-	"net"
-	"net/http"
+	"net/http/httptest"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/reasoner/server"
+	"github.com/NouSart/sump/spv2"
 )
 
-// ---------- 设置中心的最小替身 ----------
-
-type stubConn struct {
-	ws *websocket.Conn
-	mu sync.Mutex
-}
-
-func (c *stubConn) send(env protocol.Envelope) {
-	data, err := protocol.Marshal(env)
-	if err != nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.ws.WriteMessage(websocket.BinaryMessage, data)
-}
+// ---------- 设置中心的最小替身（原生 /spv2：register 是 call，roster 是 event） ----------
 
 type stubCenter struct {
-	ln     net.Listener
-	srv    *http.Server
+	srv    *spv2.Server
+	http   *httptest.Server
+	tools  *stubEndpoint // “stub-center”工具端点：ping 回 pong
 	logger *log.Logger
 
 	mu       sync.Mutex
 	cards    map[string]protocol.ServiceCard
-	conns    map[*stubConn]struct{}
+	calls    map[string]*spv2.Call      // 服务名 → 中心连接（roster 事件往这上面推）
 	settings *protocol.SettingsResult   // 非 nil 时响应 list_settings
 	regs     []protocol.RegisterPayload // 收到的注册（按到达顺序；重注册会再次出现）
 }
 
-var stubUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-
 func startStubCenter(t *testing.T) *stubCenter {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "settings-center", Actor: spv2.ServiceRef("settings-center"),
+		Version: "stub/1",
+		Methods: []spv2.Method{
+			{Name: "register", Shape: spv2.ShapeCall},
+			{Name: "list_settings", Shape: spv2.ShapeCall},
+			{Name: "report", Shape: spv2.ShapeCall},
+			{Name: "report_setting", Shape: spv2.ShapeCall},
+			{Name: "heartbeat", Shape: spv2.ShapeEvent},
+		},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	sc := &stubCenter{
-		ln:     ln,
+		srv:    srv,
 		logger: log.New(os.Stdout, "[stub-center] ", log.LstdFlags),
 		cards:  map[string]protocol.ServiceCard{},
-		conns:  map[*stubConn]struct{}{},
+		calls:  map[string]*spv2.Call{},
 	}
-	sc.cards["stub-center"] = protocol.ServiceCard{
-		Name:        "stub-center",
-		Addr:        sc.URL(),
-		Description: "设置中心测试替身",
+	srv.Handle("register", sc.handleRegister)
+	srv.Handle("list_settings", sc.handleListSettings)
+	srv.Handle("report", func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]any{"status": "ok"})
+	})
+	srv.Handle("report_setting", func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]any{"status": "ok"})
+	})
+	srv.Handle("heartbeat", func(context.Context, *spv2.Call) error { return nil })
+	sc.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(sc.http.Close)
+
+	// 工具端点单起一个 /spv2 服务（Actor 必须是 stub-center——SPv2 校验 to == 服务自己的 actor）。
+	sc.tools = newStubEndpoint(t, "stub-center", spv2.Method{Name: "ping", Shape: spv2.ShapeCall})
+	sc.tools.handle("ping", func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]any{"pong": true, "who": "stub-center"})
+	})
+	registerStub(t, sc, protocol.RegisterPayload{
+		Name: "stub-center", Addr: sc.tools.URL(), Description: "设置中心测试替身",
 		Provides: []protocol.Provide{
 			{Action: "ping", Tool: true, Output: "pong"},
 			{Action: "hidden_no_tool", Output: "未声明 tool,不应暴露"},
 		},
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", sc.handleWS)
-	sc.srv = &http.Server{Handler: mux}
-	go func() { _ = sc.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = sc.srv.Close() })
+	})
 	return sc
 }
 
-func (sc *stubCenter) URL() string { return "ws://" + sc.ln.Addr().String() + "/ws" }
+func (sc *stubCenter) URL() string {
+	return "ws" + strings.TrimPrefix(sc.http.URL, "http") + "/spv2"
+}
 
-func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := stubUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
+func (sc *stubCenter) handleRegister(_ context.Context, call *spv2.Call) error {
+	var reg protocol.RegisterPayload
+	if err := call.Frame.DecodeBody(&reg); err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
-	c := &stubConn{ws: ws}
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			sc.mu.Lock()
-			delete(sc.conns, c)
-			sc.mu.Unlock()
-			_ = ws.Close()
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		switch env.Type {
-		case protocol.TypeRegister:
-			var reg protocol.RegisterPayload
-			if err := env.DecodePayload(&reg); err != nil {
-				continue
-			}
-			sc.mu.Lock()
-			sc.cards[reg.Name] = reg.Card()
-			sc.regs = append(sc.regs, reg)
-			sc.conns[c] = struct{}{}
-			roster := sc.snapshotLocked()
-			sc.mu.Unlock()
+	sc.mu.Lock()
+	sc.cards[reg.Name] = reg.Card()
+	sc.regs = append(sc.regs, reg)
+	sc.calls[reg.Name] = call
+	roster := sc.snapshotLocked()
+	sc.mu.Unlock()
+	if err := call.Reply(roster); err != nil {
+		return err
+	}
+	sc.broadcast(roster)
+	return nil
+}
 
-			respData, _ := protocol.EncodePayload(roster)
-			resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true, Data: respData})
-			c.send(resp)
-			sc.broadcast(roster)
-		case protocol.TypeJump:
-			var jp protocol.JumpPayload
-			if err := env.DecodePayload(&jp); err != nil {
-				continue
-			}
-			switch jp.Action {
-			case "ping":
-				data, _ := protocol.EncodePayload(map[string]any{"pong": true, "who": "stub-center"})
-				resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true, Data: data})
-				c.send(resp)
-			case "list_settings":
-				sc.mu.Lock()
-				settings := sc.settings
-				sc.mu.Unlock()
-				if settings == nil {
-					resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: false, Error: "unknown action: " + jp.Action})
-					c.send(resp)
-					continue
-				}
-				data, _ := protocol.EncodePayload(*settings)
-				resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true, Data: data})
-				c.send(resp)
-			}
-		case protocol.TypeHeartbeat:
-			// 忽略
-		}
+func (sc *stubCenter) handleListSettings(_ context.Context, call *spv2.Call) error {
+	sc.mu.Lock()
+	settings := sc.settings
+	sc.mu.Unlock()
+	if settings == nil {
+		return call.ReplyError(spv2.CodeNotFound, "unknown action: list_settings", false, nil)
 	}
+	return call.Reply(*settings)
 }
 
 func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
@@ -161,16 +130,13 @@ func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
 
 func (sc *stubCenter) broadcast(roster protocol.RosterPayload) {
 	sc.mu.Lock()
-	targets := make([]*stubConn, 0, len(sc.conns))
-	for c := range sc.conns {
-		targets = append(targets, c)
+	targets := make([]*spv2.Call, 0, len(sc.calls))
+	for _, call := range sc.calls {
+		targets = append(targets, call)
 	}
 	sc.mu.Unlock()
-	for _, c := range targets {
-		env, err := protocol.NewEnvelope(protocol.TypeRoster, "stub-center", "", "", roster)
-		if err == nil {
-			c.send(env)
-		}
+	for _, call := range targets {
+		_ = call.SendEvent("roster", roster)
 	}
 }
 
@@ -196,6 +162,56 @@ func (sc *stubCenter) withSettings(t *testing.T, res protocol.SettingsResult) {
 	sc.settings = &res
 }
 
+// ---------- 通用替身件 ----------
+
+// stubEndpoint 是一个最小 SPv2.1 服务端：测试里“别的服务”都长这样（Actor = 自己的名字）。
+type stubEndpoint struct {
+	srv  *spv2.Server
+	http *httptest.Server
+	url  string
+}
+
+func newStubEndpoint(t *testing.T, name string, methods ...spv2.Method) *stubEndpoint {
+	t.Helper()
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: name, Actor: spv2.ServiceRef(name),
+		Version: "stub/1", Methods: methods, Limits: spv2.Limits{MaxBody: 4 << 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &stubEndpoint{srv: srv, http: httptest.NewServer(srv.Handler())}
+	e.url = "ws" + strings.TrimPrefix(e.http.URL, "http") + "/spv2"
+	t.Cleanup(e.http.Close)
+	return e
+}
+
+// URL 返回替身自己的 /spv2 地址（名册里的 addr 就填它）。
+func (e *stubEndpoint) URL() string { return e.url }
+
+// handle 注册一个原生 method。
+func (e *stubEndpoint) handle(name string, h spv2.Handler) { e.srv.Handle(name, h) }
+
+// registerStub 用一次原生 register call 把替身注册进桩中心（注册后连接即可关闭）。
+func registerStub(t *testing.T, sc *stubCenter, p protocol.RegisterPayload) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := spv2.Dial(ctx, sc.URL())
+	if err != nil {
+		t.Fatalf("%s 注册失败: %v", p.Name, err)
+	}
+	defer c.Close()
+	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef(p.Name), spv2.ServiceRef("settings-center"), "register", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roster protocol.RosterPayload
+	if err := c.CallDecode(ctx, call, &roster); err != nil {
+		t.Fatalf("%s 注册失败: %v", p.Name, err)
+	}
+}
+
 // ---------- 测试辅助 ----------
 
 func startReasoner(t *testing.T, centerURL string) *server.Server {
@@ -216,9 +232,9 @@ func startReasoner(t *testing.T, centerURL string) *server.Server {
 	return s
 }
 
-func dialReasoner(t *testing.T, s *server.Server) *protocol.Client {
+func dialReasoner(t *testing.T, s *server.Server) *spv2.Client {
 	t.Helper()
-	c, err := protocol.Dial(s.WsURL(), nil)
+	c, err := spv2.Dial(context.Background(), s.WsURL())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,26 +242,53 @@ func dialReasoner(t *testing.T, s *server.Server) *protocol.Client {
 	return c
 }
 
-// jump 对 reasoner 发起一次跳转并返回响应 payload。
-func jump(t *testing.T, c *protocol.Client, action string, input any, ctx context.Context) protocol.ResponsePayload {
+// outcome 把原生 reply 摊平成测试关心的两件事：成功数据 / 错误文本。
+type outcome struct {
+	OK    bool
+	Data  []byte
+	Error string
+}
+
+// jump 以 from=test 对 reasoner 发起一次原生 call（work 固定在测试里不关心）。
+func jump(t *testing.T, c *spv2.Client, action string, input any, ctx context.Context) outcome {
 	t.Helper()
-	raw, err := protocol.EncodePayload(input)
+	return callFrom(t, c, "test", "w-test", action, input, ctx)
+}
+
+// callFrom 以 from 的身份向 reasoner 发起一次原生 call。
+func callFrom(t *testing.T, c *spv2.Client, from, work, action string, input any, ctx context.Context) outcome {
+	t.Helper()
+	call, err := spv2.NewCall(work, spv2.ServiceRef(from), spv2.ServiceRef("reasoner"), action, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: action, Input: raw})
+	resp, err := c.Call(ctx, call)
+	if err != nil {
+		return outcome{Error: err.Error()}
+	}
+	return outcome{OK: true, Data: resp.Body}
+}
+
+// sendFrom 以 from 的身份发一条 user_message 并断言受理。
+// SPv2 没有 boss 字段：from 既是入口，也是结果的归属方。
+func sendFrom(t *testing.T, s *server.Server, from string, payload any) {
+	t.Helper()
+	c := dialReasoner(t, s)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef(from), spv2.ServiceRef("reasoner"), "user_message", payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
+	var ack struct {
+		Status string `msgpack:"status"`
 	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
+	if err := c.CallDecode(ctx, call, &ack); err != nil {
+		t.Fatalf("user_message 未被受理: %v", err)
 	}
-	return rp
+	if ack.Status != "accepted" {
+		t.Fatalf("user_message 未被受理: %+v", ack)
+	}
 }
 
 // ---------- 用例 ----------

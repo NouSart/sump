@@ -1,7 +1,6 @@
 package tests
 
-// 原生 SPv2 method：/spv2 的 call 直接解帧 body（ShellRunPayload），
-// 不经过 v1 的 JumpPayload / 合成 Envelope；v1 边缘（/ws）保持可用。
+// 原生 SPv2 method：/spv2 的 call 直接解帧 body（ShellRunPayload），进程内只有这一条入口。
 
 import (
 	"context"
@@ -13,11 +12,6 @@ import (
 	"github.com/NouSart/sump/shell/server"
 	"github.com/NouSart/sump/spv2"
 )
-
-// spv2URL 把服务的 /ws 地址换成 /spv2 入口。
-func spv2URL(wsURL string) string {
-	return strings.TrimSuffix(wsURL, "/ws") + "/spv2"
-}
 
 // dialSPv2 打开一条到 shell /spv2 的 SPv2.1 连接。
 func dialSPv2(t *testing.T, url string) *spv2.Client {
@@ -33,11 +27,10 @@ func dialSPv2(t *testing.T, url string) *spv2.Client {
 // TestShellNativeSPv2 直接打 shell 的 /spv2：run 走原生 handler（body 即 ShellRunPayload），
 // 受理回执正常、补报按 frame.from.id 回到调用方；错误输入回 invalid_argument。
 func TestShellNativeSPv2(t *testing.T) {
-	t.Setenv("SUMP_SPV2", "1") // /spv2 入口按环境开关挂载（与 main 的启动方式一致）
 	sc := startStubCenter(t)
 	cl := startCaller(t, sc, "caller")
 	s := startShell(t, sc, server.Config{Root: t.TempDir(), Approver: allowAll{}})
-	c := dialSPv2(t, spv2URL(s.WsURL()))
+	c := dialSPv2(t, s.WsURL())
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

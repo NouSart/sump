@@ -54,27 +54,7 @@ func TestTaskGate(t *testing.T) {
 	t.Cleanup(s.Shutdown)
 	mem.setReasonerURL(s.WsURL())
 
-	c := dialReasoner(t, s)
-	raw, err := protocol.EncodePayload(map[string]any{"text": "现在几点了"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Boss = "stub-boss"
-	resp, err := c.Call(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack protocol.ResponsePayload
-	if err := resp.DecodePayload(&ack); err != nil {
-		t.Fatal(err)
-	}
-	if !ack.OK {
-		t.Fatalf("user_message 未被受理: %s", ack.Error)
-	}
+	sendFrom(t, s, "stub-boss", map[string]any{"text": "现在几点了"})
 
 	// 最终交付必须是"补判定之后"那一轮的内容。
 	select {
@@ -152,13 +132,7 @@ func TestTaskContinue(t *testing.T) {
 	t.Cleanup(s.Shutdown)
 	mem.setReasonerURL(s.WsURL())
 
-	c := dialReasoner(t, s)
-	raw, _ := protocol.EncodePayload(map[string]any{"text": "开始做"})
-	req, _ := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	req.Boss = "stub-boss"
-	if _, err := c.Call(ctx, req); err != nil {
-		t.Fatal(err)
-	}
+	sendFrom(t, s, "stub-boss", map[string]any{"text": "开始做"})
 
 	select {
 	case d := <-boss.delivered:

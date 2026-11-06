@@ -169,11 +169,12 @@ var migrations = []struct{ name, ddl string }{
 	{"task_id", `ALTER TABLE messages ADD COLUMN task_id TEXT NOT NULL DEFAULT ''`},
 }
 
-// Close 关闭数据库。注意：若还有别的包共享本句柄（如 longterm），由打开方统一关闭。
+// Close 关闭数据库。注意：句柄交给过别人（DB()）也仍由打开方统一关闭。
 func (s *Store) Close() error { return s.db.Close() }
 
-// DB 返回底层句柄：长期记忆库（longterm）与它会话库共享**同一** 句柄——
-// 同进程同库，将来跨表事务（归档/清除这类）才有原子性。谁都能调，但只有打开方负责 Close。
+// DB 返回底层句柄。生产里只有一个消费者：main 的一次性旧库迁移（shared.MigrateFrom(st.DB())）；
+// 测试也拿它直接建表。共享经验库**不是**从这个句柄接过去的——它是另一个文件、另一个句柄，
+// 两个库的分工见 shared/db.go 的包注释。谁都能调，但只有打开方负责 Close。
 func (s *Store) DB() *sql.DB { return s.db }
 
 // Record 追加一条会话记录。Kind 为空时按 Role 推断（老调用方不用改）。
@@ -184,6 +185,11 @@ func (s *Store) DB() *sql.DB { return s.db }
 //
 // Seq 由写入方给（会话内单调）：并发写（Fire 是 goroutine）也能按真实先后排序；
 // 为 0 时退化为按落库顺序（老数据 / 不关心顺序的调用方）。
+//
+// **归档不设门槛**：这里不查 conversations.status——归档 = 移出默认列表，不是只读。
+// 改成拒写不是加个 if 那么简单：调用方（reasoner / 各入口）不看会话状态、多数还用 Fire
+// （发出即完，失败只进日志），门户又没有「取消归档」入口，拦下来就是悄悄丢历史。
+// 依据与逐条证据钉在 tests/conversations_test.go 的 TestConversationTable。
 func (s *Store) Record(conversationID, role, content, kind, meta string, seq int64, taskID string) error {
 	if kind == "" {
 		kind = kindOfRole(role)

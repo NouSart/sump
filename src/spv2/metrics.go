@@ -7,21 +7,21 @@ import (
 
 // Metric 是一个指标样本。
 type Metric struct {
-	Name    string            `json:"name"`
-	Type    string            `json:"type"` // counter|gauge|histogram
-	Help    string            `json:"help,omitempty"`
-	Unit    string            `json:"unit,omitempty"`
-	Labels  map[string]string `json:"labels,omitempty"`
-	Value   float64           `json:"value,omitempty"`
-	Count   uint64            `json:"count,omitempty"`
-	Sum     float64           `json:"sum,omitempty"`
-	Buckets []Bucket          `json:"buckets,omitempty"`
+	Name    string            `msgpack:"name" json:"name"`
+	Type    string            `msgpack:"type" json:"type"` // counter|gauge|histogram
+	Help    string            `msgpack:"help,omitempty" json:"help,omitempty"`
+	Unit    string            `msgpack:"unit,omitempty" json:"unit,omitempty"`
+	Labels  map[string]string `msgpack:"labels,omitempty" json:"labels,omitempty"`
+	Value   float64           `msgpack:"value,omitempty" json:"value,omitempty"`
+	Count   uint64            `msgpack:"count,omitempty" json:"count,omitempty"`
+	Sum     float64           `msgpack:"sum,omitempty" json:"sum,omitempty"`
+	Buckets []Bucket          `msgpack:"buckets,omitempty" json:"buckets,omitempty"`
 }
 
 // Bucket 是直方图桶。
 type Bucket struct {
-	LE    float64 `json:"le"`
-	Count uint64  `json:"count"`
+	LE    float64 `msgpack:"le" json:"le"`
+	Count uint64  `msgpack:"count" json:"count"`
 }
 
 type series struct {

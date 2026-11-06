@@ -19,7 +19,7 @@ func newSecretTestService(t *testing.T, secretFile string) *Service {
 	return New(Config{
 		Name:       "secret-failure-test",
 		Listen:     "127.0.0.1:0",
-		Center:     "ws://127.0.0.1:1/ws",
+		Center:     "ws://127.0.0.1:1/spv2",
 		SecretFile: secretFile,
 		Logger:     log.New(io.Discard, "", 0),
 	})

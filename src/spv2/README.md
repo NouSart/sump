@@ -1,11 +1,11 @@
 # spv2 · SPv2.1 参考实现
 
-> **读者**：要基于 SPv2.1 写服务、写适配器，或评估迁移差距的人 ｜ **读完能做**：用本包起 WS 服务与客户端，分清哪些是已实现机制、哪些只是协议字段 ｜ **最后校验**：2026-11-05
+> **读者**：要基于 SPv2.1 写服务，或评估迁移差距的人 ｜ **读完能做**：用本包起 WS 服务与客户端，分清哪些是已实现机制、哪些只是协议字段 ｜ **最后校验**：2026-11-06
 
 **这是 SPv2.1 的参考实现，不是生产服务迁移完成版。**
 核心协议、术语、错误码与验收标准见 [docs/concepts/spv2.md](../../docs/concepts/spv2.md)；本文只写实现视角，不复述 spec。
 
-模块路径 `github.com/NouSart/sump/spv2`，是一个独立 Go 包：核心包不 import 本仓库其他服务，只依赖 `gorilla/websocket`、`oklog/ulid`、`vmihailenco/msgpack`；`adapter` 只 import `protocol` 复用 v1 信封类型，SQLite 实现另依赖 `modernc.org/sqlite`。
+模块路径 `github.com/NouSart/sump/spv2`，是一个独立 Go 包：核心包不 import 本仓库其他服务，只依赖 `gorilla/websocket`、`oklog/ulid`、`vmihailenco/msgpack`，SQLite 实现另依赖 `modernc.org/sqlite`。
 
 ## 包结构
 
@@ -23,12 +23,11 @@
 | `sqlitestore.go` | `SQLiteStore` / `NewSQLiteStore`：`WorkStore` 的 SQLite 实现 |
 | `client.go` | `Client`：拨号、call、stream、hello、事件回调 |
 | `server.go` | `Server` / `Handler` / `Call`，内置 hello / health / metrics |
-| `http.go` | `Server.Mux`：`/ws`、`/healthz`、`/readyz`、`/metrics`（OpenMetrics） |
+| `http.go` | `Server.Mux`：`/spv2`、`/healthz`、`/readyz`、`/metrics`（OpenMetrics） |
 | `metrics.go` | `Registry`、`Metric` / `Bucket` 与快照 |
 | `idempotency.go` | `IdempotencyCache`：按卡片声明缓存 unary reply |
-| `adapter/v1.go` | v1 `jump` / `response` 与 SPv2.1 `call` / `reply` 的最小映射 |
 | `ref/` | 参考链路：entry → reasoner → memory → tool，四个服务走真实 WS；含 `ref_test.go` |
-| `*_test.go` | 帧、校验、卡片、指标、store、WS 传输与 v1 适配器测试 |
+| `*_test.go` | 帧、校验、卡片、指标、store、WS 传输测试 |
 
 ## API
 
@@ -37,10 +36,19 @@
 - `Frame` 对应线上唯一单元：`v` / `id` / `type` / `work` / `from` / `to`，加上可选的 `method` / `reply_to` / `content_type` / `schema` / `idempotency_key` / `stream` / `status` / `error` / `body`。
 - `NewCall` / `NewReply` / `NewErrorReply` / `NewEvent` / `NewStreamFrame` / `NewErrorStreamFrame` 负责生成帧并填默认值；`Normalize` 补版本、id、内容类型和 authority。
 - `Marshal` / `Unmarshal` 走 MsgPack；`EncodeBody` / `DecodeBody` 处理 body。`DecodeBody` 按 `content_type` 解到目标：MsgPack/JSON 用通用解码，`text/plain` 只接受 `*string`，`application/octet-stream` 只接受 `*[]byte`。
+- **结构体必须同时带 `msgpack:` 与 `json:` 标签**：msgpack 是默认编解码器，而 msgpack/v5 在缺 `msgpack:` 时退回 Go 字段名——只写 `json:"tool_calls"` 会让线上键名变成 `ToolCalls`，与 JSON 契约不一致。`msgpack_tags_test.go` 直接断言线上键名，不测 Go 结构体之间的自反往返（那种写法漏标签也照样绿）。
 - `Frame.Validate` 检查版本、四种 type、work/from/to、`content_type` 白名单（msgpack/json/text/plain/octet-stream）、reply/stream 的目标是调用方，以及各 type 的排他字段（call 不携带 `reply_to` / `status` / `error` / `stream` 等）。
 - **authority 帧级规则**：human 只能 `owner` / `none`；agent 允许 `none` / `runtime`（`delegated` 返回 `not_supported`）；service/system 只能 `none`。因此 agent 可以携带 `runtime` 发 deliver，但能否执行仍由 work 角色校验决定。
 - `Ref` 有 `kind` / `id` / `authority` / `tenant`；`HumanRef`、`AgentRef`、`ServiceRef`、`SystemRef`、`WorkRef`、`CapabilityRef` 给默认 authority，`WithAuthority` 返回副本。`tenant` 仅为保留字段。
 - `ValidateTo` 只在 `to.kind=service` 时要求目标就是本服务；`capability` 目标直接返回 `not_supported`。
+
+### 生产骨架（src/service）怎么映射帧头
+
+说清楚现状，免得被当成 bug 去「修」：
+
+- 出站 `Service.Call(ctx, to, action, payload, trace)` 与 `Fire` 把 **trace 当作帧头 `work`**（trace 为空时现场生成一个 ULID）——SPv2.1 里 work 是唯一的工作名词，骨架没有第二个 id 可放。
+- 帧头 **`from` 是发起这一跳的服务自己**（逐跳自定）：跨服务看到的调用方身份来自 `from`，不是任何入参。
+- **没有 `boss` 这个概念**：SPv2.1 帧头没有 `boss` 字段，结果归属就是 `from`；因此骨架 API 也不收 boss 参数（历史上 `Call` / `Fire` 各带一个、`callSPv2` 从不读它，已删）。仍在用 boss 的地方都是服务自己的数据（batch 的库列、timer 推门户的分组键、memory 的 `TaskContext.boss`），与骨架签名无关。`src/service/spv2_trace_work_test.go` 把上面三条钉成了断言（含「整帧上线后线上不出现 boss」）。
 
 ### Card 与 Method
 
@@ -82,15 +90,17 @@
 ### Server
 
 - `NewServer(card, ...)` 先校验卡片；默认注册 `hello` / `health` / `metrics`，其余 method 用 `Handle` 注册。
-- `Handler()` 返回挂在 `/ws` 上的 HTTP handler；`Mux()` 返回完整 mux：`/ws`、`/healthz`、`/readyz`、`/metrics`（OpenMetrics 文本）。
-- 选项有 `WithMaxMessageBytes`（默认 4 MiB）、`WithActionTimeout`（默认 30s）、`WithMaxInflight`（默认 64）、`WithMetrics`、`WithIdempotency`。
+- `Handler()` 返回挂在 `/spv2` 上的 HTTP handler；`Mux()` 返回完整 mux：`/spv2`、`/healthz`、`/readyz`、`/metrics`（OpenMetrics 文本）。
+- 选项有 `WithMaxMessageBytes`（默认 4 MiB）、`WithActionTimeout`（默认 30s）、`WithMaxInflight`（默认 64）、`WithMetrics`、`WithIdempotency`、`WithLogger`（默认 `log.Default()`；生产骨架传自己的 logger，见 `src/service/spv2_bridge.go`）。
 - 收到 call 后做 `Normalize` / `Validate` / `ValidateTo`；未知 method 回 `not_found`，并发超限回 `resource_exhausted`，每个 call 在独立 goroutine 中执行。
+- **丢弃必留痕**（spec 附录 A 第 1 条「无静默终态：drop 必计数」）：解不开 / 校验失败 / 超 body 上限 / 没有分发分支的入站帧，一律记 `sump_dropped_total{reason}` 并写一条日志（原因取值见 `server.go` 的常量表）。call 额外多回一帧错误 reply，只为不让调用方空等——同一种事件仍只记一次账，call 与 event 不分家。
+- **panic 不外溢**：handler 的 panic 在 `invoke` 里被收成 `internal` 错误，回给调用方、记 `sump_panics_total{method}`、把栈写进日志；进程与这条连接继续工作。event 的 panic 同理，但不再另记 `sump_event_errors_total`（一个事件一个指标）。
 - `Handler` 拿到的 `*Call` 提供 `Reply` / `ReplyError` / `SendEvent` / `SendStream` / `SendStreamError` / `Replied` / `WorkID`；handler 没回应时 server 会补错误 reply。
 - `hello` 校验请求协议版本并返回服务卡；`health` 返回 status/version/uptime；`metrics` 返回当前快照。event 交给同名 handler 处理，不产生 reply。
 
 ### HTTP 观测
 
-- `Server.Mux()` 一次挂好 `/ws`、`/healthz`、`/readyz`、`/metrics`。
+- `Server.Mux()` 一次挂好 `/spv2`、`/healthz`、`/readyz`、`/metrics`。
 - `/healthz` 与 `/readyz` 都返回 JSON 的 `HealthResponse`；当前没有依赖探针，固定 `status=ok`（所以 `readyz` 还不具备“依赖不可用就不接流量”的语义）。
 - `/metrics` 把 `Registry.Snapshot()` 渲染成 OpenMetrics 文本（counter/gauge/histogram，含 `_bucket` / `_sum` / `_count`）。
 
@@ -100,11 +110,6 @@
 - 只有卡片声明 `idempotent:true` 且请求带 `idempotency_key` 的 unary call 才缓存；key 由 `from.kind` / `from.id` / `method` / key 组成。
 - 命中时复用第一次的 body/status/error，重写 `id` / `reply_to` / `to` 后发回；stream 不缓存，缓存在进程内。
 
-### v1 适配器
-
-- `adapter.FromV1`：`jump` → `call`（action→method，input→body）；`response` → `reply`（ok/error→status，data→body，错误串落为 `internal`）。
-- `adapter.ToV1`：`call` → `jump`，`reply` → `response`；`event` / `stream` 和其它 v1 信封类型一律返回明确错误，不静默降级。
-- work 优先取 v1 `trace`，缺失时退回消息 id；from/to 映射为 `ServiceRef`。
 
 ### 参考链路 ref/
 
@@ -119,7 +124,7 @@
 
 - `Registry` 支持 `Counter`、`Gauge`、`AddGauge`、`Observe`、`Snapshot`；相同名字 + 标签聚合为一条序列，快照按名字和标签排序。
 - 直方图默认桶为 0.005 / 0.01 / 0.05 / 0.1 / 0.5 / 1 / 5 秒。
-- server 自动埋 `sump_requests_total`（method/code）、`sump_request_duration_seconds`（method）、`sump_inflight_requests`（method）；命名、单位和标签纪律由调用方负责，Registry 不强制。
+- server 自动埋 `sump_requests_total`（method/code）、`sump_request_duration_seconds`（method）、`sump_inflight_requests`（method）、`sump_dropped_total`（reason）、`sump_panics_total`（method）、`sump_unknown_event_total`（method）、`sump_event_errors_total`（method）；命名、单位和标签纪律由调用方负责，Registry 不强制。
 
 ## 最小示例
 
@@ -137,7 +142,7 @@ srv.Handle("echo", func(ctx context.Context, call *spv2.Call) error {
 })
 http.ListenAndServe(":9000", srv.Mux())
 
-client, err := spv2.Dial(ctx, "ws://127.0.0.1:9000/ws")
+client, err := spv2.Dial(ctx, "ws://127.0.0.1:9000/spv2")
 if err != nil {
     return err
 }
@@ -156,11 +161,11 @@ if err := client.CallDecode(ctx, call, &out); err != nil {
 
 阶段、范围、文件地图与待办以 [IMPLEMENTATION.md](IMPLEMENTATION.md) 为准；README 只记录当前代码事实。
 
-- 已落地：帧/卡片/校验、call/reply/event/stream、WS client/server、hello/health/metrics、HTTP `/healthz` `/readyz` `/metrics`、`MemStore`（work/lease/queue/sweep/renew）、可选幂等缓存、v1 adapter、`ref/` 参考链路。
+- 已落地：帧/卡片/校验、call/reply/event/stream、WS client/server、hello/health/metrics、HTTP `/healthz` `/readyz` `/metrics`、`MemStore`（work/lease/queue/sweep/renew）、可选幂等缓存、`ref/` 参考链路。
 - SQLite：`sqlitestore.go` 有 `SQLiteStore` / `NewSQLiteStore` 和 `sqlitestore_test.go`，测试已通过；但参考链路与默认测试仍用 `MemStore`，生产 memory 尚未接入，不把参考实现当成迁移完成。
-- 未接入：生产 reasoner/memory/frontend 迁移、auth/tenant/capability、spawn/cross-owner、v1 适配器之外的服务改造；`cancel` 只在 `ref/memory` 有 handler，`renew` 只有 Store 方法，生产 method 未接。
+- 未接入：auth/tenant/capability、spawn/cross-owner；`cancel` 只在 `ref/memory` 有 handler，`renew` 只有 Store 方法，生产 method 未接。
 - 测试缺口：没有 reconnect/heartbeat、stream 缺口/重复、专门的并发压测；`go test -race` 已通过。
-- 迁移顺序：frontend → reasoner → memory → tools；先接适配器跑通一条链，再按顺序替换；v3 触发条件见 [spec §19](../../docs/concepts/spv2.md#19-实现顺序与-v3-触发)。
+- 迁移顺序：frontend → reasoner → memory → tools；v3 触发条件见 [spec §19](../../docs/concepts/spv2.md#19-实现顺序与-v3-触发)。
 
 ## 运行与测试
 

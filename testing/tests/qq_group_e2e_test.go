@@ -88,29 +88,10 @@ func qqGroupEvent(groupID, uid int64, text string, mentionSelf bool) map[string]
 // jumpToService 以「测试客户端」身份调一个服务的动作（走真 WS，不绕过协议）。
 func jumpToService(t *testing.T, addr, to, action string, input any) map[string]any {
 	t.Helper()
-	c, err := protocol.Dial(addr, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = c.Close() })
-	raw, err := protocol.EncodePayload(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "e2e", to, "", protocol.JumpPayload{Action: action, Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := dialSPV2(t, addr)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
+	rp := callJumpFrom(t, c, "e2e", to, action, input, ctx)
 	if !rp.OK {
 		t.Fatalf("%s.%s 失败: %s", to, action, rp.Error)
 	}
@@ -134,10 +115,10 @@ func TestQQGroupE2E(t *testing.T) {
 	memPort := freePort(t)
 	alPort := freePort(t)
 	qqPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	memURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", memPort)
-	alURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", alPort)
-	qqURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", qqPort)
+	centerURL := spv2URL(scPort)
+	memURL := spv2URL(memPort)
+	alURL := spv2URL(alPort)
+	qqURL := spv2URL(qqPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
@@ -164,11 +145,7 @@ func TestQQGroupE2E(t *testing.T) {
 	)
 	waitWSReady(t, qqURL, 60*time.Second)
 
-	obs, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = obs.Close() })
+	obs := dialSPV2(t, centerURL)
 	for _, name := range []string{"memory", "reasoner", "qq"} {
 		waitRosterHas(t, obs, name, 60*time.Second)
 	}

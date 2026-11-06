@@ -157,11 +157,6 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Logger: logger,
 	})
 	s.declareSettings()
-	s.Handle("run", s.actionRun)
-	s.Handle("status", s.actionStatus)
-	s.Handle("result", s.actionResult)
-	s.Handle("list", s.actionList)
-	s.Handle("control", s.actionControl)
 	s.registerNativeMethods()
 	return s
 }

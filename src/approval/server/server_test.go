@@ -47,7 +47,7 @@ func TestBoundedConcurrencyAndCancellation(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.actionApprove(ctx, protocol.Envelope{}, protocol.JumpPayload{Input: raw})
+		_, err := s.approve(ctx, "", "", raw)
 		done <- err
 	}()
 	select {
@@ -55,7 +55,7 @@ func TestBoundedConcurrencyAndCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("parser not started")
 	}
-	if _, err := s.actionApprove(context.Background(), protocol.Envelope{}, protocol.JumpPayload{Input: raw}); err == nil || !strings.Contains(err.Error(), "approval_busy") {
+	if _, err := s.approve(context.Background(), "", "", raw); err == nil || !strings.Contains(err.Error(), "approval_busy") {
 		t.Fatalf("busy admission: %v", err)
 	}
 	cancel()
@@ -70,7 +70,7 @@ func TestBoundedConcurrencyAndCancellation(t *testing.T) {
 	if len(s.slots) != 0 {
 		t.Fatal("slot leaked")
 	}
-	if _, err := s.actionApprove(context.Background(), protocol.Envelope{}, protocol.JumpPayload{Input: make([]byte, (64<<10)+1)}); err == nil {
+	if _, err := s.approve(context.Background(), "", "", make([]byte, (64<<10)+1)); err == nil {
 		t.Fatal("oversized payload accepted")
 	}
 }

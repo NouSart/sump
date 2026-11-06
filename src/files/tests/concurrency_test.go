@@ -9,45 +9,20 @@ package tests
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/xuri/excelize/v2"
 
 	"github.com/NouSart/sump/protocol"
 )
 
-// callQuiet 与 call 同语义，但返回错误供 goroutine 使用。
-func callQuiet(addr, action string, input any) (protocol.ResponsePayload, error) {
-	conn, err := protocol.Dial(addr, nil)
-	if err != nil {
-		return protocol.ResponsePayload{}, err
-	}
-	defer conn.Close()
-	raw, err := protocol.EncodePayload(input)
-	if err != nil {
-		return protocol.ResponsePayload{}, err
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "test", "files", "trace-concurrent", protocol.JumpPayload{Action: action, Input: raw})
-	if err != nil {
-		return protocol.ResponsePayload{}, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	resp, err := conn.Call(ctx, env)
-	if err != nil {
-		return protocol.ResponsePayload{}, err
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		return protocol.ResponsePayload{}, err
-	}
-	return rp, nil
+// callQuiet 与 call 同语义，但把传输错误带回给 goroutine，业务错误回执仍放进 outcome。
+func callQuiet(addr, action string, input any) (outcome, error) {
+	return callService(addr, "trace-concurrent", "test", action, input)
 }
 
 // fetchBytes 取回权威副本的二进制。
@@ -89,7 +64,7 @@ func TestConcurrentXlsxWritesKeepAllCells(t *testing.T) {
 
 	start := make(chan struct{})
 	results := make([]struct {
-		rp  protocol.ResponsePayload
+		rp  outcome
 		err error
 	}, writers)
 	var wg sync.WaitGroup
@@ -155,7 +130,7 @@ func TestConcurrentPatchSameDigestAllowsExactlyOne(t *testing.T) {
 	texts := []string{"请求甲", "请求乙"}
 	start := make(chan struct{})
 	results := make([]struct {
-		rp  protocol.ResponsePayload
+		rp  outcome
 		err error
 	}, len(texts))
 	var wg sync.WaitGroup

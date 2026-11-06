@@ -6,7 +6,6 @@ package tests
 import (
 	"context"
 	"encoding/base64"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,11 +15,10 @@ import (
 
 // TestNativeSPV2Methods 验证 files 的 provides 动作都有原生 method，且调用链不走 v1。
 func TestNativeSPV2Methods(t *testing.T) {
-	t.Setenv("SUMP_SPV2", "1") // server.New 在构造时读取
 	sc := startStubCenter(t)
 	srv := startFiles(t, sc.URL(), 4000)
 
-	target := strings.TrimSuffix(srv.WsURL(), "/ws") + "/spv2"
+	target := srv.WsURL()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c, err := spv2.Dial(ctx, target)

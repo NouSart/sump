@@ -175,12 +175,8 @@ func asyncPayloadSize(p protocol.AsyncResultPayload) int {
 	return len(p.ItemID) + len(p.Phase) + len(p.Text) + len(p.Data)
 }
 
-func (s *Server) actionReportResult(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.reportResult(env.From, env.To, env.Trace, in.Input)
-}
-
 // reportResult 是补报的共享实现：source + trace + item_id 共同关联一笔在途受理。
-// v1 的 from/to/trace 取自信封，原生分别取 Frame.From.ID / Frame.To.ID / Frame.Work。
+// 三者都取自帧头：from / to / work。
 func (s *Server) reportResult(from, to, trace string, body []byte) (any, error) {
 	if len(body) > asyncReportBytes {
 		return nil, errors.New("report_result: 载荷超限")
@@ -320,7 +316,7 @@ func (s *Server) deliverFollowUp(j *asyncJob, text string) string {
 	s.boardMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := s.Call(ctx, j.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: j.cid, TaskID: j.taskID}, j.trace, ""); err != nil {
+	if _, err := s.Call(ctx, j.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: j.cid, TaskID: j.taskID}, j.trace); err != nil {
 		s.logger.Printf("会话 %s：原任务 %s 补报未确认送达: %v", j.cid, j.taskID, err)
 		return "delivery_failed"
 	}

@@ -290,7 +290,7 @@ func TestServerRejectsNonWebSocket(t *testing.T) {
 	card := wsTestCard(wsTestMethod("x"))
 	srv, _ := wsStartServer(t, card)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	req := httptest.NewRequest(http.MethodGet, "/spv2", nil)
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("non-websocket status = %d, want 400", rec.Code)

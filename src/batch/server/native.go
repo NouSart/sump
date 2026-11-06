@@ -1,9 +1,8 @@
 package server
 
 // batch 的原生 SPv2.1 method：Provides 里的每个动作都注册成一个 method。
-// 业务实现与 v1 边缘共用同一组共享函数（run/status/result/list/control）；
-// 这里只从 Frame 取调用元数据、调用共享函数并回 reply，不再合成
-// protocol.JumpPayload / protocol.Envelope。
+// 业务实现在共享函数（run/status/result/list/control）；
+// 这里只从 Frame 取调用元数据、调用共享函数并回 reply。
 
 import (
 	"context"
@@ -225,8 +224,7 @@ func (s *Server) registerNativeMethods() {
 }
 
 // nativeReply 把共享函数的返回值 / 错误统一回成 SPv2 reply。
-// 业务错误按参数错误回（与 timer/images 的原生入口一致）；错误文本保持原样（BATCH_* 前缀
-// 不变），v1 与原生两条边的调用方看到的是同一句话。
+// 业务错误按参数错误回；错误文本保持原样（BATCH_* 前缀不变）。
 func nativeReply(call *spv2.Call, out any, err error) error {
 	if err != nil {
 		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
@@ -235,8 +233,7 @@ func nativeReply(call *spv2.Call, out any, err error) error {
 }
 
 func (s *Server) nativeRun(_ context.Context, call *spv2.Call) error {
-	// 与骨架的 v1→SPv2 映射一致：caller=from.id、trace=work；SPv2 帧没有独立 boss，
-	// 沿用调用方作为结果归属。
+	// SPv2 帧没有独立 boss，沿用调用方作为结果归属；trace 取 work。
 	caller := call.Frame.From.ID
 	out, err := s.run(caller, caller, call.Frame.Work, call.Frame.Body)
 	return nativeReply(call, out, err)

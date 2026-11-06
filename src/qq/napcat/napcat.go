@@ -318,8 +318,8 @@ func (c *Client) Call(ctx context.Context, action string, params map[string]any)
 		if resp == nil {
 			return nil, errors.New("napcat 连接断开")
 		}
-		if status, _ := resp["status"].(string); status != "" && status != "ok" {
-			return resp, fmt.Errorf("napcat 返回 %s: %v", status, resp["message"])
+		if err := replyFailure(action, resp); err != nil {
+			return resp, err
 		}
 		return resp, nil
 	case <-ctx.Done():
@@ -329,6 +329,91 @@ func (c *Client) Call(ctx context.Context, action string, params map[string]any)
 		c.removePending(echo)
 		return nil, errors.New("napcat 响应超时")
 	}
+}
+
+// replyFailure 判定一条 OneBot 11 动作响应算不算成功，失败时返回带远端理由的错误。
+//
+// status 与 retcode 是同一件事的两种写法：NapCat 以 retcode 为准（0 = 成功），
+// 但有的动作只回 retcode、有的两个都回——所以「在场的信号都必须通过、且至少有一个在场」才算成功；
+// 两个都没有（或类型认不出来）一律按失败：一条什么都没声明的响应不能算"消息已送达"。
+func replyFailure(action string, resp map[string]any) error {
+	if resp == nil {
+		return fmt.Errorf("napcat 动作 %s 没有响应体", action)
+	}
+	var bad []string
+	status, hasStatus := resp["status"]
+	if hasStatus {
+		if s, isStr := status.(string); !isStr {
+			bad = append(bad, "status="+jsonValueText(status)+"（不是字符串）")
+		} else if s != "ok" {
+			bad = append(bad, "status="+jsonValueText(s))
+		}
+	}
+	retcode, hasRetcode := resp["retcode"]
+	if hasRetcode {
+		if code, isNum := jsonInt(retcode); !isNum {
+			bad = append(bad, "retcode="+jsonValueText(retcode)+"（不是数字）")
+		} else if code != 0 {
+			bad = append(bad, fmt.Sprintf("retcode=%d", code))
+		}
+	}
+	if !hasStatus && !hasRetcode {
+		bad = append(bad, "响应里既没有 status 也没有 retcode")
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return errors.New("napcat 动作 " + action + " 失败：" + strings.Join(bad, "、") + replyReason(resp))
+}
+
+// replyReason 带上远端自己写的原因（OneBot 11 的 message / wording），
+// 这样运维能一眼分开"QQ 侧拒收"与"网络不通 / 超时"（后两者的错误文本完全不同）。
+func replyReason(resp map[string]any) string {
+	var parts []string
+	for _, key := range []string{"message", "wording"} {
+		if v, _ := resp[key].(string); strings.TrimSpace(v) != "" {
+			parts = append(parts, key+"="+strconv.Quote(v))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " " + strings.Join(parts, " ")
+}
+
+// jsonValueText 把响应字段写成一行原文（null 就写 null、字符串带引号）：
+// 错误文本是给运维看的，不该漏出 Go 的 <nil>。
+func jsonValueText(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return strconv.Quote(t)
+	default:
+		return fmt.Sprint(t)
+	}
+}
+
+// jsonInt 把一个 JSON 字段读成整数：数字（float64 / json.Number）、字符串形式的数字都认，
+// 其余（null、对象、空串……）返回 false——认不出来由调用方按失败处理。
+func jsonInt(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	case int64:
+		return n, true
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return i, true
+		}
+	case string:
+		if i, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func (c *Client) removePending(echo string) {

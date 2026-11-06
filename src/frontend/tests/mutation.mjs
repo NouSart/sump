@@ -9,19 +9,13 @@ const center = ['tests/center.test.ts'];
 const spv2 = ['tests/spv2.test.ts'];
 const service = ['tests/api.test.ts', 'tests/service.test.ts'];
 const mutants = [
-  { id: 'TS01', file: 'center.ts', old: "this.spv2Enabled = opts.spv2 ?? process.env.SUMP_SPV2 === '1';", next: 'this.spv2Enabled = opts.spv2 ?? false;', tests: center },
-  { id: 'TS02', file: 'center.ts', old: 'if (native !== null && this.connectedFlag) {', next: 'if (native !== null || this.connectedFlag) {', tests: center },
-  { id: 'TS03', file: 'center.ts', old: 'if (err instanceof SPv2RemoteError) throw new RemoteError(err.message);', next: 'if (false) throw new RemoteError(err.message);', tests: center },
-  { id: 'TS04', file: 'center.ts', old: "if (this.spv2Enabled) {\n      try {\n        return await dialSPv2Once", next: "if (false) {\n      try {\n        return await dialSPv2Once", tests: center },
+  { id: 'TS02', file: 'center.ts', old: 'if (native === null || !this.connectedFlag) {', next: 'if (native === null || this.connectedFlag) {', tests: center },
+  // call 与 jumpTo 都有 RemoteError 映射：锚点带上前一行保证唯一。
+  { id: 'TS03', file: 'center.ts', old: "return await native.call(action, input, timeoutMS);\n    } catch (err) {\n      if (err instanceof SPv2RemoteError) throw new RemoteError(err.message);", next: "return await native.call(action, input, timeoutMS);\n    } catch (err) {\n      if (false) throw new RemoteError((err as Error).message);", tests: center },
   { id: 'TS05', file: 'center.ts', old: 'if (!card || !card.addr)', next: 'if (!card && !card.addr)', tests: center },
-  { id: 'TS06', file: 'center.ts', old: 'if (err instanceof SPv2UnavailableError) {', next: 'if (false) {', tests: center },
-  { id: 'TS07', file: 'center.ts', old: '} else if (err instanceof SPv2RemoteError) {', next: '} else if (false) {', tests: center },
   { id: 'TS08', file: 'center.ts', old: "if (ev.method === 'roster')", next: "if (ev.method !== 'roster')", tests: center },
   { id: 'TS09', file: 'center.ts', old: "if (ev.method === 'settings')", next: "if (ev.method !== 'settings')", tests: center },
-  { id: 'TS10', file: 'center.ts', old: "if (!rp || typeof rp !== 'object')", next: 'if (!rp)', tests: center },
-  { id: 'TS11', file: 'center.ts', old: 'if (rp.ok !== true)', next: 'if (rp.ok === true)', tests: center },
-  { id: 'TS12', file: 'center.ts', old: 'this.backoff = registered ? 1_000 : Math.min(this.backoff * 2, maxBackoff);', next: 'this.backoff = registered ? Math.min(this.backoff * 2, maxBackoff) : 1_000;', tests: center },
-  { id: 'TS13', file: 'spv2.ts', old: "if (addr.endsWith('/ws'))", next: "if (!addr.endsWith('/ws'))", tests: spv2 },
+  { id: 'TS12', file: 'center.ts', old: 'this.backoff = wasRegistered ? 1_000 : Math.min(this.backoff * 2, maxBackoff);', next: 'this.backoff = wasRegistered ? Math.min(this.backoff * 2, maxBackoff) : 1_000;', tests: center },
   { id: 'TS14', file: 'spv2.ts', old: "if (addr.endsWith('/spv2'))", next: "if (!addr.endsWith('/spv2'))", tests: spv2 },
   { id: 'TS15', file: 'spv2.ts', old: "return addr.replace(/\\/$/, '') + '/spv2';", next: "return addr + '/spv2';", tests: spv2 },
   { id: 'TS16', file: 'spv2.ts', old: 'if (raw.body instanceof Uint8Array) f.body = raw.body;', next: 'if (raw.body instanceof Uint8Array) f.body = new Uint8Array();', tests: spv2 },
@@ -45,10 +39,8 @@ const mutants = [
   { id: 'TS34', file: 'spv2.ts', old: 'return checkRequestTrust(reqHost, reqOrigin, trust);', next: 'return null;', tests: spv2 },
   { id: 'TS35', file: 'service.ts', old: 'if (!Array.isArray(raw)) return [];', next: 'if (Array.isArray(raw)) return [];', tests: service },
   { id: 'TS36', file: 'service.ts', old: "typeof o?.item_id !== 'string' || o.item_id === '' || typeof o.fire_at !== 'string' || typeof o.ms !== 'number'", next: "typeof o?.item_id !== 'string' && o.item_id === '' && typeof o.fire_at !== 'string' && typeof o.ms !== 'number'", tests: service },
-  { id: 'TS37', file: 'service.ts', old: 'if (!isV1 && !isSpv2) {', next: 'if (!isV1 || !isSpv2) {', tests: service },
+  { id: 'TS37', file: 'service.ts', old: 'if (url.pathname !== path) {', next: 'if (url.pathname === path) {', tests: service },
   { id: 'TS38', file: 'service.ts', old: 'if (denied !== null) {', next: 'if (denied === null) {', tests: service },
-  { id: 'TS39', file: 'service.ts', old: 'if (isV1) {', next: 'if (!isV1) {', tests: service },
-  { id: 'TS40', file: 'service.ts', old: "if (jp?.action === 'deliver') {", next: "if (jp?.action !== 'deliver') {", tests: service },
 ];
 
 const args = process.argv.slice(2);
@@ -58,11 +50,11 @@ const output = args.find((arg) => arg.startsWith('--output='))?.slice('--output=
 const selected = only ? mutants.filter((mutant) => only.includes(mutant.id)) : mutants;
 if (selected.length === 0 || (only && selected.length !== only.length)) throw new Error('未知 mutant id');
 
-function runTests(cwd, tests, nativeMode) {
+function runTests(cwd, tests) {
   return new Promise((resolveRun) => {
     const child = spawn(process.execPath, ['--test', ...tests], {
       cwd,
-      env: { ...process.env, SUMP_SPV2: nativeMode ? '1' : '' },
+      env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let log = '';
@@ -91,21 +83,17 @@ try {
   await cp(join(root, 'tests'), join(temp, 'tests'), { recursive: true });
   await cp(join(root, 'package.json'), join(temp, 'package.json'));
   await symlink(join(root, 'node_modules'), join(temp, 'node_modules'), 'junction');
-  const modeFor = (mutant) => (mutant.file === 'service.ts' ? [false] : [false, true]);
   const baselines = new Map();
   for (const mutant of selected) {
-    for (const nativeMode of modeFor(mutant)) {
-      for (const testFile of mutant.tests) {
-        const k = `${testFile}|${String(nativeMode)}`;
-        if (!baselines.has(k)) baselines.set(k, { testFile, nativeMode });
-      }
+    for (const testFile of mutant.tests) {
+      if (!baselines.has(testFile)) baselines.set(testFile, { testFile });
     }
   }
-  for (const { testFile, nativeMode } of baselines.values()) {
-    const baseline = await runTests(temp, [testFile], nativeMode);
+  for (const { testFile } of baselines.values()) {
+    const baseline = await runTests(temp, [testFile]);
     if (baseline.status !== 'lived') {
       console.error(baseline.log);
-      throw new Error(`未变异基线未通过（${testFile}, native=${String(nativeMode)}），mutation 结果无效`);
+      throw new Error(`未变异基线未通过（${testFile}），mutation 结果无效`);
     }
   }
   console.log(`baseline: pass (${[...baselines.keys()].join(', ')})`);
@@ -115,20 +103,11 @@ try {
     if (original.split(mutant.old).length !== 2) throw new Error(`${mutant.id}: 变异锚点不唯一或不存在`);
     try {
       await writeFile(path, original.replace(mutant.old, mutant.next));
-      const modes = [];
-      for (const nativeMode of modeFor(mutant)) {
-        modes.push(await runTests(temp, mutant.tests, nativeMode));
-      }
-      const status = modes.some((x) => x.status === 'killed')
-        ? 'killed'
-        : modes.some((x) => x.status === 'timeout')
-          ? 'timeout'
-          : 'lived';
+      const mode = await runTests(temp, mutant.tests);
+      const status = mode.status;
       results.push({ id: mutant.id, file: mutant.file, old: mutant.old, next: mutant.next, status });
       console.log(`${mutant.id} ${status} ${mutant.file}`);
-      if (status === 'lived' && args.includes('--verbose')) {
-        for (const mode of modes) console.log(mode.log);
-      }
+      if (status === 'lived' && args.includes('--verbose')) console.log(mode.log);
     } finally {
       await writeFile(path, original);
     }

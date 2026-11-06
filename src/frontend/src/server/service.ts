@@ -1,15 +1,14 @@
-// 前端服务的 WS 端点：接受其他服务的 jump。
+// 前端服务的 WS 端点：接受其他服务的原生 /spv2 call（deliver / 计时快照 / 待审项 / 任务实况 / 终端补报）。
 //
 // 门户对外只提供 deliver（智能体 → 用户）：投递交给 DeliverHub，由 SSE 推给浏览器。
 // 回执只表示"已送达面板"，**不表示用户看过**——与 shell 的"受理即回执"同一取向。
-// 其余动作一律回执 unknown action，保证注册进名册的地址真实可达、行为诚实。
+// 其余方法一律回执 unknown method，保证注册进名册的地址真实可达、行为诚实。
 import type { Server as HttpServer } from 'node:http';
-import { WebSocketServer, type WebSocket } from 'ws';
-import type { RawData } from 'ws';
-import { PORTAL_CONVERSATION_ID, checkRequestTrust, parsePendingApproval, parseProgress, parseTerminalUpdate, type DeliverMessage, type PendingApprovalItem, type ProgressUpdate, type TerminalUpdate, type TimerItem, type TimerState, type TrustConfig } from './portal.ts';
-import { type Provide, type Setting, TypeJump, decodeEnvelope, encodeEnvelope, frameBytes, newResponse } from './protocol.ts';
+import type { WebSocketServer } from 'ws';
+import { checkRequestTrust, type TimerItem, type TrustConfig } from './portal.ts';
+import type { Provide, Setting } from './protocol.ts';
 
-// portalProvides 是注册时上报的动作清单——名册里因此看得见门户能收 deliver、计时快照、待审命令与任务实况。
+// portalProvides 是注册时上报的能力清单——名册里因此看得见门户能收 deliver、计时快照、待审命令与任务实况。
 export const portalProvides: Provide[] = [
   { action: 'deliver', input: '{text, conversation_id}', output: '回执（已送达面板）' },
   { action: 'timer_state', input: '{boss?, seq, timers[]}', output: '回执（已登记展示；accepted 说明这条快照有没有被采纳）' },
@@ -56,114 +55,29 @@ export function parseTimerItems(raw: unknown, log: (m: string) => void): TimerIt
   return out;
 }
 
-// 与 Go 侧服务默认的 -max-message-bytes（1 MiB）对齐：门户只收 deliver / 计时快照 /
-// 待审项 / 任务实况这类小消息。不设上限时 ws 默认允许 100 MiB 单帧。
-const maxInboundMessageBytes = 1 << 20;
-
-export function attachJumpEndpoint(
+// attachSPv2Endpoint 把原生 /spv2 的 upgrade 接到 wss 上；其余路径一律断开。
+//
+// 信任栅栏对 WS 同样生效：服务之间的连接不带 Origin（放行），而浏览器发起的
+// 握手必然带 Origin——否则恶意页面能直连这里往门户里塞假投递。
+export function attachSPv2Endpoint(
   server: HttpServer,
   path: string,
-  name: string,
-  log: (m: string) => void,
-  onDeliver: (m: DeliverMessage) => void,
-  onTimers: (s: TimerState) => boolean,
-  onApproval: (item: PendingApprovalItem) => void,
-  onProgress: (p: ProgressUpdate) => boolean,
-  onTerminal: (u: TerminalUpdate) => boolean,
+  wss: WebSocketServer,
   trust: TrustConfig,
-  spv2?: { path: string; wss: WebSocketServer },
-): WebSocketServer {
-  const wss = new WebSocketServer({ noServer: true, maxPayload: maxInboundMessageBytes });
-
-  const handleConn = (ws: WebSocket): void => {
-    // 超限帧会让 ws 发 'error' 并关闭连接；没有监听器时 EventEmitter 会把整个进程带崩。
-    ws.on('error', (err: Error) => {
-      log(`WS 连接出错（即将关闭）: ${err.message}`);
-    });
-    ws.on('message', (data: RawData) => {
-      let env;
-      try {
-        env = decodeEnvelope(frameBytes(data));
-      } catch {
-        log('WS 端点上收到坏帧（丢弃）');
-        return;
-      }
-      if (env.type !== TypeJump) {
-        ws.send(encodeEnvelope(newResponse(env, name, { ok: false, error: `unsupported message type: ${env.type}` })));
-        return;
-      }
-      const jp = env.payload as { action?: string; input?: unknown } | undefined;
-      if (jp?.action === 'deliver') {
-        const input = (jp.input ?? {}) as { text?: unknown; conversation_id?: unknown };
-        if (typeof input.text !== 'string' || input.text === '') {
-          ws.send(encodeEnvelope(newResponse(env, name, { ok: false, error: 'deliver 需要非空 text' })));
-          return;
-        }
-        const conversationId =
-          typeof input.conversation_id === 'string' && input.conversation_id !== ''
-            ? input.conversation_id
-            : PORTAL_CONVERSATION_ID;
-        const taskId = typeof (input as { task_id?: unknown }).task_id === 'string' ? (input as { task_id: string }).task_id : '';
-        onDeliver({ text: input.text, conversationId, taskId, at: new Date().toISOString() });
-        ws.send(encodeEnvelope(newResponse(env, name, { ok: true, data: { delivered: true } })));
-        return;
-      }
-      if (jp?.action === 'timer_state') {
-        const input = (jp.input ?? {}) as { boss?: unknown; seq?: unknown; timers?: unknown };
-        const accepted = onTimers({
-          boss: typeof input.boss === 'string' ? input.boss : '',
-          seq: typeof input.seq === 'number' ? input.seq : 0,
-          items: parseTimerItems(input.timers, log),
-        });
-        ws.send(encodeEnvelope(newResponse(env, name, { ok: true, data: { accepted } })));
-        return;
-      }
-      if (jp?.action === 'approval_pending') {
-        const item = parsePendingApproval(jp.input, log);
-        if (item !== null) onApproval(item);
-        ws.send(encodeEnvelope(newResponse(env, name, { ok: true, data: { accepted: item !== null } })));
-        return;
-      }
-      if (jp?.action === 'progress') {
-        const p = parseProgress(jp.input, log);
-        const accepted = p !== null ? onProgress(p) : false;
-        ws.send(encodeEnvelope(newResponse(env, name, { ok: true, data: { accepted } })));
-        return;
-      }
-      if (jp?.action === 'report_result') {
-        const u = parseTerminalUpdate(jp.input, log);
-        const accepted = u !== null ? onTerminal(u) : false;
-        ws.send(encodeEnvelope(newResponse(env, name, { ok: true, data: { accepted } })));
-        return;
-      }
-      ws.send(encodeEnvelope(newResponse(env, name, { ok: false, error: `unknown action: ${jp?.action ?? ''}` })));
-    });
-  };
-
+  log: (m: string) => void,
+): void {
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    const isV1 = url.pathname === path;
-    const isSpv2 = spv2 !== undefined && url.pathname === spv2.path;
-    if (!isV1 && !isSpv2) {
+    if (url.pathname !== path) {
       socket.destroy();
       return;
     }
-    // 信任栅栏对 WS 同样生效：服务之间的连接不带 Origin（放行），而浏览器发起的
-    // 握手必然带 Origin——否则恶意页面能直连这里往门户里塞假投递。
     const denied = checkRequestTrust(req.headers.host, req.headers.origin, trust);
     if (denied !== null) {
       log(`WS 端点拒绝连接: ${denied}`);
       socket.destroy();
       return;
     }
-    if (isV1) {
-      wss.handleUpgrade(req, socket, head, (ws) => handleConn(ws));
-    } else {
-      spv2!.wss.handleUpgrade(req, socket, head, (ws) => {
-        spv2!.wss.emit('connection', ws, req);
-      });
-    }
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   });
-
-  return wss;
 }

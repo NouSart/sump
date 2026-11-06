@@ -11,7 +11,7 @@ import (
 	"github.com/NouSart/sump/reasoner/llm"
 )
 
-// TestActionThink 验证单步推理动作：一次补全、原样回文本、上限生效、空提示词拒绝。
+// TestActionThink 验证单步推理：一次补全、原样回文本、上限生效、空提示词拒绝。
 func TestActionThink(t *testing.T) {
 	fake := &llm.Fake{Replies: []llm.Message{{Role: "assistant", Content: "一句话答案"}}}
 	s := &Server{llm: fake, logger: log.New(os.Stdout, "[think-test] ", 0), cfg: Config{Name: "reasoner"}}
@@ -20,7 +20,7 @@ func TestActionThink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.actionThink(context.Background(), protocol.Envelope{}, protocol.JumpPayload{Action: "think", Input: in})
+	out, err := s.think(context.Background(), in)
 	if err != nil {
 		t.Fatalf("think 失败: %v", err)
 	}
@@ -49,14 +49,14 @@ func TestActionThink(t *testing.T) {
 
 	// 空提示词：明确拒绝，不是发一个空气请求出去。
 	empty, _ := protocol.EncodePayload(protocol.ThinkPayload{Prompt: "   "})
-	if _, err := s.actionThink(context.Background(), protocol.Envelope{}, protocol.JumpPayload{Input: empty}); err == nil {
+	if _, err := s.think(context.Background(), empty); err == nil {
 		t.Fatal("空提示词应报错")
 	}
 
 	// 未配置 LLM：如实报错，调用方自己决定降级。
 	bare := &Server{logger: log.New(os.Stdout, "[think-test] ", 0)}
 	ok, _ := protocol.EncodePayload(protocol.ThinkPayload{Prompt: "x"})
-	if _, err := bare.actionThink(context.Background(), protocol.Envelope{}, protocol.JumpPayload{Input: ok}); err == nil {
+	if _, err := bare.think(context.Background(), ok); err == nil {
 		t.Fatal("未配置 LLM 时应报错")
 	}
 }
@@ -68,7 +68,7 @@ func TestActionThinkRejectsHugePrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.actionThink(context.Background(), protocol.Envelope{}, protocol.JumpPayload{Input: in})
+	_, err = s.think(context.Background(), in)
 	if err == nil || !strings.Contains(err.Error(), "太长") {
 		t.Fatalf("超长提示词应被拒绝: %v", err)
 	}

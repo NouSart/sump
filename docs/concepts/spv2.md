@@ -556,14 +556,15 @@ reply body: {
   "status": "ok | degraded | fail",
   "version": "0.1.0",
   "uptime_ms": 123456,
-  "checks": [
+  "checks": [ // 契约形状；当前参考实现不产此字段，见下方「现状」
     { "name": "center", "status": "ok", "latency_ms": 1 },
     { "name": "db", "status": "ok", "latency_ms": 0 }
   ]
 }
 ```
 
-- HTTP 侧：`/healthz`（liveness）、`/readyz`（readiness）。
+- 本节是契约形状：`checks` 为可选字段（omitempty），探针由服务自己填。
+- **现状（未做）**：参考实现 `src/spv2` 的 `health` 与 HTTP 侧 `/readyz` 都还不产 `checks[]`，`/readyz` 当前与 `/healthz` 返回完全一致，没有"依赖不可用就不接流量"的就绪语义；缺什么以 [src/spv2/IMPLEMENTATION.md](../../src/spv2/IMPLEMENTATION.md) §5「已知未做」为准，这里不复制清单。
 - `degraded` 不等于死；不要因为依赖慢就判 fail。
 
 ### 7.7 `metrics`
@@ -835,9 +836,8 @@ pending ──claim──▶ claimed ──ack──▶ delivered
 | `async:true` | `long_running:true` + `event` |
 | `provides` | `methods` + schema |
 
-- **适配器**：收 v1 `jump`，映射成 SPv2.1 `call`；收 SPv2.1，对老服务映射回 v1。
-- **切片**：frontend → reasoner → memory → shell/files → A2A → 其他。
-- 适配器是脚手架，不是长期双栈；全部迁完就删。
+- **迁移方式（本仓库现状）**：**不做 v1 适配器**。所有服务直接改为只暴露 `/spv2`；v1 信封、`jump` 与 `protocol.Client` 已从代码中删除，原计划的适配器脚手架未落地。
+- **切片**：frontend → embedding → settings-center → service 骨架 → timer/images/files → qq/shell/mcp/batch/approval → reasoner → protocol；已全部完成。
 
 ---
 
@@ -936,7 +936,7 @@ call method=message work=w1
 - 流式：多块、seq、end、cancel、buffer 超限。
 - 错误：code/retryable/details；未知 method。
 - 观测：health/metrics/HTTP 端点；最小指标集。
-- 迁移：v1 适配器；一条链端到端。
+- 迁移：v2-only 直接切换（无适配器）；一条链端到端。
 
 ### 17.2 红队测试（六条红线）
 
@@ -992,7 +992,7 @@ call method=message work=w1
 1. **P0 核心**：帧/Ref/card/hello；memory work 表 + lease 账本 + work_messages；`message` / `context` / `deliver` / `health` / `metrics`；authority 矩阵；单测。
 2. **P1 工具与 A2A**：工具 call；A2A queue claim/ack/nack；stream；cancel；idempotency；契约测试。
 3. **P2 观测**：骨架指标、最小指标集、门户快照；负向/红队测试。
-4. **P3 迁移**：v1 适配器；一条链切完；再扩到全部服务。
+4. **P3 迁移**：v2-only 直接切换——不做 v1 适配器；服务逐个改为只暴露 `/spv2`，全部迁完后删除 protocol 的 v1 传输。
 5. **Profiles**：等真实场景；不提前实现。
 
 ### 19.2 v3 触发

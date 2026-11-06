@@ -21,20 +21,12 @@ func TestTaskContextRoundTrip(t *testing.T) {
 			{Role: "tool", Content: `{"ok":true}`, ToolCallID: "c1"},
 		},
 	}}
-	env, err := NewEnvelope(TypeJump, "reasoner", "memory", "trace-1", in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := Marshal(env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := Unmarshal(data)
+	raw, err := EncodePayload(in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out RecallPayload
-	if err := got.DecodePayload(&out); err != nil {
+	if err := DecodeRaw(raw, &out); err != nil {
 		t.Fatal(err)
 	}
 	if out.Context.ConversationID != in.Context.ConversationID || out.Context.Boss != in.Context.Boss {
@@ -59,10 +51,10 @@ func TestTaskContextRoundTrip(t *testing.T) {
 
 	// Resume 与 Store 同构走一遍。
 	rp := ResumePayload{Context: out.Context}
-	if _, err := NewEnvelope(TypeJump, "memory", "reasoner", "trace-1", rp); err != nil {
+	if _, err := EncodePayload(rp); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewEnvelope(TypeJump, "reasoner", "memory", "trace-1", StorePayload{ConversationID: "conv-1", Role: "user", Content: "你好"}); err != nil {
+	if _, err := EncodePayload(StorePayload{ConversationID: "conv-1", Role: "user", Content: "你好"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -390,19 +382,11 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 		}}}, &SettingsResult{}},
 	}
 	for _, tc := range cases {
-		env, err := NewEnvelope(TypeJump, "a", "b", "trace-1", tc.in)
+		raw, err := EncodePayload(tc.in)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
-		data, err := Marshal(env)
-		if err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
-		}
-		got, err := Unmarshal(data)
-		if err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
-		}
-		if err := got.DecodePayload(tc.out); err != nil {
+		if err := DecodeRaw(raw, tc.out); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
 		if !reflect.DeepEqual(tc.in, reflect.ValueOf(tc.out).Elem().Interface()) {

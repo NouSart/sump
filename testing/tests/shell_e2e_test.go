@@ -12,96 +12,66 @@ package tests
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // reportProbe 是调用方替身：注册进中心，收 shell 的补报（report_result）。
-// 名字必须是 "e2e-observer"——补报发往“发起跳转时的 From”，而 callJump 的 From 就是它。
+// 名字必须是 "e2e-observer"——补报发往发起调用的 From，而 callJump 的 From 就是它。
 type reportProbe struct {
-	ln      net.Listener
-	srv     *http.Server
+	srv     *httptest.Server
 	reports chan protocol.AsyncResultPayload
 }
 
 func startReportProbe(t *testing.T, centerURL string) *reportProbe {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	p := &reportProbe{reports: make(chan protocol.AsyncResultPayload, 16)}
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "e2e-observer", Actor: spv2.ServiceRef("e2e-observer"),
+		Version: "e2e-observer/1", Description: "shell e2e 调用方替身",
+		Methods: []spv2.Method{{Name: "report_result", Shape: spv2.ShapeCall}},
+		Limits:  spv2.Limits{MaxBody: 1 << 20},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &reportProbe{ln: ln, reports: make(chan protocol.AsyncResultPayload, 16)}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", p.handleWS)
-	p.srv = &http.Server{Handler: mux}
-	go func() { _ = p.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = p.srv.Close() })
+	srv.Handle("report_result", func(_ context.Context, call *spv2.Call) error {
+		var pl protocol.AsyncResultPayload
+		if err := call.Frame.DecodeBody(&pl); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		select {
+		case p.reports <- pl:
+		default:
+		}
+		return call.Reply(map[string]string{"status": "accepted"})
+	})
+	p.srv = httptest.NewServer(srv.Handler())
+	t.Cleanup(p.srv.Close)
 
-	reg, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reg.Close() })
+	reg := dialSPV2(t, centerURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, "e2e-observer", "settings-center", "", protocol.RegisterPayload{
+	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef("e2e-observer"), spv2.ServiceRef("settings-center"), "register", protocol.RegisterPayload{
 		Name: "e2e-observer", Addr: p.URL(), Description: "shell e2e 调用方替身",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := reg.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil || !rp.OK {
-		t.Fatalf("调用方替身注册失败: %v / %s", err, rp.Error)
+	var roster protocol.RosterPayload
+	if err := reg.CallDecode(ctx, call, &roster); err != nil {
+		t.Fatalf("调用方替身注册失败: %v", err)
 	}
 	return p
 }
 
-func (p *reportProbe) URL() string { return "ws://" + p.ln.Addr().String() + "/ws" }
-
-func (p *reportProbe) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := probeUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil || env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action != "report_result" {
-			resp, _ := protocol.NewResponse(env, "e2e-observer", protocol.ResponsePayload{OK: false, Error: "unknown action: " + jp.Action})
-			writeWS(ws, resp)
-			continue
-		}
-		var pl protocol.AsyncResultPayload
-		if err := protocol.DecodeRaw(jp.Input, &pl); err == nil {
-			select {
-			case p.reports <- pl:
-			default:
-			}
-		}
-		resp, _ := protocol.NewResponse(env, "e2e-observer", protocol.ResponsePayload{OK: true})
-		writeWS(ws, resp)
-	}
+func (p *reportProbe) URL() string {
+	return "ws" + strings.TrimPrefix(p.srv.URL, "http") + "/spv2"
 }
 
 // waitReport 等一条指定阶段的补报。
@@ -127,8 +97,8 @@ func TestShellHotPathE2E(t *testing.T) {
 
 	scPort := freePort(t)
 	shPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	shellURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", shPort)
+	centerURL := spv2URL(scPort)
+	shellURL := spv2URL(shPort)
 	root := t.TempDir()
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
@@ -140,11 +110,7 @@ func TestShellHotPathE2E(t *testing.T) {
 	)
 
 	probe := startReportProbe(t, centerURL)
-	obs, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = obs.Close() })
+	obs := dialSPV2(t, centerURL)
 	waitRosterHas(t, obs, "shell", 60*time.Second)
 
 	// 断言 a：名片跨进程带来了 async 声明（受理即回执的动作契约）。
@@ -177,11 +143,7 @@ func TestShellHotPathE2E(t *testing.T) {
 	}
 
 	// 断言 b：受理即回执——回执立刻返回，且只表示“已入队列”。
-	caller, err := protocol.Dial(shellURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = caller.Close() })
+	caller := dialSPV2(t, shellURL)
 	ctxB, cancelB := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelB()
 	start := time.Now()

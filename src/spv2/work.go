@@ -48,21 +48,21 @@ func DefaultLease(now time.Time) Lease {
 
 // Charge 是一次租约扣减。
 type Charge struct {
-	ToolCalls int `json:"tool_calls,omitempty"`
-	Tokens    int `json:"tokens,omitempty"`
-	Approvals int `json:"approvals,omitempty"`
-	Children  int `json:"children,omitempty"`
-	Depth     int `json:"depth,omitempty"`
+	ToolCalls int `msgpack:"tool_calls,omitempty" json:"tool_calls,omitempty"`
+	Tokens    int `msgpack:"tokens,omitempty" json:"tokens,omitempty"`
+	Approvals int `msgpack:"approvals,omitempty" json:"approvals,omitempty"`
+	Children  int `msgpack:"children,omitempty" json:"children,omitempty"`
+	Depth     int `msgpack:"depth,omitempty" json:"depth,omitempty"`
 }
 
 // Remaining 是租约余额。
 type Remaining struct {
-	DeadlineAt string `json:"deadline_at,omitempty"`
-	ToolCalls  int    `json:"tool_calls"`
-	Tokens     int    `json:"tokens"`
-	Approvals  int    `json:"approvals"`
-	Children   int    `json:"children"`
-	Depth      int    `json:"depth"`
+	DeadlineAt string `msgpack:"deadline_at,omitempty" json:"deadline_at,omitempty"`
+	ToolCalls  int    `msgpack:"tool_calls" json:"tool_calls"`
+	Tokens     int    `msgpack:"tokens" json:"tokens"`
+	Approvals  int    `msgpack:"approvals" json:"approvals"`
+	Children   int    `msgpack:"children" json:"children"`
+	Depth      int    `msgpack:"depth" json:"depth"`
 }
 
 // Participant 是 work 的参与者。

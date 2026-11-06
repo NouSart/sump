@@ -300,16 +300,11 @@ func (s *Server) release(principal string) {
 	}
 }
 
-// handleImport 是 v1 action 的薄包装；业务实现与 /spv2 原生 method 共用。
-func (s *Server) handleImport(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.importCall(ctx, in.Action, in.Input, env.From, env.Trace, env.Boss)
-}
-
-// importCall 只接收原始 MessagePack body 与路由字段，原生路径不构造
-// v1 跳转载荷，也不合成信封。
-func (s *Server) importCall(ctx context.Context, action string, body []byte, caller, trace, boss string) (any, error) {
+// importCall 只接收原始 MessagePack body 与路由字段；入站 import 只走
+// /spv2 原生 method，不构造 v1 跳转载荷，也不合成信封。
+func (s *Server) importCall(ctx context.Context, action string, body []byte, caller, trace string) (any, error) {
 	if s.imports.IsAsync(action) {
-		return s.asyncImport(ctx, action, body, caller, trace, boss)
+		return s.asyncImport(ctx, action, body, caller, trace)
 	}
 	// SUMP From is routing identity within the trusted internal network, not a
 	// credential. External HTTP callers cannot choose it or invoke imports here.
@@ -342,7 +337,7 @@ func (s *Server) callTool(ctx context.Context, req *mcp.CallToolRequest, b Bindi
 	defer s.release(principal)
 	callCtx, cancel := context.WithTimeout(ctx, s.cfg.CallTimeout)
 	defer cancel()
-	raw, err := s.svc.Call(callCtx, b.Service, b.Action, input, protocol.NewID(), "mcp")
+	raw, err := s.svc.Call(callCtx, b.Service, b.Action, input, protocol.NewID())
 	if err != nil {
 		phase := "failed"
 		if errors.Is(callCtx.Err(), context.DeadlineExceeded) {

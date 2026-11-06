@@ -11,7 +11,7 @@ import type { RowStatus, SettingViewData } from '../../src/web/types';
 // tZh 等价于“语言包缺失、一路走兜底中文”，正是默认路径。
 const tZh: Translate = (key, fallback) => fallback ?? key;
 
-const svc = { name: 'images', title: '图片', addr: 'ws://127.0.0.1:9401/ws', description: '图片服务' };
+const svc = { name: 'images', title: '图片', addr: 'ws://127.0.0.1:9401/spv2', description: '图片服务' };
 
 const defaultRow: SettingViewData = { key: 'max_mb', value: '32', default: '32', overridden: false, label: '单张图片大小上限', kind: 'number' };
 const overriddenRow: SettingViewData = { key: 'owner', value: '10001', default: '', overridden: true };

@@ -43,7 +43,8 @@ export interface Frame {
   body?: Uint8Array;
 }
 
-// SPv2UnavailableError 表示目标没有 /spv2（拨号/握手失败），调用方可以回退 v1。
+// SPv2UnavailableError 表示目标没有 /spv2（拨号/握手失败）——
+// 与“目标明确回 error”（SPv2RemoteError）区分，API 层据此映射 502。
 export class SPv2UnavailableError extends Error {}
 
 // SPv2RemoteError 表示目标明确回了 status=error；API 层应映射为 400 而不是 502。
@@ -56,7 +57,6 @@ export class SPv2RemoteError extends Error {
 }
 
 export function spv2Addr(addr: string): string {
-  if (addr.endsWith('/ws')) return addr.slice(0, -3) + '/spv2';
   if (addr.endsWith('/spv2')) return addr;
   return addr.replace(/\/$/, '') + '/spv2';
 }
@@ -253,7 +253,7 @@ export class SPv2Session {
     });
   }
 
-  /** 建立连接；拨号/握手失败抛 SPv2UnavailableError（调用方据此回退 v1）。 */
+  /** 建立连接；拨号/握手失败抛 SPv2UnavailableError。 */
   static dial(addr: string, from: string, to: string, handlers: SPv2SessionHandlers = {}): Promise<SPv2Session> {
     return new Promise<SPv2Session>((resolve, reject) => {
       let ws: WebSocket;
@@ -442,7 +442,7 @@ export interface SPv2PortalHandlers {
   onTerminal: (u: TerminalUpdate) => boolean;
 }
 
-// createSPv2WSS 生成 /spv2 的端口；upgrade 路由由 attachJumpEndpoint 统一处理，
+// createSPv2WSS 生成 /spv2 的端口；upgrade 路由由 service.attachSPv2Endpoint 统一处理，
 // 避免同一 HTTP server 上两个 upgrade 监听互相抢/互相 destroy。
 export function createSPv2WSS(name: string, log: (m: string) => void, handlers: SPv2PortalHandlers): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
@@ -525,7 +525,7 @@ export function createSPv2WSS(name: string, log: (m: string) => void, handlers: 
   return wss;
 }
 
-// checkSPv2Trust 与 v1 /ws 共用同一道信任栅栏。
+// checkSPv2Trust 与门户 HTTP 层共用同一道信任栅栏。
 export function checkSPv2Trust(reqHost: string | undefined, reqOrigin: string | undefined, trust: TrustConfig): string | null {
   return checkRequestTrust(reqHost, reqOrigin, trust);
 }

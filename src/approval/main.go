@@ -20,6 +20,7 @@ import (
 	"github.com/NouSart/sump/approval/server"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
 )
 
 func main() {
@@ -66,7 +67,7 @@ func newEngine(path string) (*engine.Engine, string, error) {
 func serve(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:9901", "监听地址")
-	center := fs.String("center", "ws://127.0.0.1:9000/ws", "设置中心")
+	center := fs.String("center", "ws://127.0.0.1:9000/spv2", "设置中心")
 	name := fs.String("name", "approval", "服务名")
 	path := fs.String("policy", "", "本地 JSON 规则包；中心 policy.json 可覆盖")
 	portal := fs.String("portal", "frontend", "能裁决的门户服务名（空 = 关闭第二层，非白名单直接按未通过返回）")
@@ -134,7 +135,7 @@ func send(parent context.Context, args []string) error {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	command := fs.String("command", "", "提交给 shell 的命令（通过后真实执行）")
 	dir := fs.String("work-dir", "", "执行目录，默认 shell 根目录")
-	center := fs.String("center", "ws://127.0.0.1:9000/ws", "设置中心")
+	center := fs.String("center", "ws://127.0.0.1:9000/spv2", "设置中心")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -143,23 +144,23 @@ func send(parent context.Context, args []string) error {
 	results := make(chan protocol.AsyncResultPayload, 16)
 	name := "approval-console-" + fmt.Sprint(time.Now().UnixNano())
 	c := service.New(service.Config{Name: name, Listen: "127.0.0.1:0", Center: *center, Description: "命令提交与反馈观察客户端；不是真实 LLM"})
-	c.Handle("report_result", func(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	c.HandleNative(spv2.Method{Name: "report_result", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
 		var r protocol.AsyncResultPayload
-		if err := protocol.DecodeRaw(in.Input, &r); err != nil {
-			return nil, err
+		if err := protocol.DecodeRaw(call.Frame.Body, &r); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 		}
 		select {
 		case results <- r:
-			return map[string]string{"status": "accepted"}, nil
+			return call.Reply(map[string]string{"status": "accepted"})
 		default:
-			return nil, errors.New("反馈队列已满")
+			return call.ReplyError(spv2.CodeResourceExhausted, "反馈队列已满", false, nil)
 		}
 	})
 	if err := c.Start(ctx); err != nil {
 		return err
 	}
 	defer c.Shutdown()
-	raw, err := c.Call(ctx, "shell", "run", protocol.ShellRunPayload{Command: *command, WorkDir: *dir}, protocol.NewID(), name)
+	raw, err := c.Call(ctx, "shell", "run", protocol.ShellRunPayload{Command: *command, WorkDir: *dir}, protocol.NewID())
 	if err != nil {
 		return err
 	}

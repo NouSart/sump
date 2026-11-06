@@ -1,23 +1,10 @@
 // CenterLink 是 frontend → 设置中心 的唯一连接（服务节点一侧）：
 // 注册 / 心跳 / 断线自愈（重连 + 重注册）/ 名册广播接收 / 跳转调用。
-// 启用 SPv2 时控制面优先走原生 /spv2（register call + heartbeat event），失败回退 v1；
+// 控制面只走 SPv2.1 原生 /spv2：register 是 call，heartbeat 是 event，roster / settings 是事件推送；
 // 与 Go 侧 service/ 骨架同语义（本服务是 TS，等价实现其中这一个子集）。
-import WebSocket, { type RawData } from 'ws';
-import type { Envelope, Provide, RegisterPayload, ResponsePayloadView, RosterPayload, Setting, SettingsEventView } from './protocol.ts';
-import { SPv2RemoteError, SPv2Session, SPv2UnavailableError, dialSPv2Once, spv2Addr } from './spv2.ts';
+import type { Provide, RegisterPayload, RosterPayload, Setting, SettingsEventView } from './protocol.ts';
+import { SPv2RemoteError, SPv2Session, dialSPv2Once, spv2Addr } from './spv2.ts';
 import type { SPv2NativeEvent } from './spv2.ts';
-import {
-  TypeHeartbeat,
-  TypeJump,
-  TypeRegister,
-  TypeResponse,
-  TypeRoster,
-  TypeSettings,
-  decodeEnvelope,
-  encodeEnvelope,
-  frameBytes,
-  newEnvelope,
-} from './protocol.ts';
 
 export interface CenterOptions {
   name: string;
@@ -30,8 +17,6 @@ export interface CenterOptions {
   settings: Setting[];
   heartbeatMS: number;
   log: (msg: string) => void;
-  /** 是否优先走 SPv2.1 /spv2；默认读 SUMP_SPV2=1，测试可显式关闭。 */
-  spv2?: boolean;
 }
 
 export type CenterEvent =
@@ -39,80 +24,16 @@ export type CenterEvent =
   | { kind: 'roster'; roster: RosterPayload }
   | { kind: 'settings'; event: SettingsEventView };
 
-interface Pending {
-  resolve: (v: unknown) => void;
-  reject: (e: Error) => void;
-  timer: NodeJS.Timeout;
-}
-
 const callTimeoutDefault = 10_000;
 const registerTimeout = 10_000;
 const maxBackoff = 30_000;
-// 名册包含所有服务的声明（可能远大于单条业务消息），给中心/直连响应 8 MiB 上限；
-// 仍然是有界值，避免一个坏对端让进程无限吃内存。
-const maxCenterMessageBytes = 8 << 20;
 
-// RemoteError 表示“中心明确回执的拒绝”（ok=false，带原因）——
+// RemoteError 表示“中心明确回执的拒绝”（带原因）——
 // 与传输类失败（断开 / 超时）区分，API 层据此映射 400 与 502。
 export class RemoteError extends Error {}
 
-/**
- * dialOnce 直连目标服务发一条 jump 并等响应（不复用连接）。
- * 中心**不转发** jump——目标地址从名册解析后直连，与 Go 骨架的 callOnce 同语义。
- * @param addr - 目标服务的 WS 地址。
- * @param env - 已构造好的 jump 信封。
- * @param timeoutMS - 拨号 + 等响应的总时限。
- * @returns 响应载荷里的 data。
- * @throws RemoteError 目标明确回执 ok=false；其余为传输类失败（连接 / 超时）。
- */
-function dialOnce(addr: string, env: Envelope, timeoutMS: number): Promise<unknown> {
-  return new Promise<unknown>((resolve, reject) => {
-    const ws = new WebSocket(addr, { maxPayload: maxCenterMessageBytes });
-    let settled = false;
-    let timer: NodeJS.Timeout | undefined;
-    const finish = (fn: () => void): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== undefined) clearTimeout(timer);
-      try {
-        ws.close();
-      } catch {
-        // 尽力
-      }
-      fn();
-    };
-    timer = setTimeout(() => {
-      finish(() => reject(new Error(`跳转等待响应超时（${timeoutMS}ms）: ${addr}`)));
-    }, timeoutMS);
-    ws.on('error', (err: Error) => {
-      finish(() => reject(err));
-    });
-    ws.on('open', () => {
-      ws.send(encodeEnvelope(env), (err?: Error) => {
-        if (err) finish(() => reject(err));
-      });
-    });
-    ws.on('message', (data: RawData) => {
-      let resp: Envelope;
-      try {
-        resp = decodeEnvelope(frameBytes(data));
-      } catch {
-        return; // 坏帧：忽略，交给超时兜底
-      }
-      if (resp.type !== TypeResponse || resp.id !== env.id) return;
-      const rp = resp.payload as ResponsePayloadView | undefined;
-      finish(() => {
-        if (rp?.ok !== true) reject(new RemoteError(rp?.error || '远端错误'));
-        else resolve(rp.data);
-      });
-    });
-  });
-}
-
 export class CenterLink {
   private readonly opts: CenterOptions;
-  private ws: WebSocket | null = null;
-  private readonly pending = new Map<string, Pending>();
   private readonly listeners = new Set<(e: CenterEvent) => void>();
   private reconnectTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
@@ -120,17 +41,15 @@ export class CenterLink {
   private closed = false;
   private connectedFlag = false;
   private rosterValue: RosterPayload | null = null;
-  /** 最近一次成功注册的连接：它断开说明对端是健康的，重连用基础间隔而不是继续退避。 */
-  private registeredWS: WebSocket | null = null;
-  private readonly spv2Enabled: boolean;
-  /** 原生 /spv2 长连接（null = 当前走 v1 或尚未连接）。 */
+  /** 最近一次成功注册：它断开说明对端是健康的，重连用基础间隔而不是继续退避。 */
+  private registered = false;
+  /** 当前原生 /spv2 长连接（null = 尚未连上 / 正在重连）。 */
   private native: SPv2Session | null = null;
-  /** 当前原生连接是否已完成 register（用于区分“注册失败回退”与“已连上后重连”）。 */
-  private nativeRegistered = false;
+  /** 连接代次：只认最近一次拨号的回调，旧连接的迟到事件一律忽略。 */
+  private attempts = 0;
 
   constructor(opts: CenterOptions) {
     this.opts = opts;
-    this.spv2Enabled = opts.spv2 ?? process.env.SUMP_SPV2 === '1';
   }
 
   start(): void {
@@ -141,6 +60,7 @@ export class CenterLink {
   // stop 主动关闭：不再重连；未决调用全部失败。测试与进程退出使用。
   stop(): void {
     this.closed = true;
+    this.attempts += 1;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -148,19 +68,9 @@ export class CenterLink {
     this.stopHeartbeat();
     const native = this.native;
     this.native = null;
-    this.nativeRegistered = false;
+    this.registered = false;
     if (native) native.close('服务已关闭');
-    const ws = this.ws;
-    this.ws = null;
     this.setConnected(false);
-    if (ws) {
-      try {
-        ws.terminate();
-      } catch {
-        // 尽力
-      }
-    }
-    this.rejectAll(new Error('服务已关闭'));
   }
 
   get connected(): boolean {
@@ -177,79 +87,52 @@ export class CenterLink {
     return () => this.listeners.delete(fn);
   }
 
-  // call 经中心跳转执行一个动作（等响应；未连接时立即失败）。
-  // 原生连接上用 SPv2 call；v1 连接上仍是 jump 信封。
+  // call 经中心执行一个控制面动作（等响应；未注册时立即失败）。
+  // 中心明确回 status=error 时映射为 RemoteError，API 层据此回 400。
   async call(action: string, input?: unknown, timeoutMS: number = callTimeoutDefault): Promise<unknown> {
     const native = this.native;
-    if (native !== null && this.connectedFlag) {
-      try {
-        return await native.call(action, input, timeoutMS);
-      } catch (err) {
-        if (err instanceof SPv2RemoteError) throw new RemoteError(err.message);
-        throw err;
-      }
-    }
-    const ws = this.ws;
-    if (!ws || !this.connectedFlag || ws.readyState !== WebSocket.OPEN) {
+    if (native === null || !this.connectedFlag) {
       throw new Error('未连接到设置中心');
     }
-    const body: Record<string, unknown> = { action };
-    if (input !== undefined) body.input = input;
-    const env = newEnvelope(TypeJump, this.opts.name, 'settings-center', '', body);
-    return this.callSocket(ws, env, timeoutMS);
+    try {
+      return await native.call(action, input, timeoutMS);
+    } catch (err) {
+      if (err instanceof SPv2RemoteError) throw new RemoteError(err.message);
+      throw err;
+    }
   }
 
   // jumpTo 跳转到名册里的另一个服务并等响应——门户的"用户 → 智能体"这一跳走它。
-  // boss 带发起方自己：一跳的结果归属就是发起的服务（对方最终经 deliver 直达 boss）——
-  // 少了它，请求照样送达，但回答会找不到回来的路（reasoner 只认 boss）。
+  // 帧的 from 带发起方自己：一跳的归属就是发起的服务（对方最终经 deliver 直达 from）——
+  // 少了它，请求照样送达，但回答会找不到回来的路（reasoner 只认发起方）。
   async jumpTo(to: string, action: string, input?: unknown, timeoutMS: number = callTimeoutDefault): Promise<unknown> {
     const card = this.rosterValue?.services?.find((c) => c.name === to);
     if (!card || !card.addr) throw new Error(`未知目标服务: ${to}（不在名册里）`);
-    if (this.spv2Enabled) {
-      try {
-        return await dialSPv2Once(spv2Addr(card.addr), this.opts.name, card.name, action, input, timeoutMS);
-      } catch (err) {
-        if (err instanceof SPv2UnavailableError) {
-          this.opts.log(`SPv2 目标 ${card.addr} 不可达，回退 v1`);
-        } else if (err instanceof SPv2RemoteError) {
-          throw new RemoteError(err.message);
-        } else {
-          throw err;
-        }
-      }
+    try {
+      return await dialSPv2Once(spv2Addr(card.addr), this.opts.name, card.name, action, input, timeoutMS);
+    } catch (err) {
+      if (err instanceof SPv2RemoteError) throw new RemoteError(err.message);
+      throw err;
     }
-    const body: Record<string, unknown> = { action };
-    if (input !== undefined) body.input = input;
-    const env = newEnvelope(TypeJump, this.opts.name, card.name, '', body, this.opts.name);
-    return dialOnce(card.addr, env, timeoutMS);
   }
 
   private connect(): void {
     if (this.closed) return;
-    if (this.spv2Enabled) {
-      this.connectNative();
-      return;
-    }
-    this.connectV1();
-  }
-
-  // 原生 /spv2：先拨号再 register；任一步失败都回退 v1（与 Go service 的 connectAndRegister 同语义）。
-  private connectNative(): void {
-    if (this.closed) return;
+    const attempt = ++this.attempts;
     const addr = spv2Addr(this.opts.centerURL);
     void SPv2Session.dial(addr, this.opts.name, 'settings-center', {
       onEvent: (ev) => {
-        this.onNativeEvent(ev);
+        if (attempt === this.attempts) this.onNativeEvent(ev);
       },
       onClose: () => {
-        this.onNativeClose();
+        if (attempt === this.attempts) this.onNativeClose();
       },
       onError: (err) => {
         this.opts.log(`设置中心（SPv2）连接出错: ${err.message}`);
       },
     })
       .then((session) => {
-        if (this.closed) {
+        if (this.closed || attempt !== this.attempts) {
           session.close('服务已关闭');
           return;
         }
@@ -257,35 +140,12 @@ export class CenterLink {
         void this.registerNative(session);
       })
       .catch((err: unknown) => {
-        if (this.closed) return;
-        this.opts.log(`SPv2 连接设置中心失败: ${(err as Error).message}，回退 v1`);
-        this.connectV1();
+        if (this.closed || attempt !== this.attempts) return;
+        this.scheduleReconnect(false, `SPv2 连接设置中心失败: ${(err as Error).message}`);
       });
   }
 
-  private connectV1(): void {
-    if (this.closed) return;
-    const ws = new WebSocket(this.opts.centerURL, { maxPayload: maxCenterMessageBytes });
-    this.ws = ws;
-    ws.on('open', () => {
-      void this.registerV1(ws);
-    });
-    ws.on('message', (data: RawData) => {
-      try {
-        this.onMessage(frameBytes(data));
-      } catch (err) {
-        this.opts.log(`消息处理失败: ${(err as Error).message}`);
-      }
-    });
-    ws.on('error', (err: Error) => {
-      this.opts.log(`连接设置中心出错: ${err.message}`);
-    });
-    ws.on('close', () => {
-      this.onClose(ws);
-    });
-  }
-
-  // 注册名片：v1 register payload 与原生 register body 共用同一形状。
+  // 注册名片：原生 register call 的 body。
   private registerPayload(): RegisterPayload {
     return {
       name: this.opts.name,
@@ -298,30 +158,6 @@ export class CenterLink {
     };
   }
 
-  private async registerV1(ws: WebSocket): Promise<void> {
-    const payload = this.registerPayload();
-    const env = newEnvelope(TypeRegister, this.opts.name, 'settings-center', '', payload);
-    try {
-      const data = await this.callSocket(ws, env, registerTimeout);
-      if (this.closed || this.ws !== ws) return;
-      const roster = (data ?? { services: [], revision: 0 }) as RosterPayload;
-      this.setRoster(roster);
-      this.backoff = 1_000;
-      this.registeredWS = ws;
-      this.setConnected(true);
-      this.startHeartbeat(ws);
-      this.opts.log(`已接入设置中心（名册 ${roster.services?.length ?? 0} 个服务, rev ${roster.revision ?? 0}）`);
-    } catch (err) {
-      this.opts.log(`注册设置中心失败: ${(err as Error).message}`);
-      // 退避统一由 onClose 增长（terminate/对端关闭都会走到那里），这里不再重复翻倍。
-      try {
-        ws.terminate();
-      } catch {
-        // 尽力
-      }
-    }
-  }
-
   private async registerNative(session: SPv2Session): Promise<void> {
     try {
       const data = await session.call('register', this.registerPayload(), registerTimeout);
@@ -331,40 +167,43 @@ export class CenterLink {
       }
       const roster = (data ?? { services: [], revision: 0 }) as RosterPayload;
       this.setRoster(roster);
+      this.registered = true;
       this.backoff = 1_000;
-      this.nativeRegistered = true;
       this.setConnected(true);
-      this.startNativeHeartbeat(session);
+      this.startHeartbeat(session);
       this.opts.log(`已接入设置中心（SPv2 原生，名册 ${roster.services?.length ?? 0} 个服务, rev ${roster.revision ?? 0}）`);
     } catch (err) {
       if (this.closed || this.native !== session) return;
       this.native = null;
-      this.nativeRegistered = false;
+      this.registered = false;
       this.stopHeartbeat();
       this.setConnected(false);
       session.close('SPv2 注册失败');
-      this.opts.log(`SPv2 注册设置中心失败: ${(err as Error).message}，回退 v1`);
-      this.connectV1();
+      this.scheduleReconnect(false, `SPv2 注册设置中心失败: ${(err as Error).message}`);
     }
   }
 
   private onNativeClose(): void {
     if (this.closed) return;
-    const wasRegistered = this.nativeRegistered;
+    const wasRegistered = this.registered;
     this.native = null;
-    this.nativeRegistered = false;
+    this.registered = false;
     this.stopHeartbeat();
     this.setConnected(false);
-    if (!wasRegistered) {
-      // 注册完成前断开 = 原生控制面不可用，直接回退 v1，不再等退避。
-      this.opts.log('SPv2 连接在注册完成前断开，回退 v1');
-      this.connectV1();
-      return;
+    this.scheduleReconnect(wasRegistered, '与设置中心（SPv2）连接断开');
+  }
+
+  // scheduleReconnect 统一退避语义：注册成功过的连接断开只等基础间隔（对端健康，中心重启要快回来）；
+  // 连不上 / 注册不上才逐步翻倍，避免每秒刷屏。
+  private scheduleReconnect(wasRegistered: boolean, reason: string): void {
+    if (this.closed) return;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
-    const delay = this.backoff;
-    // 注册成功过的连接断开说明对端是健康的：用基础间隔重连（与 v1 的 onClose 同策略）。
-    this.backoff = 1_000;
-    this.opts.log(`与设置中心（SPv2）连接断开，${delay}ms 后重连`);
+    const delay = wasRegistered ? 1_000 : this.backoff;
+    this.backoff = wasRegistered ? 1_000 : Math.min(this.backoff * 2, maxBackoff);
+    this.opts.log(`${reason}，${delay}ms 后重连`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
@@ -385,102 +224,13 @@ export class CenterLink {
     this.opts.log(`忽略未知 SPv2 事件: ${ev.method}`);
   }
 
-  private startNativeHeartbeat(session: SPv2Session): void {
+  private startHeartbeat(session: SPv2Session): void {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
       if (this.closed || this.native !== session) return;
       if (!session.sendEvent('heartbeat', { status: 'ok' })) {
         this.opts.log('SPv2 心跳发送失败');
       }
-    }, this.opts.heartbeatMS);
-  }
-
-  private callSocket(ws: WebSocket, env: Envelope, timeoutMS: number): Promise<unknown> {
-    return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(env.id);
-        reject(new Error(`等待响应超时（${timeoutMS}ms）`));
-      }, timeoutMS);
-      this.pending.set(env.id, { resolve, reject, timer });
-      ws.send(encodeEnvelope(env), (err) => {
-        if (!err) return;
-        clearTimeout(timer);
-        this.pending.delete(env.id);
-        reject(err);
-      });
-    });
-  }
-
-  private onMessage(bytes: Uint8Array): void {
-    let env: Envelope;
-    try {
-      env = decodeEnvelope(bytes);
-    } catch (err) {
-      this.opts.log(`坏帧: ${(err as Error).message}`);
-      return;
-    }
-    if (env.type === TypeResponse) {
-      const p = this.pending.get(env.id);
-      if (!p) return;
-      this.pending.delete(env.id);
-      clearTimeout(p.timer);
-      const rp = env.payload as ResponsePayloadView | undefined;
-      if (!rp || typeof rp !== 'object') {
-        p.reject(new Error('响应缺少 payload'));
-        return;
-      }
-      if (rp.ok !== true) {
-        p.reject(new RemoteError(rp.error || '远端错误'));
-        return;
-      }
-      p.resolve(rp.data);
-      return;
-    }
-    if (env.type === TypeRoster) {
-      const roster = env.payload as RosterPayload | undefined;
-      if (roster && typeof roster === 'object') this.setRoster(roster);
-      return;
-    }
-    if (env.type === TypeSettings) {
-      const ev = env.payload as SettingsEventView | undefined;
-      if (ev && typeof ev === 'object') this.emit({ kind: 'settings', event: ev });
-      return;
-    }
-  }
-
-  private onClose(ws: WebSocket): void {
-    if (this.ws !== ws) return;
-    this.ws = null;
-    this.stopHeartbeat();
-    this.setConnected(false);
-    this.rejectAll(new Error('与设置中心连接断开'));
-    if (this.closed) return;
-    const registered = this.registeredWS === ws;
-    this.registeredWS = null;
-    const delay = this.backoff;
-    // 只有"一直连不上/注册不上"才继续翻倍退避；注册成功过的连接断开说明对端是健康的，
-    // 用基础间隔立刻重连（否则中心重启一次就要等好几秒）。
-    this.backoff = registered ? 1_000 : Math.min(this.backoff * 2, maxBackoff);
-    this.opts.log(`与设置中心连接断开，${delay}ms 后重连`);
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.connect();
-    }, delay);
-  }
-
-  private startHeartbeat(ws: WebSocket): void {
-    this.stopHeartbeat();
-    this.heartbeatTimer = setInterval(() => {
-      if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
-      const env = newEnvelope(TypeHeartbeat, this.opts.name, 'settings-center', '', { status: 'ok' });
-      ws.send(encodeEnvelope(env), (err) => {
-        if (!err) return;
-        try {
-          ws.terminate();
-        } catch {
-          // 尽力
-        }
-      });
     }, this.opts.heartbeatMS);
   }
 
@@ -504,13 +254,5 @@ export class CenterLink {
 
   private emit(e: CenterEvent): void {
     for (const fn of [...this.listeners]) fn(e);
-  }
-
-  private rejectAll(err: Error): void {
-    for (const [, p] of this.pending) {
-      clearTimeout(p.timer);
-      p.reject(err);
-    }
-    this.pending.clear();
   }
 }

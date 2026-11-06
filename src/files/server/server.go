@@ -7,11 +7,9 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -27,6 +25,7 @@ import (
 
 	"github.com/NouSart/sump/files/store"
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/protocol/fetchsafe"
 	"github.com/NouSart/sump/service"
 )
 
@@ -41,6 +40,10 @@ type Config struct {
 	ReadMaxChars      int           // read 返回的最大字符数（默认 4000；作为声明预设上报）
 	DBPath            string        // 元数据库路径（只读项展示用：换它要重启）
 	Dir               string        // 文件二进制目录（只读项展示用：换它要重启）
+	// FetchAllowLoopback 是仅供测试/显式配置的逃生闸：放行 save{url} 的**首个地址**指向环回
+	// （httptest 对端都在 127.0.0.1）。重定向跳永远按严格口径检查，私有/链路本地等照旧拒绝。
+	// 生产默认必须为 false——详见 fetchsafe 包头的说明。
+	FetchAllowLoopback bool
 }
 
 // Server 是 files 服务实例（服务骨架 + 文件库）。
@@ -49,6 +52,10 @@ type Server struct {
 
 	cfg    Config
 	logger *log.Logger
+
+	// fetchGuard 是 URL 下载的 SSRF 守卫（协议白名单 + 地址检查 + 重定向逐跳 + 钉 IP），
+	// FallbackMaxBytes 保留本服务原有口径（100MiB）。
+	fetchGuard fetchsafe.Policy
 
 	setMu        sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
 	maxBytes     int64      // 当前单文件上限（字节）
@@ -69,6 +76,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		cfg.ReadMaxChars = 4000
 	}
 	s := &Server{cfg: cfg, logger: logger, maxBytes: cfg.MaxBytes, readMaxChars: cfg.ReadMaxChars}
+	// 下载守卫：兜底上限沿用本服务原口径（100MiB）；逃生闸只由 Config 显式打开。
+	s.fetchGuard = fetchsafe.Policy{AllowLoopback: cfg.FetchAllowLoopback, FallbackMaxBytes: 100 << 20}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Title:             "文件",
@@ -76,7 +85,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		ActionTimeout:     60 * time.Second, // save 含下载，放宽动作超时
-		Description:       "文件服务：保存文件（URL/base64），按需取回（fetch）或读取文本内容（read：文本类/.xlsx/.docx/.pptx/.pdf）",
+		// 入站 body 装的是 base64 文件（约为原始字节的 4/3），上限须随单文件上限放宽；
+		// 否则一个合法大小的文件会在协议层被 1MiB 默认读限直接断开。
+		MaxMessageBytes: cfg.MaxBytes/3*4 + 1<<20,
+		Description:     "文件服务：保存文件（URL/base64），按需取回（fetch）或读取文本内容（read：文本类/.xlsx/.docx/.pptx/.pdf）",
 		Provides: []protocol.Provide{
 			{Action: "save", Tool: true, Input: "{url} 或 {data(base64), filename, mime}", Output: "{id, filename, mime, size}"},
 			{Action: "fetch", Input: "{id}", Output: "{id, filename, mime, data(base64), size}"},
@@ -120,19 +132,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Hint("读文件时最多往回带多少字，超出的会截断——调大能少丢上下文，但更费模型额度"),
 		service.As("number"),
 		service.Unit("chars"))
-	s.Handle("save", s.actionSave)
-	s.Handle("fetch", s.actionFetch)
-	s.Handle("read", s.actionRead)
-	s.Handle("write", s.actionWrite)
-	s.Handle("edit_word", s.actionEditWord)
-	s.Handle("edit_ppt", s.actionEditPpt)
-	s.Handle("edit_pdf", s.actionEditPdf)
-	s.Handle("outline", s.actionDocOutline)
-	s.Handle("read_range", s.actionDocReadRange)
-	s.Handle("find", s.actionDocFind)
-	s.Handle("patch", s.actionDocPatch)
-	s.Handle("verify", s.actionDocVerify)
-	// 原生 SPv2.1 method：与上面同名 v1 action 共用业务函数，/spv2 不再合成 v1 信封。
+	// 原生 SPv2.1 method：每个动作的 handler 直接读 body，/spv2 是唯一入口。
 	s.registerNativeMethods()
 	// 只读项：启动参数带起来的（换它要重启）。db/dir 是存储身份——运行中换库/换目录
 	// 意味着一批在途读写换个落点，不做（与 images 同口径）。
@@ -173,12 +173,7 @@ func expandError(err error) error {
 
 // ---------- 动作 ----------
 
-// actionSave 保存一个文件：URL 或 base64 二选一，filename 必填。
-func (s *Server) actionSave(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.save(in.Input)
-}
-
-// save 是 save 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
+// save 保存一个文件：URL 或 base64 二选一，filename 必填。
 func (s *Server) save(body []byte) (any, error) {
 	var p protocol.FileSavePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -190,7 +185,8 @@ func (s *Server) save(body []byte) (any, error) {
 	limit := s.maxBytesNow()
 	switch {
 	case strings.TrimSpace(p.URL) != "":
-		data, mimeHint, err = fetchURL(p.URL, limit)
+		// 模型给的 URL 一律走 fetchsafe 守卫下载（限时、限大小、SSRF 四连检），本服务不再自带下载体。
+		data, mimeHint, err = s.fetchGuard.Fetch(p.URL, limit)
 	case strings.TrimSpace(p.Data) != "":
 		data, err = base64.StdEncoding.DecodeString(p.Data)
 	default:
@@ -230,12 +226,7 @@ func (s *Server) save(body []byte) (any, error) {
 	return protocol.FileSaveResult{ID: id, Filename: filename, Mime: mime, Size: int64(len(data))}, nil
 }
 
-// actionFetch 把文件转成 base64 发回调用方（凭牌取全量）。
-func (s *Server) actionFetch(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.fetch(in.Input)
-}
-
-// fetch 是 fetch 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
+// fetch 把文件转成 base64 发回调用方（凭牌取全量）。
 func (s *Server) fetch(body []byte) (any, error) {
 	var p protocol.FileFetchPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -257,14 +248,9 @@ func (s *Server) fetch(body []byte) (any, error) {
 	}, nil
 }
 
-// actionRead 读取文件的可文本化内容（LLM 工具）：先 Stat 判定类型再读本体。
+// read 读取文件的可文本化内容（LLM 工具）：先 Stat 判定类型再读本体。
 // 文本类直接读取；.xlsx 逐 sheet 转 TSV；.docx 提取正文段落；.xls/.doc 与其余二进制明确拒绝。
 // 截断阈值 = read_max_chars（截断置 truncated——“没给全”必须显式告知模型）。
-func (s *Server) actionRead(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.read(in.Input)
-}
-
-// read 是 read 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
 func (s *Server) read(body []byte) (any, error) {
 	var p protocol.FileReadPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -405,14 +391,9 @@ func (s *Server) readPdf(id string, meta store.Meta, offset, limit int) (any, er
 	return fileReadResult(id, meta, text, total, next, nil, truncated), nil
 }
 
-// actionWrite 编辑 xlsx 的单元格（LLM 工具，就地修改权威副本）。
+// write 编辑 xlsx 的单元格（LLM 工具，就地修改权威副本）。
 // 校验链：id 存在 → 必须 .xlsx → sheet 存在（报错附可用表清单）→ 坐标全量预检 → 写回库。
 // 全局写锁串行化 read-modify-write，防并发改同一文件丢更新。
-func (s *Server) actionWrite(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.write(in.Input)
-}
-
-// write 是 write 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
 func (s *Server) write(body []byte) (any, error) {
 	var p protocol.FileWritePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -451,13 +432,8 @@ func (s *Server) write(body []byte) (any, error) {
 	return protocol.FileWriteResult{ID: p.ID, Sheet: p.Sheet, Updated: n}, nil
 }
 
-// actionEditWord 编辑 .docx 正文（LLM 工具，就地修改权威副本）。
+// editWord 编辑 .docx 正文（LLM 工具，就地修改权威副本）。
 // 校验链：id 存在 → 必须 .docx → operations 非空 → 预检查所有 old 存在 → 写回库。
-func (s *Server) actionEditWord(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.editWord(in.Input)
-}
-
-// editWord 是 edit_word 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
 func (s *Server) editWord(body []byte) (any, error) {
 	var p protocol.FileWordEditPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -493,13 +469,8 @@ func (s *Server) editWord(body []byte) (any, error) {
 	return protocol.FileWordEditResult{ID: p.ID, Replaced: n}, nil
 }
 
-// actionEditPpt 编辑 .pptx 幻灯片文本（LLM 工具，就地修改权威副本）。
+// editPpt 编辑 .pptx 幻灯片文本（LLM 工具，就地修改权威副本）。
 // 校验链：id 存在 → 必须 .pptx → operations 非空 → 预检查所有 old 存在 → 写回库。
-func (s *Server) actionEditPpt(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.editPpt(in.Input)
-}
-
-// editPpt 是 edit_ppt 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
 func (s *Server) editPpt(body []byte) (any, error) {
 	var p protocol.FilePptEditPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -535,13 +506,8 @@ func (s *Server) editPpt(body []byte) (any, error) {
 	return protocol.FilePptEditResult{ID: p.ID, Replaced: n}, nil
 }
 
-// actionEditPdf 编辑 .pdf（LLM 工具，就地修改权威副本）。
+// editPdf 编辑 .pdf（LLM 工具，就地修改权威副本）。
 // 校验链：id 存在 → 必须 .pdf → operations 非空 → 依次应用（原子）→ 写回库。
-func (s *Server) actionEditPdf(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.editPdf(in.Input)
-}
-
-// editPdf 是 edit_pdf 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
 func (s *Server) editPdf(body []byte) (any, error) {
 	var p protocol.FilePdfEditPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -634,7 +600,6 @@ func truncateRunes(s string, max int) (string, bool) {
 	return s, false
 }
 
-// fetchURL 下载文件：限时 30s、限制大小（多读 1 字节探测超限）。
 // filenameFromURL 从 URL 末段推断文件名（去掉查询串、解码转义）。
 // 不像文件名（末段为空 / 含路径分隔符或控制字符 / 过长）时返回空串——由调用方继续要求显式 filename。
 func filenameFromURL(raw string) string {
@@ -653,31 +618,4 @@ func filenameFromURL(raw string) string {
 		return ""
 	}
 	return base
-}
-
-func fetchURL(url string, maxBytes int64) ([]byte, string, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		return nil, "", fmt.Errorf("下载失败: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
-	}
-	if maxBytes <= 0 {
-		maxBytes = 100 << 20
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-	if err != nil {
-		return nil, "", fmt.Errorf("读取下载内容失败: %w", err)
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, "", fmt.Errorf("下载内容超过 %d 字节上限", maxBytes)
-	}
-	mime := resp.Header.Get("Content-Type")
-	if i := strings.IndexByte(mime, ';'); i >= 0 {
-		mime = mime[:i]
-	}
-	return data, strings.TrimSpace(mime), nil
 }

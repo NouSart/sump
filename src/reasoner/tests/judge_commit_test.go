@@ -51,13 +51,7 @@ func TestJudgementCommittedAtCloseOnly(t *testing.T) {
 	t.Cleanup(s.Shutdown)
 	mem.setReasonerURL(s.WsURL())
 
-	c := dialReasoner(t, s)
-	raw, _ := protocol.EncodePayload(map[string]any{"text": "开始做"})
-	req, _ := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	req.Boss = "stub-boss"
-	if _, err := c.Call(ctx, req); err != nil {
-		t.Fatal(err)
-	}
+	sendFrom(t, s, "stub-boss", map[string]any{"text": "开始做"})
 
 	select {
 	case d := <-boss.delivered:

@@ -30,6 +30,9 @@ func startImagesForTest(t *testing.T, centerURL string) *server.Server {
 	srv := server.New(server.Config{
 		Name: "images", Listen: "127.0.0.1:0", Center: centerURL,
 		HeartbeatInterval: 200 * time.Millisecond, Store: st,
+		// 这些失败路径用例要用 httptest（127.0.0.1）对端测「下载阶段」的错误，
+		// 所以开测试逃生闸；默认（生产）口径的拒绝行为由 fetch_guard_test.go 覆盖。
+		FetchAllowLoopback: true,
 	}, log.New(os.Stdout, "[images-test] ", log.LstdFlags))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

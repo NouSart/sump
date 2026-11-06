@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"log"
@@ -34,7 +33,7 @@ func reserveAsync(t *testing.T, s *Server, st *taskState, callID string) *asyncJ
 
 func acceptAsyncReport(s *Server, source, trace, item, text string, final bool) (map[string]any, error) {
 	raw, _ := protocol.EncodePayload(protocol.AsyncResultPayload{ItemID: item, Phase: "done", Text: text, Final: final})
-	out, err := s.actionReportResult(context.Background(), protocol.Envelope{From: source, Trace: trace, To: "reasoner"}, protocol.JumpPayload{Input: raw})
+	out, err := s.reportResult(source, "reasoner", trace, raw)
 	if err != nil {
 		return nil, err
 	}

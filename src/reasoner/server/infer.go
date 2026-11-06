@@ -222,7 +222,7 @@ func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCa
 		}
 		defer s.abandonAsync(pending)
 	}
-	data, err := s.Call(ctx, svc, action, rawIn, st.trace, st.boss)
+	data, err := s.Call(ctx, svc, action, rawIn, st.trace)
 	if err != nil {
 		return "", err // 无回执不代表远端未执行；不重放工具调用。
 	}
@@ -294,7 +294,7 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 			defer wg.Done()
 			// fetch_full：用户刚发的图要原图内联（模型看到的就是用户看到的）。
 			// 走 fetch 会拿到缩略图——那是给模型「主动查看」用的；fetch_full 不在工具列表里。
-			data, err := s.Call(ctx, images, "fetch_full", protocol.ImageFetchPayload{ID: id}, trace, "")
+			data, err := s.Call(ctx, images, "fetch_full", protocol.ImageFetchPayload{ID: id}, trace)
 			if err != nil {
 				s.logger.Printf("取图 %s 失败: %v", id, err)
 				return
@@ -326,18 +326,11 @@ func (s *Server) startMemoryRound(boss, trace, conversationID, taskName string, 
 		Messages:       messages,
 		Boss:           boss,
 		TaskName:       taskName,
-	}}, trace, s.cfg.Name)
+	}}, trace)
 }
 
-// actionUserMessage 是链的入口：boss 发来用户消息。
-// 半启动：把任务上下文托管给记忆服务（recall）——收到来自记忆的 resume 才完全启动。
-func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.userMessage(env.Boss, env.Trace, env.From, in.Input)
-}
-
-// userMessage 是链入口的共享实现：boss 是结果归属方，trace 是链路 id，
-// from 是入口服务（交付失败时的另一条回家路）。原生入口三者都取自帧头。
-func (s *Server) userMessage(boss, trace, from string, body []byte) (any, error) {
+// userMessage 是链入口的共享实现：boss 是结果归属方（SPv2 的帧头 from），trace 是链路 id。
+func (s *Server) userMessage(boss, trace string, body []byte) (any, error) {
 	var p protocol.UserMessagePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
@@ -371,8 +364,7 @@ func (s *Server) userMessage(boss, trace, from string, body []byte) (any, error)
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: text, ImageIDs: p.Images},
 	}
-	// 记下入口：交付失败时往它补一条（boss 认错了/丢了的时候，入口是唯一还能回声的地方）。
-	s.noteEntry(cid, from)
+	// SPv2 没有独立入口：结果归属方就是帧头 from，失败只能记日志（没有第二条回家路）。
 	s.startMemoryRound(boss, trace, cid, taskName, messages)
 	return map[string]any{"status": "accepted"}, nil
 }
@@ -405,14 +397,9 @@ func taskNameOf(text string, images, files []string) string {
 	return ""
 }
 
-// actionResume 是完全启动的唯一入口：仅接受来自记忆服务的 resume。
+// resume 是完全启动的唯一入口：仅接受来自记忆服务的 resume（from 取自帧头）。
 // 记忆组装好的上下文到达后，开启任务（黑板）并立即受理——推理在后台推进（见 board.go）。
-func (s *Server) actionResume(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.resume(env.From, env.Boss, env.Trace, in.Input)
-}
-
-// resume 是完全启动的共享实现。from 是调用方（必须记忆服务），defaultBoss 是
-// 上下文里没带原 boss 时的兜底（v1 取信封 boss，原生取 Frame.From.ID）。
+// defaultBoss 是上下文里没带原 boss 时的兜底（原生取 Frame.From.ID）。
 func (s *Server) resume(from, defaultBoss, trace string, body []byte) (any, error) {
 	mem := s.memoryName()
 	if from != mem {

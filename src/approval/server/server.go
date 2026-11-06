@@ -113,24 +113,15 @@ func New(cfg Config) (*Server, error) {
 	}
 	s.HandleSetting("auto_approve", defaultTier, s.engine.UpdateTier,
 		service.Label("自动批准档位"),
-		service.Hint("关 = 只有策略白名单里那几条直过，其余都等你点；低 = 只读命令（看目录/看文件/搜文本/看 git 状态）以及由若干只读命令拼起来的组合也自动放行，写文件、构建、装包、删东西、联网外发照旧等你点；中 = 反过来，只拦删除、改系统设置、装软件、提权、下载即执行、管道进 shell、往仓库外写，其余自动放行（python -c 这类判不出意图的也放）；工作区 = 把调用方传来的工作目录当边界，区内的读、写、删除、移动、复制、建目录、构建、跑脚本、本地 git 全部放行，只拦五类越界动作：路径跳出工作区、提权或装系统软件、联网外发、管道进解释器、碰密钥文件。注意它只读命令文本、不做运行时沙箱：区内的 python -c 若在代码里拼路径，未必看得出来。拒绝名单在任何档位下都优先。"),
+		service.Hint("关 = 只有策略白名单里那几条直过，其余都等你点；低 = 只读命令（看目录/看文件/搜文本/看 git 状态）以及由若干只读命令拼起来的组合也自动放行，写文件、构建、装包、删东西、联网外发照旧等你点；中 = 反过来，只拦删除与改文件、改系统状态与改账号、装软件、提权、联网取送与扫描、下载即执行、管道进 shell、用重定向把输出写到仓库外，其余自动放行（python -c 这类判不出意图的也放；它只看命令文本，参数里的路径写到仓库外看不出来，这一条要用工作区档）；工作区 = 把调用方传来的工作目录当边界，区内的读、写、删除、移动、复制、建目录、构建、跑脚本、本地 git 全部放行，只拦五类越界动作：路径跳出工作区、提权或装系统软件、联网外发、管道进解释器、碰密钥文件。注意它只读命令文本、不做运行时沙箱：区内的 python -c 若在代码里拼路径，未必看得出来。拒绝名单在任何档位下都优先。"),
 		service.As("enum", "off", "low", "medium", "workspace"))
 	s.HandleSetting("policy.json", cfg.PolicyJSON, s.engine.UpdatePolicy,
 		service.Label("命令审批策略"),
 		service.Hint("JSON 策略：deny_commands 里的命令直接拒绝；rules 里列出的命令免审批直过；其余挂起等你在门户点批准"),
 		service.As("textarea"))
-	s.Handle(protocol.ApprovalAction, s.actionApprove)
-	s.Handle(protocol.ApprovalDecideAction, s.actionDecide)
-	s.Handle(protocol.ApprovalListAction, s.actionList)
-	s.Handle("capabilities", s.actionCapabilities)
-	// 原生 SPv2.1 method：与同名 v1 action 共用业务函数，/spv2 不再合成 v1 信封。
+	// 原生 SPv2.1 method：/spv2 直接解帧体，不合成 v1 信封。
 	s.registerNativeMethods()
 	return s, nil
-}
-
-// actionCapabilities 是 v1 入口：capabilities 不需要信封里的任何字段。
-func (s *Server) actionCapabilities(context.Context, protocol.Envelope, protocol.JumpPayload) (any, error) {
-	return s.capabilities(), nil
 }
 
 // capabilities 说明审批服务当前的方言、第二层状态与档位（管理/调试动作，不暴露给模型）。
@@ -145,13 +136,8 @@ func (s *Server) capabilities() map[string]any {
 		"pending":      len(s.pendingSnapshot()), "accepted": s.accepted.Load(), "busy": s.busy.Load()}
 }
 
-// actionApprove 是 v1 入口：只把信封里的元信息交给共享实现。
-func (s *Server) actionApprove(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.approve(ctx, env.From, env.Trace, env.Boss, in.Input)
-}
-
-// approve 是 approval_request 的共享实现：v1 action 与原生 SPv2 method 都走这里。
-func (s *Server) approve(ctx context.Context, caller, trace, boss string, body []byte) (out any, err error) {
+// approve 是 approval_request 的业务实现，原生 SPv2 method 直接调它。
+func (s *Server) approve(ctx context.Context, caller, trace string, body []byte) (out any, err error) {
 	// handler 级限制不等于传输层大帧限制；部署边界保持为可信本地服务。
 	if len(body) > 64<<10 {
 		return nil, errors.New("审批载荷超过 64 KiB")
@@ -194,7 +180,7 @@ func (s *Server) approve(ctx context.Context, caller, trace, boss string, body [
 	s.accepted.Add(1)
 	release()
 	if result.Decision == protocol.DecisionReview {
-		return s.awaitUserDecision(ctx, caller, trace, boss, result, req)
+		return s.awaitUserDecision(ctx, caller, trace, result, req)
 	}
 	return result, nil
 }

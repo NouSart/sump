@@ -325,3 +325,40 @@ func TestDigEntryPullsSiblings(t *testing.T) {
 		t.Fatalf("翻出来的应是别的条目: %+v", notes[0])
 	}
 }
+
+// TestDefaultTuningMatchesDocTable 把 README §7 的参数表钉在出厂值上。
+//
+// 表里左边是文档写死的数字，右边是 memnet.DefaultTuning() 的真值：任何一边单独改动都会红。
+// 「一个事实只有一个家」在这里靠这条测试成立，不靠人记得同步文档。
+// LinkL1 尤其要紧：中心化后余弦被压小（无关 ≤ 0.21），阈值一旦高过这条带宽，
+// 第二条大类线永远够不着，README §4 描述的"网"就悄悄退化成单父树。
+func TestDefaultTuningMatchesDocTable(t *testing.T) {
+	// README.md §7「参数」表里的默认值。
+	doc := map[string]float64{
+		"MaxLinks":    3,
+		"LinkL1":      0.15,
+		"NeighborSim": 0.30,
+		"NearDup":     0.62,
+		"BaseStable":  30, // 天
+		"Growth":      2.0,
+		"PruneRetain": 0.15,
+	}
+	tune := memnet.DefaultTuning()
+	code := map[string]float64{
+		"MaxLinks":    float64(tune.MaxLinks),
+		"LinkL1":      tune.LinkL1,
+		"NeighborSim": tune.NeighborSim,
+		"NearDup":     tune.NearDup,
+		"BaseStable":  tune.BaseStable,
+		"Growth":      tune.Growth,
+		"PruneRetain": tune.PruneRetain,
+	}
+	for key, want := range doc {
+		if got := code[key]; got != want {
+			t.Fatalf("README §7 与 DefaultTuning 打架：%s 文档 %.2f / 代码 %.2f（改一边必须同时改另一边）", key, want, got)
+		}
+	}
+	if !tune.Center {
+		t.Fatal("README §7 写 Center=true，出厂值却是关的")
+	}
+}

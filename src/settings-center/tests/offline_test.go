@@ -10,68 +10,35 @@ import (
 
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/settings-center/server"
+	"github.com/NouSart/sump/spv2"
 )
 
-// registerRaw 用原始客户端注册一个服务并保持连接（不跑心跳循环）。
+// registerRaw 用原生客户端注册一个服务并保持连接（不跑心跳循环）。
 // hbMS 为声明的心跳间隔（毫秒）；desc 为简介（用于“名片变化”用例）。
-func registerRaw(t *testing.T, wsURL, name string, hbMS int64, desc string) *protocol.Client {
+func registerRaw(t *testing.T, url, name string, hbMS int64, desc string, opts ...spv2.ClientOption) *spv2.Client {
 	t.Helper()
-	c, err := protocol.Dial(wsURL, nil)
+	c := dialCenter(t, url, opts...)
+	f, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef(name), spv2.ServiceRef("settings-center"), "register",
+		protocol.RegisterPayload{Name: name, Addr: "ws://127.0.0.1:1/spv2", Description: desc, HeartbeatMS: hbMS})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = c.Close() })
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, name, "settings-center", "", protocol.RegisterPayload{
-		Name: name, Addr: "ws://127.0.0.1:1/ws", Description: desc, HeartbeatMS: hbMS,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	if !rp.OK {
-		t.Fatalf("注册失败: %s", rp.Error)
+	var roster protocol.RosterPayload
+	if err := c.CallDecode(ctx, f, &roster); err != nil {
+		t.Fatalf("注册失败: %v", err)
 	}
 	return c
 }
 
-// pullRoster 通过 jump roster 拉取最新全量清单。
-func pullRoster(t *testing.T, wsURL string) protocol.RosterPayload {
+// pullRoster 通过原生 roster 拉取最新全量清单。
+func pullRoster(t *testing.T, url string) protocol.RosterPayload {
 	t.Helper()
-	c, err := protocol.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "test", "settings-center", "", protocol.JumpPayload{Action: "roster"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	if !rp.OK {
-		t.Fatalf("roster 拉取失败: %s", rp.Error)
-	}
+	c := dialCenter(t, url)
 	var roster protocol.RosterPayload
-	if err := protocol.DecodeRaw(rp.Data, &roster); err != nil {
-		t.Fatal(err)
+	if err := callCenter(t, c, "roster", nil, &roster); err != nil {
+		t.Fatalf("roster 拉取失败: %v", err)
 	}
 	return roster
 }
@@ -87,11 +54,11 @@ func hasService(roster protocol.RosterPayload, name string) bool {
 }
 
 // waitInRoster 轮询等待某服务在名册中出现 / 消失。
-func waitInRoster(t *testing.T, wsURL, name string, want bool, timeout time.Duration) {
+func waitInRoster(t *testing.T, url, name string, want bool, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if hasService(pullRoster(t, wsURL), name) == want {
+		if hasService(pullRoster(t, url), name) == want {
 			return
 		}
 		time.Sleep(30 * time.Millisecond)
@@ -111,22 +78,22 @@ func newFastCenter(t *testing.T) (*server.Server, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Shutdown() })
-	return s, "ws://" + s.Addr() + "/ws"
+	return s, centerURL(s)
 }
 
 // TestOfflineSweepAndBroadcast 验证：心跳超时（2× 声明间隔）→ 摘除名册 + 广播事件。
 func TestOfflineSweepAndBroadcast(t *testing.T) {
-	_, wsURL := newFastCenter(t)
+	_, url := newFastCenter(t)
 
 	// 观察者：以服务身份注册（只有注册连接才在中心广播名单里），坐收 roster 事件
 	var mu sync.Mutex
 	var rosters [][]string
-	obs, err := protocol.Dial(wsURL, func(env protocol.Envelope) {
-		if env.Type != protocol.TypeRoster {
+	registerRaw(t, url, "obs", 60000, "观察者", spv2.WithOnEvent(func(f spv2.Frame) {
+		if f.Type != spv2.TypeEvent || f.Method != protocol.TypeRoster {
 			return
 		}
 		var r protocol.RosterPayload
-		if env.DecodePayload(&r) != nil {
+		if f.DecodeBody(&r) != nil {
 			return
 		}
 		names := make([]string, 0, len(r.Services))
@@ -136,28 +103,12 @@ func TestOfflineSweepAndBroadcast(t *testing.T) {
 		mu.Lock()
 		rosters = append(rosters, names)
 		mu.Unlock()
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = obs.Close() })
-
-	octx, ocancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer ocancel()
-	regEnv, err := protocol.NewEnvelope(protocol.TypeRegister, "obs", "settings-center", "", protocol.RegisterPayload{
-		Name: "obs", Addr: "ws://127.0.0.1:1/ws", Description: "观察者", HeartbeatMS: 60000,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := obs.Call(octx, regEnv); err != nil {
-		t.Fatal(err)
-	}
+	}))
 
 	// 注册 svc-x：声明心跳 100ms，但之后不发心跳 → 约 200ms 后被判定离线
-	registerRaw(t, wsURL, "svc-x", 100, "离线测试服务")
-	waitInRoster(t, wsURL, "svc-x", true, 3*time.Second)
-	waitInRoster(t, wsURL, "svc-x", false, 5*time.Second)
+	registerRaw(t, url, "svc-x", 100, "离线测试服务")
+	waitInRoster(t, url, "svc-x", true, 3*time.Second)
+	waitInRoster(t, url, "svc-x", false, 5*time.Second)
 
 	// 广播序列应“先含 svc-x（注册）后不含（摘除）”
 	deadline := time.Now().Add(2 * time.Second)
@@ -189,46 +140,44 @@ func TestOfflineSweepAndBroadcast(t *testing.T) {
 
 // TestByeRemovesImmediately 验证：告别心跳 → 立即摘除（不等超时）。
 func TestByeRemovesImmediately(t *testing.T) {
-	_, wsURL := newFastCenter(t)
+	_, url := newFastCenter(t)
 
 	// 声明心跳 60s：正常超时要等 2 分钟；bye 应立即生效
-	c := registerRaw(t, wsURL, "svc-y", 60000, "告别测试服务")
-	waitInRoster(t, wsURL, "svc-y", true, 3*time.Second)
+	c := registerRaw(t, url, "svc-y", 60000, "告别测试服务")
+	waitInRoster(t, url, "svc-y", true, 3*time.Second)
 
-	env, err := protocol.NewEnvelope(protocol.TypeHeartbeat, "svc-y", "settings-center", "", protocol.HeartbeatPayload{Status: "bye"})
+	f, err := spv2.NewEvent(spv2.NewID(), spv2.ServiceRef("svc-y"), spv2.ServiceRef("settings-center"), "heartbeat",
+		protocol.HeartbeatPayload{Status: "bye"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Send(env); err != nil {
+	if err := c.Send(f); err != nil {
 		t.Fatal(err)
 	}
-	waitInRoster(t, wsURL, "svc-y", false, 2*time.Second)
+	waitInRoster(t, url, "svc-y", false, 2*time.Second)
 }
 
 // TestRegisterDedup 验证重连去重：名片无变化不推进 revision；名片变化才推进。
 func TestRegisterDedup(t *testing.T) {
-	_, wsURL := newFastCenter(t)
+	_, url := newFastCenter(t)
 
-	rev := func() int64 { return pullRoster(t, wsURL).Revision }
+	rev := func() int64 { return pullRoster(t, url).Revision }
 
 	r0 := rev()
-	c1 := registerRaw(t, wsURL, "svc-d", 60000, "去重测试")
-	_ = c1
+	_ = registerRaw(t, url, "svc-d", 60000, "去重测试")
 	r1 := rev()
 	if r1 <= r0 {
 		t.Fatalf("首次注册应推进 revision: %d -> %d", r0, r1)
 	}
 
 	// 同名同名片重连（模拟断线重连）：只换连接，不推进 revision
-	c2 := registerRaw(t, wsURL, "svc-d", 60000, "去重测试")
-	_ = c2
+	_ = registerRaw(t, url, "svc-d", 60000, "去重测试")
 	if r2 := rev(); r2 != r1 {
 		t.Fatalf("名片无变化不应推进 revision: %d -> %d", r1, r2)
 	}
 
 	// 名片变化（简介变化）：推进 revision
-	c3 := registerRaw(t, wsURL, "svc-d", 60000, "去重测试（改了简介）")
-	_ = c3
+	_ = registerRaw(t, url, "svc-d", 60000, "去重测试（改了简介）")
 	if r3 := rev(); r3 <= r1 {
 		t.Fatalf("名片变化应推进 revision: %d -> %d", r1, r3)
 	}
@@ -243,22 +192,22 @@ func TestSweepSettingsLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Shutdown() })
-	wsURL := "ws://" + s.Addr() + "/ws"
+	url := centerURL(s)
 
 	for _, p := range []protocol.SetSettingPayload{
 		{Service: "settings-center", Key: "sweep_ms", Value: "100"},
 		{Service: "settings-center", Key: "heartbeat_fallback_ms", Value: "300"},
 	} {
-		if _, msg := callSettings(t, wsURL, "set_setting", p); msg != "" {
+		if _, msg := callSettings(t, url, "set_setting", p); msg != "" {
 			t.Fatalf("%s 下发失败: %s", p.Key, msg)
 		}
 	}
 
 	// 未声明心跳（hbMS=0）且不发心跳：兜底 300ms → 2×300ms 后应判离线。
-	registerRaw(t, wsURL, "svc-f", 0, "兜底心跳测试")
-	waitInRoster(t, wsURL, "svc-f", true, 3*time.Second)
+	registerRaw(t, url, "svc-f", 0, "兜底心跳测试")
+	waitInRoster(t, url, "svc-f", true, 3*time.Second)
 	start := time.Now()
-	waitInRoster(t, wsURL, "svc-f", false, 5*time.Second)
+	waitInRoster(t, url, "svc-f", false, 5*time.Second)
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("兜底=300ms 时应 ~1s 内判离线，实际 %v", elapsed)
 	}

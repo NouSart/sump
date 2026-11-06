@@ -29,11 +29,11 @@ func (s *Server) commitJudgement(st *taskState, trace string) {
 	}
 	if done {
 		// 完结是终态：顺带把任务名改成模型给的那个（更像人写的标题）。
-		s.Fire(s.memoryName(), "task_finish", protocol.TaskFinishPayload{TaskID: taskID, Name: title}, trace, s.cfg.Name)
+		s.Fire(s.memoryName(), "task_finish", protocol.TaskFinishPayload{TaskID: taskID, Name: title}, trace)
 		return
 	}
 	if title != "" {
-		s.Fire(s.memoryName(), "task_rename", protocol.TaskRenamePayload{TaskID: taskID, Name: title}, trace, s.cfg.Name)
+		s.Fire(s.memoryName(), "task_rename", protocol.TaskRenamePayload{TaskID: taskID, Name: title}, trace)
 	}
 }
 

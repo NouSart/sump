@@ -1,6 +1,6 @@
 # 把 MCP 接到远程 / 先做接入检查
 
-> **读者**：要把 MCP 从本机搬到跨设备、或接一个外部 MCP Server 的人 ｜ **读完能做**：配好 HTTPS 入口、信任私有 CA、在不执行工具的前提下验证契约 ｜ **最后校验**：2026-10-30
+> **读者**：要把 MCP 从本机搬到跨设备、或接一个外部 MCP Server 的人 ｜ **读完能做**：配好 HTTPS 入口、信任私有 CA、在不执行工具的前提下验证契约 ｜ **最后校验**：2026-11-06
 
 服务本身的职责、配置项与契约见 [mcp/README.md](../../src/mcp/README.md)。
 
@@ -9,7 +9,7 @@
 证书使用 PEM 格式，证书的 SAN（允许使用的主机名 / IP）**必须包含客户端实际访问的地址**。证书链与私钥成对提供；启动时读取，替换后需重启。应用不安装系统证书、不生成防火墙规则。
 
 ```powershell
-go run . -addr 127.0.0.1:9902 -center ws://127.0.0.1:9000/ws -http-addr 192.168.100.10:9903 -allow-remote -allowed-hosts 192.168.100.10:9903 -tls-cert ../private/server.pem -tls-key ../private/server-key.pem -config ../data/mcp.json -secret-file ../data/mcp-secret.json
+go run . -addr 127.0.0.1:9902 -center ws://127.0.0.1:9000/spv2 -http-addr 192.168.100.10:9903 -allow-remote -allowed-hosts 192.168.100.10:9903 -tls-cert ../private/server.pem -tls-key ../private/server-key.pem -config ../data/mcp.json -secret-file ../data/mcp-secret.json
 ```
 
 - 上面的 IP 仅作示例，需换成实际受控网络地址。

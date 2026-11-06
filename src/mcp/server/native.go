@@ -1,7 +1,7 @@
 package server
 
-// SPv2.1 原生入口：/spv2 的 call 直接解 Frame.Body，调用与 v1 action 共用的
-// 业务函数；这里不构造 v1 跳转载荷，也不合成信封。
+// SPv2.1 原生入口：/spv2 的 call 直接解 Frame.Body 并调用业务函数；
+// 服务只暴露原生 method，不构造跳转载荷，也不合成信封。
 
 import (
 	"context"
@@ -12,14 +12,12 @@ import (
 )
 
 // registerNativeMethods 把每个动态 provide 注册为原生 SPv2.1 method，
-// 并为 report_result / cancel_import 注册原生入口。同名 v1 action 仍保留，
-// 由 s.handleImport 等薄包装承接 /ws 兼容边缘。
+// 并为 report_result / cancel_import 注册原生入口。服务只暴露 /spv2，
+// 不再注册同名 v1 action。
 func (s *Server) registerNativeMethods() {
 	for _, method := range s.imports.NativeMethods() {
-		s.svc.Handle(method.Name, s.handleImport)
 		s.svc.HandleNative(method, s.nativeImport(method.Name))
 	}
-	s.svc.Handle("report_result", s.handleReport)
 	s.svc.HandleNative(spv2.Method{
 		Name:        "report_result",
 		Description: "接收异步调用的补报（调用方按 trace 关联）",
@@ -36,7 +34,6 @@ func (s *Server) registerNativeMethods() {
 		},
 		Output: map[string]any{"type": "object"},
 	}, s.nativeReport)
-	s.svc.Handle("cancel_import", s.handleCancelImport)
 	s.svc.HandleNative(spv2.Method{
 		Name:        "cancel_import",
 		Description: "撤销本进程内尚未完成的异步 import 观察",
@@ -52,7 +49,7 @@ func (s *Server) registerNativeMethods() {
 // nativeImport 返回某个动态 provide 的原生 handler；method 已在注册时绑定。
 func (s *Server) nativeImport(action string) func(context.Context, *spv2.Call) error {
 	return func(ctx context.Context, call *spv2.Call) error {
-		out, err := s.importCall(ctx, action, call.Frame.Body, call.Frame.From.ID, call.Frame.Work, call.Frame.From.ID)
+		out, err := s.importCall(ctx, action, call.Frame.Body, call.Frame.From.ID, call.Frame.Work)
 		if err != nil {
 			code, retryable := nativeImportError(err)
 			return call.ReplyError(code, err.Error(), retryable, nil)

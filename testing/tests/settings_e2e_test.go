@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // settingsRecorder 收集观察者连接上的 settings 事件。
@@ -22,12 +23,12 @@ type settingsRecorder struct {
 	events []protocol.SettingsEventPayload
 }
 
-func (r *settingsRecorder) onEvent(env protocol.Envelope) {
-	if env.Type != protocol.TypeSettings {
+func (r *settingsRecorder) onEvent(f spv2.Frame) {
+	if f.Type != spv2.TypeEvent || f.Method != protocol.TypeSettings {
 		return
 	}
 	var p protocol.SettingsEventPayload
-	if err := env.DecodePayload(&p); err != nil {
+	if err := f.DecodeBody(&p); err != nil {
 		return
 	}
 	r.mu.Lock()
@@ -53,7 +54,7 @@ func (r *settingsRecorder) wait(t *testing.T, n int, timeout time.Duration) []pr
 }
 
 // waitRosterAddr 等待名册里某服务的名片地址变为 addr（服务重启换端口后用它判定“已重新注册”）。
-func waitRosterAddr(t *testing.T, obs *protocol.Client, name, addr string, timeout time.Duration) {
+func waitRosterAddr(t *testing.T, obs *spv2.Client, name, addr string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -73,14 +74,10 @@ func waitRosterAddr(t *testing.T, obs *protocol.Client, name, addr string, timeo
 	t.Fatalf("等待名册中 %s 的地址变为 %s 超时", name, addr)
 }
 
-// saveImage 向 images 发一次 save，返回响应 payload。
-func saveImage(t *testing.T, imagesURL string, data string) protocol.ResponsePayload {
+// saveImage 向 images 发一次 save，返回原生调用结果。
+func saveImage(t *testing.T, imagesURL string, data string) callResult {
 	t.Helper()
-	c, err := protocol.Dial(imagesURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
+	c := dialSPV2(t, imagesURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return callJump(t, c, "images", "save", protocol.ImageSavePayload{Data: data, Mime: "image/png"}, ctx)
@@ -93,8 +90,8 @@ func TestSettingsHotPathE2E(t *testing.T) {
 
 	scPort := freePort(t)
 	imgPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
-	imagesURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", imgPort)
+	centerURL := spv2URL(scPort)
+	imagesURL := spv2URL(imgPort)
 
 	dir := t.TempDir()
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort), "-settings", filepath.Join(dir, "settings.json"))
@@ -148,7 +145,7 @@ func TestSettingsHotPathE2E(t *testing.T) {
 	_ = imgCmd.Process.Kill()
 	_, _ = imgCmd.Process.Wait()
 	imgPort2 := freePort(t)
-	imagesURL2 := fmt.Sprintf("ws://127.0.0.1:%d/ws", imgPort2)
+	imagesURL2 := spv2URL(imgPort2)
 	startProc(t, imgBin,
 		"-addr", fmt.Sprintf("127.0.0.1:%d", imgPort2), "-center", centerURL,
 		"-db", filepath.Join(dir, "images.db"), "-dir", filepath.Join(dir, "images"))
@@ -183,23 +180,20 @@ func TestSettingsHotPathE2E(t *testing.T) {
 
 // registerObserver 注册一个“设置热链观察者”：收集 settings 事件，供断言使用
 // （名片地址不会被拨号——观察者不声明设置项）。
-func registerObserver(t *testing.T, centerURL string) (*protocol.Client, *settingsRecorder) {
+func registerObserver(t *testing.T, centerURL string) (*spv2.Client, *settingsRecorder) {
 	t.Helper()
 	rec := &settingsRecorder{}
-	c, err := protocol.Dial(centerURL, rec.onEvent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = c.Close() })
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, "e2e-settings-observer", "settings-center", "", protocol.RegisterPayload{
-		Name: "e2e-settings-observer", Addr: "ws://127.0.0.1:1/ws", Description: "设置热链观察者",
+	c := dialSPV2(t, centerURL, spv2.WithOnEvent(rec.onEvent))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef("e2e-settings-observer"), spv2.ServiceRef("settings-center"), "register", protocol.RegisterPayload{
+		Name: "e2e-settings-observer", Addr: "ws://127.0.0.1:1/spv2", Description: "设置热链观察者",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := c.Call(ctx, env); err != nil {
+	var roster protocol.RosterPayload
+	if err := c.CallDecode(ctx, call, &roster); err != nil {
 		t.Fatal(err)
 	}
 	return c, rec
@@ -209,7 +203,7 @@ func registerObserver(t *testing.T, centerURL string) (*protocol.Client, *settin
 func waitSaveRejected(t *testing.T, imagesURL, data, want string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
-	var last protocol.ResponsePayload
+	var last callResult
 	for time.Now().Before(deadline) {
 		last = saveImage(t, imagesURL, data)
 		if !last.OK && strings.Contains(last.Error, want) {
@@ -224,7 +218,7 @@ func waitSaveRejected(t *testing.T, imagesURL, data, want string, timeout time.D
 func waitSaveOK(t *testing.T, imagesURL, data string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
-	var last protocol.ResponsePayload
+	var last callResult
 	for time.Now().Before(deadline) {
 		last = saveImage(t, imagesURL, data)
 		if last.OK {
@@ -244,9 +238,9 @@ func TestSettingsCenterRestartE2E(t *testing.T) {
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, "settings.json")
 	scPort := freePort(t)
-	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
+	centerURL := spv2URL(scPort)
 	imgPort := freePort(t)
-	imagesURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", imgPort)
+	imagesURL := spv2URL(imgPort)
 	big := base64.StdEncoding.EncodeToString(make([]byte, 2<<20))
 
 	scCmd := startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort), "-settings", settingsPath)

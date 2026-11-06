@@ -25,7 +25,7 @@ func (s *Server) callAsyncTool(ctx context.Context, owner string, b Binding, inp
 	callCtx, cancel := context.WithTimeout(ctx, s.cfg.CallTimeout)
 	stop := context.AfterFunc(s.lifetime, cancel)
 	defer func() { stop(); cancel() }()
-	raw, err := s.svc.Call(callCtx, b.Service, b.Action, input, trace, "mcp")
+	raw, err := s.svc.Call(callCtx, b.Service, b.Action, input, trace)
 	if err != nil {
 		// Service.Call does not replay after sending. Preserve this observation
 		// so a late report can still establish the outcome after receipt loss.
@@ -52,15 +52,7 @@ func (s *Server) callAsyncTool(ctx context.Context, owner string, b Binding, inp
 	return result
 }
 
-// handleReport 是 v1 action 的薄包装。
-func (s *Server) handleReport(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	if env.To != "mcp" || env.Boss != "mcp" {
-		return nil, errors.New("report target does not match an MCP observation")
-	}
-	return s.reportResult(env.Trace, env.From, in.Input)
-}
-
-// reportResult 与 /spv2 原生 method 共用：只接收关联字段与原始 MessagePack。
+// reportResult 从 /spv2 原生 method 收补报：只接收关联字段与原始 MessagePack。
 func (s *Server) reportResult(trace, from string, body []byte) (any, error) {
 	var report protocol.AsyncResultPayload
 	if err := decodeMessagePack(body, &report); err != nil {
@@ -130,7 +122,7 @@ func (s *Server) cancelTimer(ctx context.Context, owner string, b Binding, id st
 	callCtx, cancel := context.WithTimeout(ctx, min(s.cfg.CallTimeout, 5*time.Second))
 	stop := context.AfterFunc(s.lifetime, cancel)
 	defer func() { stop(); cancel() }()
-	raw, err := s.svc.Call(callCtx, "timer", "cancel", protocol.TimerCancelPayload{ItemID: target.ItemID}, target.Trace, "mcp")
+	raw, err := s.svc.Call(callCtx, "timer", "cancel", protocol.TimerCancelPayload{ItemID: target.ItemID}, target.Trace)
 	if err != nil {
 		return s.failure("unknown", "cancellation not confirmed; native timer may continue")
 	}
