@@ -21,10 +21,10 @@ func TestSettingsKindsAndPortalHotChange(t *testing.T) {
 	startCaller(t, sc, "e2e-caller")
 	cl := dial(t, "ws://"+listenAddr(t, sc))
 
-	set := func(key, value string) protocol.ResponsePayload {
+	set := func(key, value string) outcome {
 		return request(t, cl, "e2e-caller", "configure", protocol.ConfigurePayload{Key: key, Value: value})
 	}
-	sleep := func(note string) protocol.ResponsePayload {
+	sleep := func(note string) outcome {
 		return request(t, cl, "e2e-caller", "sleep", protocol.TimerSleepPayload{MS: 60000, Note: note})
 	}
 
