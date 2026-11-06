@@ -190,7 +190,7 @@ go run ./scripts/mutation -v           # 附上每个异变的测试输出
 
 ## 9. 边界
 
-- 不加协议动作、不改信封：`usage` 走假 LLM 的响应，轨迹直接读记忆服务现有的 `history`。
+- 不加协议 method、不改帧：`usage` 走假 LLM 的响应，轨迹直接读记忆服务现有的 `history`。
 - 不动别的服务的代码；故障注入优先用「不启动某个服务」与模型侧剧本，不改被测进程。
 - `evals` 是不注册、不提供动作的脚手架（`tests/docs_test.go` 的服务清单基线里已排除），
   但它在 `go.work` 里，`gofmt` / IDE 与主仓一致。

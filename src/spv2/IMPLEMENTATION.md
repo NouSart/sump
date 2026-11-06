@@ -30,7 +30,7 @@
 | codec.go | msgpack/JSON/text/binary body 编解码 |
 | metrics.go | counter/gauge/histogram 注册表 |
 | client.go / server.go | WS 传输与 call/stream/event |
-| http.go | /ws /healthz /readyz /metrics |
+| http.go | /spv2 /healthz /readyz /metrics |
 | idempotency.go | 可选的 unary reply 幂等缓存 |
 | store.go | WorkStore 接口 + MemStore |
 | sqlitestore.go | WorkStore 的 SQLite 实现 |

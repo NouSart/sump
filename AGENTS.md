@@ -17,17 +17,17 @@ SUMP 是「服务的互联网」式智能体系统：每个能力是一个**独�
 
 ## 不可违反的技术约定
 
-- 信封 `v: 1`；**动作只增不改**，删改 = 破坏性变更。
-- **未知字段必须忽略**；**未知动作必须回 `{ok:false, error}`**，不得静默丢弃。
-- 工具暴露必须显式：`provides` 里 `tool: true` 才给模型看；管理 / 调试动作不暴露。
-- 每跳的 `boss`（结果归属）逐跳自定、**不可丢失**；入口服务必须把 boss 设成自己。
-- 长耗时动作走 `async: true` + `report_result` 补报，不让调用方等。
+- 只有一种线协议：SPv2.1 帧（`v: "spv2.1"`，`type` = `call` / `reply` / `event` / `stream`）；所有服务只暴露 `/spv2`。**method 只增不改**，删改 = 破坏性变更。
+- **未知帧字段必须忽略**；**未知 method 的 `call` 必须回错误 `reply`**（`status=error`、`code=not_found`），不得静默丢弃。
+- 工具暴露必须显式：`provides` 里 `tool: true` 才给模型看；管理 / 调试 method 不暴露。
+- 结果归属 = 帧头 `from`（SPv2 没有 `boss` 字段），逐跳自定、**不可丢失**；入口服务必须把 `from` 设成自己。
+- 长耗时 method 走 `async: true` + 受理回执 + `report_result` 补报，不让调用方等。
 - 派生数据（缓存 / 向量 / 索引）必须可丢弃、可重建；权威数据只有一份。
 - **会话库私有、共享库只放提炼物**：`data/memory.db`（对话 / 任务）只有当事会话能读；跨会话共享的库（`data/experience.db`）**不得**出现原文、工具输出、路径或账号——靠表结构和载荷保证，不靠调用方自觉。
 - 测试不得依赖外网：用假 LLM / 假对端；真模型只在显式开关下跑。
-- 新动作要有测试（含错误路径）；不允许为了变绿而改弱测试。
+- 新 method 要有测试（含错误路径）；不允许为了变绿而改弱测试。
 
-细节：[docs/concepts/protocol.md](docs/concepts/protocol.md)（契约）、[docs/guides/add-a-service.md](docs/guides/add-a-service.md)（写服务）、[docs/concepts/agent-loop.md](docs/concepts/agent-loop.md)（运行时语义）。
+细节：[docs/concepts/protocol.md](docs/concepts/protocol.md)（契约）、[docs/concepts/spv2.md](docs/concepts/spv2.md)（线格式 spec）、[docs/guides/add-a-service.md](docs/guides/add-a-service.md)（写服务）、[docs/concepts/agent-loop.md](docs/concepts/agent-loop.md)（运行时语义）。
 
 ## 常用命令
 
@@ -44,7 +44,7 @@ gofmt -l (git ls-files '*.go')                              # 提交前必须无
 ## 改代码的规矩
 
 - 小步提交：一个提交只做一件事；信息用「类型: 中文描述」（`feat:` / `fix:` / `docs:` / `refactor:` / `test:` / `chore:`）。
-- 协议变更（`src/protocol/`）、新动作、新消息类型：**先商量再动手**，且只做加法。
+- 协议变更（`src/protocol/`）、新 method、新帧类型：**先商量再动手**，且只做加法。
 - 不顺手重构：改动范围收敛在目标内；发现无关问题提 issue，别顺路改。
 - Go 以 `gofmt` 为准；注释与文档用中文；错误信息指明对象、可读。
 

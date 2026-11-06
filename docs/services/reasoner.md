@@ -11,7 +11,7 @@
 - 收尾门禁：交付前必须 `task_status` 判定；还有工具在跑 / 快照过期 → 拒绝收尾。
 - 判定在**收尾那一刻**落库（`done` → `task_finish`，否则 `task_rename`）——提前落库会让下半程的工作
   挂在一个「已完成」的任务里。
-- 交付到 boss（`deliver`）；交付失败补报给入口；后台复盘写经验网（`reflect.on`）。
+- 交付到结果归属方（`deliver`，帧头 `from`）；交付失败记日志并停住；后台复盘写经验网（`reflect.on`）。
 
 ## 端口
 
@@ -54,7 +54,7 @@
 | --- | --- | --- |
 | `memory` | `recall` / `store` / `task_finish` / `task_rename` / `note` / `publish_session` | 每轮入口托管、记录轨迹、判定落库、复盘 |
 | `images` | `fetch_full` | 最近一条带图消息内联给模型 |
-| boss（入口服务） | `deliver`（失败时向入口补 `[交付失败]`） | 收尾 |
+| 结果归属方（帧头 `from`） | `deliver` | 收尾 |
 | 名册里的任意服务 | 该服务 `tool: true` 的动作 | 模型决定调用时 |
 
 ## 怎么测

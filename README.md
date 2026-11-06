@@ -5,7 +5,7 @@
 
 > **v0.0.1-beta.2** · Apache-2.0 · *SUMP is a service-mesh style agent runtime: every capability is an independent process with its own database and address, and the agent loop lives only in the network.*
 
-SUMP 是「服务的互联网」式智能体系统：每个能力是**独立进程**（独立数据库、任意语言），按地址互相访问；智能体循环不存在于任何服务内部，而是 LLM 服务在网络上的自我跳转链。
+SUMP 是「服务的互联网」式智能体系统：每个能力是**独立进程**（独立数据库、任意语言），按地址互相访问（每服务只暴露 `/spv2`）；智能体循环不存在于任何服务内部，而是 LLM 服务在网络上的自我调用链。
 
 ## 三条路径
 
@@ -79,7 +79,7 @@ go.work       把 src/ 与 testing/ 下的 16 个模块串成一个工作区
 | [docs/quickstart.md](./docs/quickstart.md) | 快速开始：依赖、一键启动、端口、测试、长期运行 |
 | [docs/concepts/architecture.md](./docs/concepts/architecture.md) | 架构：服务清单、一次对话怎么流动、数据归属、刻意不做的事 |
 | [docs/concepts/agent-loop.md](./docs/concepts/agent-loop.md) | 运行时语义：工具异步、会话记录、任务、经验网、复盘 |
-| [docs/concepts/protocol.md](./docs/concepts/protocol.md) | 协议契约：独立性约束、生命周期、帧与信封、动作与暴露、异步补报、链机制、命名基线 |
+| [docs/concepts/protocol.md](./docs/concepts/protocol.md) | 协议契约：独立性约束、生命周期、SPv2.1 帧与控制面、method 与暴露、异步补报、链机制、命名基线 |
 | [docs/concepts/approval.md](./docs/concepts/approval.md) | 命令审批：一条命令怎么走完、裁决包、限额、用户裁决、边界 |
 | [docs/concepts/roadmap.md](./docs/concepts/roadmap.md) | 路线与失败条件：三步走、现在在哪、什么情况下该停 |
 | [docs/guides/add-a-service.md](./docs/guides/add-a-service.md) | 写一个服务：名片字段、三类设置项与下发、服务自报、测试要求 |
