@@ -16,6 +16,7 @@ const (
 	samplePosix  = `/srv/app/logs/app.log`
 	sampleURL    = `ws://127.0.0.1:3000`
 	sampleToken  = `sk-abcdefgh12345678`
+	sampleBare   = `a1b2c3d4e5f6g7` // 14 位字母数字混合、**无已知前缀**：reToken 认不出这一类
 	sampleEmail  = `someone@example.com`
 	samplePhone  = `13812345678`
 )
@@ -29,6 +30,9 @@ func TestTextMasksEveryShape(t *testing.T) {
 		{"ws 链接", "默认地址 " + sampleURL, "[链接]", sampleURL},
 		{"http 链接", "参考 https://example.com/a?b=1 的做法", "[链接]", "example.com"},
 		{"密钥形状", "key 是 " + sampleToken + " 别外传", "[已隐去]", sampleToken},
+		{"裸令牌·空格分隔", "把 NapCat 令牌 " + sampleBare + " 写成默认", "[已隐去]", sampleBare},
+		{"裸令牌·全角冒号", "密码：" + sampleBare + "，已写进配置", "[已隐去]", sampleBare},
+		{"裸令牌·等号", "api_key = " + sampleBare + " 复用", "[已隐去]", sampleBare},
 		{"Bearer", "header Bearer abc.def-ghi", "[已隐去]", "abc.def-ghi"},
 		{"邮箱", "发到 " + sampleEmail, "[邮箱]", sampleEmail},
 		{"手机号", "打 " + samplePhone + " 找他", "[已隐去]", samplePhone},
@@ -84,6 +88,9 @@ func TestDetectAgreesWithText(t *testing.T) {
 		"POSIX 路径":        "日志在 " + samplePosix,
 		"链接":              "默认地址 " + sampleURL,
 		"密钥形状":            "key 是 " + sampleToken,
+		"密钥上下文":           "把 NapCat 令牌 " + sampleBare + " 写成默认",
+		"密钥上下文（全角冒号）":     "密码：" + sampleBare,
+		"密钥上下文（等号）":       "api_key = " + sampleBare,
 		"Bearer":          "header Bearer abc.def-ghi",
 		"邮箱":              "发到 " + sampleEmail,
 		"手机号":             "打 " + samplePhone + " 找他",
@@ -102,6 +109,29 @@ func TestDetectAgreesWithText(t *testing.T) {
 		if why := Detect(clean); why != "" {
 			t.Errorf("正常提炼物不该被 Detect 命中（%q → %s）", clean, why)
 		}
+	}
+}
+
+// Detect 的类别名也是契约：整段遮之后正文里只剩 [已隐去]，运维分不清遮掉的是
+// sk- 形状还是"令牌 <裸值>"，报错时要能说出是哪一类。
+func TestDetectNamesContextSecretCategory(t *testing.T) {
+	for _, in := range []string{
+		"把 NapCat 令牌 " + sampleBare + " 写成默认",
+		"密码：" + sampleBare + "，已写进配置",
+		"api_key = " + sampleBare,
+	} {
+		if got := Detect(in); got != "密钥上下文" {
+			t.Errorf("Detect(%q) = %q，期望 密钥上下文", in, got)
+		}
+	}
+
+	// 这一条记的是**够不着的地方**，不是要求：值前面没有任何关键词时，
+	// reSecretCtx 与 reToken 双双失灵，redact 这一层就是这么薄。
+	// 补它的活归 audit 包的熵 / 已知凭据探针（第二把尺）。
+	// 将来若把这一类也管住了，本用例要一起改成"必须命中"，别只是删掉。
+	bare := "默认值是 " + sampleBare
+	if got := Detect(bare); got != "" {
+		t.Errorf("redact 没有熵判断，%q 不该被它命中，实际命中 %q——这一层扩了就得同步 audit", bare, got)
 	}
 }
 

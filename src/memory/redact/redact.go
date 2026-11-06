@@ -30,12 +30,33 @@ var (
 	reWinPath = regexp.MustCompile(`(?i)\b[A-Z]:[\\/](?:[^\s"'<>，。；]*)`)
 	reUNCPath = regexp.MustCompile(`\\\\[^\s"'<>，。；]+`)
 	// POSIX 绝对路径：至少两段，避免把 and/or 这类词当路径。
-	rePosix   = regexp.MustCompile(`(^|[\s（(])(?:~|\.{1,2})?(?:/[A-Za-z0-9._-]+){2,}/?`)
-	reEmail   = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
-	reToken   = regexp.MustCompile(`(?i)\b(?:sk|pk|ghp|gho|ghu|ghs|glpat|xox[baprs])[-_][A-Za-z0-9_\-]{8,}`)
-	reBearer  = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._\-]+`)
-	reCNPhone = regexp.MustCompile(`\b1[3-9]\d{9}\b`)
-	reSpace   = regexp.MustCompile(`\s+`)
+	rePosix  = regexp.MustCompile(`(^|[\s（(])(?:~|\.{1,2})?(?:/[A-Za-z0-9._-]+){2,}/?`)
+	reEmail  = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+	reToken  = regexp.MustCompile(`(?i)\b(?:sk|pk|ghp|gho|ghu|ghs|glpat|xox[baprs])[-_][A-Za-z0-9_\-]{8,}`)
+	reBearer = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._\-]+`)
+	// reSecretCtx 补的是 reToken 认不出的一类：**没有已知前缀的裸令牌**，
+	// 只靠"前面有个密钥类关键词"来认定。2026-11-06 实测的那条泄露就是它——
+	// memories rowid 5 的 NapCat 令牌是 14 位小写字母数字（sha256 前 8 位 57eadc2f，
+	// 与 data/qq-secret.json 的 napcat.token 对得上），reToken 只认 8 个前缀，
+	// 于是同一句里挨着的 ws:// 被洗成了 [链接]，令牌本身原文躺着不动。
+	//
+	// 分隔符写成可选，是量出来的不是猜的：强制要 `[:：=]` 的严格版在全库**命中 0**，
+	// 因为那句是"令牌 <值>"这种空格分隔；可选的宽松版命中 1，正是泄漏行。
+	//
+	// 不加"字母数字皆含"的值判别器，同样是量出来的：加了仍命中 1（那条本来就
+	// 字母数字皆含），也就是说判别器换不来更少命中，只换来更弱的覆盖，
+	// 所以按"宁可过掩不可漏掩"留着宽松版。**将来要压误伤，杠杆就是这个判别器**，
+	// 但先补测再改——别反过来。
+	//
+	// 关键词整段遮（连"令牌"一起变成 [已隐去]），与 URL / 邮箱的待遇一致：
+	// 留下的词本身可能就是"这里曾经有个凭据"的提示。代价是看不出遮的是哪一类，
+	// 由 Detect 单独给一个"密钥上下文"类别补回来。
+	//
+	// 认不出的仍然认不出：裸写、前后没有任何关键词的令牌没有形状可言，
+	// 这一层管不到，得靠 audit 的熵/已知凭据探针（第二把尺）。
+	reSecretCtx = regexp.MustCompile(`(?i)(?:令牌|token|secret|password|api[-_]?key|密码|密钥)\s*[:：=]?\s*[A-Za-z0-9_\-]{8,}`)
+	reCNPhone   = regexp.MustCompile(`\b1[3-9]\d{9}\b`)
+	reSpace     = regexp.MustCompile(`\s+`)
 
 	// reOpaqueSession 是 SessionID 的输出形状：入口 + 12 位十六进制摘要。
 	// 认它，是为了让 SessionID 可重复作用——目录里读回的 id 会原样传回来删除，
@@ -59,6 +80,7 @@ func Text(s string) string {
 	s = reEmail.ReplaceAllString(s, "[邮箱]")
 	s = reToken.ReplaceAllString(s, "[已隐去]")
 	s = reBearer.ReplaceAllString(s, "[已隐去]")
+	s = reSecretCtx.ReplaceAllString(s, "[已隐去]")
 	s = reWinPath.ReplaceAllString(s, "[路径]")
 	s = reUNCPath.ReplaceAllString(s, "[路径]")
 	s = rePosix.ReplaceAllString(s, "${1}[路径]")
@@ -183,9 +205,10 @@ func RefID(raw, what string) (string, error) {
 // 它是"什么算泄露"的唯一定义源：写入前的过滤、存量清理后的复检、测试里的断言，
 // 都问它，免得三处各写一套谓词、清理脚本自称干净。
 //
-// 局限要写明白：它认的是**形状**（链接 / 路径 / 邮箱 / 密钥形状 / 手机号），
-// 认不出一个裸的 QQ 号——那没有形状可言。所以标识列不看 Detect，看结构：
-// conversation_id 必须已经是收口后的形状，见 IsOpaqueSessionID。
+// 局限要写明白：它认的是**形状**（链接 / 路径 / 邮箱 / 密钥形状 / 带关键词的密钥上下文 /
+// 手机号），认不出一个裸的 QQ 号——那没有形状可言；也认不出**前后没有任何关键词**的裸
+// 令牌。所以标识列不看 Detect，看结构：conversation_id 必须已经是收口后的形状，
+// 见 IsOpaqueSessionID。
 func Detect(s string) string {
 	switch {
 	case reURL.MatchString(s):
@@ -196,6 +219,8 @@ func Detect(s string) string {
 		return "邮箱"
 	case reToken.MatchString(s), reBearer.MatchString(s):
 		return "密钥形状"
+	case reSecretCtx.MatchString(s):
+		return "密钥上下文"
 	case reCNPhone.MatchString(s):
 		return "手机号"
 	default:

@@ -36,21 +36,22 @@ func mustOpaque(t *testing.T, raw string) string {
 
 // 造的样本值：形状与事故里那几行同类，值本身不对应任何真实账号 / 机器 / 密钥。
 const (
-	fakeQQ       = "987654321"
-	fakeWinPath  = `D:\srv\app\data\x.db`
-	fakeWinFwd   = `C:/Windows/x` // 库里 rowid 80 的原句形状：open('C:/Windows/x','w')
-	fakePosix    = `/srv/app/logs/app.log`
-	fakeURL      = `ws://127.0.0.1:3000`
-	fakeToken    = `sk-abcdefgh12345678`
-	fakePhone    = "13812345678"
-	fakeEmail    = "someone@example.com"
-	fakeTaskID   = "t20261101T170150-de9fa74c9a53"
-	fakeCIDPlain = "qq:private:" + fakeQQ
+	fakeQQ        = "987654321"
+	fakeWinPath   = `D:\srv\app\data\x.db`
+	fakeWinFwd    = `C:/Windows/x` // 库里 rowid 80 的原句形状：open('C:/Windows/x','w')
+	fakePosix     = `/srv/app/logs/app.log`
+	fakeURL       = `ws://127.0.0.1:3000`
+	fakeToken     = `sk-abcdefgh12345678`
+	fakeTokenBare = `a1b2c3d4e5f6g7` // 14 位字母数字混合、**无前缀**：reToken 认不出，只能靠上下文
+	fakePhone     = "13812345678"
+	fakeEmail     = "someone@example.com"
+	fakeTaskID    = "t20261101T170150-de9fa74c9a53"
+	fakeCIDPlain  = "qq:private:" + fakeQQ
 )
 
 // leaky 是"绝不能进共享库"的样本值清单：断言直接盯原值，不盯形状，
 // 因为掩码后留下的 "[路径]" 这类标记本身就该在场。
-var leaky = []string{fakeQQ, fakeWinPath, fakeWinFwd, fakePosix, fakeURL, fakeToken, fakePhone, fakeEmail}
+var leaky = []string{fakeQQ, fakeWinPath, fakeWinFwd, fakePosix, fakeURL, fakeToken, fakeTokenBare, fakePhone, fakeEmail}
 
 // assertNoLeak 断言一批文本里不含任何一个样本原值。
 func assertNoLeak(t *testing.T, what string, texts ...string) {
@@ -70,7 +71,7 @@ func TestRedlinePublishMasksBodyAndHashesAccount(t *testing.T) {
 		SessionID: fakeCIDPlain,
 		TaskID:    fakeTaskID,
 		Goal:      `排查 ` + fakeWinPath + ` 的 NapCat 连接，默认地址 ` + fakeURL + `，令牌 ` + fakeToken,
-		Outcome:   "日志见 " + fakePosix + "，联系 " + fakePhone,
+		Outcome:   "日志见 " + fakePosix + "，联系 " + fakePhone + "；备用令牌 " + fakeTokenBare,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +103,10 @@ func TestRedlinePublishMasksBodyAndHashesAccount(t *testing.T) {
 	}
 	if !strings.Contains(goal, "[路径]") || !strings.Contains(goal, "[链接]") || !strings.Contains(goal, "[已隐去]") {
 		t.Errorf("正文该被掩码，实际 = %q", goal)
+	}
+	// 无前缀的裸令牌：reToken 够不着，只能靠"令牌 <值>"这一层上下文。
+	if !strings.Contains(outcome, "[已隐去]") {
+		t.Errorf("outcome 里的裸令牌该被上下文规则遮掉，实际 = %q", outcome)
 	}
 }
 
@@ -139,7 +144,7 @@ func TestRedlinePublishRejectsSmuggledIdentifiers(t *testing.T) {
 func TestRedlineRememberPathMasksContent(t *testing.T) {
 	s := openTest(t)
 	// remember（Tool:true，模型可直接调）落在这里：Add 是它唯一的写入路。
-	id, created, err := s.Longterm.Add("偏好", `在 `+fakeWinPath+` 用 PowerShell；密钥 `+fakeToken, 1, fakeCIDPlain, "reasoner")
+	id, created, err := s.Longterm.Add("偏好", `在 `+fakeWinPath+` 用 PowerShell；密钥 `+fakeToken+`；轮换令牌 `+fakeTokenBare, 1, fakeCIDPlain, "reasoner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +159,7 @@ func TestRedlineRememberPathMasksContent(t *testing.T) {
 		t.Fatalf("条目 = %+v", entries)
 	}
 	assertNoLeak(t, "memories", entries[0].Content, entries[0].ConversationID, entries[0].Kind, entries[0].EmbeddingModel)
-	if !strings.Contains(entries[0].Content, "[路径]") {
+	if !strings.Contains(entries[0].Content, "[路径]") || !strings.Contains(entries[0].Content, "[已隐去]") {
 		t.Errorf("正文该被掩码，实际 = %q", entries[0].Content)
 	}
 	if want := mustOpaque(t, fakeCIDPlain); entries[0].ConversationID != want {
@@ -169,7 +174,7 @@ func TestRedlineNotePathMasksContent(t *testing.T) {
 	s := openTest(t)
 	seedNetDirections(t, s.Net)
 	res, err := s.Net.Attach(time.Now(), memnet.AttachInput{
-		Content: `NapCat 默认地址 ` + fakeURL + `，令牌 ` + fakeToken +
+		Content: `NapCat 默认地址 ` + fakeURL + `，令牌 ` + fakeTokenBare +
 			`；脚本里 open('` + fakeWinFwd + `','w') 这样写`,
 		ConversationID: fakeCIDPlain,
 		TaskID:         "t1",
@@ -226,7 +231,7 @@ func TestRedlineMigrationMasksLegacyRows(t *testing.T) {
 	if _, err := priv.DB().Exec(
 		`INSERT INTO memories(kind, content, priority, source, conversation_id, status, created_at, updated_at)
 		 VALUES('事实', ?, 1, 'reasoner', ?, 'active', '2026-10-19T20:00:00Z', '2026-10-19T20:00:00Z')`,
-		`把 QQ 的 NapCat 默认连接地址改成 `+fakeURL+`，并把 NapCat 令牌 `+fakeToken+` 写成默认，`+fakeWinPath+` 的 qq/main.go 里有 defaultNapCatToken`,
+		`把 QQ 的 NapCat 默认连接地址改成 `+fakeURL+`，并把 NapCat 令牌 `+fakeTokenBare+` 写成默认，`+fakeWinPath+` 的 qq/main.go 里有 defaultNapCatToken`,
 		fakeCIDPlain,
 	); err != nil {
 		t.Fatal(err)
@@ -272,7 +277,7 @@ func TestRedlineMigrationMasksLegacyRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoLeak(t, "迁移后的 memories", memContent, memCID, memSource)
-	if !strings.Contains(memContent, "[链接]") {
+	if !strings.Contains(memContent, "[链接]") || !strings.Contains(memContent, "[已隐去]") {
 		t.Errorf("迁移也该掩码正文，实际 = %q", memContent)
 	}
 
