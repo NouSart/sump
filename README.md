@@ -38,7 +38,7 @@ automation/   打包与发版（package.ps1：一条命令出 win-x64 zip）
 scripts/      起停与体检脚本（run-local / reload-sump / serve / check-frontend）
 docs/         文档
 third_party/  第三方代码（附 LICENSE 与来源说明）
-go.work       把 src/ 与 testing/ 下的 16 个模块串成一个工作区
+go.work       把 src/ 与 testing/ 下的 17 个模块串成一个工作区
 ```
 
 `data/` 与 `logs/` 是运行期产物，不入库。

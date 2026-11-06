@@ -6,12 +6,13 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// 文档不是散文：它得能被人点开。这两个用例守住两件最容易悄悄坏掉的事——
-// 相对链接指向不存在的文件、服务清单和真实目录对不上。
+// 文档不是散文：它得能被人点开。这三个用例守住三件最容易悄悄坏掉的事——
+// 相对链接指向不存在的文件、服务清单和真实目录对不上、模块数量和各处写死的数字对不上。
 
 func repoRootForDocs(t *testing.T) string {
 	t.Helper()
@@ -71,6 +72,92 @@ func TestDocsServiceListMatchesDirs(t *testing.T) {
 	if strings.Join(documented, ",") != strings.Join(actual, ",") {
 		t.Fatalf("服务清单与目录不一致\n文档列出: %v\n仓库实际: %v", documented, actual)
 	}
+}
+
+// moduleCountClaims 覆盖文档里写模块数量的两种中文语序：
+// 「N 个模块」（数字在前，README）和「Go 模块 N 个」（数字在后，CONTRIBUTING）。
+// 只写一种语序，另一种就是死代码——所以自证时要同时改两份文档。
+var moduleCountClaims = []*regexp.Regexp{
+	regexp.MustCompile(`([0-9]+)\s*个模块`),
+	regexp.MustCompile(`模块\s*([0-9]+)\s*个`),
+}
+
+// TestDocsModuleCountMatchesGoWork 检查 README / CONTRIBUTING 里写明的模块数量与 go.work 一致。
+// go.work 是「本仓库有几个模块」的唯一权威：文档里的数字一旦手打就会漂，
+// 所以这里当场解析 go.work，不预先写死任何数量。
+func TestDocsModuleCountMatchesGoWork(t *testing.T) {
+	root := repoRootForDocs(t)
+	fromGoWork := countGoWorkModules(t, filepath.Join(root, "go.work"))
+
+	found := 0
+	for _, name := range []string{"README.md", "CONTRIBUTING.md"} {
+		path := filepath.Join(root, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("读 %s 失败: %v", name, err)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			seen := map[string]bool{} // 同一行只报一次，免得两种语序重复计数
+			for _, re := range moduleCountClaims {
+				for _, m := range re.FindAllStringSubmatch(line, -1) {
+					if seen[m[0]] {
+						continue
+					}
+					seen[m[0]] = true
+					found++
+					n, err := strconv.Atoi(m[1])
+					if err != nil {
+						t.Fatalf("%s:%d: 模块数量 %q 读不懂: %v", name, i+1, m[1], err)
+					}
+					if n != fromGoWork {
+						t.Errorf("%s:%d: 文档写 %d 个模块，go.work 实际登记 %d 个\n%s",
+							name, i+1, n, fromGoWork, strings.TrimSpace(line))
+					}
+				}
+			}
+		}
+	}
+	// 两份文档都不提数量也是允许的（没有可校对的说法），但要在日志里留下痕迹，
+	// 免得日后文档改成不写数量时这个用例悄悄变成空转。
+	if found == 0 {
+		t.Logf("README / CONTRIBUTING 里没出现模块数量，无可校对项（go.work 登记 %d 个）", fromGoWork)
+	}
+}
+
+// countGoWorkModules 解析 go.work 的 use ( ... ) 块，返回登记的模块数。
+// go.work 缺失或一条都没有时直接判失败——那种情况下本用例什么都证明不了。
+func countGoWorkModules(t *testing.T, goWorkPath string) int {
+	t.Helper()
+	data, err := os.ReadFile(goWorkPath)
+	if err != nil {
+		t.Fatalf("读 go.work 失败: %v（模块数量没有权威来源，用例无法校验）", err)
+	}
+	count := 0
+	inUse := false
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		if !inUse {
+			switch {
+			case strings.HasPrefix(line, "use ("):
+				inUse = true
+			case len(strings.Fields(line)) == 2 && strings.HasPrefix(line, "use "):
+				count++ // 单行写法 use ./src/foo
+			}
+			continue
+		}
+		if line == ")" {
+			inUse = false
+			continue
+		}
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+		count++
+	}
+	if count == 0 {
+		t.Fatal("go.work 的 use 块里一个模块都没解析出来，用例无从校验（检查 go.work 或本用例的解析逻辑）")
+	}
+	return count
 }
 
 func namesFromBaseline(t *testing.T, doc string) []string {
