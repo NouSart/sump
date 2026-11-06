@@ -9,11 +9,13 @@
 // 压成键之后与 adjudicated.json 里人已逐处读过的清单对账。两个开关：
 //
 //	-adjudicated <path>  换一份白名单（默认空 = 用编进二进制的 audit/adjudicated.json）
-//	-no-adjudicated      关掉白名单，输出 Scan 原样结果（基线复现 / 外来库第一遍抄 key）
+//	-no-adjudicated      关掉白名单，输出 Scan 原样结果（复现无条件基线 / 第一遍抄 key）
 //
 // 两个开关互斥，同时给直接报错退出。登记新裁定的引导顺序：先用 -no-adjudicated 跑一遍，
 // 拿到 String() 形式的输出，人逐处读过，再把里面的 key 逐字抄进 adjudicated.json，重编。
 // JSON 不是手写的——键只能由 Key() 算，抄错一位就是未裁定。
+// 注意：-audit 目前要求库里有 scope 的全部表，缺表时 Scan 当场报错（exit 1），
+// 到不了闸门——换一个没有这些表的库不是"跳过"，是失败。
 //
 // 用法（先停掉 memory 服务，避免两个写者抢同一张表；-audit 是只读的，可以不停）：
 //
@@ -46,7 +48,7 @@ func main() {
 	auditOnly := flag.Bool("audit", false, "只跑独立复检（audit 包，与清洗谓词不共享）；配 -apply 则先清洗再复检")
 	knownPath := flag.String("known", "", "已知凭据 JSON 文件（递归取字符串叶子，供 -audit 第一路探针；不给就跳过这一路）")
 	adjudicatedPath := flag.String("adjudicated", "", "已裁定白名单 JSON 路径（不给就用编进二进制的那份 audit/adjudicated.json）")
-	noAdjudicated := flag.Bool("no-adjudicated", false, "关闭已裁定白名单，-audit 输出 Scan 原样结果（基线复现 / 外来库第一遍抄 key）")
+	noAdjudicated := flag.Bool("no-adjudicated", false, "关闭已裁定白名单，-audit 输出 Scan 原样结果（复现无条件基线 / 第一遍抄 key）")
 	flag.Parse()
 
 	// 互斥要说破，不要由实现顺序决定谁赢：一个换清单、一个关清单，同时给没有唯一答案。

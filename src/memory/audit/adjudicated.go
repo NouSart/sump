@@ -131,11 +131,13 @@ func inScope(table, column string) bool {
 //	stale   —— 白名单条目里行还在库里、却对不上当前任何一条同键命中的：行被改写过，
 //	           或者这一格已经被洗掉了。这是**维护**问题（清单与库脱钩），同样破闸，
 //	           但错误信息要与 novel 分开，别让人把"该重新抄 key"读成"新泄漏"。
-//	skipped —— 白名单条目里行已经不在了（换了库、外部库、行被删）：不是错误，只打一行提示。
+//	skipped —— 白名单条目里行已经不在了（洗完删过行，或换了一份 schema 相同、内容不同的库）：
+//	           不是错误，只打一行提示。
 //
-// rowExists 对"整张表都不存在"也必须返回 false 而不是报错：本工具要能在外来库、空库上跑，
-// 让 no such table 冒到闸门这里来，崩溃会吞掉同一次运行里的 novel——正是安全结论被
-// 环境差异挡住的那种失败。行不存在的条目归 skipped，闸门只看 novel 与 stale。
+// rowExists 对"整张表都不存在"也必须返回 false 而不是报错：白名单是跟着代码走的，
+// 库却是各跑各的——同一份清单遇到换了 schema 的库时，答案该是"这些条目在当前库里
+// 对不上任何行"，不是一句 no such table 把整次运行打死（崩掉会连本次的 novel 一起吞了）。
+// 行不存在的条目归 skipped，闸门只看 novel 与 stale。
 //
 // 匹配的是键，不是位置：同格形状一变，键就变，旧条目立刻成为 stale 而新命中成为 novel，
 // 两处一起响。这是"同格新增过阈段不许被旧裁定静默吸收"的落点。
@@ -185,9 +187,10 @@ func Filter(hits []Finding, adj []Adjudicated, rowExists func(table string, rowK
 // RowSet 回答"白名单指的这一行还在不在当前库里"，是 Filter 的 rowExists 实现。
 //
 // 分两步取，第一步是关键：先用一次 sqlite_master 拿到库里**有哪些表**，之后只对
-// 白名单点到、且确实存在的表查 rowid。直接对外来库里的白名单表 SELECT 会抛
-// no such table，那个错误会顺着 Filter 冒上来把整条闸门崩掉——表不存在的答案
-// 是 false（归 skipped），不是错误。
+// 白名单点到、且确实存在的表查 rowid。直接对一张不存在的表 SELECT 会抛 no such table，
+// 那个错误会顺着 Filter 冒上来把整次运行打死——表不存在的答案是 false（归 skipped），
+// 不是错误。注意 Scan 本身仍要求 scope 里每张表都在（缺表当场报错，见 sump-repair 的
+// 用法注释与 TODO.md），所以今天真正出声的路径是"表都在、个别行没了"。
 //
 // 表名来自 Adjudicated，已在 ParseAdjudicated 里收口成 Scope() 内的标识符，
 // 拼进语句是安全的；rowid 一律走参数。
