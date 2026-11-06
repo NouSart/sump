@@ -6,46 +6,31 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"image"
 	"image/png"
 	"log"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/NouSart/sump/images/server"
 	"github.com/NouSart/sump/images/store"
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // ---------- 设置中心替身（精简） ----------
 
-type stubConn struct {
-	ws *websocket.Conn
-	mu sync.Mutex
-}
-
-func (c *stubConn) send(env protocol.Envelope) {
-	data, err := protocol.Marshal(env)
-	if err != nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.ws.WriteMessage(websocket.BinaryMessage, data)
-}
-
 type stubCenter struct {
-	ln  net.Listener
-	srv *http.Server
+	srv  *spv2.Server
+	http *httptest.Server
 
 	mu   sync.Mutex
 	regs []protocol.RegisterPayload // 收到的注册（断言名片声明用）
@@ -58,88 +43,89 @@ func (sc *stubCenter) Registers() []protocol.RegisterPayload {
 	return append([]protocol.RegisterPayload(nil), sc.regs...)
 }
 
-var stubUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-
 func startStubCenter(t *testing.T) *stubCenter {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "settings-center", Actor: spv2.ServiceRef("settings-center"),
+		Version: "stub/1", Methods: []spv2.Method{
+			{Name: "register", Shape: spv2.ShapeCall},
+			{Name: "list_settings", Shape: spv2.ShapeCall},
+		},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sc := &stubCenter{ln: ln}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", sc.handleWS)
-	sc.srv = &http.Server{Handler: mux}
-	go func() { _ = sc.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = sc.srv.Close() })
+	sc := &stubCenter{srv: srv}
+	srv.Handle("register", sc.handleRegister)
+	srv.Handle("list_settings", func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(protocol.SettingsResult{})
+	})
+	sc.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(sc.http.Close)
 	return sc
 }
 
-func (sc *stubCenter) URL() string { return "ws://" + sc.ln.Addr().String() + "/ws" }
+func (sc *stubCenter) URL() string {
+	return "ws" + strings.TrimPrefix(sc.http.URL, "http") + "/spv2"
+}
 
-func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := stubUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
+func (sc *stubCenter) handleRegister(_ context.Context, call *spv2.Call) error {
+	var reg protocol.RegisterPayload
+	if err := call.Frame.DecodeBody(&reg); err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
-	c := &stubConn{ws: ws}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		switch env.Type {
-		case protocol.TypeRegister:
-			var reg protocol.RegisterPayload
-			if err := env.DecodePayload(&reg); err == nil {
-				sc.mu.Lock()
-				sc.regs = append(sc.regs, reg)
-				sc.mu.Unlock()
-			}
-			roster := protocol.RosterPayload{Services: []protocol.ServiceCard{{Name: "settings-center", Addr: sc.URL()}}, Revision: 1}
-			respData, _ := protocol.EncodePayload(roster)
-			resp, _ := protocol.NewResponse(env, "settings-center", protocol.ResponsePayload{OK: true, Data: respData})
-			c.send(resp)
-		case protocol.TypeHeartbeat:
-			// 忽略
-		}
+	sc.mu.Lock()
+	sc.regs = append(sc.regs, reg)
+	sc.mu.Unlock()
+	roster := protocol.RosterPayload{
+		Services: []protocol.ServiceCard{{Name: "settings-center", Addr: sc.URL()}},
+		Revision: 1,
 	}
+	return call.Reply(roster)
 }
 
 // ---------- 调用辅助 ----------
 
-// call 向 images 发一次跳转并等回执（短连接）。
-func call(t *testing.T, url, action string, input any) protocol.ResponsePayload {
+// outcome 把原生 reply 摊平成测试关心的两件事：成功数据 / 错误文本。
+type outcome struct {
+	OK    bool
+	Data  []byte
+	Error string
+}
+
+// testMaxMessageBytes 是测试客户端的单条消息读限：要装得下 fetch_full 回传的
+// base64 原图（单图上限 32MiB 的 4/3 再加信封），与 v1 无读限的行为对齐。
+const testMaxMessageBytes = 64 << 20
+
+// callFrom 向 images 发一次原生 call 并等回执（短连接）。
+func callFrom(t *testing.T, url, work, from, action string, input any) outcome {
 	t.Helper()
-	conn, err := protocol.Dial(url, nil)
+	c, err := spv2.Dial(context.Background(), url, spv2.WithClientMaxMessageBytes(testMaxMessageBytes))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	raw, err := protocol.EncodePayload(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "test", "images", "trace-img", protocol.JumpPayload{Action: action, Input: raw})
+	defer c.Close()
+	f, err := spv2.NewCall(work, spv2.ServiceRef(from), spv2.ServiceRef("images"), action, input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	resp, err := conn.Call(ctx, env)
+	resp, err := c.Call(ctx, f)
 	if err != nil {
+		var se *spv2.Error
+		if errors.As(err, &se) {
+			return outcome{Error: se.Error()}
+		}
 		t.Fatal(err)
 	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	return rp
+	return outcome{OK: true, Data: resp.Body}
+}
+
+func call(t *testing.T, url, action string, input any) outcome {
+	t.Helper()
+	return callFrom(t, url, "trace-img", "test", action, input)
 }
 
 // ---------- 用例 ----------

@@ -64,7 +64,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		ActionTimeout:     60 * time.Second, // save 含下载，放宽动作超时
-		Description:       "图片服务：保存图片（URL/base64），按需转 base64 发回调用方",
+		// 入站 body 装的是 base64 图片（约为原始字节的 4/3），上限须随单图上限放宽；
+		// 否则一张合法大小的图会在协议层被 1MiB 默认读限直接断开。
+		MaxMessageBytes: cfg.MaxBytes/3*4 + 1<<20,
+		Description:     "图片服务：保存图片（URL/base64），按需转 base64 发回调用方",
 		Provides: []protocol.Provide{
 			{Action: "save", Tool: true, Input: "{url} 或 {data(base64), mime}", Output: "{id, mime, size}"},
 			{Action: "fetch", Tool: true, Input: "{id, x1?,y1?,x2?,y2?, max_side?}（不带坐标 = 缩略图，长边 ≤ max_side 默认 768；给矩形 = 该区域的原图，坐标是原图像素）", Output: "{id, mime, data(base64), size, original_width, original_height, width, height, x1,y1,x2,y2, downscaled, data_bytes}（原图尺寸与本次窗口都回传，方便平移）"},
@@ -86,9 +89,6 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Hint("超过这个大小的图片会被拒绝"),
 		service.As("number"),
 		service.Unit("MB"))
-	s.Handle("save", s.actionSave)
-	s.Handle("fetch", s.actionFetch)
-	s.Handle("fetch_full", s.actionFetchFull)
 	s.HandleNative(spv2.Method{
 		Name: "save", Tool: true,
 		Description: "保存图片（URL 或 base64）",
@@ -148,11 +148,7 @@ func (s *Server) maxBytesNow() int64 {
 
 // ---------- 动作 ----------
 
-// actionSave 保存一张图片：URL 或 base64 二选一。
-func (s *Server) actionSave(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.save(in.Input)
-}
-
+// nativeSave 保存一张图片：URL 或 base64 二选一。
 func (s *Server) nativeSave(_ context.Context, call *spv2.Call) error {
 	out, err := s.save(call.Frame.Body)
 	if err != nil {
@@ -202,7 +198,7 @@ func (s *Server) save(body []byte) (any, error) {
 	return protocol.ImageSaveResult{ID: id, Mime: mime, Size: int64(len(data))}, nil
 }
 
-// actionFetch 取一张图，把图片转成 base64 发回调用方。**永远不给原图**——这是模型走的那条路。
+// nativeFetch 取一张图，把图片转成 base64 发回调用方。**永远不给原图**——这是模型走的那条路。
 //
 // 两种取法（见 protocol.ImageFetchPayload）：
 //   - 给矩形（x1,y1,x2,y2）：该区域的原图，超上限等比缩小
@@ -211,10 +207,6 @@ func (s *Server) save(body []byte) (any, error) {
 // 为什么要缩略图/窗口：整张 8MB 截图 base64 之后 ~11MB，一次就把模型上下文撑爆。
 // 缩略图先让模型看清「大概是什么」，要看细节再用矩形平移窗口取局部原图。
 // 要原图的是服务（reasoner 内联用户刚发的图），走 fetch_full——那个动作不进工具列表。
-func (s *Server) actionFetch(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.fetch(in.Input)
-}
-
 func (s *Server) nativeFetch(_ context.Context, call *spv2.Call) error {
 	out, err := s.fetch(call.Frame.Body)
 	if err != nil {
@@ -284,12 +276,8 @@ func (s *Server) fetch(body []byte) (any, error) {
 	}, nil
 }
 
-// actionFetchFull 原样发回整张图（服务间调用：reasoner 内联用户刚发的图）。
+// nativeFetchFull 原样发回整张图（服务间调用：reasoner 内联用户刚发的图）。
 // 不进工具列表（provides 里不带 tool:true）：模型拿不到这条逃逸通道，才不会一把撑爆上下文。
-func (s *Server) actionFetchFull(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.fetchFull(in.Input)
-}
-
 func (s *Server) nativeFetchFull(_ context.Context, call *spv2.Call) error {
 	out, err := s.fetchFull(call.Frame.Body)
 	if err != nil {
