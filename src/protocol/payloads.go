@@ -78,23 +78,10 @@ func (r RegisterPayload) Card() ServiceCard {
 	}
 }
 
-// ResponsePayload 是通用响应的 payload。
-type ResponsePayload struct {
-	OK    bool               `msgpack:"ok"`
-	Data  msgpack.RawMessage `msgpack:"data,omitempty"`
-	Error string             `msgpack:"error,omitempty"`
-}
-
 // RosterPayload 是全局服务清单（register 响应与 roster 事件共用）。
 type RosterPayload struct {
 	Services []ServiceCard `msgpack:"services"`
 	Revision int64         `msgpack:"revision"`
-}
-
-// JumpPayload 是一次跳转访问：目标服务上的动作 + 输入。
-type JumpPayload struct {
-	Action string             `msgpack:"action"`
-	Input  msgpack.RawMessage `msgpack:"input,omitempty"`
 }
 
 // HeartbeatPayload 是报活 payload。
