@@ -1,18 +1,12 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/NouSart/sump/protocol"
 )
-
-// actionStatus 是 v1 兼容边缘；业务逻辑在 status。
-func (s *Server) actionStatus(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.status(in.Input)
-}
 
 // status 查单个任务的进度（内存优先：内存里有在飞的实时数）。
 func (s *Server) status(body []byte) (any, error) {
@@ -76,11 +70,6 @@ func (j *runningJob) phaseLocked() string {
 	return protocol.BatchPhaseRunning
 }
 
-// actionResult 是 v1 兼容边缘；业务逻辑在 result。
-func (s *Server) actionResult(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.result(in.Input)
-}
-
 // result 取明细（分页）。
 func (s *Server) result(body []byte) (any, error) {
 	var p protocol.BatchResultPayload
@@ -120,11 +109,6 @@ func (s *Server) result(body []byte) (any, error) {
 		})
 	}
 	return out, nil
-}
-
-// actionList 是 v1 兼容边缘；业务逻辑在 list。
-func (s *Server) actionList(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.list(in.Input)
 }
 
 // list 查任务队列（模型与前端共用）。

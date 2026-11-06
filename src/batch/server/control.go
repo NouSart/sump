@@ -1,18 +1,12 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/NouSart/sump/protocol"
 )
-
-// actionControl 是 v1 兼容边缘；业务逻辑在 control。
-func (s *Server) actionControl(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.control(in.Input)
-}
 
 // control 暂停 / 恢复 / 停止。
 //

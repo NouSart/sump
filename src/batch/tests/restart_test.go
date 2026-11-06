@@ -8,7 +8,6 @@ import (
 
 	"github.com/NouSart/sump/batch/server"
 	"github.com/NouSart/sump/protocol"
-	"github.com/NouSart/sump/service"
 )
 
 // TestRestartTurnsRunningIntoPaused：服务重启后，没跑完的任务转 paused，
@@ -29,17 +28,9 @@ func TestRestartTurnsRunningIntoPaused(t *testing.T) {
 	}
 
 	b1 := startBatch()
-	probe := service.New(service.Config{
-		Name: "probe", Listen: "127.0.0.1:0", Center: sc.URL(), Logger: log.New(testWriter{t}, "[probe] ", 0),
-	})
-	if err := probe.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(probe.Shutdown)
-	waitRoster(t, probe, "batch")
-	waitRoster(t, probe, "worker")
-
-	f := &fixture{batch: b1, target: tg, center: sc, probe: probe, reports: make(chan protocol.AsyncResultPayload, 64)}
+	reports := make(chan protocol.AsyncResultPayload, 64)
+	probe := startCaller(t, sc, "probe", b1.WsURL(), reports)
+	f := &fixture{batch: b1, target: tg, center: sc, probe: probe, reports: reports}
 	list := make([]protocol.BatchItem, 4)
 	for i := range list {
 		list[i] = protocol.BatchItem{Input: mustRaw(map[string]any{"ms": 3000})}
@@ -54,18 +45,10 @@ func TestRestartTurnsRunningIntoPaused(t *testing.T) {
 	b2 := startBatch()
 	t.Cleanup(b2.Shutdown)
 	f.batch = b2
-	waitRoster(t, probe, "batch")
 
-	// 重连后名册里的 batch 地址变了，用一个新的 probe 保证解析到新实例。
-	probe.Shutdown()
-	probe2 := service.New(service.Config{
-		Name: "probe2", Listen: "127.0.0.1:0", Center: sc.URL(), Logger: log.New(testWriter{t}, "[probe2] ", 0),
-	})
-	if err := probe2.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(probe2.Shutdown)
-	waitRoster(t, probe2, "batch")
+	// 重启后 batch 换了一个监听地址：旧调用方的连接随之作废，换一条连新实例的。
+	probe.close()
+	probe2 := startCaller(t, sc, "probe2", b2.WsURL(), nil)
 	f.probe = probe2
 
 	got := f.status(t, res.ItemID)

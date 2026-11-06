@@ -9,7 +9,6 @@ import (
 
 	"github.com/NouSart/sump/batch/server"
 	"github.com/NouSart/sump/protocol"
-	"github.com/NouSart/sump/service"
 )
 
 // collect 收补报直到终态（或超时失败）。
@@ -303,19 +302,11 @@ func TestInvalidParamsRejected(t *testing.T) {
 // TestListCallerFilter：队列可按调用方过滤（前端只看自己的）。
 func TestListCallerFilter(t *testing.T) {
 	f := startFixture(t, nil)
-	other := service.New(service.Config{
-		Name: "other", Listen: "127.0.0.1:0", Center: f.center.URL(), Logger: log.New(testWriter{t}, "[other] ", 0),
-	})
-	if err := other.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(other.Shutdown)
-	waitRoster(t, other, "batch")
+	other := startCaller(t, f.center, "other", f.batch.WsURL(), nil)
+	t.Cleanup(other.close)
 
-	call := func(s *service.Service) string {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		raw, err := s.Call(ctx, "batch", "run", protocol.BatchRunPayload{Service: "worker", Action: "ok", Items: items(1)}, "", "boss-1")
+	call := func(c *caller) string {
+		raw, err := c.call(t, "run", protocol.BatchRunPayload{Service: "worker", Action: "ok", Items: items(1)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -534,17 +525,7 @@ func TestResumeOnStart(t *testing.T) {
 	}
 
 	b1 := boot(false)
-	probe := service.New(service.Config{
-		Name: "probe", Listen: "127.0.0.1:0", Center: sc.URL(), Logger: log.New(testWriter{t}, "[probe] ", 0),
-	})
-	probe.Handle("report_result", func(context.Context, protocol.Envelope, protocol.JumpPayload) (any, error) {
-		return map[string]string{"status": "accepted"}, nil
-	})
-	if err := probe.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(probe.Shutdown)
-	waitRoster(t, probe, "batch")
+	probe := startCaller(t, sc, "probe", b1.WsURL(), nil)
 
 	f := &fixture{batch: b1, center: sc, probe: probe, reports: make(chan protocol.AsyncResultPayload, 64)}
 	list := make([]protocol.BatchItem, 4)
@@ -558,15 +539,9 @@ func TestResumeOnStart(t *testing.T) {
 
 	b2 := boot(true)
 	t.Cleanup(b2.Shutdown)
-	probe.Shutdown()
-	probe2 := service.New(service.Config{
-		Name: "probe2", Listen: "127.0.0.1:0", Center: sc.URL(), Logger: log.New(testWriter{t}, "[probe2] ", 0),
-	})
-	if err := probe2.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(probe2.Shutdown)
-	waitRoster(t, probe2, "batch")
+	// 重启后 batch 换了监听地址：旧调用方的连接作废，换一条连新实例的。
+	probe.close()
+	probe2 := startCaller(t, sc, "probe2", b2.WsURL(), nil)
 	f.probe = probe2
 
 	deadline := time.Now().Add(20 * time.Second)
