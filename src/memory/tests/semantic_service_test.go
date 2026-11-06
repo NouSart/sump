@@ -4,8 +4,7 @@ package tests
 
 import (
 	"context"
-	"net"
-	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -13,13 +12,14 @@ import (
 
 	"github.com/NouSart/sump/memory/server"
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // ---------- embedding 服务替身 ----------
 
 type stubEmbedding struct {
-	ln  net.Listener
-	srv *http.Server
+	srv  *spv2.Server
+	http *httptest.Server
 
 	mu       sync.Mutex
 	requests []protocol.EmbedPayload
@@ -49,43 +49,28 @@ func startStubEmbedding(t *testing.T, center *stubCenter) *stubEmbedding {
 // startStubEmbeddingNamed 同上，但可指定注册名（测 recall.embedding 热改用）。
 func startStubEmbeddingNamed(t *testing.T, center *stubCenter, name string) *stubEmbedding {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	e := &stubEmbedding{ln: ln, vectors: map[string][]float64{}}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", e.handleWS)
-	e.srv = &http.Server{Handler: mux}
-	go func() { _ = e.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = e.srv.Close() })
-
-	// 注册进中心（走真实注册路径：名册广播后 memory 才能解析到 embedding）。
-	reg, err := protocol.Dial(center.URL(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reg.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, name, "settings-center", "", protocol.RegisterPayload{
-		Name: name, Addr: e.URL(), Description: "embedding 测试替身",
+	e := &stubEmbedding{vectors: map[string][]float64{}}
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: name, Actor: spv2.ServiceRef(name),
+		Version: "stub/1", Methods: []spv2.Method{{Name: "embed", Shape: spv2.ShapeCall}},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := reg.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil || !rp.OK {
-		t.Fatalf("embedding 替身注册失败: %v / %s", err, rp.Error)
-	}
+	e.srv = srv
+	srv.Handle("embed", e.handleEmbed)
+	e.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(e.http.Close)
+
+	// 注册进中心（走真实注册路径：名册广播后 memory 才能解析到 embedding）。
+	registerService(t, center.URL(), name, e.URL())
 	return e
 }
 
-func (e *stubEmbedding) URL() string { return "ws://" + e.ln.Addr().String() + "/ws" }
+func (e *stubEmbedding) URL() string {
+	return "ws" + strings.TrimPrefix(e.http.URL, "http") + "/spv2"
+}
 
 func (e *stubEmbedding) SetVectors(m map[string][]float64) {
 	e.mu.Lock()
@@ -116,60 +101,30 @@ func (e *stubEmbedding) RequestsFor(text string) int {
 	return n
 }
 
-func (e *stubEmbedding) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := stubUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
+func (e *stubEmbedding) handleEmbed(_ context.Context, call *spv2.Call) error {
+	var p protocol.EmbedPayload
+	if err := call.Frame.DecodeBody(&p); err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, "bad payload", false, nil)
 	}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
+	e.mu.Lock()
+	e.requests = append(e.requests, p)
+	delay, fail := e.delay, e.fail
+	vecs := make([][]float64, 0, len(p.Texts))
+	for _, text := range p.Texts {
+		v := e.vectors[text]
+		if v == nil {
+			v = []float64{0, 0} // 未配置 → 零向量（低于阈值，便于断言"不该命中"）
 		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil || env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action != "embed" {
-			resp, _ := protocol.NewResponse(env, "embedding", protocol.ResponsePayload{OK: false, Error: "unknown action: " + jp.Action})
-			_ = writeConn(ws, resp)
-			continue
-		}
-		var p protocol.EmbedPayload
-		if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
-			resp, _ := protocol.NewResponse(env, "embedding", protocol.ResponsePayload{OK: false, Error: "bad payload"})
-			_ = writeConn(ws, resp)
-			continue
-		}
-		e.mu.Lock()
-		e.requests = append(e.requests, p)
-		delay, fail := e.delay, e.fail
-		vecs := make([][]float64, 0, len(p.Texts))
-		for _, text := range p.Texts {
-			v := e.vectors[text]
-			if v == nil {
-				v = []float64{0, 0} // 未配置 → 零向量（低于阈值，便于断言"不该命中"）
-			}
-			vecs = append(vecs, v)
-		}
-		e.mu.Unlock()
-		if delay > 0 {
-			time.Sleep(delay)
-		}
-		if fail {
-			resp, _ := protocol.NewResponse(env, "embedding", protocol.ResponsePayload{OK: false, Error: "stub: 上游挂了"})
-			_ = writeConn(ws, resp)
-			continue
-		}
-		dataOut, _ := protocol.EncodePayload(protocol.EmbedResult{Vectors: vecs, Dim: 2, Model: "stub-1"})
-		resp, _ := protocol.NewResponse(env, "embedding", protocol.ResponsePayload{OK: true, Data: dataOut})
-		_ = writeConn(ws, resp)
+		vecs = append(vecs, v)
 	}
+	e.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	if fail {
+		return call.ReplyError(spv2.CodeUnavailable, "stub: 上游挂了", false, nil)
+	}
+	return call.Reply(protocol.EmbedResult{Vectors: vecs, Dim: 2, Model: "stub-1"})
 }
 
 // ---------- 辅助 ----------

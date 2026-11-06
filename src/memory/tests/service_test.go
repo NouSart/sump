@@ -7,8 +7,7 @@ package tests
 import (
 	"context"
 	"log"
-	"net"
-	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,60 +16,62 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/NouSart/sump/memory/compose"
 	"github.com/NouSart/sump/memory/server"
 	"github.com/NouSart/sump/memory/shared"
 	"github.com/NouSart/sump/memory/store"
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // ---------- 设置中心替身 ----------
 
-type stubConn struct {
-	ws *websocket.Conn
-	mu sync.Mutex
-}
-
-func (c *stubConn) send(env protocol.Envelope) {
-	data, err := protocol.Marshal(env)
-	if err != nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.ws.WriteMessage(websocket.BinaryMessage, data)
-}
-
 type stubCenter struct {
-	ln       net.Listener
-	srv      *http.Server
+	srv  *spv2.Server
+	http *httptest.Server
+
 	mu       sync.Mutex
 	cards    map[string]protocol.ServiceCard
 	settings map[string][]protocol.Setting
-	conns    map[*stubConn]struct{}
+	calls    map[string]*spv2.Call
 }
-
-var stubUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
 func startStubCenter(t *testing.T) *stubCenter {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	card := spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "settings-center", Actor: spv2.ServiceRef("settings-center"),
+		Version: "stub/1", Methods: []spv2.Method{
+			{Name: "register", Shape: spv2.ShapeCall},
+			{Name: "heartbeat", Shape: spv2.ShapeEvent},
+			{Name: "list_settings", Shape: spv2.ShapeCall},
+		},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
+	}
+	srv, err := spv2.NewServer(card)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sc := &stubCenter{ln: ln, cards: map[string]protocol.ServiceCard{}, settings: map[string][]protocol.Setting{}, conns: map[*stubConn]struct{}{}}
-	sc.cards["stub-center"] = protocol.ServiceCard{Name: "stub-center", Addr: sc.URL(), Description: "设置中心测试替身"}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", sc.handleWS)
-	sc.srv = &http.Server{Handler: mux}
-	go func() { _ = sc.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = sc.srv.Close() })
+	sc := &stubCenter{
+		srv: srv, cards: map[string]protocol.ServiceCard{},
+		settings: map[string][]protocol.Setting{}, calls: map[string]*spv2.Call{},
+	}
+	srv.Handle("register", sc.handleRegister)
+	srv.Handle("heartbeat", func(_ context.Context, _ *spv2.Call) error { return nil })
+	srv.Handle("list_settings", func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(protocol.SettingsResult{})
+	})
+	sc.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(sc.http.Close)
+	sc.cards["stub-center"] = protocol.ServiceCard{
+		Name: "stub-center", Addr: sc.URL(), Description: "设置中心测试替身",
+		Provides: []protocol.Provide{{Action: "list_settings"}, {Action: "roster"}},
+	}
 	return sc
 }
 
-func (sc *stubCenter) URL() string { return "ws://" + sc.ln.Addr().String() + "/ws" }
+func (sc *stubCenter) URL() string {
+	return "ws" + strings.TrimPrefix(sc.http.URL, "http") + "/spv2"
+}
 
 // DeclaredSettings 返回某服务最近一次注册声明的设置项。
 func (sc *stubCenter) DeclaredSettings(name string) []protocol.Setting {
@@ -79,55 +80,22 @@ func (sc *stubCenter) DeclaredSettings(name string) []protocol.Setting {
 	return append([]protocol.Setting(nil), sc.settings[name]...)
 }
 
-func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := stubUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
+func (sc *stubCenter) handleRegister(_ context.Context, call *spv2.Call) error {
+	var reg protocol.RegisterPayload
+	if err := call.Frame.DecodeBody(&reg); err != nil {
+		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
-	c := &stubConn{ws: ws}
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			sc.mu.Lock()
-			delete(sc.conns, c)
-			sc.mu.Unlock()
-			_ = ws.Close()
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		switch env.Type {
-		case protocol.TypeRegister:
-			var reg protocol.RegisterPayload
-			if err := env.DecodePayload(&reg); err != nil {
-				continue
-			}
-			sc.mu.Lock()
-			sc.cards[reg.Name] = reg.Card()
-			sc.settings[reg.Name] = reg.Settings
-			sc.conns[c] = struct{}{}
-			roster := sc.snapshotLocked()
-			targets := make([]*stubConn, 0, len(sc.conns))
-			for cc := range sc.conns {
-				targets = append(targets, cc)
-			}
-			sc.mu.Unlock()
-
-			respData, _ := protocol.EncodePayload(roster)
-			resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true, Data: respData})
-			c.send(resp)
-			for _, cc := range targets {
-				env, err := protocol.NewEnvelope(protocol.TypeRoster, "stub-center", "", "", roster)
-				if err == nil {
-					cc.send(env)
-				}
-			}
-		case protocol.TypeHeartbeat:
-			// 忽略
-		}
+	sc.mu.Lock()
+	sc.cards[reg.Name] = reg.Card()
+	sc.settings[reg.Name] = reg.Settings
+	sc.calls[reg.Name] = call
+	roster := sc.snapshotLocked()
+	sc.mu.Unlock()
+	if err := call.Reply(roster); err != nil {
+		return err
 	}
+	sc.broadcast(roster)
+	return nil
 }
 
 func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
@@ -143,134 +111,105 @@ func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
 	return protocol.RosterPayload{Services: services, Revision: 1}
 }
 
+func (sc *stubCenter) broadcast(roster protocol.RosterPayload) {
+	sc.mu.Lock()
+	targets := make([]*spv2.Call, 0, len(sc.calls))
+	for _, call := range sc.calls {
+		targets = append(targets, call)
+	}
+	sc.mu.Unlock()
+	for _, call := range targets {
+		_ = call.SendEvent("roster", roster)
+	}
+}
+
+// registerService 用一个原生 call 把替身注册进名册（注册后连接即可关闭）。
+func registerService(t *testing.T, centerURL, name, addr string) {
+	t.Helper()
+	c, err := spv2.Dial(context.Background(), centerURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	call, err := spv2.NewCall("w-reg-"+name, spv2.ServiceRef(name), spv2.ServiceRef("settings-center"), "register",
+		protocol.RegisterPayload{Name: name, Addr: addr, Description: name + " 替身"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var roster protocol.RosterPayload
+	if err := c.CallDecode(ctx, call, &roster); err != nil {
+		t.Fatalf("%s 注册失败: %v", name, err)
+	}
+}
+
 // ---------- 调用方替身（扮演 reasoner） ----------
 
 type stubCaller struct {
-	ln      net.Listener
-	srv     *http.Server
+	srv     *spv2.Server
+	http    *httptest.Server
 	resumes chan resumeRecord
 }
 
 type resumeRecord struct {
 	from string
-	env  protocol.Envelope
 	tc   protocol.TaskContext
 }
 
 func startStubCaller(t *testing.T, centerURL string) *stubCaller {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := &stubCaller{ln: ln, resumes: make(chan resumeRecord, 8)}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", c.handleWS)
-	c.srv = &http.Server{Handler: mux}
-	go func() { _ = c.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = c.srv.Close() })
-
-	// 注册进设置中心（memory 的 resume 要经名册解析到我们）。
-	reg, err := protocol.Dial(centerURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reg.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, "reasoner", "settings-center", "", protocol.RegisterPayload{
-		Name: "reasoner", Addr: c.URL(), Description: "reasoner 测试替身",
+	c := &stubCaller{resumes: make(chan resumeRecord, 8)}
+	srv, err := spv2.NewServer(spv2.Card{
+		Protocol: spv2.ProtocolVersion, Name: "reasoner", Actor: spv2.ServiceRef("reasoner"),
+		Version: "stub/1", Methods: []spv2.Method{{Name: "resume", Shape: spv2.ShapeCall}},
+		Limits: spv2.Limits{MaxBody: 1 << 20},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := reg.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	if !rp.OK {
-		t.Fatalf("caller 注册失败: %s", rp.Error)
-	}
+	c.srv = srv
+	srv.Handle("resume", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.ResumePayload
+		if err := call.Frame.DecodeBody(&p); err == nil {
+			select {
+			case c.resumes <- resumeRecord{from: call.Frame.From.ID, tc: p.Context}:
+			default:
+			}
+		}
+		return call.Reply(map[string]any{"ok": true})
+	})
+	c.http = httptest.NewServer(srv.Handler())
+	t.Cleanup(c.http.Close)
+
+	// 注册进设置中心（memory 的 resume 要经名册解析到我们）。
+	registerService(t, centerURL, "reasoner", c.URL())
 	return c
 }
 
-func (c *stubCaller) URL() string { return "ws://" + c.ln.Addr().String() + "/ws" }
-
-func (c *stubCaller) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := stubUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		if env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action == "resume" {
-			var p protocol.ResumePayload
-			if err := protocol.DecodeRaw(jp.Input, &p); err == nil {
-				select {
-				case c.resumes <- resumeRecord{from: env.From, env: env, tc: p.Context}:
-				default:
-				}
-			}
-			resp, _ := protocol.NewResponse(env, "reasoner", protocol.ResponsePayload{OK: true})
-			_ = writeConn(ws, resp)
-		}
-	}
+func (c *stubCaller) URL() string {
+	return "ws" + strings.TrimPrefix(c.http.URL, "http") + "/spv2"
 }
 
-func writeConn(ws *websocket.Conn, env protocol.Envelope) error {
-	data, err := protocol.Marshal(env)
-	if err != nil {
-		return err
-	}
-	return ws.WriteMessage(websocket.BinaryMessage, data)
-}
-
-// call 向 memory 发一次跳转并等回执（短连接）。
+// call 向 memory 发一次原生调用并等回执（短连接）。
 func (c *stubCaller) call(t *testing.T, memoryURL, action string, input any) protocol.ResponsePayload {
 	t.Helper()
-	conn, err := protocol.Dial(memoryURL, nil)
+	conn, err := spv2.Dial(context.Background(), memoryURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	raw, err := protocol.EncodePayload(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "reasoner", "memory", "trace-test", protocol.JumpPayload{Action: action, Input: raw})
+	call, err := spv2.NewCall("trace-test", spv2.ServiceRef("reasoner"), spv2.ServiceRef("memory"), action, input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	resp, err := conn.Call(ctx, env)
+	resp, err := conn.Call(ctx, call)
 	if err != nil {
-		t.Fatal(err)
+		return protocol.ResponsePayload{OK: false, Error: err.Error()}
 	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	return rp
+	return protocol.ResponsePayload{OK: true, Data: resp.Body}
 }
 
 // recallUntilReady 处理“caller 刚注册、memory 的 roster 可能还未更新”的时序：

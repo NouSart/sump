@@ -17,35 +17,28 @@ import (
 
 	"github.com/NouSart/sump/memory/server"
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // callWithin 是 call 的可调超时版（上游挂住时要等超过默认 5s，才看得出服务端的收手）。
 func callWithin(t *testing.T, srv *server.Server, action string, input any, timeout time.Duration) protocol.ResponsePayload {
 	t.Helper()
-	conn, err := protocol.Dial(srv.WsURL(), nil)
+	conn, err := spv2.Dial(context.Background(), srv.WsURL())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	raw, err := protocol.EncodePayload(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "reasoner", "memory", "trace-test", protocol.JumpPayload{Action: action, Input: raw})
+	call, err := spv2.NewCall("trace-test", spv2.ServiceRef("reasoner"), spv2.ServiceRef("memory"), action, input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	resp, err := conn.Call(ctx, env)
+	resp, err := conn.Call(ctx, call)
 	if err != nil {
 		return protocol.ResponsePayload{OK: false, Error: err.Error()}
 	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	return rp
+	return protocol.ResponsePayload{OK: true, Data: resp.Body}
 }
 
 // TestNoteTimesOutWhenEmbeddingHangs 验证上游挂住时 note 会自己收手。

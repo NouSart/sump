@@ -13,36 +13,28 @@ import (
 	"github.com/NouSart/sump/memory/compose"
 	"github.com/NouSart/sump/memory/server"
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // pushConfigure 以设置中心身份向服务地址推送一条 configure（单键）并取回执。
 func pushConfigure(t *testing.T, addr string, p protocol.ConfigurePayload) protocol.ResponsePayload {
 	t.Helper()
-	raw, err := protocol.EncodePayload(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c, err := protocol.Dial(addr, nil)
+	c, err := spv2.Dial(context.Background(), addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "settings-center", "memory", "trace-cfg",
-		protocol.JumpPayload{Action: "configure", Input: raw})
+	call, err := spv2.NewCall("trace-cfg", spv2.ServiceRef("settings-center"), spv2.ServiceRef("memory"), "configure", p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	resp, err := c.Call(ctx, env)
+	resp, err := c.Call(ctx, call)
 	if err != nil {
-		t.Fatal(err)
+		return protocol.ResponsePayload{OK: false, Error: err.Error()}
 	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	return rp
+	return protocol.ResponsePayload{OK: true, Data: resp.Body}
 }
 
 // TestSettingsLive 验证：名片声明 13 项（5 个 recall.* + recall.embedding + 2 个 share.* + 5 个只读）；

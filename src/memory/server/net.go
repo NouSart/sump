@@ -116,13 +116,8 @@ func (s *Server) experienceLines(ctx context.Context, trace, query string) []str
 	return out
 }
 
-// actionNote 写一条经验（整理时机由调用方决定：收尾后、定时、手动都行）。
+// note 写一条经验（整理时机由调用方决定：收尾后、定时、手动都行）。
 // 不进 provides：不给 LLM 随手记东西的按钮——记错的"经验"比没记更糟。
-func (s *Server) actionNote(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.note(ctx, in.Input, callMeta{from: env.From, trace: env.Trace})
-}
-
-// note 写一条经验（v1 / SPv2 共用）。
 func (s *Server) note(ctx context.Context, body []byte, meta callMeta) (any, error) {
 	var p protocol.NotePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -158,14 +153,9 @@ func (s *Server) note(ctx context.Context, body []byte, meta callMeta) (any, err
 	}, nil
 }
 
-// actionDig 顺着线头往下扒：
+// dig 顺着线头往下扒：
 //   - 给 entry_id：翻出这条经验同一大类里够近的兄弟（"还有没有类似的"）；
 //   - 给 node_id：展开整个大类（"这一类都有什么"）。
-func (s *Server) actionDig(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.dig(in.Input)
-}
-
-// dig 顺着线头往下扒（v1 / SPv2 共用）。
 func (s *Server) dig(body []byte) (any, error) {
 	var p protocol.DigPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -204,12 +194,7 @@ func (s *Server) dig(body []byte) (any, error) {
 	}
 }
 
-// actionLineHeads 直接要线头（门户/调试用；recall 里是自动带的）。
-func (s *Server) actionLineHeads(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.lineHeads(ctx, in.Input, callMeta{from: env.From, trace: env.Trace})
-}
-
-// lineHeads 直接要线头（v1 / SPv2 共用）。
+// lineHeads 直接要线头（门户/调试用；recall 里是自动带的）。
 func (s *Server) lineHeads(ctx context.Context, body []byte, meta callMeta) (any, error) {
 	var p protocol.LineHeadsPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -241,13 +226,8 @@ func (s *Server) lineHeads(ctx context.Context, body []byte, meta callMeta) (any
 	return protocol.LineHeadsResult{Heads: out}, nil
 }
 
-// actionNetPrune 维护：软剪枝（只标状态、只断干枯的线，不删行）。
+// netPrune 软剪枝（只标状态、只断干枯的线，不删行）。
 // 不绑时机——谁调都行（收尾后 / 定时 / 门户手动）。
-func (s *Server) actionNetPrune(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.netPrune(in.Input)
-}
-
-// netPrune 软剪枝（v1 / SPv2 共用；输入为空）。
 func (s *Server) netPrune(_ []byte) (any, error) {
 	if s.net() == nil {
 		return nil, errors.New("经验网未启用")

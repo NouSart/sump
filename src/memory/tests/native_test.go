@@ -1,12 +1,11 @@
 package tests
 
-// memory 的 SPv2.1 原生入口：直接打 /spv2，确认 22 个动作不再经过 v1 合成信封。
+// memory 的 SPv2.1 原生入口：直接打 /spv2，确认 22 个动作只走原生 method。
 // 同时钉住 method 的 Tool 暴露面（与 provides 对齐）与 Input/Output schema。
 
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +13,7 @@ import (
 	"github.com/NouSart/sump/spv2"
 )
 
-// nativeActions 是 server.go 里 s.Handle 的全部动作（顺序无关）。
+// nativeActions 是 server 注册的全部原生动作（顺序无关）。
 var nativeActions = []string{
 	"recall", "store", "history", "conversation_list", "conversation_rename",
 	"note", "dig", "lineheads", "prune", "remember", "forget",
@@ -24,14 +23,13 @@ var nativeActions = []string{
 }
 
 func TestMemoryNativeSPv2(t *testing.T) {
-	t.Setenv("SUMP_SPV2", "1")
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL()) // 注册成 reasoner，recall 的 resume 回它
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	c, err := spv2.Dial(ctx, strings.TrimSuffix(srv.WsURL(), "/ws")+"/spv2")
+	c, err := spv2.Dial(ctx, srv.WsURL())
 	if err != nil {
 		t.Fatal(err)
 	}
