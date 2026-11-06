@@ -835,9 +835,8 @@ pending ──claim──▶ claimed ──ack──▶ delivered
 | `async:true` | `long_running:true` + `event` |
 | `provides` | `methods` + schema |
 
-- **适配器**：收 v1 `jump`，映射成 SPv2.1 `call`；收 SPv2.1，对老服务映射回 v1。
-- **切片**：frontend → reasoner → memory → shell/files → A2A → 其他。
-- 适配器是脚手架，不是长期双栈；全部迁完就删。
+- **迁移方式（本仓库现状）**：**不做 v1 适配器**。所有服务直接改为只暴露 `/spv2`；v1 信封、`jump` 与 `protocol.Client` 已从代码中删除，原计划的适配器脚手架未落地。
+- **切片**：frontend → embedding → settings-center → service 骨架 → timer/images/files → qq/shell/mcp/batch/approval → reasoner → protocol；已全部完成。
 
 ---
 
@@ -936,7 +935,7 @@ call method=message work=w1
 - 流式：多块、seq、end、cancel、buffer 超限。
 - 错误：code/retryable/details；未知 method。
 - 观测：health/metrics/HTTP 端点；最小指标集。
-- 迁移：v1 适配器；一条链端到端。
+- 迁移：v2-only 直接切换（无适配器）；一条链端到端。
 
 ### 17.2 红队测试（六条红线）
 
@@ -992,7 +991,7 @@ call method=message work=w1
 1. **P0 核心**：帧/Ref/card/hello；memory work 表 + lease 账本 + work_messages；`message` / `context` / `deliver` / `health` / `metrics`；authority 矩阵；单测。
 2. **P1 工具与 A2A**：工具 call；A2A queue claim/ack/nack；stream；cancel；idempotency；契约测试。
 3. **P2 观测**：骨架指标、最小指标集、门户快照；负向/红队测试。
-4. **P3 迁移**：v1 适配器；一条链切完；再扩到全部服务。
+4. **P3 迁移**：v2-only 直接切换——不做 v1 适配器；服务逐个改为只暴露 `/spv2`，全部迁完后删除 protocol 的 v1 传输。
 5. **Profiles**：等真实场景；不提前实现。
 
 ### 19.2 v3 触发
