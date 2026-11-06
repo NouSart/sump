@@ -457,7 +457,7 @@ type UserMessagePayload struct {
 
 // ---------- 交付与图片 ----------
 
-// DeliverPayload 是 deliver（链终点 → boss）的 payload：最终文本 + 会话标识（boss 据此路由回复）。
+// DeliverPayload 是 deliver（链终点 → 结果归属方）的 payload：最终文本 + 会话标识（归属方据此路由回复）。
 type DeliverPayload struct {
 	Text           string `msgpack:"text"`
 	ConversationID string `msgpack:"conversation_id,omitempty"`
@@ -1060,7 +1060,7 @@ type TimerListResult struct {
 }
 
 // TimerStatePayload 是 timer 主动推给门户的快照（门户据此展示倒计时）。
-// Boss 指明这批计时属于谁（信封 boss 原样带来）——门户据此认领该给哪个会话展示；
+// Boss 指明这批计时属于谁（调用方帧头 from 原样带来）——门户据此认领该给哪个会话展示；
 // 空 Boss 表示无主的计时，门户可自行归到默认会话。
 // Seq 单调递增：骨架的 Fire 各自成 goroutine 投递、**到达顺序无保证**，
 // 门户只接受比已见序号大的快照，旧的自然丢弃。
