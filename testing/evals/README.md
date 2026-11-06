@@ -215,7 +215,7 @@ go run ./scripts/guardmutation -v                # 附上每条的测试输出
 清单与源码的同步由 `TestGuardsMatchSource` 守着；`-only` / `-not` 空命中直接报错，
 不交"0 条，全部杀死"这种空集胜利。
 
-当前 **28 条，全部杀死**（2026-11-06 实测，2 分 12 秒）。本轮逼出的四处真缺陷各自成提交：
+当前 **28 条，全部杀死**（2026-11-06 两次实测：2 分 12 秒 / 2 分 08 秒）。本轮逼出的四处真缺陷各自成提交：
 `src/spv2` 的键名表没有 Frame（把 `reply_to` 改成 `replyTo` 全绿，而帧头键名正是跨实现契约）、
 归档过滤的断言长在 `src/memory/tests` 而不在被改的 `store` 包里、
 `TestServerMaxBody` 拿 `context.Background()` 等回执（回执一丢就拖满 10 分钟全包超时，
