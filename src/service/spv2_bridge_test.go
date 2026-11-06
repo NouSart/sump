@@ -16,8 +16,8 @@ func bridgePeerCard(name string) []protocol.Provide {
 
 func TestSPv2Addr(t *testing.T) {
 	cases := map[string]string{
-		"ws://h:1/ws":   "ws://h:1/spv2",
 		"ws://h:1":      "ws://h:1/spv2",
+		"ws://h:1/":     "ws://h:1/spv2",
 		"ws://h:1/spv2": "ws://h:1/spv2",
 	}
 	for in, want := range cases {

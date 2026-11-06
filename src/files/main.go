@@ -16,7 +16,7 @@ import (
 func main() {
 	name := flag.String("name", "files", "服务名")
 	addr := flag.String("addr", "127.0.0.1:9802", "监听地址（host:port）")
-	center := flag.String("center", "ws://127.0.0.1:9000/ws", "设置中心 WS 地址")
+	center := flag.String("center", "ws://127.0.0.1:9000/spv2", "设置中心 WS 地址")
 	dbPath := flag.String("db", "data/files.db", "SQLite 元数据文件路径")
 	dir := flag.String("dir", "data/files", "文件二进制存放目录")
 	maxMB := flag.Int("max-mb", 100, "单文件大小上限（MB）")

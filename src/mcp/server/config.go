@@ -26,7 +26,7 @@ func (c *Config) defaults() error {
 		c.Listen = "127.0.0.1:9902"
 	}
 	if c.Center == "" {
-		c.Center = "ws://127.0.0.1:9000/ws"
+		c.Center = "ws://127.0.0.1:9000/spv2"
 	}
 	if c.HTTP.Listen == "" {
 		c.HTTP.Listen = "127.0.0.1:9903"

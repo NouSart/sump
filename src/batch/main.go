@@ -16,7 +16,7 @@ import (
 func main() {
 	name := flag.String("name", "batch", "服务名")
 	addr := flag.String("addr", "127.0.0.1:9951", "监听地址（host:port）")
-	center := flag.String("center", "ws://127.0.0.1:9000/ws", "设置中心 WS 地址")
+	center := flag.String("center", "ws://127.0.0.1:9000/spv2", "设置中心 WS 地址")
 	db := flag.String("db", "data/batch.db", "任务账本路径")
 	conc := flag.Int("concurrency", 8, "单任务默认并发")
 	maxConc := flag.Int("max-concurrency", 64, "单任务并发上限")

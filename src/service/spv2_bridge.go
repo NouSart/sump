@@ -114,9 +114,6 @@ func (s *Service) maxMessageBytes() int64 {
 }
 
 func spv2Addr(addr string) string {
-	if strings.HasSuffix(addr, "/ws") {
-		return strings.TrimSuffix(addr, "/ws") + "/spv2"
-	}
 	if strings.HasSuffix(addr, "/spv2") {
 		return addr
 	}
