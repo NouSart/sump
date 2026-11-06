@@ -143,9 +143,17 @@ type stubNapCat struct {
 	writeMu       sync.Mutex
 	mu            sync.Mutex
 	conn          *websocket.Conn
-	sent          []map[string]any // 收到的 action 调用
-	failSend      bool             // 测试用：send_msg 一律回失败
-	failGroupInfo bool             // 测试用：get_group_info 一律失败（模拟网关不支持）
+	sent          []map[string]any                         // 收到的 action 调用
+	failSend      bool                                     // 测试用：send_msg 一律回失败
+	failGroupInfo bool                                     // 测试用：get_group_info 一律失败（模拟网关不支持）
+	replyShape    func(action string, resp map[string]any) // 测试用：改响应形状（如去掉 status）
+}
+
+// setReplyShape 换响应形状（并发安全：读侧在 handleWS 的锁里）。
+func (n *stubNapCat) setReplyShape(fn func(action string, resp map[string]any)) {
+	n.mu.Lock()
+	n.replyShape = fn
+	n.mu.Unlock()
 }
 
 func startStubNapCat(t *testing.T) *stubNapCat {
@@ -191,6 +199,7 @@ func (n *stubNapCat) handleWS(w http.ResponseWriter, r *http.Request) {
 		n.mu.Lock()
 		failSend := n.failSend
 		failGroup := n.failGroupInfo
+		shape := n.replyShape
 		n.mu.Unlock()
 		action, _ := m["action"].(string)
 		if failSend && action == "send_msg" {
@@ -205,6 +214,9 @@ func (n *stubNapCat) handleWS(w http.ResponseWriter, r *http.Request) {
 					"group_id": 67890, "group_name": "测试群", "member_count": 7, "max_member_count": 200,
 				}
 			}
+		}
+		if shape != nil {
+			shape(action, resp)
 		}
 		if echo, _ := m["echo"].(string); echo != "" {
 			resp["echo"] = echo
