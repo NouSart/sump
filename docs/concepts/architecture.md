@@ -140,7 +140,7 @@ sequenceDiagram
 | `data/memory.db`（会话库） | **只有当事会话** | `conversations`、`messages`（对话与轨迹）、`tasks` |
 | `data/experience.db`（共享库） | 所有会话（都是提炼物） | `memories`（偏好 / 事实）、经验网三表、`shared_sessions` / `shared_tasks`（会话目录） |
 
-- 共享库里**没有承载原文的字段**：没有 `messages`、没有工具输出、没有文件字节。泄露在形状上不可能发生，不靠过滤器。
+- 共享库里**没有承载原文的字段**：没有 `messages`、没有工具输出、没有文件字节。但形状只是第一道：提炼物由模型写，正文里夹路径 / 链接、标识列里带真实账号都实际发生过。红线现在由代码在每格落库前执行（四条写入路 + 标识列 fail-closed），规则的唯一之家是 [../../src/memory/redact/redact.go](../../src/memory/redact/redact.go) 与 [../../src/memory/shared/db.go](../../src/memory/shared/db.go) 的包头注释，这里不重述。
 - 会话目录每条只有「在做什么 / 做到哪了 / 用过哪些能力」，每个会话最多留最近 3 条；任务可标 `private`（只写经验、不进目录）。
 - 模型**没有任何动作**能读别的会话的记录（`history` / `task_*` 都不在 `provides` 的 `tool: true` 里）。
 - **人**的界面（门户）能不能看别的入口的会话，是门户侧的事（见 [agent-loop.md](agent-loop.md) §6.3）；模型侧没有任何这类路径。
