@@ -19,30 +19,10 @@ import (
 )
 
 // pushConfigure 以设置中心身份向服务地址推送一条 configure（单键）并取回执。
-func pushConfigure(t *testing.T, addr string, p protocol.ConfigurePayload) protocol.ResponsePayload {
+func pushConfigure(t *testing.T, addr string, p protocol.ConfigurePayload) outcome {
 	t.Helper()
-	raw, err := protocol.EncodePayload(p)
+	rp, err := callService(addr, "trace-cfg", "settings-center", "configure", p)
 	if err != nil {
-		t.Fatal(err)
-	}
-	c, err := protocol.Dial(addr, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "settings-center", "files", "trace-cfg",
-		protocol.JumpPayload{Action: "configure", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
 		t.Fatal(err)
 	}
 	return rp

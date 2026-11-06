@@ -1,8 +1,8 @@
 // native.go：files 服务的原生 SPv2.1 method 入口。
 //
-// 每个 provides 动作都在这里注册一个原生 handler：直接读 call.Frame.Body，调用与
-// v1 action 共用的业务函数（save/fetch/...），再 call.Reply / call.ReplyError 回包。
-// 这里不合成 protocol.JumpPayload 或 protocol.Envelope；v1 /ws 的 Handle 只是兼容边缘。
+// 每个 provides 动作都在这里注册一个原生 handler：直接读 call.Frame.Body，调用
+// 共享业务函数（save/fetch/...），再 call.Reply / call.ReplyError 回包。
+// 这里不合成 v1 信封；/spv2 是唯一入口。
 package server
 
 import (

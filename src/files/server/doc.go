@@ -69,12 +69,7 @@ func toDocNode(n docmodel.Node) protocol.DocNode {
 	return out
 }
 
-// actionDocOutline 返回文档目录（结构树 + 规模 + 整篇指纹）。
-func (s *Server) actionDocOutline(ctx context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.docOutline(ctx, in.Input)
-}
-
-// docOutline 是 outline 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
+// docOutline 返回文档目录（结构树 + 规模 + 整篇指纹）。
 func (s *Server) docOutline(ctx context.Context, body []byte) (any, error) {
 	var p protocol.DocOutlinePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -107,12 +102,7 @@ func (s *Server) docOutline(ctx context.Context, body []byte) (any, error) {
 	}, nil
 }
 
-// actionDocReadRange 按节点分页读（node 空 = 整篇）。
-func (s *Server) actionDocReadRange(ctx context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.docReadRange(ctx, in.Input)
-}
-
-// docReadRange 是 read_range 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
+// docReadRange 按节点分页读（node 空 = 整篇）。
 func (s *Server) docReadRange(ctx context.Context, body []byte) (any, error) {
 	var p protocol.DocReadPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -142,12 +132,7 @@ func (s *Server) docReadRange(ctx context.Context, body []byte) (any, error) {
 	}, nil
 }
 
-// actionDocFind 返回命中位置（节点 + 字符区间 + 上下文），不改文档。
-func (s *Server) actionDocFind(ctx context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.docFind(ctx, in.Input)
-}
-
-// docFind 是 find 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
+// docFind 返回命中位置（节点 + 字符区间 + 上下文），不改文档。
 func (s *Server) docFind(ctx context.Context, body []byte) (any, error) {
 	var p protocol.DocFindPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -188,14 +173,9 @@ func (s *Server) docFind(ctx context.Context, body []byte) (any, error) {
 	}, nil
 }
 
-// actionDocPatch 按节点地址改文档（LLM 工具，就地修改权威副本）。
+// docPatch 按节点地址改文档（LLM 工具，就地修改权威副本）。
 // 校验链：id 必填 → 必须 .docx → operations 非空 → 整篇 anchor → 逐条转换 → 原子写入。
 // 写锁串行化 read-modify-write，防并发改同一文件丢更新。
-func (s *Server) actionDocPatch(ctx context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.docPatch(ctx, in.Input)
-}
-
-// docPatch 是 patch 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
 func (s *Server) docPatch(ctx context.Context, body []byte) (any, error) {
 	var p protocol.DocPatchPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -277,13 +257,8 @@ func toDocPatchOp(op protocol.DocPatchOp) (docmodel.PatchOp, error) {
 // verifyChunkRunes 是 verify 每块读取的字符数；块与块之间保留片段长度的重叠。
 const verifyChunkRunes = 64 << 10
 
-// actionDocVerify 改完自查：整篇指纹 + 必须出现 / 必须不出现的片段。
+// docVerify 改完自查：整篇指纹 + 必须出现 / 必须不出现的片段。
 // 结果永远是"已判定的结论"（ok=false 也只描述事实，不报错）——让模型自己决定下一步。
-func (s *Server) actionDocVerify(ctx context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.docVerify(ctx, in.Input)
-}
-
-// docVerify 是 verify 动作的共享实现：v1 action 与原生 SPv2 method 都走这里。
 func (s *Server) docVerify(ctx context.Context, body []byte) (any, error) {
 	var p protocol.DocVerifyPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
