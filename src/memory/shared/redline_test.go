@@ -36,20 +36,22 @@ func mustOpaque(t *testing.T, raw string) string {
 
 // 造的样本值：形状与事故里那几行同类，值本身不对应任何真实账号 / 机器 / 密钥。
 const (
-	fakeQQ       = "987654321"
-	fakeWinPath  = `D:\srv\app\data\x.db`
-	fakePosix    = `/srv/app/logs/app.log`
-	fakeURL      = `ws://127.0.0.1:3000`
-	fakeToken    = `sk-abcdefgh12345678`
-	fakePhone    = "13812345678"
-	fakeEmail    = "someone@example.com"
-	fakeTaskID   = "t20261101T170150-de9fa74c9a53"
-	fakeCIDPlain = "qq:private:" + fakeQQ
+	fakeQQ        = "987654321"
+	fakeWinPath   = `D:\srv\app\data\x.db`
+	fakeWinFwd    = `C:/Windows/x` // 库里 rowid 80 的原句形状：open('C:/Windows/x','w')
+	fakePosix     = `/srv/app/logs/app.log`
+	fakeURL       = `ws://127.0.0.1:3000`
+	fakeToken     = `sk-abcdefgh12345678`
+	fakeTokenBare = `a1b2c3d4e5f6g7` // 14 位字母数字混合、**无前缀**：reToken 认不出，只能靠上下文
+	fakePhone     = "13812345678"
+	fakeEmail     = "someone@example.com"
+	fakeTaskID    = "t20261101T170150-de9fa74c9a53"
+	fakeCIDPlain  = "qq:private:" + fakeQQ
 )
 
 // leaky 是"绝不能进共享库"的样本值清单：断言直接盯原值，不盯形状，
 // 因为掩码后留下的 "[路径]" 这类标记本身就该在场。
-var leaky = []string{fakeQQ, fakeWinPath, fakePosix, fakeURL, fakeToken, fakePhone, fakeEmail}
+var leaky = []string{fakeQQ, fakeWinPath, fakeWinFwd, fakePosix, fakeURL, fakeToken, fakeTokenBare, fakePhone, fakeEmail}
 
 // assertNoLeak 断言一批文本里不含任何一个样本原值。
 func assertNoLeak(t *testing.T, what string, texts ...string) {
@@ -66,10 +68,12 @@ func TestRedlinePublishMasksBodyAndHashesAccount(t *testing.T) {
 	s := openTest(t)
 	now := time.Now()
 	published, err := s.Publish(now, PublishInput{
-		SessionID: fakeCIDPlain,
-		TaskID:    fakeTaskID,
-		Goal:      `排查 ` + fakeWinPath + ` 的 NapCat 连接，默认地址 ` + fakeURL + `，令牌 ` + fakeToken,
-		Outcome:   "日志见 " + fakePosix + "，联系 " + fakePhone,
+		SessionID:    fakeCIDPlain,
+		SessionTitle: "运维会话，联系 " + fakePhone,
+		TaskID:       fakeTaskID,
+		TaskTitle:    `排查 ` + fakeWinPath,
+		Goal:         `排查 ` + fakeWinPath + ` 的 NapCat 连接，默认地址 ` + fakeURL + `，令牌 ` + fakeToken,
+		Outcome:      "日志见 " + fakePosix + "，联系 " + fakePhone + "；备用令牌 " + fakeTokenBare,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -78,16 +82,18 @@ func TestRedlinePublishMasksBodyAndHashesAccount(t *testing.T) {
 		t.Fatal("有内容就该占目录位置")
 	}
 
-	var sessionID, entry, title string
-	if err := s.db.QueryRow(`SELECT id, entry, title FROM shared_sessions LIMIT 1`).Scan(&sessionID, &entry, &title); err != nil {
+	// 两个 title 列必须查、而且必须有料：以前输入是空串，SELECT 到了也白到了，
+	// 把 sessions.go 里的 Sanitize 摘掉测试一声不响。
+	var sessionID, entry, sessionTitle string
+	if err := s.db.QueryRow(`SELECT id, entry, title FROM shared_sessions LIMIT 1`).Scan(&sessionID, &entry, &sessionTitle); err != nil {
 		t.Fatal(err)
 	}
-	var taskID, goal, outcome string
-	if err := s.db.QueryRow(`SELECT task_id, goal, outcome FROM shared_tasks LIMIT 1`).Scan(&taskID, &goal, &outcome); err != nil {
+	var taskID, taskTitle, goal, outcome string
+	if err := s.db.QueryRow(`SELECT task_id, title, goal, outcome FROM shared_tasks LIMIT 1`).Scan(&taskID, &taskTitle, &goal, &outcome); err != nil {
 		t.Fatal(err)
 	}
-	assertNoLeak(t, "shared_sessions", sessionID, entry, title)
-	assertNoLeak(t, "shared_tasks", taskID, goal, outcome)
+	assertNoLeak(t, "shared_sessions", sessionID, entry, sessionTitle)
+	assertNoLeak(t, "shared_tasks", taskID, taskTitle, goal, outcome)
 
 	// 收口不是抹掉：分组键与入口都要留下，否则目录散架、"排除自己"也失效。
 	if want := mustOpaque(t, fakeCIDPlain); sessionID != want {
@@ -101,6 +107,16 @@ func TestRedlinePublishMasksBodyAndHashesAccount(t *testing.T) {
 	}
 	if !strings.Contains(goal, "[路径]") || !strings.Contains(goal, "[链接]") || !strings.Contains(goal, "[已隐去]") {
 		t.Errorf("正文该被掩码，实际 = %q", goal)
+	}
+	// 无前缀的裸令牌：reToken 够不着，只能靠"令牌 <值>"这一层上下文。
+	if !strings.Contains(outcome, "[已隐去]") {
+		t.Errorf("outcome 里的裸令牌该被上下文规则遮掉，实际 = %q", outcome)
+	}
+	if !strings.Contains(taskTitle, "[路径]") {
+		t.Errorf("shared_tasks.title 该走同一道写入边界，实际 = %q", taskTitle)
+	}
+	if !strings.Contains(sessionTitle, "[已隐去]") {
+		t.Errorf("shared_sessions.title 该走同一道写入边界，实际 = %q", sessionTitle)
 	}
 }
 
@@ -138,7 +154,7 @@ func TestRedlinePublishRejectsSmuggledIdentifiers(t *testing.T) {
 func TestRedlineRememberPathMasksContent(t *testing.T) {
 	s := openTest(t)
 	// remember（Tool:true，模型可直接调）落在这里：Add 是它唯一的写入路。
-	id, created, err := s.Longterm.Add("偏好", `在 `+fakeWinPath+` 用 PowerShell；密钥 `+fakeToken, 1, fakeCIDPlain, "reasoner")
+	id, created, err := s.Longterm.Add("偏好", `在 `+fakeWinPath+` 用 PowerShell；密钥 `+fakeToken+`；轮换令牌 `+fakeTokenBare, 1, fakeCIDPlain, "reasoner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +169,7 @@ func TestRedlineRememberPathMasksContent(t *testing.T) {
 		t.Fatalf("条目 = %+v", entries)
 	}
 	assertNoLeak(t, "memories", entries[0].Content, entries[0].ConversationID, entries[0].Kind, entries[0].EmbeddingModel)
-	if !strings.Contains(entries[0].Content, "[路径]") {
+	if !strings.Contains(entries[0].Content, "[路径]") || !strings.Contains(entries[0].Content, "[已隐去]") {
 		t.Errorf("正文该被掩码，实际 = %q", entries[0].Content)
 	}
 	if want := mustOpaque(t, fakeCIDPlain); entries[0].ConversationID != want {
@@ -168,7 +184,8 @@ func TestRedlineNotePathMasksContent(t *testing.T) {
 	s := openTest(t)
 	seedNetDirections(t, s.Net)
 	res, err := s.Net.Attach(time.Now(), memnet.AttachInput{
-		Content:        `NapCat 默认地址 ` + fakeURL + `，令牌 ` + fakeToken,
+		Content: `NapCat 默认地址 ` + fakeURL + `，令牌 ` + fakeTokenBare +
+			`；脚本里 open('` + fakeWinFwd + `','w') 这样写`,
 		ConversationID: fakeCIDPlain,
 		TaskID:         "t1",
 		Source:         "reasoner",
@@ -185,7 +202,8 @@ func TestRedlineNotePathMasksContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoLeak(t, "mem_entries", content, cid, tid, source)
-	if !strings.Contains(content, "[链接]") || !strings.Contains(content, "[已隐去]") {
+	if !strings.Contains(content, "[链接]") || !strings.Contains(content, "[已隐去]") ||
+		!strings.Contains(content, "[路径]") {
 		t.Errorf("正文该被掩码，实际 = %q", content)
 	}
 	if want := mustOpaque(t, fakeCIDPlain); cid != want {
@@ -223,7 +241,7 @@ func TestRedlineMigrationMasksLegacyRows(t *testing.T) {
 	if _, err := priv.DB().Exec(
 		`INSERT INTO memories(kind, content, priority, source, conversation_id, status, created_at, updated_at)
 		 VALUES('事实', ?, 1, 'reasoner', ?, 'active', '2026-10-19T20:00:00Z', '2026-10-19T20:00:00Z')`,
-		`把 QQ 的 NapCat 默认连接地址改成 `+fakeURL+`，并把 NapCat 令牌 `+fakeToken+` 写成默认，`+fakeWinPath+` 的 qq/main.go 里有 defaultNapCatToken`,
+		`把 QQ 的 NapCat 默认连接地址改成 `+fakeURL+`，并把 NapCat 令牌 `+fakeTokenBare+` 写成默认，`+fakeWinPath+` 的 qq/main.go 里有 defaultNapCatToken`,
 		fakeCIDPlain,
 	); err != nil {
 		t.Fatal(err)
@@ -232,7 +250,8 @@ func TestRedlineMigrationMasksLegacyRows(t *testing.T) {
 		`INSERT INTO mem_entries(id, content, conversation_id, task_id, source, durability, hits, status,
 		   last_hit_at, created_at, embedding, embedding_model)
 		 VALUES('e-leak', ?, ?, ?, 'reasoner', 'durable', 1, 'active', '2026-10-19T20:00:00Z', '2026-10-19T20:00:00Z', ?, 'fake')`,
-		`工作目录是 `+fakeWinPath+`，仿真终端下显示为 `+fakePosix, fakeCIDPlain, fakeTaskID,
+		`工作目录是 `+fakeWinPath+`，仿真终端下显示为 `+fakePosix+
+			`；脚本里 open('`+fakeWinFwd+`','w') 这样写`, fakeCIDPlain, fakeTaskID,
 		[]byte{0, 0, 128, 63, 0, 0, 128, 63},
 	); err != nil {
 		t.Fatal(err)
@@ -268,7 +287,7 @@ func TestRedlineMigrationMasksLegacyRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoLeak(t, "迁移后的 memories", memContent, memCID, memSource)
-	if !strings.Contains(memContent, "[链接]") {
+	if !strings.Contains(memContent, "[链接]") || !strings.Contains(memContent, "[已隐去]") {
 		t.Errorf("迁移也该掩码正文，实际 = %q", memContent)
 	}
 

@@ -42,6 +42,21 @@ var guards = []guard{
 		new:  `	if false && !reRefID.MatchString(s) {`,
 	},
 
+	// ---------- 会话目录的两个标题列（src/memory/shared）----------
+	// 用例先填实（d3174af：Publish 输入里两个标题原本都是空串，断言对着空格永真），再补守卫。
+	{
+		name: "任务标题绕过写入边界（目录里的标题原样入库）",
+		file: "src/memory/shared/sessions.go",
+		old:  `	title := Sanitize(in.TaskTitle, maxTitleChars)`,
+		new:  `	title := in.TaskTitle`,
+	},
+	{
+		name: "会话标题绕过写入边界（门户上那行会话名没人管）",
+		file: "src/memory/shared/sessions.go",
+		old:  `	sessionTitle := Sanitize(in.SessionTitle, maxTitleChars)`,
+		new:  `	sessionTitle := in.SessionTitle`,
+	},
+
 	// ---------- 存量清理（src/memory/repair）----------
 	{
 		name: "复检没归零也照样提交（洗了一半写进库）",
