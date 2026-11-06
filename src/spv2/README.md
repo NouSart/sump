@@ -100,11 +100,6 @@
 - 只有卡片声明 `idempotent:true` 且请求带 `idempotency_key` 的 unary call 才缓存；key 由 `from.kind` / `from.id` / `method` / key 组成。
 - 命中时复用第一次的 body/status/error，重写 `id` / `reply_to` / `to` 后发回；stream 不缓存，缓存在进程内。
 
-### v1 适配器
-
-- `adapter.FromV1`：`jump` → `call`（action→method，input→body）；`response` → `reply`（ok/error→status，data→body，错误串落为 `internal`）。
-- `adapter.ToV1`：`call` → `jump`，`reply` → `response`；`event` / `stream` 和其它 v1 信封类型一律返回明确错误，不静默降级。
-- work 优先取 v1 `trace`，缺失时退回消息 id；from/to 映射为 `ServiceRef`。
 
 ### 参考链路 ref/
 
