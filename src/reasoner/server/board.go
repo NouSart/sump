@@ -504,15 +504,10 @@ func (s *Server) notifyRoundFailure(st *taskState, cause error) {
 	}
 }
 
-// actionRetry 让门户对「上一轮失败、任务还开着」的任务再跑一轮。
+// retry 让门户对「上一轮失败、任务还开着」的任务再跑一轮。
 //
 // 只认门户：重试是对用户意图的重放，不该让任意服务替用户按下这个按钮。
-func (s *Server) actionRetry(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.retry(env.From, in.Input)
-}
-
-// retry 让来源为门户的调用对“上一轮失败、任务还开着”的会话再跑一轮。
-// v1 从信封取 from，原生取 Frame.From.ID；来源不符时回 permissionError。
+// from 取自帧头 Frame.From.ID；来源不符时回 permissionError。
 func (s *Server) retry(from string, body []byte) (any, error) {
 	var allowed bool
 	if s.retryFrom != nil {
@@ -623,11 +618,6 @@ func (s *Server) notifyDeliveryFailure(st *taskState, cause error) error {
 // stepPayload 是自跳（step）的 payload：只带会话号（上下文在黑板里）。
 type stepPayload struct {
 	ConversationID string `msgpack:"conversation_id,omitempty"`
-}
-
-// actionStep 承接自跳：把黑板上的任务推进到下一轮。
-func (s *Server) actionStep(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.step(in.Input)
 }
 
 // step 承接自跳的共享实现：把黑板上的任务推进到下一轮（没有进行中的任务就忽略）。

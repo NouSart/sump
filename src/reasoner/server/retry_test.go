@@ -6,7 +6,6 @@
 package server
 
 import (
-	"context"
 	"io"
 	"log"
 	"strings"
@@ -27,13 +26,13 @@ func newRetryServer(t *testing.T) *Server {
 	}
 }
 
-func retryPayload(t *testing.T, cid string) protocol.JumpPayload {
+func retryPayload(t *testing.T, cid string) []byte {
 	t.Helper()
 	raw, err := protocol.EncodePayload(protocol.RetryPayload{ConversationID: cid})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return protocol.JumpPayload{Action: "retry", Input: raw}
+	return raw
 }
 
 // 只有门户能触发：别的服务（哪怕它在名册里）一律拒。
@@ -66,7 +65,7 @@ func TestIsPortalFrom(t *testing.T) {
 func TestActionRetryRejectsNonPortal(t *testing.T) {
 	s := newRetryServer(t)
 	s.retryFrom = func(string) bool { return false }
-	_, err := s.actionRetry(context.Background(), protocol.Envelope{From: "shell"}, retryPayload(t, "c1"))
+	_, err := s.retry("shell", retryPayload(t, "c1"))
 	if err == nil || !strings.Contains(err.Error(), "只有门户") {
 		t.Fatalf("非门户应被拒并说明原因，实际: %v", err)
 	}
@@ -75,7 +74,7 @@ func TestActionRetryRejectsNonPortal(t *testing.T) {
 // 会话没有进行中的任务：说清楚没有可重试的对象。
 func TestActionRetryWithoutTask(t *testing.T) {
 	s := newRetryServer(t)
-	_, err := s.actionRetry(context.Background(), protocol.Envelope{From: "frontend"}, retryPayload(t, "nope"))
+	_, err := s.retry("frontend", retryPayload(t, "nope"))
 	if err == nil || !strings.Contains(err.Error(), "没有进行中的任务") {
 		t.Fatalf("缺任务应报错，实际: %v", err)
 	}
@@ -87,7 +86,7 @@ func TestActionRetryWhileRunning(t *testing.T) {
 	s.boardMu.Lock()
 	s.board["c1"] = &taskState{cid: "c1", running: true, lastError: "boom"}
 	s.boardMu.Unlock()
-	_, err := s.actionRetry(context.Background(), protocol.Envelope{From: "frontend"}, retryPayload(t, "c1"))
+	_, err := s.retry("frontend", retryPayload(t, "c1"))
 	if err == nil || !strings.Contains(err.Error(), "正在跑") {
 		t.Fatalf("运行中应拒绝，实际: %v", err)
 	}
@@ -99,7 +98,7 @@ func TestActionRetryWithoutFailure(t *testing.T) {
 	s.boardMu.Lock()
 	s.board["c1"] = &taskState{cid: "c1"}
 	s.boardMu.Unlock()
-	_, err := s.actionRetry(context.Background(), protocol.Envelope{From: "frontend"}, retryPayload(t, "c1"))
+	_, err := s.retry("frontend", retryPayload(t, "c1"))
 	if err == nil || !strings.Contains(err.Error(), "没有待重试的失败") {
 		t.Fatalf("无失败记录应拒绝，实际: %v", err)
 	}
@@ -111,7 +110,7 @@ func TestActionRetryOnClosedTask(t *testing.T) {
 	s.boardMu.Lock()
 	s.board["c1"] = &taskState{cid: "c1", closed: true, lastError: "boom"}
 	s.boardMu.Unlock()
-	_, err := s.actionRetry(context.Background(), protocol.Envelope{From: "frontend"}, retryPayload(t, "c1"))
+	_, err := s.retry("frontend", retryPayload(t, "c1"))
 	if err == nil || !strings.Contains(err.Error(), "已结束") {
 		t.Fatalf("已收尾应拒绝，实际: %v", err)
 	}
@@ -128,7 +127,7 @@ func TestActionRetryAccepts(t *testing.T) {
 	s.board["c1"] = st
 	s.boardMu.Unlock()
 
-	out, err := s.actionRetry(context.Background(), protocol.Envelope{From: "frontend"}, retryPayload(t, "c1"))
+	out, err := s.retry("frontend", retryPayload(t, "c1"))
 	if err != nil {
 		t.Fatalf("合法重试被拒: %v", err)
 	}
@@ -150,7 +149,7 @@ func TestActionRetryAccepts(t *testing.T) {
 // 空会话号：直接拒。
 func TestActionRetryRequiresConversation(t *testing.T) {
 	s := newRetryServer(t)
-	_, err := s.actionRetry(context.Background(), protocol.Envelope{From: "frontend"}, retryPayload(t, "  "))
+	_, err := s.retry("frontend", retryPayload(t, "  "))
 	if err == nil || !strings.Contains(err.Error(), "conversation_id 必填") {
 		t.Fatalf("空会话号应被拒，实际: %v", err)
 	}

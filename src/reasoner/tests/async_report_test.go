@@ -9,8 +9,6 @@ package tests
 import (
 	"context"
 	"log"
-	"net"
-	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -19,90 +17,61 @@ import (
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/reasoner/llm"
 	"github.com/NouSart/sump/reasoner/server"
+	"github.com/NouSart/sump/spv2"
 )
 
 // ---------- “受理即回执”的工具替身 ----------
 
 // stubAsync 是异步工具替身：run 立刻回执 {item_id}；补报由测试自己按需发出（时序可控，不靠 sleep 猜）。
 type stubAsync struct {
-	ln     net.Listener
-	srv    *http.Server
+	srv    *spv2.Server
+	url    string
 	itemID string
 	kind   string
 
 	got       chan protocol.ShellRunPayload // 收到的 run 输入
-	envelope  chan protocol.Envelope
-	beforeAck func(protocol.Envelope)
-	boss      chan string // 受理时信封里的 boss
+	calls     chan spv2.Frame               // 收到的 run 帧（trace 取自 Frame.Work）
+	beforeAck func(spv2.Frame)
+	// caller 是受理时帧里的 from。SPv2 没有 boss 字段：调用方（from）就是结果的归属方，
+	// 受理方事后补报也回到它（v1 的 env.Boss 在原生链路上不再单独传递）。
+	caller chan string
 }
 
 func startStubAsync(t *testing.T, center *stubCenter, itemID string, kinds ...string) *stubAsync {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := &stubAsync{ln: ln, itemID: itemID, got: make(chan protocol.ShellRunPayload, 8), boss: make(chan string, 8), envelope: make(chan protocol.Envelope, 8)}
+	a := &stubAsync{itemID: itemID, got: make(chan protocol.ShellRunPayload, 8), caller: make(chan string, 8), calls: make(chan spv2.Frame, 8)}
 	if len(kinds) > 0 {
 		a.kind = kinds[0]
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", a.handleWS)
-	a.srv = &http.Server{Handler: mux}
-	go func() { _ = a.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = a.srv.Close() })
-
-	center.mu.Lock()
-	center.cards["stub-async"] = protocol.ServiceCard{
-		Name: "stub-async", Addr: a.URL(), Description: "异步工具测试替身",
-		Provides: []protocol.Provide{{Action: "run", Tool: true, Async: true, Input: "{command}", Output: "受理回执"}},
-	}
-	center.mu.Unlock()
-	return a
-}
-
-func (a *stubAsync) URL() string { return "ws://" + a.ln.Addr().String() + "/ws" }
-
-func (a *stubAsync) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := stubUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	c := &stubConn{ws: ws}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil || env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil || jp.Action != "run" {
-			continue
-		}
+	e := newStubEndpoint(t, "stub-async", spv2.Method{Name: "run", Shape: spv2.ShapeCall})
+	a.srv, a.url = e.srv, e.URL()
+	e.handle("run", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.ShellRunPayload
-		_ = protocol.DecodeRaw(jp.Input, &p)
+		_ = call.Frame.DecodeBody(&p)
 		select {
 		case a.got <- p:
 		default:
 		}
 		select {
-		case a.boss <- env.Boss:
+		case a.caller <- call.Frame.From.ID:
 		default:
 		}
-		a.envelope <- env
+		a.calls <- call.Frame
 		if a.beforeAck != nil {
-			a.beforeAck(env)
+			a.beforeAck(call.Frame)
 		}
 		// 受理即回执：只回句柄，不执行。
-		out, _ := protocol.EncodePayload(map[string]any{"item_id": a.itemID, "phase": "queued", "kind": a.kind})
-		resp, _ := protocol.NewResponse(env, "stub-async", protocol.ResponsePayload{OK: true, Data: out})
-		c.send(resp)
-	}
+		return call.Reply(map[string]any{"item_id": a.itemID, "phase": "queued", "kind": a.kind})
+	})
+
+	registerStub(t, center, protocol.RegisterPayload{
+		Name: "stub-async", Addr: e.URL(), Description: "异步工具测试替身",
+		Provides: []protocol.Provide{{Action: "run", Tool: true, Async: true, Input: "{command}", Output: "受理回执"}},
+	})
+	return a
 }
+
+func (a *stubAsync) URL() string { return a.url }
 
 // ---------- 环境与辅助 ----------
 
@@ -145,21 +114,17 @@ func fireReport(t *testing.T, s *server.Server, trace, item, phase, text string,
 	c := dialReasoner(t, s)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	raw, _ := protocol.EncodePayload(protocol.AsyncResultPayload{ItemID: item, Phase: phase, Text: text, Final: final})
-	env, _ := protocol.NewEnvelope(protocol.TypeJump, "stub-async", "reasoner", trace, protocol.JumpPayload{Action: "report_result", Input: raw})
-	response, err := c.Call(ctx, env)
+	call, err := spv2.NewCall(trace, spv2.ServiceRef("stub-async"), spv2.ServiceRef("reasoner"), "report_result",
+		protocol.AsyncResultPayload{ItemID: item, Phase: phase, Text: text, Final: final})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rp protocol.ResponsePayload
-	if err := response.DecodePayload(&rp); err != nil {
-		t.Fatal(err)
-	}
-	if !rp.OK {
-		t.Fatalf("补报未被受理: %s", rp.Error)
+	response, err := c.Call(ctx, call)
+	if err != nil {
+		t.Fatalf("补报未被受理: %v", err)
 	}
 	var out asyncOutcome
-	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
+	if err := protocol.DecodeRaw(response.Body, &out); err != nil {
 		t.Fatal(err)
 	}
 	return out
@@ -242,21 +207,21 @@ func TestReportResultOpensSupplementAfterClose(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("异步工具未被调用")
 	}
-	// boss 随工具调用传到受理方——受理方事后补报才知道结果面向谁。
+	// 受理方看到的是调用方（from）：SPv2 没有 boss 字段，结果归属方就是调用方。
 	select {
-	case b := <-async.boss:
-		if b != "stub-boss" {
-			t.Fatalf("工具调用未带上 boss: %q", b)
+	case c := <-async.caller:
+		if c != "reasoner" {
+			t.Fatalf("工具调用未带上调用方: %q", c)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("未取到受理方看到的 boss")
+		t.Fatal("未取到受理方看到的调用方")
 	}
 
 	// 第一交付：结果还没到，模型先说“已受理”（受理即回执，不该被长命令扣住）。
 	waitDelivery(t, boss, "已受理，结果稍后送达")
 
 	// 终态补报：任务已收尾 → 开补报轮。
-	out := reportUntilAccepted(t, s, (<-async.envelope).Trace, "cmd-1", "done", "命令执行完成：hello", true)
+	out := reportUntilAccepted(t, s, (<-async.calls).Work, "cmd-1", "done", "命令执行完成：hello", true)
 	if out.Delivery != "new_task" {
 		t.Fatalf("任务已收尾时应开补报轮: %+v", out)
 	}
@@ -306,7 +271,7 @@ func TestReportResultNotSwallowedWhileDelivering(t *testing.T) {
 		t.Fatal("等待第一交付超时")
 	}
 
-	out := reportUntilAccepted(t, s, (<-async.envelope).Trace, "cmd-slow-deliver", "done", "命令执行完成：hello", true)
+	out := reportUntilAccepted(t, s, (<-async.calls).Work, "cmd-slow-deliver", "done", "命令执行完成：hello", true)
 	if out.Delivery != "new_task" {
 		t.Fatalf("交付窗口内的补报应开补报轮（注入会被吞掉）: %+v", out)
 	}
@@ -348,7 +313,7 @@ func TestReportResultInjectedIntoLiveTask(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	out := reportUntilAccepted(t, s, (<-async.envelope).Trace, "cmd-2", "approved", "审批通过，已开始执行", false)
+	out := reportUntilAccepted(t, s, (<-async.calls).Work, "cmd-2", "approved", "审批通过，已开始执行", false)
 	if out.Delivery != "injected" {
 		t.Fatalf("任务在跑时应注入同一条链: %+v", out)
 	}
@@ -420,7 +385,7 @@ func TestReportWithoutMatchingItemIgnored(t *testing.T) {
 	}
 }
 
-// TestReportBeforeAcceptanceResponse 使用真实 WS；工具必须先收到补报回执，才发送工具受理回执。
+// TestReportBeforeAcceptanceResponse 使用真实 /spv2；工具必须先收到补报回执，才发送工具受理回执。
 // 因而时序由协议屏障决定，不依赖 sleep 或机器速度。
 func TestReportBeforeAcceptanceResponse(t *testing.T) {
 	sc := startStubCenter(t)
@@ -441,33 +406,28 @@ func TestReportBeforeAcceptanceResponse(t *testing.T) {
 		sc.mu.Unlock()
 	})
 	result := make(chan string, 1)
-	async.beforeAck = func(call protocol.Envelope) {
+	async.beforeAck = func(f spv2.Frame) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		c, err := protocol.DialContext(ctx, s.WsURL(), nil)
+		c, err := spv2.Dial(ctx, s.WsURL())
 		if err != nil {
 			result <- err.Error()
 			return
 		}
 		defer c.Close()
-		input, _ := protocol.EncodePayload(protocol.AsyncResultPayload{ItemID: "early-item", Phase: "done", Text: "实际早到的输出", Final: true})
-		env, _ := protocol.NewEnvelope(protocol.TypeJump, "stub-async", "reasoner", call.Trace, protocol.JumpPayload{Action: "report_result", Input: input})
-		reply, err := c.Call(ctx, env)
+		call, err := spv2.NewCall(f.Work, spv2.ServiceRef("stub-async"), spv2.ServiceRef("reasoner"), "report_result",
+			protocol.AsyncResultPayload{ItemID: "early-item", Phase: "done", Text: "实际早到的输出", Final: true})
 		if err != nil {
 			result <- err.Error()
 			return
 		}
-		var rp protocol.ResponsePayload
-		if err := reply.DecodePayload(&rp); err != nil {
+		reply, err := c.Call(ctx, call)
+		if err != nil {
 			result <- err.Error()
 			return
 		}
-		if !rp.OK {
-			result <- rp.Error
-			return
-		}
 		var out asyncOutcome
-		if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
+		if err := protocol.DecodeRaw(reply.Body, &out); err != nil {
 			result <- err.Error()
 			return
 		}

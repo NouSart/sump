@@ -6,8 +6,6 @@ package tests
 import (
 	"context"
 	"log"
-	"net"
-	"net/http"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -17,12 +15,11 @@ import (
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/reasoner/llm"
 	"github.com/NouSart/sump/reasoner/server"
+	"github.com/NouSart/sump/spv2"
 )
 
 // stubBoss 是“老板”的最小替身：实现约定的 deliver 动作，收到结果放进 channel。
 type stubBoss struct {
-	ln        net.Listener
-	srv       *http.Server
 	delivered chan protocol.DeliverPayload
 	progress  chan protocol.ProgressPayload
 	delay     atomic.Int64 // 交付响应前的停顿：把补报卡在「正在交付」的窗口里（见 TestReportResultNotSwallowedWhileDelivering）
@@ -33,78 +30,42 @@ func (b *stubBoss) setDeliverDelay(d time.Duration) { b.delay.Store(int64(d)) }
 
 func startStubBoss(t *testing.T, center *stubCenter) *stubBoss {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	b := &stubBoss{ln: ln, delivered: make(chan protocol.DeliverPayload, 4)}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", b.handleWS)
-	b.srv = &http.Server{Handler: mux}
-	go func() { _ = b.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = b.srv.Close() })
-
-	// 把 boss 名片放进中心（reasoner 从 roster 解析它的地址）。
-	center.mu.Lock()
-	center.cards["stub-boss"] = protocol.ServiceCard{
-		Name:        "stub-boss",
-		Addr:        b.URL(),
-		Description: "老板测试替身",
-		Provides:    []protocol.Provide{{Action: "deliver", Input: "{text}", Output: "回执"}},
-	}
-	center.mu.Unlock()
-	return b
-}
-
-func (b *stubBoss) URL() string { return "ws://" + b.ln.Addr().String() + "/ws" }
-
-func (b *stubBoss) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := stubUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	c := &stubConn{ws: ws}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
+	b := &stubBoss{delivered: make(chan protocol.DeliverPayload, 4)}
+	e := newStubEndpoint(t, "stub-boss",
+		spv2.Method{Name: "deliver", Shape: spv2.ShapeCall},
+		spv2.Method{Name: "progress", Shape: spv2.ShapeCall},
+	)
+	e.handle("deliver", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.DeliverPayload
+		_ = call.Frame.DecodeBody(&p)
+		select {
+		case b.delivered <- p:
+		default:
 		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
+		if d := time.Duration(b.delay.Load()); d > 0 {
+			time.Sleep(d)
 		}
-		if env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		if jp.Action == "progress" {
-			var p protocol.ProgressPayload
-			_ = protocol.DecodeRaw(jp.Input, &p)
+		return call.Reply(map[string]any{"ok": true})
+	})
+	e.handle("progress", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.ProgressPayload
+		_ = call.Frame.DecodeBody(&p)
+		if b.progress != nil {
 			select {
 			case b.progress <- p:
 			default:
 			}
-			resp, _ := protocol.NewResponse(env, "stub-boss", protocol.ResponsePayload{OK: true})
-			c.send(resp)
 		}
-		if jp.Action == "deliver" {
-			var p protocol.DeliverPayload
-			_ = protocol.DecodeRaw(jp.Input, &p)
-			select {
-			case b.delivered <- p:
-			default:
-			}
-			if d := time.Duration(b.delay.Load()); d > 0 {
-				time.Sleep(d)
-			}
-			resp, _ := protocol.NewResponse(env, "stub-boss", protocol.ResponsePayload{OK: true})
-			c.send(resp)
-		}
-	}
+		return call.Reply(map[string]any{"ok": true})
+	})
+	// 把 boss 名片注册进中心（reasoner 从 roster 解析它的地址）。
+	registerStub(t, center, protocol.RegisterPayload{
+		Name:        "stub-boss",
+		Addr:        e.URL(),
+		Description: "老板测试替身",
+		Provides:    []protocol.Provide{{Action: "deliver", Input: "{text}", Output: "回执"}},
+	})
+	return b
 }
 
 // TestInferChain 验证 Fake LLM 驱动的全链（异步工具）：
@@ -145,29 +106,8 @@ func TestInferChain(t *testing.T) {
 	t.Cleanup(s.Shutdown)
 	mem.setReasonerURL(s.WsURL())
 
-	c := dialReasoner(t, s)
-
-	// 发起链：boss=stub-boss——“结果交付对象”。
-	raw, err := protocol.EncodePayload(map[string]any{"text": "你好"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Boss = "stub-boss"
-	resp, err := c.Call(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack protocol.ResponsePayload
-	if err := resp.DecodePayload(&ack); err != nil {
-		t.Fatal(err)
-	}
-	if !ack.OK {
-		t.Fatalf("user_message 未被受理: %s", ack.Error)
-	}
+	// 发起链：from=stub-boss——“结果交付对象”（SPv2 没有 boss 字段，from 即归属方）。
+	sendFrom(t, s, "stub-boss", map[string]any{"text": "你好"})
 
 	// 等待 boss 收到 deliver（链在后台推进）。
 	select {
@@ -319,19 +259,7 @@ func TestUnadvertisedToolRejected(t *testing.T) {
 	t.Cleanup(s.Shutdown)
 	mem.setReasonerURL(s.WsURL())
 
-	c := dialReasoner(t, s)
-	raw, err := protocol.EncodePayload(map[string]any{"text": "你好"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Boss = "stub-boss"
-	if _, err := c.Call(ctx, req); err != nil {
-		t.Fatal(err)
-	}
+	sendFrom(t, s, "stub-boss", map[string]any{"text": "你好"})
 
 	// 链照常收尾：boss 收到的第一条交付是最终答复，而不是 debug_jump 若被执行会伪造的“绕过”。
 	select {

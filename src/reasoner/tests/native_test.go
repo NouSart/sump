@@ -1,7 +1,7 @@
 package tests
 
-// 原生 SPv2.1 method 的验收：直接打 /spv2，确认 9 个动作走原生 handler
-// （v1 合成信封路径的副作用不会出现），且 boss 语义由 Frame.From.ID 承接。
+// 原生 SPv2.1 method 的验收：直接打 /spv2，确认 9 个动作走原生 handler，
+// 且 boss 语义由 Frame.From.ID 承接。
 
 import (
 	"context"
@@ -27,11 +27,10 @@ func nativeCall(t *testing.T, from, method string, body any) spv2.Frame {
 	return f
 }
 
-// dialNative 连上 reasoner 的 /spv2。
+// dialNative 连上 reasoner 的 /spv2（WsURL 现在已以 /spv2 结尾）。
 func dialNative(t *testing.T, s *server.Server) *spv2.Client {
 	t.Helper()
-	addr := strings.TrimSuffix(s.WsURL(), "/ws") + "/spv2"
-	c, err := spv2.Dial(context.Background(), addr)
+	c, err := spv2.Dial(context.Background(), s.WsURL())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +40,6 @@ func dialNative(t *testing.T, s *server.Server) *spv2.Client {
 
 // TestReasonerNativeMethods 校验原生 method 声明与不依赖 v1 动作的分支。
 func TestReasonerNativeMethods(t *testing.T) {
-	t.Setenv("SUMP_SPV2", "1")
 	sc := startStubCenter(t)
 	s := startReasoner(t, sc.URL())
 
@@ -173,7 +171,6 @@ func TestReasonerNativeMethods(t *testing.T) {
 // SPv2 没有 boss 字段，Frame.From.ID 就是结果的归属方——最终 deliver 必须回到它，
 // 且 trace 原样沿链（Frame.Work）。
 func TestReasonerNativeUserMessageBoss(t *testing.T) {
-	t.Setenv("SUMP_SPV2", "1")
 	sc := startStubCenter(t)
 	boss := startStubBoss(t, sc)
 	mem := startStubMemory(t, sc)

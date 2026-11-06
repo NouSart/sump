@@ -32,13 +32,7 @@ const (
 	thinkTimeout = 120 * time.Second
 )
 
-// actionThink 跑一次单步推理，返回模型的纯文本。
-// 不进 provides：LLM 不该有"让自己再想一次"的按钮（那是无限自我循环的起点）。
-func (s *Server) actionThink(ctx context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.think(ctx, in.Input)
-}
-
-// think 跑一次单步补全（v1 / 原生共用）；失败如实返回，调用方自己决定重试或降级。
+// think 跑一次单步补全（原生入口直接解 body）；失败如实返回，调用方自己决定重试或降级。
 func (s *Server) think(ctx context.Context, body []byte) (any, error) {
 	var p protocol.ThinkPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {

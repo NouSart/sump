@@ -1,24 +1,21 @@
 package tests
 
 // stubMemory 是记忆服务替身（完全启动链）：recall → 注入固定记忆块 → 以 resume 发回 reasoner；
-// store → 记录（供断言）。
+// store → 记录（供断言）。全部走原生 /spv2。
 
 import (
 	"context"
-	"net"
-	"net/http"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/vmihailenco/msgpack/v5"
-
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 type stubMemory struct {
-	ln  net.Listener
-	srv *http.Server
+	srv *spv2.Server
+	url string
 
 	mu          sync.Mutex
 	name        string // 服务名（默认 memory；服务名热改测试用别的名字）
@@ -45,33 +42,102 @@ func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
 // startStubMemoryNamed 起一个自定义服务名的记忆替身（服务名热改测试用）。
 func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMemory {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := &stubMemory{ln: ln, name: name}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", m.handleWS)
-	m.srv = &http.Server{Handler: mux}
-	go func() { _ = m.srv.Serve(ln) }()
-	t.Cleanup(func() { _ = m.srv.Close() })
+	e := newStubEndpoint(t, name,
+		spv2.Method{Name: "recall", Shape: spv2.ShapeCall},
+		spv2.Method{Name: "store", Shape: spv2.ShapeCall},
+		spv2.Method{Name: "task_finish", Shape: spv2.ShapeCall},
+		spv2.Method{Name: "task_rename", Shape: spv2.ShapeCall},
+		spv2.Method{Name: "note", Shape: spv2.ShapeCall},
+		spv2.Method{Name: "publish_session", Shape: spv2.ShapeCall},
+	)
+	m := &stubMemory{srv: e.srv, url: e.URL(), name: name}
 
-	// 把记忆名片放进中心（reasoner 从 roster 解析它的地址）。
-	center.mu.Lock()
-	center.cards[name] = protocol.ServiceCard{
+	e.handle("store", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.StorePayload
+		_ = call.Frame.DecodeBody(&p)
+		m.mu.Lock()
+		m.stores = append(m.stores, p)
+		m.mu.Unlock()
+		return call.Reply(map[string]any{"ok": true})
+	})
+	e.handle("recall", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.RecallPayload
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		m.mu.Lock()
+		m.recalls++
+		m.recallContexts = append(m.recallContexts, p.Context)
+		task := m.task
+		m.mu.Unlock()
+		// 注入固定记忆块（插在第一条 system 之后）。
+		msgs := make([]protocol.Message, 0, len(p.Context.Messages)+1)
+		placed := false
+		for _, msg := range p.Context.Messages {
+			msgs = append(msgs, msg)
+			if !placed && msg.Role == "system" {
+				msgs = append(msgs, protocol.Message{Role: "system", Content: "【记忆】\n测试记忆块"})
+				placed = true
+			}
+		}
+		if err := call.Reply(map[string]any{"ok": true}); err != nil {
+			return err
+		}
+		m.fireResume(call.Frame.Work, protocol.ResumePayload{Context: protocol.TaskContext{
+			ConversationID: p.Context.ConversationID,
+			Messages:       msgs,
+			Boss:           p.Context.Boss,
+			Task:           task,
+		}})
+		return nil
+	})
+	e.handle("task_finish", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.TaskFinishPayload
+		_ = call.Frame.DecodeBody(&p)
+		m.mu.Lock()
+		m.finished = append(m.finished, p)
+		m.mu.Unlock()
+		return call.Reply(map[string]any{"ok": true})
+	})
+	e.handle("task_rename", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.TaskRenamePayload
+		_ = call.Frame.DecodeBody(&p)
+		m.mu.Lock()
+		m.renamed = append(m.renamed, p)
+		m.mu.Unlock()
+		return call.Reply(map[string]any{"ok": true})
+	})
+	e.handle("note", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.NotePayload
+		_ = call.Frame.DecodeBody(&p)
+		m.mu.Lock()
+		m.notes = append(m.notes, p)
+		m.mu.Unlock()
+		return call.Reply(map[string]any{"ok": true})
+	})
+	e.handle("publish_session", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.PublishSessionPayload
+		_ = call.Frame.DecodeBody(&p)
+		m.mu.Lock()
+		m.publishes = append(m.publishes, p)
+		m.mu.Unlock()
+		return call.Reply(map[string]any{"ok": true})
+	})
+
+	// 把记忆名片注册进中心（reasoner 从 roster 解析它的地址）。
+	registerStub(t, center, protocol.RegisterPayload{
 		Name:        name,
-		Addr:        m.URL(),
+		Addr:        e.URL(),
 		Description: "记忆测试替身",
 		Provides: []protocol.Provide{
 			{Action: "recall"}, {Action: "store"}, {Action: "task_finish"},
 			{Action: "task_rename"}, {Action: "note"}, {Action: "publish_session"},
 		},
-	}
-	center.mu.Unlock()
+	})
 	return m
 }
 
-func (m *stubMemory) URL() string { return "ws://" + m.ln.Addr().String() + "/ws" }
+func (m *stubMemory) URL() string { return m.url }
 
 func (m *stubMemory) setReasonerURL(u string) {
 	m.mu.Lock()
@@ -147,110 +213,9 @@ func (m *stubMemory) Publishes() []protocol.PublishSessionPayload {
 	return out
 }
 
-func (m *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := stubUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	c := &stubConn{ws: ws}
-	defer ws.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			continue
-		}
-		if env.Type != protocol.TypeJump {
-			continue
-		}
-		var jp protocol.JumpPayload
-		if err := env.DecodePayload(&jp); err != nil {
-			continue
-		}
-		switch jp.Action {
-		case "store":
-			var p protocol.StorePayload
-			_ = protocol.DecodeRaw(jp.Input, &p)
-			m.mu.Lock()
-			m.stores = append(m.stores, p)
-			m.mu.Unlock()
-			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
-			c.send(resp)
-		case "recall":
-			var p protocol.RecallPayload
-			if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
-				continue
-			}
-			m.mu.Lock()
-			m.recalls++
-			m.recallContexts = append(m.recallContexts, p.Context)
-			m.mu.Unlock()
-			// 注入固定记忆块（插在第一条 system 之后）。
-			msgs := make([]protocol.Message, 0, len(p.Context.Messages)+1)
-			placed := false
-			for _, msg := range p.Context.Messages {
-				msgs = append(msgs, msg)
-				if !placed && msg.Role == "system" {
-					msgs = append(msgs, protocol.Message{Role: "system", Content: "【记忆】\n测试记忆块"})
-					placed = true
-				}
-			}
-			m.mu.Lock()
-			task := m.task
-			m.mu.Unlock()
-			raw, err := protocol.EncodePayload(protocol.ResumePayload{Context: protocol.TaskContext{
-				ConversationID: p.Context.ConversationID,
-				Messages:       msgs,
-				Boss:           p.Context.Boss,
-				Task:           task,
-			}})
-			if err != nil {
-				continue
-			}
-			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
-			c.send(resp)
-			m.fireResume(env.Trace, raw)
-		case "task_finish":
-			var p protocol.TaskFinishPayload
-			_ = protocol.DecodeRaw(jp.Input, &p)
-			m.mu.Lock()
-			m.finished = append(m.finished, p)
-			m.mu.Unlock()
-			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
-			c.send(resp)
-		case "task_rename":
-			var p protocol.TaskRenamePayload
-			_ = protocol.DecodeRaw(jp.Input, &p)
-			m.mu.Lock()
-			m.renamed = append(m.renamed, p)
-			m.mu.Unlock()
-			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
-			c.send(resp)
-		case "note":
-			var p protocol.NotePayload
-			_ = protocol.DecodeRaw(jp.Input, &p)
-			m.mu.Lock()
-			m.notes = append(m.notes, p)
-			m.mu.Unlock()
-			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
-			c.send(resp)
-		case "publish_session":
-			var p protocol.PublishSessionPayload
-			_ = protocol.DecodeRaw(jp.Input, &p)
-			m.mu.Lock()
-			m.publishes = append(m.publishes, p)
-			m.mu.Unlock()
-			resp, _ := protocol.NewResponse(env, m.name, protocol.ResponsePayload{OK: true})
-			c.send(resp)
-		}
-	}
-}
-
 // fireResume 把组装好的上下文发给 reasoner（from=memory → 触发完全启动）。
-func (m *stubMemory) fireResume(trace string, raw msgpack.RawMessage) {
+// work 沿用 recall 的 trace，整条链仍是同一个工作号。
+func (m *stubMemory) fireResume(trace string, p protocol.ResumePayload) {
 	m.mu.Lock()
 	url := m.reasonerURL
 	m.mu.Unlock()
@@ -258,18 +223,17 @@ func (m *stubMemory) fireResume(trace string, raw msgpack.RawMessage) {
 		return
 	}
 	go func() {
-		c, err := protocol.Dial(url, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		c, err := spv2.Dial(ctx, url)
 		if err != nil {
 			return
 		}
 		defer c.Close()
-		env, err := protocol.NewEnvelope(protocol.TypeJump, m.name, "reasoner", trace, protocol.JumpPayload{Action: "resume", Input: raw})
+		f, err := spv2.NewCall(trace, spv2.ServiceRef(m.name), spv2.ServiceRef("reasoner"), "resume", p)
 		if err != nil {
 			return
 		}
-		env.Boss = "reasoner"
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_, _ = c.Call(ctx, env)
+		_, _ = c.Call(ctx, f)
 	}()
 }

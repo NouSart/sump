@@ -5,9 +5,8 @@ package server
 //   - 直接解 call.Frame.Body，调共享实现；
 //   - 用 call.Reply / call.ReplyError 回应。
 //
-// 原生路径**不合成 v1 信封，也不构造 v1 跳转载荷**；v1 语义里由信封携带的元信息
-// 改从帧头取：from = Frame.From.ID、trace = Frame.Work、boss = Frame.From.ID
-// （SPv2 没有 boss 字段，from 就是结果的归属方）。
+// 信封里曾经的元信息改从帧头取：from = Frame.From.ID、trace = Frame.Work、
+// boss = Frame.From.ID（SPv2 没有 boss 字段，from 就是结果的归属方）。
 
 import (
 	"context"

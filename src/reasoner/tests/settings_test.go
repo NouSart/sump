@@ -55,7 +55,7 @@ func startSettingsReasoner(t *testing.T, sc *stubCenter, cfg server.Config) *ser
 }
 
 // pushConfigure 下发一个设置项并返回响应（不预设成败：既测受理也测拒绝）。
-func pushConfigure(t *testing.T, s *server.Server, p protocol.ConfigurePayload) protocol.ResponsePayload {
+func pushConfigure(t *testing.T, s *server.Server, p protocol.ConfigurePayload) outcome {
 	t.Helper()
 	c := dialReasoner(t, s)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -63,32 +63,10 @@ func pushConfigure(t *testing.T, s *server.Server, p protocol.ConfigurePayload) 
 	return jump(t, c, "configure", p, ctx)
 }
 
-// sendMessage 以 boss=stub-boss 发一条 user_message（payload 自定）并断言被受理。
+// sendMessage 以 from=stub-boss 发一条 user_message（payload 自定）并断言被受理。
 func sendMessage(t *testing.T, s *server.Server, payload map[string]any) {
 	t.Helper()
-	c := dialReasoner(t, s)
-	raw, err := protocol.EncodePayload(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Boss = "stub-boss"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := c.Call(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack protocol.ResponsePayload
-	if err := resp.DecodePayload(&ack); err != nil {
-		t.Fatal(err)
-	}
-	if !ack.OK {
-		t.Fatalf("user_message 未被受理: %s", ack.Error)
-	}
+	sendFrom(t, s, "stub-boss", payload)
 }
 
 // registerOf 返回某个服务最近一次注册的 payload（重注册时取最后一次）。

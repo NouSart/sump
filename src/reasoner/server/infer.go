@@ -329,14 +329,8 @@ func (s *Server) startMemoryRound(boss, trace, conversationID, taskName string, 
 	}}, trace, s.cfg.Name)
 }
 
-// actionUserMessage 是链的入口：boss 发来用户消息。
-// 半启动：把任务上下文托管给记忆服务（recall）——收到来自记忆的 resume 才完全启动。
-func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.userMessage(env.Boss, env.Trace, env.From, in.Input)
-}
-
 // userMessage 是链入口的共享实现：boss 是结果归属方，trace 是链路 id，
-// from 是入口服务（交付失败时的另一条回家路）。原生入口三者都取自帧头。
+// from 是入口服务（交付失败时的另一条回家路）。三者都取自帧头。
 func (s *Server) userMessage(boss, trace, from string, body []byte) (any, error) {
 	var p protocol.UserMessagePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
@@ -405,14 +399,9 @@ func taskNameOf(text string, images, files []string) string {
 	return ""
 }
 
-// actionResume 是完全启动的唯一入口：仅接受来自记忆服务的 resume。
+// resume 是完全启动的唯一入口：仅接受来自记忆服务的 resume（from 取自帧头）。
 // 记忆组装好的上下文到达后，开启任务（黑板）并立即受理——推理在后台推进（见 board.go）。
-func (s *Server) actionResume(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.resume(env.From, env.Boss, env.Trace, in.Input)
-}
-
-// resume 是完全启动的共享实现。from 是调用方（必须记忆服务），defaultBoss 是
-// 上下文里没带原 boss 时的兜底（v1 取信封 boss，原生取 Frame.From.ID）。
+// defaultBoss 是上下文里没带原 boss 时的兜底（原生取 Frame.From.ID）。
 func (s *Server) resume(from, defaultBoss, trace string, body []byte) (any, error) {
 	mem := s.memoryName()
 	if from != mem {

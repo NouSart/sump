@@ -47,34 +47,13 @@ func startAttrEnv(t *testing.T, fake llm.Client) (*server.Server, *stubBoss, *st
 }
 
 // sendGroupUser 向 reasoner 发一条带来源标注的 user_message。
+// 会话号保持在群里；from=stub-boss 是这批测试的替身入口（deliver 的落点）——
+// SPv2 没有 boss 字段，from 既是入口也是结果归属方。
 func sendGroupUser(t *testing.T, s *server.Server, text string, sender protocol.Sender) {
 	t.Helper()
-	c := dialReasoner(t, s)
-	raw, err := protocol.EncodePayload(protocol.UserMessagePayload{
+	sendFrom(t, s, "stub-boss", protocol.UserMessagePayload{
 		Text: text, ConversationID: "qq:group:67890", Sender: &sender,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "qq", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// boss 是这批测试的替身入口（deliver 的落点）；会话号保持在群里。
-	req.Boss = "stub-boss"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := c.Call(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack protocol.ResponsePayload
-	if err := resp.DecodePayload(&ack); err != nil {
-		t.Fatal(err)
-	}
-	if !ack.OK {
-		t.Fatalf("user_message 未被受理: %s", ack.Error)
-	}
 }
 
 // waitStoreContaining 等一条内容里含 marker 的 store 记录。

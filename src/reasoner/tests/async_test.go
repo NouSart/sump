@@ -48,32 +48,10 @@ func startAsyncEnv(t *testing.T, sc *stubCenter, client llm.Client, notify strin
 	return s, boss
 }
 
-// sendUser 向 reasoner 发一条 user_message（boss=stub-boss）并断言被受理。
+// sendUser 向 reasoner 发一条 user_message（from=stub-boss：SPv2 里 from 即结果归属方）并断言被受理。
 func sendUser(t *testing.T, s *server.Server, text string) {
 	t.Helper()
-	c := dialReasoner(t, s)
-	raw, err := protocol.EncodePayload(map[string]any{"text": text})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Boss = "stub-boss"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := c.Call(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack protocol.ResponsePayload
-	if err := resp.DecodePayload(&ack); err != nil {
-		t.Fatal(err)
-	}
-	if !ack.OK {
-		t.Fatalf("user_message 未被受理: %s", ack.Error)
-	}
+	sendFrom(t, s, "stub-boss", map[string]any{"text": text})
 }
 
 // hasToolResult 判断一轮请求里是否注入了某个 job 的 [工具结果]。

@@ -11,7 +11,6 @@ package server
 // 边界：这个动作**不进 provides、不是模型工具**——它是入口服务用的控制面。
 
 import (
-	"context"
 	"errors"
 	"strings"
 
@@ -41,12 +40,7 @@ func (s *Server) holdFor(cid string) *holdState {
 	return h
 }
 
-// actionUserHold 承接入口服务的"用户停手"。
-func (s *Server) actionUserHold(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	return s.userHold(in.Input)
-}
-
-// userHold 承接入口服务的“用户停手”（v1 / 原生共用）。
+// userHold 承接入口服务的“用户停手”（原生入口直接解 body）。
 func (s *Server) userHold(body []byte) (any, error) {
 	var p protocol.UserHoldPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
