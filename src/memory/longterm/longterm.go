@@ -1,10 +1,11 @@
 // Package longterm 是共享经验库里的「偏好 / 事实」那一层（SQLite）：条目写入 / 软删 / 读取。
-// 本包的实例在生产里只由 shared.Open 建出来，也就是**只服务于共享库**，
+// 生产里本包的实例只由 shared.Open 建出来，挂在共享经验库 data/experience.db 的句柄上，
 // 因此 Add 的脱敏与标识列收口是无条件的红线执行点，不是调用方可选项。
 //
-// 与会话库（store）**不是同一个 *sql.DB 句柄、不是同一个文件**：
-// memory.db 放对话流水，experience.db 放提炼物；跨表事务在这里不可能原子，
-// 代码也不依赖它原子。
+// 两个库的分工、句柄与「跨库不保证原子」是 shared 包的事实，写在 shared/db.go 的
+// 包注释里（一个事实只有一个家）——这里不复述，只说本包看到什么：
+// Open 收到哪个句柄就用哪个句柄。测试会把**会话库**（私有）的句柄递进来走旧库迁移路
+// （shared/migrate_test.go、redline_test.go），那是测试形态，不是生产接线。
 // 检索（bigram 打分）见 rank.go：纯函数，不碰库。
 package longterm
 
@@ -41,7 +42,8 @@ type Store struct {
 	db *sql.DB
 }
 
-// Open 校验 / 建立 memories 表（db 由会话库提供——共享句柄是有意为之）。
+// Open 校验 / 建立 memories 表。db 由调用方给：生产里是共享经验库的句柄（shared.Open 递进来），
+// 会话库句柄只出现在旧库迁移的测试里——本包不判断句柄属于谁。
 func Open(db *sql.DB) (*Store, error) {
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {

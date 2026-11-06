@@ -169,11 +169,12 @@ var migrations = []struct{ name, ddl string }{
 	{"task_id", `ALTER TABLE messages ADD COLUMN task_id TEXT NOT NULL DEFAULT ''`},
 }
 
-// Close 关闭数据库。注意：若还有别的包共享本句柄（如 longterm），由打开方统一关闭。
+// Close 关闭数据库。注意：句柄交给过别人（DB()）也仍由打开方统一关闭。
 func (s *Store) Close() error { return s.db.Close() }
 
-// DB 返回底层句柄：长期记忆库（longterm）与它会话库共享**同一** 句柄——
-// 同进程同库，将来跨表事务（归档/清除这类）才有原子性。谁都能调，但只有打开方负责 Close。
+// DB 返回底层句柄。生产里只有一个消费者：main 的一次性旧库迁移（shared.MigrateFrom(st.DB())）；
+// 测试也拿它直接建表。共享经验库**不是**从这个句柄接过去的——它是另一个文件、另一个句柄，
+// 两个库的分工见 shared/db.go 的包注释。谁都能调，但只有打开方负责 Close。
 func (s *Store) DB() *sql.DB { return s.db }
 
 // Record 追加一条会话记录。Kind 为空时按 Role 推断（老调用方不用改）。
