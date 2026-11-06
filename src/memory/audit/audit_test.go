@@ -613,6 +613,52 @@ func TestRowSetMissingTableIsFalseNotError(t *testing.T) {
 	}
 }
 
+// 行键列必须由清单给，不能写死 rowid：这张测试表是 WITHOUT ROWID + id INTEGER PRIMARY KEY，
+// 没有可依赖的隐式 rowid。实现若退回写死，这里要么报错、要么把真在库里的行答成"不存在"，
+// 而"不存在"会让白名单条目错误归进 skipped，把该报的位置冲突吞掉。
+func TestRowSetUsesScopeKeyColumn(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE mem_nodes (id INTEGER PRIMARY KEY, anchor TEXT) WITHOUT ROWID`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO mem_nodes (id, anchor) VALUES (7, '一条干净的锚点'), (9, '另一条')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 注入一份临时清单：同一张表的三个行键，一次 IN 查询取回。
+	cols := []Column{{Table: "mem_nodes", Name: "anchor", RowKey: "id"}}
+	adj := []Adjudicated{
+		{Table: "mem_nodes", RowKey: 7, Column: "anchor", Probe: ProbeContext, Key: "aaaa0007", Reason: "行在库里"},
+		{Table: "mem_nodes", RowKey: 8, Column: "anchor", Probe: ProbeContext, Key: "aaaa0008", Reason: "行不在库里"},
+		{Table: "mem_nodes", RowKey: 9, Column: "anchor", Probe: ProbeContext, Key: "aaaa0009", Reason: "同一次查询里的另一行"},
+	}
+	set, err := newRowSetColumns(db, adj, cols)
+	if err != nil {
+		t.Fatalf("按清单给的行键列查应当成功: %v", err)
+	}
+	if !set.Has("mem_nodes", 7) {
+		t.Error("id=7 在库里，Has 该返回 true（实现写死 rowid 就是这条先红）")
+	}
+	if !set.Has("mem_nodes", 9) {
+		t.Error("同一次查询里的 id=9 也该并进来（占位符拼错或结果覆盖会栽在这条）")
+	}
+	if set.Has("mem_nodes", 8) {
+		t.Error("id=8 不在库里，Has 该返回 false")
+	}
+
+	// 清单里没有的二元组要出声报错，不能悄悄答"这行不存在"：那会把清单错写当成行被删。
+	if _, err := newRowSetColumns(db, []Adjudicated{{
+		Table: "mem_nodes", RowKey: 7, Column: "content", Probe: ProbeContext, Key: "aaaa0009", Reason: "列不在清单里",
+	}}, cols); err == nil {
+		t.Error("（表，列）不在清单里时要报错，不能静默归成 skipped")
+	}
+}
+
 // ④ 内置白名单的合法性，以及每一份不合法形态都要被拒。
 func TestDefaultAdjudicatedIsValid(t *testing.T) {
 	adj, err := DefaultAdjudicated()

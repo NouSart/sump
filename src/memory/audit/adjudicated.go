@@ -75,8 +75,8 @@ func LoadAdjudicated(path string) ([]Adjudicated, error) {
 // ParseAdjudicated 解析并做合法性收口。四条都是"错了就整份不认"，因为一份
 // 半认半废的白名单比没有白名单更危险：人会以为某处已经裁过了。
 //
-//	table / column 必须落在 Scope() 的清单里——这一条同时是安全边界（表名要拼进
-//	SELECT rowid 的语句，只允许清单内的标识符）与防自欺（扫不到的位置永远配不上命中，
+//	table / column 必须落在 Scope() 的清单里——这一条同时是安全边界（表名与行键列要拼进
+//	查行是否存在的语句，只允许清单内的标识符）与防自欺（扫不到的位置永远配不上命中，
 //	写在白名单里只是把漏扫伪装成已裁定）。
 func ParseAdjudicated(raw []byte) ([]Adjudicated, error) {
 	var list []Adjudicated
@@ -212,19 +212,31 @@ func AdjudicatedAt(adj []Adjudicated, key string) (Adjudicated, bool) {
 // RowSet 回答"白名单指的这一行还在不在当前库里"，是 Filter 的 rowExists 实现。
 //
 // 分两步取，第一步是关键：先用一次 sqlite_master 拿到库里**有哪些表**，之后只对
-// 白名单点到、且确实存在的表查 rowid。直接对一张不存在的表 SELECT 会抛 no such table，
+// 白名单点到、且确实存在的表查行键。直接对一张不存在的表 SELECT 会抛 no such table，
 // 那个错误会顺着 Filter 冒上来把整次运行打死——表不存在的答案是 false（归 skipped），
 // 不是错误。注意 Scan 本身仍要求 scope 里每张表都在（缺表当场报错，见 sump-repair 的
 // 用法注释与 TODO.md），所以今天真正出声的路径是"表都在、个别行没了"。
 //
-// 表名来自 Adjudicated，已在 ParseAdjudicated 里收口成 Scope() 内的标识符，
-// 拼进语句是安全的；rowid 一律走参数。
+// 第二步用哪一列定位一行**由清单给**（Column.RowKey），不写死 rowid：正文表靠隐式 rowid，
+// 但 SQLite 里 `WITHOUT ROWID` 或 `INTEGER PRIMARY KEY` 那类表没有可依赖的隐式 rowid，
+// 写死的话要么当场报错、要么把真在库里的行答成"不存在"——后者会让白名单条目错误地归进
+// skipped，把该报的位置冲突吞掉。
+//
+// 表名与行键列名都是清单里的标识符（生产清单是包内 scope，白名单的表列已在
+// ParseAdjudicated 里收口成它旗下的二元组），不是用户输入，拼进语句是安全的；
+// 行键值一律走参数。
 type RowSet struct {
 	rowids map[string]map[int64]bool
 }
 
-// NewRowSet 装载 RowSet。adj 为空时不查库，直接返回一个恒 false 的判定器。
+// NewRowSet 用包内清单装载 RowSet。
 func NewRowSet(db *sql.DB, adj []Adjudicated) (*RowSet, error) {
+	return newRowSetColumns(db, adj, scope)
+}
+
+// newRowSetColumns 是内部入口：清单由调用方给，测试才能塞进一张行键列不是 rowid 的表
+// （见 TestRowSetUsesScopeKeyColumn）。不导出新的生产 API，也不改包级 scope。
+func newRowSetColumns(db *sql.DB, adj []Adjudicated, cols []Column) (*RowSet, error) {
 	set := &RowSet{rowids: make(map[string]map[int64]bool)}
 	if len(adj) == 0 {
 		return set, nil
@@ -233,39 +245,66 @@ func NewRowSet(db *sql.DB, adj []Adjudicated) (*RowSet, error) {
 	if err != nil {
 		return nil, err
 	}
-	wanted := make(map[string][]int64)
-	for _, a := range adj {
-		if tables[a.Table] {
-			wanted[a.Table] = append(wanted[a.Table], a.RowKey)
-		}
+	// 按（表，行键列）二元组分组，一组一查：同表若出现两种行键列就是两条查询，
+	// 结果并回同一个表的行键集合，Has 的口径不变。
+	type keyGroup struct {
+		table     string
+		keyColumn string
 	}
-	for table, rowKeys := range wanted {
+	wanted := make(map[keyGroup][]int64)
+	for _, a := range adj {
+		if !tables[a.Table] {
+			continue // 表不在库里：答案是"这一行不在"，不是错误
+		}
+		keyColumn, ok := keyColumnOf(cols, a.Table, a.Column)
+		if !ok {
+			return nil, fmt.Errorf("白名单条目 %s.%s.%d 指的 %s.%s 不在扫描清单里，无法确定行键列",
+				a.Table, a.Column, a.RowKey, a.Key, a.Probe)
+		}
+		g := keyGroup{table: a.Table, keyColumn: keyColumn}
+		wanted[g] = append(wanted[g], a.RowKey)
+	}
+	for g, rowKeys := range wanted {
 		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(rowKeys)), ",")
 		args := make([]any, 0, len(rowKeys))
 		for _, k := range rowKeys {
 			args = append(args, k)
 		}
-		rows, err := db.Query(`SELECT rowid FROM `+table+` WHERE rowid IN (`+placeholders+`)`, args...)
+		query := `SELECT ` + g.keyColumn + ` FROM ` + g.table + ` WHERE ` + g.keyColumn + ` IN (` + placeholders + `)`
+		rows, err := db.Query(query, args...)
 		if err != nil {
-			return nil, fmt.Errorf("查 %s 的行是否存在失败: %w", table, err)
+			return nil, fmt.Errorf("查 %s 的 %s 是否存在失败: %w", g.table, g.keyColumn, err)
 		}
-		ids := make(map[int64]bool)
+		ids := set.rowids[g.table]
+		if ids == nil {
+			ids = make(map[int64]bool)
+			set.rowids[g.table] = ids
+		}
 		for rows.Next() {
 			var id int64
 			if err := rows.Scan(&id); err != nil {
 				rows.Close()
-				return nil, fmt.Errorf("读 %s 的 rowid 失败: %w", table, err)
+				return nil, fmt.Errorf("读 %s 的 %s 失败: %w", g.table, g.keyColumn, err)
 			}
 			ids[id] = true
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("遍历 %s 的 rowid 失败: %w", table, err)
+			return nil, fmt.Errorf("遍历 %s 的 %s 失败: %w", g.table, g.keyColumn, err)
 		}
 		rows.Close()
-		set.rowids[table] = ids
 	}
 	return set, nil
+}
+
+// keyColumnOf 从清单里取（表，列）这一格的行键列名。
+func keyColumnOf(cols []Column, table, column string) (string, bool) {
+	for _, c := range cols {
+		if c.Table == table && c.Name == column {
+			return c.RowKey, true
+		}
+	}
+	return "", false
 }
 
 // Has 判一行在不在。表不在库里时返回 false，不返回错误（见类型注释）。
