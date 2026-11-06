@@ -126,7 +126,7 @@ func Clean(db *sql.DB, apply bool) (Report, error) {
 		}
 		rep.Tables = append(rep.Tables, st)
 	}
-	rep.Remaining, err = verify(tx)
+	rep.Remaining, err = verifyFn(tx)
 	if err != nil {
 		return rep, fmt.Errorf("复检失败: %w", err)
 	}
@@ -259,6 +259,15 @@ func dirty(k kind, v string) string {
 type queryer interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 }
+
+// verifyFn 是复检的调用点接缝，真实实现就是下面的 verify。
+//
+// 为什么要有这个变量：Clean 里"复检没归零就整事务回滚"那条 fail-closed 分支，
+// 在当前谓词下永远触发不了——clean 与 dirty 同源，正常存量一定能洗完。
+// 一条触发不了又没人测的保险等于没有保险（异变测试把 `if len(Remaining) > 0` 改成
+// `if false` 时，全套测试原本一声不响）。留这个接缝，测试就能按"谓词将来漂移"
+// 这一真实风险形态把分支钉住，而生产行为一个字不变。
+var verifyFn = verify
 
 // verify 复检整库：只报"表.列(类别)"，不报原值。
 func verify(q queryer) ([]string, error) {

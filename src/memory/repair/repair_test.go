@@ -203,6 +203,53 @@ func TestReportNeverPrintsRawValue(t *testing.T) {
 	}
 }
 
+// TestApplyRollsBackWhenRecheckNotClean 钉住"洗完复检没归零 → 整事务回滚"那条保险。
+//
+// 这条分支靠正常数据永远触发不了（clean 与 dirty 同源，存量一定洗得干净），
+// 所以这里从 verifyFn 接缝注入残留——它模拟的是真实风险：谓词将来漂移、
+// 或新增一列只在一边登记。没有这条测试，那句 `if len(Remaining) > 0` 就是一段
+// 谁也踩不到、因而谁也没验过的死代码。
+func TestApplyRollsBackWhenRecheckNotClean(t *testing.T) {
+	sh := newLegacyDB(t)
+	before := cellDump(t, sh)
+
+	// 换掉最后一道闸的检查：报告一处"仍然脏"，改写动作照旧发生。
+	// 报告里只给"表.列(类别)"——原值不许进 stdout 的规则同样适用于这里。
+	restore := verifyFn
+	verifyFn = func(queryer) ([]string, error) {
+		return []string{"mem_nodes.anchor(路径)"}, nil
+	}
+	t.Cleanup(func() { verifyFn = restore })
+
+	rep, err := Clean(sh.DB(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Committed {
+		t.Fatal("复检未归零却提交了（半洗的库已经写盘）")
+	}
+	if len(rep.Remaining) == 0 {
+		t.Fatalf("复检结果没带回报告里: %+v", rep)
+	}
+	if !strings.Contains(rep.Summary(), "未写盘") {
+		t.Errorf("摘要要说出没写盘这件事: %s", rep.Summary())
+	}
+	if got := cellDump(t, sh); got != before {
+		t.Error("回滚不彻底：复检未归零时库里留下了改写")
+	}
+
+	// 反向对照：把接缝换回真复检，同一份库必须能提交。
+	// 少了这一步，上面所有断言可能只是被一个"永远失败的假检查"撑起来的空话。
+	verifyFn = restore
+	rep2, err := Clean(sh.DB(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep2.Committed || len(rep2.Remaining) != 0 {
+		t.Fatalf("真复检下应当洗完提交: %+v", rep2)
+	}
+}
+
 // TestNullConversationStaysNull：memories.conversation_id 允许 NULL，
 // 空值不是泄露，不该被写成空串以外的任何东西。
 func TestNullConversationStaysNull(t *testing.T) {
