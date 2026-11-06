@@ -71,6 +71,7 @@
 
 ## 5. 已知未做
 
+- `/readyz` 还没有就绪语义：`http.go` 的 `handleReadyHTTP` 与 `/healthz` 完全一致，`HealthResponse.Checks` 恒为 nil；[spec §7.6](../../docs/concepts/spv2.md) 写的 `checks[]`（center / db 探针）未实现，见 `README.md` 的「HTTP 观测」；
 - 本模块 work/lease 模型接入生产（未做，非本轮目标）；
 - auth/tenant/capability；
 - spawn/cross-owner；

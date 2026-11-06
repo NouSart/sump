@@ -130,7 +130,7 @@ func validateAuthority(from Ref) error {
 		case AuthorityDelegated:
 			return ErrCode(CodeNotSupported, "delegated 在 v2.1 未设计", false, nil)
 		default:
-			return ErrCode(CodePermissionDenied, "agent authority 只能是 none/runtime/delegated", false, nil)
+			return ErrCode(CodePermissionDenied, "agent authority 只能是 none/runtime", false, nil)
 		}
 	case "service", "system":
 		if from.Authority != AuthorityNone {

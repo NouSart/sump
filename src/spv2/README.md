@@ -36,10 +36,19 @@
 - `Frame` 对应线上唯一单元：`v` / `id` / `type` / `work` / `from` / `to`，加上可选的 `method` / `reply_to` / `content_type` / `schema` / `idempotency_key` / `stream` / `status` / `error` / `body`。
 - `NewCall` / `NewReply` / `NewErrorReply` / `NewEvent` / `NewStreamFrame` / `NewErrorStreamFrame` 负责生成帧并填默认值；`Normalize` 补版本、id、内容类型和 authority。
 - `Marshal` / `Unmarshal` 走 MsgPack；`EncodeBody` / `DecodeBody` 处理 body。`DecodeBody` 按 `content_type` 解到目标：MsgPack/JSON 用通用解码，`text/plain` 只接受 `*string`，`application/octet-stream` 只接受 `*[]byte`。
+- **结构体必须同时带 `msgpack:` 与 `json:` 标签**：msgpack 是默认编解码器，而 msgpack/v5 在缺 `msgpack:` 时退回 Go 字段名——只写 `json:"tool_calls"` 会让线上键名变成 `ToolCalls`，与 JSON 契约不一致。`msgpack_tags_test.go` 直接断言线上键名，不测 Go 结构体之间的自反往返（那种写法漏标签也照样绿）。
 - `Frame.Validate` 检查版本、四种 type、work/from/to、`content_type` 白名单（msgpack/json/text/plain/octet-stream）、reply/stream 的目标是调用方，以及各 type 的排他字段（call 不携带 `reply_to` / `status` / `error` / `stream` 等）。
 - **authority 帧级规则**：human 只能 `owner` / `none`；agent 允许 `none` / `runtime`（`delegated` 返回 `not_supported`）；service/system 只能 `none`。因此 agent 可以携带 `runtime` 发 deliver，但能否执行仍由 work 角色校验决定。
 - `Ref` 有 `kind` / `id` / `authority` / `tenant`；`HumanRef`、`AgentRef`、`ServiceRef`、`SystemRef`、`WorkRef`、`CapabilityRef` 给默认 authority，`WithAuthority` 返回副本。`tenant` 仅为保留字段。
 - `ValidateTo` 只在 `to.kind=service` 时要求目标就是本服务；`capability` 目标直接返回 `not_supported`。
+
+### 生产骨架（src/service）怎么映射帧头
+
+说清楚现状，免得被当成 bug 去「修」：
+
+- 出站 `Service.Call(ctx, to, action, payload, trace, boss)` 与 `Fire` 把 **trace 当作帧头 `work`**（trace 为空时现场生成一个 ULID）——SPv2.1 里 work 是唯一的工作名词，骨架没有第二个 id 可放。
+- 帧头 **`from` 是发起这一跳的服务自己**（逐跳自定）：跨服务看到的调用方身份来自 `from`，不是任何入参。
+- **`boss` 不上线**：SPv2.1 帧头没有 `boss` 字段，`callSPv2` 也从不读它。生产链路在载荷里另带 boss，所以这是遗留参数、不是数据丢失。要彻底去掉它得改每个服务的签名，那属于协议讨论（AGENTS.md「协议变更先商量」），本轮不动；`src/service/spv2_trace_work_test.go` 把上面三条钉成了断言（含「整帧上线后线上不出现 boss」）。
 
 ### Card 与 Method
 
