@@ -957,7 +957,8 @@ func (s *Store) invalidateMean() {
 	s.mu.Unlock()
 }
 
-// centerVec 减去语料均值并归一化。mean 为空时退回归一化原向量。
+// centerVec 减去语料均值并归一化，返回**新切片**（v 与 mean 都不被改写）。
+// mean 为空或长度对不上时退化成只做归一化。
 func centerVec(v, mean []float32) []float32 {
 	if len(v) == 0 {
 		return v
@@ -972,19 +973,26 @@ func centerVec(v, mean []float32) []float32 {
 	return unit(out)
 }
 
+// unit 返回 v 的归一化副本，**不写入参**（纯函数）。
+//
+// 早先它就地改写调用方递进来的切片再返回同一个：调用方手里的向量还要继续用
+// （落库、比对下一条），却被这次计算偷偷改了——归一化结果只该由返回值给出。
+// 零向量没有方向，原样返回（仍是新切片）。
 func unit(v []float32) []float32 {
+	out := make([]float32, len(v))
 	var n float64
 	for _, f := range v {
 		n += float64(f) * float64(f)
 	}
 	if n == 0 {
-		return v
+		copy(out, v)
+		return out
 	}
 	n = math.Sqrt(n)
 	for i := range v {
-		v[i] = float32(float64(v[i]) / n)
+		out[i] = float32(float64(v[i]) / n)
 	}
-	return v
+	return out
 }
 
 func newNoteID(now time.Time) string {
