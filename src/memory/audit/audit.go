@@ -9,6 +9,7 @@
 // 硬约束（改动前请先读这段）：本包**不得 import**
 //   - github.com/NouSart/sump/memory/redact
 //   - github.com/NouSart/sump/memory/shared
+//   - github.com/NouSart/sump/memory/repair
 //
 // 第二把尺的价值全在于"独立"：共享谓词 = 同一把尺量两遍。下面的密钥上下文正则
 // 与 redact 里那条形状相同但**是手抄的第二份**，抄这件事就是设计本身，不是待清理的重复。
