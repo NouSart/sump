@@ -21,7 +21,7 @@ import (
 )
 
 // callWithin 是 call 的可调超时版（上游挂住时要等超过默认 5s，才看得出服务端的收手）。
-func callWithin(t *testing.T, srv *server.Server, action string, input any, timeout time.Duration) protocol.ResponsePayload {
+func callWithin(t *testing.T, srv *server.Server, action string, input any, timeout time.Duration) callResult {
 	t.Helper()
 	conn, err := spv2.Dial(context.Background(), srv.WsURL())
 	if err != nil {
@@ -36,9 +36,9 @@ func callWithin(t *testing.T, srv *server.Server, action string, input any, time
 	defer cancel()
 	resp, err := conn.Call(ctx, call)
 	if err != nil {
-		return protocol.ResponsePayload{OK: false, Error: err.Error()}
+		return callResult{OK: false, Error: err.Error()}
 	}
-	return protocol.ResponsePayload{OK: true, Data: resp.Body}
+	return callResult{OK: true, Data: resp.Body}
 }
 
 // TestNoteTimesOutWhenEmbeddingHangs 验证上游挂住时 note 会自己收手。

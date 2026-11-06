@@ -17,7 +17,7 @@ import (
 )
 
 // pushConfigure 以设置中心身份向服务地址推送一条 configure（单键）并取回执。
-func pushConfigure(t *testing.T, addr string, p protocol.ConfigurePayload) protocol.ResponsePayload {
+func pushConfigure(t *testing.T, addr string, p protocol.ConfigurePayload) callResult {
 	t.Helper()
 	c, err := spv2.Dial(context.Background(), addr)
 	if err != nil {
@@ -32,9 +32,9 @@ func pushConfigure(t *testing.T, addr string, p protocol.ConfigurePayload) proto
 	defer cancel()
 	resp, err := c.Call(ctx, call)
 	if err != nil {
-		return protocol.ResponsePayload{OK: false, Error: err.Error()}
+		return callResult{OK: false, Error: err.Error()}
 	}
-	return protocol.ResponsePayload{OK: true, Data: resp.Body}
+	return callResult{OK: true, Data: resp.Body}
 }
 
 // TestSettingsLive 验证：名片声明 13 项（5 个 recall.* + recall.embedding + 2 个 share.* + 5 个只读）；

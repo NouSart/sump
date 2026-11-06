@@ -192,7 +192,7 @@ func (c *stubCaller) URL() string {
 }
 
 // call 向 memory 发一次原生调用并等回执（短连接）。
-func (c *stubCaller) call(t *testing.T, memoryURL, action string, input any) protocol.ResponsePayload {
+func (c *stubCaller) call(t *testing.T, memoryURL, action string, input any) callResult {
 	t.Helper()
 	conn, err := spv2.Dial(context.Background(), memoryURL)
 	if err != nil {
@@ -207,14 +207,14 @@ func (c *stubCaller) call(t *testing.T, memoryURL, action string, input any) pro
 	defer cancel()
 	resp, err := conn.Call(ctx, call)
 	if err != nil {
-		return protocol.ResponsePayload{OK: false, Error: err.Error()}
+		return callResult{OK: false, Error: err.Error()}
 	}
-	return protocol.ResponsePayload{OK: true, Data: resp.Body}
+	return callResult{OK: true, Data: resp.Body}
 }
 
 // recallUntilReady 处理“caller 刚注册、memory 的 roster 可能还未更新”的时序：
 // resume 解析失败会同步回错（未知目标服务），重试即可。
-func (c *stubCaller) recallUntilReady(t *testing.T, memoryURL string, input protocol.RecallPayload) protocol.ResponsePayload {
+func (c *stubCaller) recallUntilReady(t *testing.T, memoryURL string, input protocol.RecallPayload) callResult {
 	t.Helper()
 	for i := 0; i < 20; i++ {
 		rp := c.call(t, memoryURL, "recall", input)
@@ -227,7 +227,7 @@ func (c *stubCaller) recallUntilReady(t *testing.T, memoryURL string, input prot
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatal("recall 重试超时：memory 名册中始终未见 reasoner")
-	return protocol.ResponsePayload{}
+	return callResult{}
 }
 
 // startMemory 起一个真 memory server（临时库）。

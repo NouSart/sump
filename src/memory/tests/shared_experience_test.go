@@ -46,7 +46,7 @@ func recallMemoryBlock(t *testing.T, caller *stubCaller, memoryURL, cid, userTex
 }
 
 // publish 以 reasoner 的身份发布会话摘要。
-func publish(t *testing.T, caller *stubCaller, memoryURL string, p protocol.PublishSessionPayload) protocol.ResponsePayload {
+func publish(t *testing.T, caller *stubCaller, memoryURL string, p protocol.PublishSessionPayload) callResult {
 	t.Helper()
 	rp := caller.call(t, memoryURL, "publish_session", p)
 	if !rp.OK {
