@@ -7,6 +7,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -76,19 +77,35 @@ func Score(terms []string, content string) int {
 // Rank 按命中词数排序（只保留 >0 分），同分按 priority 大、新近优先；
 // 受条数与字符预算（按条目正文字符数计）约束。
 func Rank(entries []Entry, query string, limit, maxChars int) []Entry {
+	return rank(entries, query, limit, maxChars, nil)
+}
+
+// RankLifecycle 与 Rank 相同，但把命中分乘以生命周期权重（重要性 / 访问次数 /
+// 距上次访问的天数）。v0 的 Rank 保留为「不看时间」的纯相关性排序。
+func RankLifecycle(entries []Entry, query string, limit, maxChars int, now time.Time) []Entry {
+	return rank(entries, query, limit, maxChars, func(e Entry) float64 { return Weight(e, now) })
+}
+
+func rank(entries []Entry, query string, limit, maxChars int, weight func(Entry) float64) []Entry {
 	terms := Terms(query)
 	if len(terms) == 0 {
 		return nil
 	}
 	type scored struct {
 		e Entry
-		s int
+		s float64
 	}
 	var hits []scored
 	for _, e := range entries {
-		if s := Score(terms, e.Content); s > 0 {
-			hits = append(hits, scored{e: e, s: s})
+		h := Score(terms, e.Content)
+		if h <= 0 {
+			continue
 		}
+		s := float64(h)
+		if weight != nil {
+			s *= weight(e)
+		}
+		hits = append(hits, scored{e: e, s: s})
 	}
 	sort.SliceStable(hits, func(i, j int) bool {
 		a, b := hits[i], hits[j]
@@ -152,21 +169,35 @@ func Core(entries []Entry, limit, maxChars int) []Entry {
 // 只保留 score ≥ minScore 的条目（无向量 / 维度不符的条目跳过）；
 // 同分按 priority 大、新近（id 大）优先；受条数与字符预算约束（与 Rank 一致）。
 func RankSemantic(entries []Entry, queryVec []float32, limit, maxChars int, minScore float32) []Entry {
+	return rankSemantic(entries, queryVec, limit, maxChars, minScore, nil)
+}
+
+// RankSemanticLifecycle 与 RankSemantic 相同，但把余弦相似度乘以生命周期权重。
+// 注意：阈值只作用于原始余弦——衰减不应把「相关」变成「不相关」。
+func RankSemanticLifecycle(entries []Entry, queryVec []float32, limit, maxChars int, minScore float32, now time.Time) []Entry {
+	return rankSemantic(entries, queryVec, limit, maxChars, minScore, func(e Entry) float64 { return Weight(e, now) })
+}
+
+func rankSemantic(entries []Entry, queryVec []float32, limit, maxChars int, minScore float32, weight func(Entry) float64) []Entry {
 	if len(queryVec) == 0 {
 		return nil
 	}
 	type scored struct {
 		e Entry
-		s float32
+		s float64
 	}
 	var hits []scored
 	for _, e := range entries {
 		if len(e.Embedding) != len(queryVec) {
 			continue
 		}
-		s := cosine(queryVec, e.Embedding)
-		if s < minScore {
+		c := cosine(queryVec, e.Embedding)
+		if c < minScore {
 			continue
+		}
+		s := float64(c)
+		if weight != nil {
+			s *= weight(e)
 		}
 		hits = append(hits, scored{e: e, s: s})
 	}

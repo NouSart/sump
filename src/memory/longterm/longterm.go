@@ -27,6 +27,9 @@ type Entry struct {
 	Kind           string
 	Content        string
 	Priority       int
+	Salience       float64 // 0..1：重要性，放大遗忘曲线的时间常数
+	AccessCount    int     // 被真正注入上下文的次数
+	LastAccessAt   int64   // unix 秒；0 = 从未访问（回退到 CreatedAt）
 	ConversationID string
 	CreatedAt      string
 	UpdatedAt      string
@@ -58,6 +61,9 @@ CREATE TABLE IF NOT EXISTS memories (
 	kind            TEXT NOT NULL,
 	content         TEXT NOT NULL,
 	priority        INTEGER NOT NULL DEFAULT 0,
+	salience        REAL NOT NULL DEFAULT 0,
+	access_count    INTEGER NOT NULL DEFAULT 0,
+	last_access_at  INTEGER NOT NULL DEFAULT 0,
 	source          TEXT NOT NULL DEFAULT '',
 	conversation_id TEXT,
 	status          TEXT NOT NULL DEFAULT 'active',
@@ -92,6 +98,9 @@ func (s *Store) migrate() error {
 		migrations := []struct{ col, stmt string }{
 			{"embedding", `ALTER TABLE memories ADD COLUMN embedding BLOB`},
 			{"embedding_model", `ALTER TABLE memories ADD COLUMN embedding_model TEXT`},
+			{"salience", `ALTER TABLE memories ADD COLUMN salience REAL NOT NULL DEFAULT 0`},
+			{"access_count", `ALTER TABLE memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0`},
+			{"last_access_at", `ALTER TABLE memories ADD COLUMN last_access_at INTEGER NOT NULL DEFAULT 0`},
 		}
 		for _, m := range migrations {
 			if cols[m.col] {
@@ -145,6 +154,16 @@ func (s *Store) tableColumns() (map[string]bool, error) {
 // 不透明 id 形状。这里不检查也不会有下一道检查——remember 是 Tool:true，
 // 模型给的 content 直接落到共享库。
 func (s *Store) Add(kind, content string, priority int, conversationID, source string) (int64, bool, error) {
+	return s.add(kind, content, priority, 0, conversationID, source, false)
+}
+
+// AddWithSalience 与 Add 相同，但带上重要性 salience（0..1），且重复内容会
+// 把 salience / priority 提升到两者最大值（只升不降）。分类流水线用这个入口。
+func (s *Store) AddWithSalience(kind, content string, priority int, salience float64, conversationID, source string) (int64, bool, error) {
+	return s.add(kind, content, priority, salience, conversationID, source, true)
+}
+
+func (s *Store) add(kind, content string, priority int, salience float64, conversationID, source string, merge bool) (int64, bool, error) {
 	kind = redact.Text(kind)
 	content = redact.Text(content)
 	if strings.TrimSpace(kind) == "" || strings.TrimSpace(content) == "" {
@@ -161,6 +180,7 @@ func (s *Store) Add(kind, content string, priority int, conversationID, source s
 	if priority < 0 {
 		priority = 0
 	}
+	salience = clampSalience(salience)
 	var id int64
 	err = s.db.QueryRow(
 		`SELECT id FROM memories WHERE status='active' AND kind=? AND content=? LIMIT 1`,
@@ -168,16 +188,25 @@ func (s *Store) Add(kind, content string, priority int, conversationID, source s
 	).Scan(&id)
 	switch {
 	case err == nil:
-		return id, false, nil
+		if !merge {
+			return id, false, nil
+		}
+		// 只升不降：重复观察不应把重要性改低。
+		_, err := s.db.Exec(
+			`UPDATE memories SET priority=MAX(priority,?), salience=MAX(salience,?), updated_at=?
+			 WHERE id=? AND status='active'`,
+			priority, salience, time.Now().Format(time.RFC3339Nano), id,
+		)
+		return id, false, err
 	case !errors.Is(err, sql.ErrNoRows):
 		return 0, false, err
 	}
 
-	now := time.Now().Format(time.RFC3339Nano)
+	ts := time.Now().Format(time.RFC3339Nano)
 	res, err := s.db.Exec(
-		`INSERT INTO memories(kind, content, priority, source, conversation_id, status, created_at, updated_at)
-		 VALUES(?,?,?,?,?,'active',?,?)`,
-		kind, content, priority, src, nullIfEmpty(cid), now, now,
+		`INSERT INTO memories(kind, content, priority, salience, access_count, last_access_at, source, conversation_id, status, created_at, updated_at)
+		 VALUES(?,?,?,?,0,0,?,?,'active',?,?)`,
+		kind, content, priority, salience, src, nullIfEmpty(cid), ts, ts,
 	)
 	if err != nil {
 		return 0, false, err
@@ -199,11 +228,43 @@ func (s *Store) Forget(id int64) (bool, error) {
 	return n > 0, err
 }
 
+// Touch 记一次「真正被注入上下文」的访问：access_count+1、last_access_at=now。
+// 只影响 active 条目；重复 id 只计一次。访问计数与时间都是派生统计，可丢失。
+func (s *Store) Touch(ids []int64, now time.Time) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, now.Unix())
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		args = append(args, id)
+	}
+	if len(args) == 1 {
+		return nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)-1), ",")
+	_, err := s.db.Exec(
+		`UPDATE memories SET access_count=access_count+1, last_access_at=?
+		 WHERE status='active' AND id IN (`+placeholders+`)`,
+		args...,
+	)
+	return err
+}
+
 // ListActive 返回全部 active 条目（按 id 升序；v0 个人规模全量取出，检索在进程内做）；
 // 含派生向量（未计算为 nil）。
 func (s *Store) ListActive() ([]Entry, error) {
 	rows, err := s.db.Query(
-		`SELECT id, kind, content, priority, COALESCE(conversation_id,''), created_at, updated_at,
+		`SELECT id, kind, content, priority, salience, access_count, last_access_at,
+		        COALESCE(conversation_id,''), created_at, updated_at,
 		        embedding, COALESCE(embedding_model,'')
 		 FROM memories WHERE status='active' ORDER BY id`)
 	if err != nil {
@@ -214,7 +275,7 @@ func (s *Store) ListActive() ([]Entry, error) {
 	for rows.Next() {
 		var e Entry
 		var blob []byte
-		if err := rows.Scan(&e.ID, &e.Kind, &e.Content, &e.Priority, &e.ConversationID, &e.CreatedAt, &e.UpdatedAt, &blob, &e.EmbeddingModel); err != nil {
+		if err := rows.Scan(&e.ID, &e.Kind, &e.Content, &e.Priority, &e.Salience, &e.AccessCount, &e.LastAccessAt, &e.ConversationID, &e.CreatedAt, &e.UpdatedAt, &blob, &e.EmbeddingModel); err != nil {
 			return nil, err
 		}
 		e.Embedding = decodeVector(blob)
