@@ -157,6 +157,18 @@ CREATE TABLE IF NOT EXISTS tasks (
 	updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_conversation ON tasks(conversation_id, updated_at);
+CREATE TABLE IF NOT EXISTS memory_staging (
+	id              INTEGER PRIMARY KEY AUTOINCREMENT,
+	conversation_id TEXT NOT NULL DEFAULT '',
+	role            TEXT NOT NULL DEFAULT 'user',
+	content         TEXT NOT NULL,
+	status          TEXT NOT NULL DEFAULT 'pending',
+	attempts        INTEGER NOT NULL DEFAULT 0,
+	last_error      TEXT NOT NULL DEFAULT '',
+	created_at      TEXT NOT NULL,
+	updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_staging_pending ON memory_staging(status, id);
 `
 
 // activeTaskIndex 保证"一个会话最多一个进行中的任务"。
