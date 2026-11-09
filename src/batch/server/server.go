@@ -474,7 +474,7 @@ func (s *Server) rebuildJob(j store.Job) (*runningJob, error) {
 	}
 	rj := &runningJob{
 		id: j.ItemID, service: j.Service, action: j.Action,
-		caller: j.Caller, boss: j.Boss, trace: j.Trace, kind: kindOf(j.Kind),
+		caller: j.Caller, trace: j.Trace, kind: kindOf(j.Kind),
 		wakeMode: wakeMode, onError: onError,
 		timeout: timeout, concurrency: conc, reserved: conc,
 		ok: j.Ok, failed: j.Failed, skipped: j.Skipped,

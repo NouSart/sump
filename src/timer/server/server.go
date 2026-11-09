@@ -67,7 +67,7 @@ type Server struct {
 	mu      sync.Mutex
 	pending map[string]*timing // item → 在计时器
 	seq     int64              // 计时表的状态版本（每次受理/到点/撤销都 ++；快照与 list 都带它）
-	pushed  map[string]bool    // 上一轮推过门户的 boss（本轮没有的要补一条空快照）
+	pushed  map[string]bool    // 上一轮推过门户的 caller（本轮没有的要补一条空快照）
 }
 
 // portalName 返回当前门户服务名（空 = 不推快照）。
@@ -87,9 +87,8 @@ func (s *Server) setPortalName(v string) {
 // timing 是一条在计时器（受理后、到点前）。
 type timing struct {
 	item   string
-	caller string // 到点补报回谁（信封 from）
+	caller string // 到点补报回谁（帧头 from 原样带回）
 	trace  string // 链路 id（原样沿用）
-	boss   string // 任务原老板（补报轮回交付用；原样带回）
 	ms     int64
 	note   string
 	fireAt time.Time
@@ -275,14 +274,14 @@ func (s *Server) StopAll() {
 
 // nativeSleep 受理一次计时：立即回执，到点由 report_result 补报（处理函数里不等待）。
 func (s *Server) nativeSleep(_ context.Context, call *spv2.Call) error {
-	out, err := s.sleep(call.Frame.From.ID, call.Frame.Work, call.Frame.From.ID, call.Frame.Body)
+	out, err := s.sleep(call.Frame.From.ID, call.Frame.Work, call.Frame.Body)
 	if err != nil {
 		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
 	return call.Reply(out)
 }
 
-func (s *Server) sleep(caller, trace, boss string, body []byte) (any, error) {
+func (s *Server) sleep(caller, trace string, body []byte) (any, error) {
 	var req protocol.TimerSleepPayload
 	if err := protocol.DecodeRaw(body, &req); err != nil {
 		return nil, err
@@ -299,7 +298,6 @@ func (s *Server) sleep(caller, trace, boss string, body []byte) (any, error) {
 		item:   protocol.NewID(),
 		caller: caller,
 		trace:  trace,
-		boss:   boss,
 		ms:     req.MS,
 		note:   note,
 		fireAt: time.Now().Add(time.Duration(req.MS) * time.Millisecond),
@@ -319,7 +317,7 @@ func (s *Server) sleep(caller, trace, boss string, body []byte) (any, error) {
 		return nil, fmt.Errorf("在计时器已满（%d 条），不排队：稍后再试或先 cancel 掉不用的", s.maxPendingValue())
 	}
 
-	s.logger.Printf("受理计时 %s（来自 %s，boss=%s）：%dms 后到点%s", t.item, t.caller, t.boss, req.MS, tripped(clipped))
+	s.logger.Printf("受理计时 %s（来自 %s）：%dms 后到点%s", t.item, t.caller, req.MS, tripped(clipped))
 	s.pushPortalState(trace)
 	return protocol.TimerSleepResult{
 		ItemID: t.item,
@@ -422,8 +420,8 @@ func (s *Server) pushPortalState(trace string) {
 	groups := map[string][]protocol.TimerItem{}
 	cur := map[string]bool{}
 	for _, t := range s.pending {
-		groups[t.boss] = append(groups[t.boss], timerItem(t))
-		cur[t.boss] = true
+		groups[t.caller] = append(groups[t.caller], timerItem(t))
+		cur[t.caller] = true
 	}
 	prev := s.pushed
 	s.pushed = cur
