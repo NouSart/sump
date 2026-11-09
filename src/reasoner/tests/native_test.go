@@ -52,7 +52,7 @@ func TestReasonerNativeMethods(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{
-		"echo", "debug_call", "think", "message", "step",
+		"echo", "debug_call", "think", "message",
 		"report_result", "user_hold", "retry",
 	} {
 		m, ok := card.Method(name)
@@ -114,17 +114,6 @@ func TestReasonerNativeMethods(t *testing.T) {
 	}
 	if held.Status != "accepted" || held.Level != "primary" {
 		t.Fatalf("user_hold 结果不符: %+v", held)
-	}
-
-	// step：没有进行中的任务时忽略，而不是报错。
-	var stepped struct {
-		Status string `msgpack:"status"`
-	}
-	if err := c.CallDecode(ctx, nativeCall(t, "tester", "step", map[string]any{"conversation_id": "nope"}), &stepped); err != nil {
-		t.Fatal(err)
-	}
-	if stepped.Status != "ignored" {
-		t.Fatalf("step 结果不符: %+v", stepped)
 	}
 
 	// report_result：没有在途受理 → ignored。

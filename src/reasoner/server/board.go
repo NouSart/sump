@@ -152,20 +152,9 @@ func (s *Server) boardKick(st *taskState) {
 		st.running = false
 		st.mu.Unlock()
 		if more {
-			s.fireStep(st)
+			s.boardKick(st)
 		}
 	}()
-}
-
-// fireStep 自跳推进下一轮（发出即完；信纸只带会话号）。
-func (s *Server) fireStep(st *taskState) {
-	st.mu.Lock()
-	cid, trace, closed := st.cid, st.trace, st.closed
-	st.mu.Unlock()
-	if closed {
-		return
-	}
-	s.Fire("self", "step", stepPayload{ConversationID: cid}, trace)
 }
 
 // ---------- 轮次 ----------
@@ -615,32 +604,6 @@ func (s *Server) deliverToBoss(st *taskState, text string) error {
 		return fmt.Errorf("交付 boss(%s) 失败: %w", st.boss, err)
 	}
 	return nil
-}
-
-// ---------- 自跳入口 ----------
-
-// stepPayload 是自跳（step）的 payload：只带会话号（上下文在黑板里）。
-type stepPayload struct {
-	ConversationID string `msgpack:"conversation_id,omitempty"`
-}
-
-// step 承接自跳的共享实现：把黑板上的任务推进到下一轮（没有进行中的任务就忽略）。
-func (s *Server) step(body []byte) (any, error) {
-	var p stepPayload
-	if err := protocol.DecodeRaw(body, &p); err != nil {
-		return nil, err
-	}
-	cid := p.ConversationID
-	if cid == "" {
-		cid = "default"
-	}
-	st := s.boardGet(cid)
-	if st == nil {
-		s.logger.Printf("step：会话 %s 没有进行中的任务（黑板已释放，忽略）", cid)
-		return map[string]any{"status": "ignored"}, nil
-	}
-	s.boardKick(st)
-	return map[string]any{"status": "accepted"}, nil
 }
 
 // ---------- 文案与辅助 ----------

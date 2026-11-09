@@ -105,22 +105,6 @@ func (s *Server) registerNativeMethods() {
 		},
 	}, s.nativeMessage)
 	s.HandleNative(spv2.Method{
-		Name:        "step",
-		Description: "自跳：把黑板上的任务推进到下一轮",
-		Input: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"conversation_id": map[string]any{"type": "string"},
-			},
-		},
-		Output: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"status": map[string]any{"type": "string", "description": "accepted / ignored"},
-			},
-		},
-	}, s.nativeStep)
-	s.HandleNative(spv2.Method{
 		Name:        "report_result",
 		Description: "补报：异步动作的后续结果，按来源 / trace / item_id 关联",
 		Input: map[string]any{
@@ -218,14 +202,6 @@ func (s *Server) nativeMessage(ctx context.Context, call *spv2.Call) error {
 		return s.streamHumanMessage(ctx, call, probe)
 	}
 	out, err := s.message(ctx, call.Frame.From, call.Frame.Work, call.Frame.Body)
-	if err != nil {
-		return replyNativeError(call, err)
-	}
-	return call.Reply(out)
-}
-
-func (s *Server) nativeStep(_ context.Context, call *spv2.Call) error {
-	out, err := s.step(call.Frame.Body)
 	if err != nil {
 		return replyNativeError(call, err)
 	}
