@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -67,6 +68,70 @@ func TestIdempotentCallCached(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&calls); got != 2 {
 		t.Fatalf("handler calls = %d, want 2", got)
+	}
+}
+
+// 并发重复请求必须只执行一次 handler：先到的在跑，后到的等它完成再读缓存。
+// 删掉 IdempotencyCache 的在途登记（begin/finish）时，本用例会看到多次执行。
+func TestIdempotentConcurrentDuplicatesRunOnce(t *testing.T) {
+	card := testCard()
+	card.Methods = []Method{{
+		Name: "echo", Shape: ShapeCall, Version: 1, Idempotent: true,
+		Input: map[string]any{"type": "object"},
+	}}
+	srv, err := NewServer(card, WithIdempotency(NewIdempotencyCache(time.Minute)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int64
+	srv.Handle("echo", func(_ context.Context, c *Call) error {
+		calls.Add(1)
+		time.Sleep(30 * time.Millisecond) // 拉宽并发窗口
+		var in map[string]any
+		_ = c.Frame.DecodeBody(&in)
+		return c.Reply(in)
+	})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/spv2" {
+			srv.Handler().ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+	url := "ws" + strings.TrimPrefix(ts.URL, "http") + "/spv2"
+	c, err := Dial(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	const n = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f, err := NewCall("w1", HumanRef("p"), ServiceRef("svc"), "echo", map[string]any{"n": 1})
+			if err != nil {
+				errs <- err
+				return
+			}
+			f.IdempotencyKey = "race-key"
+			var out map[string]any
+			errs <- c.CallDecode(context.Background(), f, &out)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("并发重复请求失败: %v", err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler calls = %d, want 1（并发重复请求应只执行一次）", got)
 	}
 }
 

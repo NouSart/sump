@@ -388,24 +388,23 @@ func (s *Server) runCall(c *conn, f Frame, h Handler) {
 		if m, ok := s.card.Method(f.Method); ok && m.Idempotent {
 			idemKey = idemKeyOf(f)
 			if cached, ok := s.idem.get(idemKey); ok {
-				cached.ID = NewID()
-				cached.ReplyTo = f.ID
-				cached.To = f.From
-				code := StatusOK
-				if cached.Status == StatusError {
-					code = StatusError
-					if cached.Error != nil && cached.Error.Code != "" {
-						code = cached.Error.Code
-					}
-				}
-				if code != StatusOK {
-					s.countError(code)
-				}
-				s.observeResponseBytes(f.Method, len(cached.Body))
-				_ = c.send(cached)
-				s.metrics.Counter("sump_requests_total", "Total requests", map[string]string{"method": s.methodLabel(f.Method), "code": code}, 1)
-				s.metrics.Observe("sump_request_duration_seconds", "Request latency", "s", map[string]string{"method": s.methodLabel(f.Method)}, time.Since(start).Seconds())
+				s.sendCached(c, f, cached, start)
 				return
+			}
+			wait, leader := s.idem.begin(idemKey)
+			if !leader {
+				select {
+				case <-wait:
+					if cached, ok := s.idem.get(idemKey); ok {
+						s.sendCached(c, f, cached, start)
+						return
+					}
+				case <-time.After(s.opts.ActionTimeout):
+					_ = c.send(NewErrorReply(f, s.card.Actor, CodeDeadlineExceeded, "幂等请求仍在处理中", true, nil))
+					return
+				}
+			} else {
+				defer s.idem.finish(idemKey)
 			}
 		}
 	}
@@ -445,6 +444,27 @@ func (s *Server) runCall(c *conn, f Frame, h Handler) {
 	}
 	s.metrics.Counter("sump_requests_total", "Total requests", map[string]string{"method": s.methodLabel(f.Method), "code": code}, 1)
 	s.metrics.Observe("sump_request_duration_seconds", "Request latency", "s", map[string]string{"method": s.methodLabel(f.Method)}, time.Since(start).Seconds())
+}
+
+// sendCached 重放幂等缓存里的 reply（只重写关联字段，不改结果）。
+func (s *Server) sendCached(c *conn, req Frame, cached Frame, start time.Time) {
+	cached.ID = NewID()
+	cached.ReplyTo = req.ID
+	cached.To = req.From
+	code := StatusOK
+	if cached.Status == StatusError {
+		code = StatusError
+		if cached.Error != nil && cached.Error.Code != "" {
+			code = cached.Error.Code
+		}
+	}
+	if code != StatusOK {
+		s.countError(code)
+	}
+	s.observeResponseBytes(req.Method, len(cached.Body))
+	_ = c.send(cached)
+	s.metrics.Counter("sump_requests_total", "Total requests", map[string]string{"method": s.methodLabel(req.Method), "code": code}, 1)
+	s.metrics.Observe("sump_request_duration_seconds", "Request latency", "s", map[string]string{"method": s.methodLabel(req.Method)}, time.Since(start).Seconds())
 }
 
 func codeOf(err error) string {
@@ -608,11 +628,12 @@ func (c *Call) Reply(body any) error {
 	c.replied = true
 	c.mu.Unlock()
 	c.srv.observeResponseBytes(c.Frame.Method, len(f.Body))
-	err = c.conn.send(f)
-	if err == nil && c.idemKey != "" && c.srv.idem != nil {
+	// 先落缓存再回包：否则调用方收到回执后立刻重试会撞进「缓存还没写」的窗口，
+	// 重复执行一次 handler（server_edge_test.go 的幂等用例就是这个竞态）。
+	if c.idemKey != "" && c.srv.idem != nil {
 		c.srv.idem.put(c.idemKey, f)
 	}
-	return err
+	return c.conn.send(f)
 }
 
 // ReplyError 发送失败响应。
@@ -628,11 +649,11 @@ func (c *Call) ReplyError(code, msg string, retryable bool, details map[string]a
 	c.mu.Unlock()
 	c.srv.countError(code)
 	c.srv.observeResponseBytes(c.Frame.Method, len(f.Body))
-	err := c.conn.send(f)
-	if err == nil && c.idemKey != "" && c.srv.idem != nil {
+	// 与 Reply 同一口径：缓存先于回包，避免重试窗口里重复执行。
+	if c.idemKey != "" && c.srv.idem != nil {
 		c.srv.idem.put(c.idemKey, f)
 	}
-	return err
+	return c.conn.send(f)
 }
 
 // SendEvent 向调用方发事件。
