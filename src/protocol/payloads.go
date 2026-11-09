@@ -995,16 +995,29 @@ type ShellEventData struct {
 
 // RememberPayload 是 remember 的 payload：写入一条长期记忆条目。
 type RememberPayload struct {
-	Kind           string `msgpack:"kind"`                      // 分类（自由文本：偏好 / 身份 / 知识 / 事件……）
-	Content        string `msgpack:"content"`                   // 条目正文
-	Priority       int    `msgpack:"priority,omitempty"`        // >0 = 核心记忆（每次对话都注入，不看相关性）
-	ConversationID string `msgpack:"conversation_id,omitempty"` // 可空 = 全局条目
+	Kind           string  `msgpack:"kind"`                      // 分类（自由文本：偏好 / 身份 / 知识 / 事件……）
+	Content        string  `msgpack:"content"`                   // 条目正文
+	Priority       int     `msgpack:"priority,omitempty"`        // >0 = 核心记忆（每次对话都注入，不看相关性）
+	Salience       float64 `msgpack:"salience,omitempty"`        // 0..1 重要性：越大遗忘越慢（缺省 0）
+	ConversationID string  `msgpack:"conversation_id,omitempty"` // 可空 = 全局条目
 }
 
 // RememberResult 是 remember 的结果：条目 id 与是否新建（重复内容幂等跳过）。
 type RememberResult struct {
 	ID      int64 `msgpack:"id"`
 	Created bool  `msgpack:"created"`
+}
+
+// ConsolidateResult 是一次记忆整理的结果（整理池的计数，不含原文）。
+type ConsolidateResult struct {
+	Processed    int `msgpack:"processed"`
+	Archived     int `msgpack:"archived"`
+	Skipped      int `msgpack:"skipped"`
+	Failed       int `msgpack:"failed"`
+	MemnetFailed int `msgpack:"memnet_failed,omitempty"`
+	Conflicts    int `msgpack:"conflicts,omitempty"`
+	Superseded   int `msgpack:"superseded,omitempty"`
+	Unresolved   int `msgpack:"unresolved,omitempty"`
 }
 
 // ForgetPayload 是 forget 的 payload：软删一条长期记忆（不在 provides 里——不给 LLM 删记忆的按钮）。
