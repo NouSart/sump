@@ -102,10 +102,9 @@ export class CenterLink {
     }
   }
 
-  // jumpTo 跳转到名册里的另一个服务并等响应——门户的"用户 → 智能体"这一跳走它。
-  // 帧的 from 带发起方自己：一跳的归属就是发起的服务（对方最终经 deliver 直达 from）——
-  // 少了它，请求照样送达，但回答会找不到回来的路（reasoner 只认发起方）。
-  async jumpTo(to: string, action: string, input?: unknown, timeoutMS: number = callTimeoutDefault): Promise<unknown> {
+  // callService 按名册解析地址，以本服务身份调用另一个服务并等响应。
+  // 帧的 from 带发起方自己：结果归属就是发起的服务（对方最终经 deliver 直达 from）。
+  async callService(to: string, action: string, input?: unknown, timeoutMS: number = callTimeoutDefault): Promise<unknown> {
     const card = this.rosterValue?.services?.find((c) => c.name === to);
     if (!card || !card.addr) throw new Error(`未知目标服务: ${to}（不在名册里）`);
     try {

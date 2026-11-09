@@ -141,7 +141,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "message", Tool: true, Input: "统一消息 {text, sender?, intent?, reply_to?, conversation?}（human=authority owner / agent=authority none）", Output: "受理回执（最终结果由 deliver 另行送达）"},
 			{Action: "think", Input: "单步推理 {prompt, system?, model?, max_tokens?}", Output: "{text}（一次补全：不带工具、不开任务、不进黑板；所有非任务型模型调用的统一出口）"},
 			{Action: "echo", Input: "任意", Output: "原样返回（测试用）"},
-			{Action: "debug_jump", Input: "{to, action, input}", Output: "目标服务的响应数据（调试用）"},
+			{Action: "debug_call", Input: "{to, action, input}", Output: "目标服务的响应数据（调试用）"},
 			{Action: "retry", Input: "{conversation_id}（门户专用：对上一轮失败、任务还开着的会话再跑一轮）", Output: "{retried, conversation_id}"},
 		},
 		Logger: logger,
@@ -423,8 +423,8 @@ func (s *Server) echo(body []byte) (any, error) {
 	return map[string]any{"who": s.cfg.Name, "echo": v}, nil
 }
 
-// debugJump 执行一次调试跳转；trace 原样传给目标（原生取 Frame.Work）。
-func (s *Server) debugJump(ctx context.Context, trace string, body []byte) (any, error) {
+// debugCall 代调用一次目标服务；trace 原样传给目标（原生取 Frame.Work）。
+func (s *Server) debugCall(ctx context.Context, trace string, body []byte) (any, error) {
 	var req struct {
 		To     string             `msgpack:"to"`
 		Action string             `msgpack:"action"`
@@ -434,7 +434,7 @@ func (s *Server) debugJump(ctx context.Context, trace string, body []byte) (any,
 		return nil, err
 	}
 	if req.To == "" || req.Action == "" {
-		return nil, errors.New("debug_jump: to 与 action 必填")
+		return nil, errors.New("debug_call: to 与 action 必填")
 	}
 	data, err := s.Call(ctx, req.To, req.Action, req.Input, trace)
 	if err != nil {

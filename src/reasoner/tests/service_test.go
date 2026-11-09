@@ -366,9 +366,8 @@ func TestRegisterAndEcho(t *testing.T) {
 	}
 }
 
-// TestSelfJump 验证自我跳转：debug_jump 到 self，再回 echo——
-// 这是“循环 = 自我跳转链”的最小形态。
-func TestSelfJump(t *testing.T) {
+// TestSelfCall 验证自调用：debug_call 到 self，再回 echo。
+func TestSelfCall(t *testing.T) {
 	sc := startStubCenter(t)
 	s := startReasoner(t, sc.URL())
 
@@ -376,7 +375,7 @@ func TestSelfJump(t *testing.T) {
 	defer cancel()
 	c := dialReasoner(t, s)
 
-	rp := jump(t, c, "debug_jump", map[string]any{
+	rp := jump(t, c, "debug_call", map[string]any{
 		"to":     "self",
 		"action": "echo",
 		"input":  map[string]any{"n": 42},
@@ -398,8 +397,8 @@ func TestSelfJump(t *testing.T) {
 	}
 }
 
-// TestJumpToCenter 验证跨服务跳转：debug_jump 经名册解析地址，访问 stub-center 的 ping。
-func TestJumpToCenter(t *testing.T) {
+// TestCallCenter 验证跨服务调用：debug_call 经名册解析地址，访问 stub-center 的 ping。
+func TestCallCenter(t *testing.T) {
 	sc := startStubCenter(t)
 	s := startReasoner(t, sc.URL())
 
@@ -407,7 +406,7 @@ func TestJumpToCenter(t *testing.T) {
 	defer cancel()
 	c := dialReasoner(t, s)
 
-	rp := jump(t, c, "debug_jump", map[string]any{
+	rp := jump(t, c, "debug_call", map[string]any{
 		"to":     "stub-center",
 		"action": "ping",
 	}, ctx)

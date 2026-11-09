@@ -10,7 +10,7 @@ const spv2 = ['tests/spv2.test.ts'];
 const service = ['tests/api.test.ts', 'tests/service.test.ts'];
 const mutants = [
   { id: 'TS02', file: 'center.ts', old: 'if (native === null || !this.connectedFlag) {', next: 'if (native === null || this.connectedFlag) {', tests: center },
-  // call 与 jumpTo 都有 RemoteError 映射：锚点带上前一行保证唯一。
+  // call 与 callService 都有 RemoteError 映射：锚点带上前一行保证唯一。
   { id: 'TS03', file: 'center.ts', old: "return await native.call(action, input, timeoutMS);\n    } catch (err) {\n      if (err instanceof SPv2RemoteError) throw new RemoteError(err.message);", next: "return await native.call(action, input, timeoutMS);\n    } catch (err) {\n      if (false) throw new RemoteError((err as Error).message);", tests: center },
   { id: 'TS05', file: 'center.ts', old: 'if (!card || !card.addr)', next: 'if (!card && !card.addr)', tests: center },
   { id: 'TS08', file: 'center.ts', old: "if (ev.method === 'roster')", next: "if (ev.method !== 'roster')", tests: center },

@@ -49,7 +49,7 @@ func (s *Server) registerNativeMethods() {
 		},
 	}, s.nativeEcho)
 	s.HandleNative(spv2.Method{
-		Name:        "debug_jump",
+		Name:        "debug_call",
 		Description: "调试：替调用方向目标服务发起一次跳转（to=self 或服务名）",
 		Input: map[string]any{
 			"type": "object",
@@ -194,7 +194,7 @@ func (s *Server) nativeEcho(_ context.Context, call *spv2.Call) error {
 }
 
 func (s *Server) nativeDebugJump(ctx context.Context, call *spv2.Call) error {
-	out, err := s.debugJump(ctx, call.Frame.Work, call.Frame.Body)
+		out, err := s.debugCall(ctx, call.Frame.Work, call.Frame.Body)
 	if err != nil {
 		return replyNativeError(call, err)
 	}

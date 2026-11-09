@@ -104,7 +104,7 @@ function recordTerminal(
   const content =
     out === '' ? `${head}\n（无输出，exit ${String(u.exitCode)}）` : `${head}\n${out}${u.truncated ? '\n（输出已截断）' : ''}`;
   void link
-    .jumpTo(
+    .callService(
       memory,
       'store',
       { conversation_id: conversationId, role: 'tool', kind: 'tool_result', content },
@@ -225,7 +225,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
     if (seeded || !(link.roster?.services ?? []).some((s) => s.name === 'timer')) return;
     seeded = true;
     void link
-      .jumpTo('timer', 'list', {}, 5000)
+      .callService('timer', 'list', {}, 5000)
       .then((data) => {
         const r = data as { seq?: unknown; timers?: unknown };
         const accepted = timers.apply({
@@ -247,7 +247,7 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
     if (approvalSeeded || !(link.roster?.services ?? []).some((s) => s.name === cfg.approval)) return;
     approvalSeeded = true;
     void link
-      .jumpTo(cfg.approval, 'approval_list', {}, 5000)
+      .callService(cfg.approval, 'approval_list', {}, 5000)
       .then((data) => {
         const r = data as { items?: unknown };
         const items = (Array.isArray(r.items) ? r.items : [])

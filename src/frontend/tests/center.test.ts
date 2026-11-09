@@ -177,7 +177,7 @@ test('注册一直失败：重连间隔逐步翻倍，不会每秒刷屏', async
   assert.ok(Date.now() - firstGap >= 1600, `第二次重试间隔应已退避到 2s，实际 ${String(Date.now() - firstGap)}ms`);
 });
 
-test('jumpTo 走原生 dialSPv2Once', async (t) => {
+test('callService 走原生 dialSPv2Once', async (t) => {
   const stub = new StubNativeCenter();
   const url = await stub.start();
   const link = makeLink(url);
@@ -191,13 +191,13 @@ test('jumpTo 走原生 dialSPv2Once', async (t) => {
   stub.broadcastRoster();
   await waitFor(() => link.roster?.services.length === 1, 3000, '目标名册');
   stub.settingsReply = { services: [{ service: 'target', settings: [] }] };
-  const data = (await link.jumpTo('target', 'list_settings', {})) as { services: { service: string }[] };
+  const data = (await link.callService('target', 'list_settings', {})) as { services: { service: string }[] };
   assert.equal(data.services[0]?.service, 'target');
   assert.equal(stub.calls.at(-1)?.method, 'list_settings');
   assert.equal(stub.calls.at(-1)?.from, 'frontend', '直连目标时 from 仍是门户自己（回答沿 from 回来）');
 });
 
-test('jumpTo 原生错误映射为 RemoteError', async (t) => {
+test('callService 原生错误映射为 RemoteError', async (t) => {
   const stub = new StubNativeCenter();
   const url = await stub.start();
   const link = makeLink(url);
@@ -212,12 +212,12 @@ test('jumpTo 原生错误映射为 RemoteError', async (t) => {
   await waitFor(() => link.roster?.services.length === 1, 3000, '目标名册');
   stub.setError = '目标拒绝了这个设置';
   await assert.rejects(
-    () => link.jumpTo('target', 'set_setting', {}),
+    () => link.callService('target', 'set_setting', {}),
     (err: unknown) => err instanceof RemoteError && /目标拒绝/.test((err as Error).message),
   );
 });
 
-test('jumpTo 目标不可达：抛 SPv2UnavailableError，不再回落 v1', async (t) => {
+test('callService 目标不可达：抛 SPv2UnavailableError，不再回落 v1', async (t) => {
   const stub = new StubNativeCenter();
   const url = await stub.start();
   const link = makeLink(url);
@@ -232,13 +232,13 @@ test('jumpTo 目标不可达：抛 SPv2UnavailableError，不再回落 v1', asyn
   stub.broadcastRoster();
   await waitFor(() => link.roster?.services.length === 1, 3000, '目标名册');
   await assert.rejects(
-    () => link.jumpTo('target', 'list_settings', {}),
+    () => link.callService('target', 'list_settings', {}),
     (err: unknown) => err instanceof SPv2UnavailableError,
     '不可达必须原样上报传输错误，不能悄悄换成 v1',
   );
 });
 
-test('jumpTo 缺目标名片时明确拒绝', async (t) => {
+test('callService 缺目标名片时明确拒绝', async (t) => {
   const stub = new StubNativeCenter();
   const url = await stub.start();
   const link = makeLink(url);
@@ -248,7 +248,7 @@ test('jumpTo 缺目标名片时明确拒绝', async (t) => {
   });
   link.start();
   await waitFor(() => link.connected, 3000, '连接');
-  await assert.rejects(() => link.jumpTo('missing', 'x'), /未知目标服务/);
+  await assert.rejects(() => link.callService('missing', 'x'), /未知目标服务/);
 });
 
 test('call 原生远端错误映射为 RemoteError（消息为远端错误）', async (t) => {
