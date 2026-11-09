@@ -118,6 +118,12 @@ func (s *Server) registerNative() {
 		Output: objectSchema(nil),
 	}, s.nativeForget)
 	s.HandleNative(spv2.Method{
+		Name:        "consolidate",
+		Description: "处理一批整理池候选（reasoner 分类 + 冲突判断；不暴露给模型）",
+		Input:       objectSchema(nil),
+		Output:      objectSchema(nil),
+	}, s.nativeConsolidate)
+	s.HandleNative(spv2.Method{
 		Name:        "publish_session",
 		Description: "发布一次任务的摘要（复盘调用；不暴露给模型）",
 		Input: objectSchema(map[string]any{
@@ -431,6 +437,14 @@ func (s *Server) nativeForget(_ context.Context, call *spv2.Call) error {
 	out, err := s.forget(call.Frame.Body)
 	if err != nil {
 		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+	}
+	return call.Reply(out)
+}
+
+func (s *Server) nativeConsolidate(ctx context.Context, call *spv2.Call) error {
+	out, err := s.consolidate(ctx, metaOfCall(call))
+	if err != nil {
+		return call.ReplyError(spv2.CodeInternal, err.Error(), false, nil)
 	}
 	return call.Reply(out)
 }

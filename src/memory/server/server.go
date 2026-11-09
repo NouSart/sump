@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ type Config struct {
 	Shared            *shared.Store // 共享经验库（另一文件：偏好 / 经验网 / 会话目录）
 	HistoryLimit      int           // recall 返回的最近消息条数（默认 12；作为声明预设上报）
 	Embedding         string        // embedding 服务名（默认 embedding；语义召回不可用时静默回落 bigram）
+	Reasoner          string        // reasoner 服务名（默认 reasoner；记忆整理调用 think）
 	DBPath            string        // 会话库路径（只读项展示用：换它要重启）
 	SharedPath        string        // 共享库路径（只读项展示用）
 }
@@ -63,6 +65,7 @@ type Server struct {
 	logger *log.Logger
 
 	setMu         sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
+	consolidateMu sync.Mutex // 同一进程内串行整理：避免两个批次重复读同一批 pending
 	historyLimit  int        // recall 返回的最近消息条数
 	coreLimit     int        // 核心记忆条数上限
 	coreMaxChars  int        // 核心记忆字符预算
@@ -103,6 +106,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.Embedding == "" {
 		cfg.Embedding = "embedding"
 	}
+	if cfg.Reasoner == "" {
+		cfg.Reasoner = "reasoner"
+	}
 	s := &Server{
 		cfg: cfg, logger: logger,
 		historyLimit:  cfg.HistoryLimit,
@@ -131,7 +137,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "dig", Tool: true, Input: "{entry_id?, node_id?, limit?}（entry_id = 翻同簇兄弟，node_id = 展开整个大类）", Output: "{notes[], total}（顺着线头往下扒）"},
 			{Action: "lineheads", Input: "{query, limit?}", Output: "{heads:[{node_id, text, count, score, task_id, members}]}（一行一条；recall 里自动带）"},
 			{Action: "prune", Input: "{}", Output: "{entries, links}（软剪枝：只标状态、只断干枯的线，不删行）"},
-			{Action: "remember", Tool: true, Input: "长期记忆条目 {kind, content, priority?}（kind 如 偏好/身份/知识/事件；priority>0 = 核心记忆，每次对话都会带上）", Output: "{id, created}（同 kind+content 已有 active 条目时幂等跳过）"},
+			{Action: "remember", Tool: true, Input: "长期记忆条目 {kind, content, priority?, salience?}（kind 如 偏好/身份/知识/事件；priority>0 = 核心记忆，每次对话都会带上；salience 0..1 = 重要性，越大遗忘越慢）", Output: "{id, created}（同 kind+content 已有 active 条目时幂等跳过，salience/priority 只升不降）"},
+			{Action: "consolidate", Input: "{}（整理池里有待处理候选时调用）", Output: "{processed, archived, skipped, failed, memnet_failed, conflicts, superseded, unresolved}（不暴露给模型：分类与冲突判断由 reasoner 完成）"},
 			{Action: "publish_session", Input: "任务摘要 {conversation_id, task_id, title?, goal?, outcome?, capabilities?, private?}（复盘调用；已脱敏，不暴露给模型）", Output: "{published, private}"},
 			{Action: "shared_sessions", Tool: true, Input: "{limit?, exclude?, query?}（别的会话在做什么的摘要；看不到它们的对话）", Output: "{sessions:[{entry, title, tasks:[{title, goal, outcome, capabilities, created_at}]}]}"},
 			{Action: "shared_forget", Input: "{session_id?, task_id?}（删共享物；不暴露给模型）", Output: "{sessions, tasks}"},
@@ -324,6 +331,13 @@ func (s *Server) store(body []byte) (any, error) {
 	}
 	if err := s.cfg.Store.Record(cid, p.Role, p.Content, p.Kind, p.Meta, p.Seq, taskID); err != nil {
 		return nil, fmt.Errorf("落库失败: %w", err)
+	}
+	// 用户说的话是长期记忆的候选；先在私有整理池留一份原文，等 reasoner 分类。
+	// 助手答复 / 工具轨迹不进来：它们可重算，且容易把模型幻觉记成事实。
+	if p.Role == "user" && (p.Kind == "" || p.Kind == "user") {
+		if _, err := s.cfg.Store.Stage(cid, p.Role, p.Content); err != nil {
+			s.logger.Printf("记忆候选入池失败（不影响本轮）: %v", err)
+		}
 	}
 	// 会话的入口只在第一次写时填上（Record 已保证会话行存在，这里只补入口，幂等）。
 	// 用 boss 而不是 env.From：记录是 reasoner 代写的，真正"从哪扇门进来"的是它替谁办事。
@@ -541,8 +555,11 @@ func (s *Server) remember(ctx context.Context, body []byte, meta callMeta) (any,
 	}
 	// 向量算的是"库里那行字"：Add 会在写入边界脱敏，这里先脱敏一次拿到同一份文本，
 	// 免得当场算的对应原文、懒补齐算的对应掩码（Text 可重复作用）。
+	if math.IsNaN(p.Salience) || p.Salience < 0 || p.Salience > 1 {
+		return nil, errors.New("remember: salience 需在 0..1")
+	}
 	content := redact.Text(p.Content)
-	id, created, err := s.longterm().Add(p.Kind, content, p.Priority, p.ConversationID, meta.from)
+	id, created, err := s.longterm().AddWithSalience(p.Kind, content, p.Priority, p.Salience, p.ConversationID, meta.from)
 	if err != nil {
 		return nil, fmt.Errorf("remember: %w", err)
 	}
@@ -623,6 +640,8 @@ func (s *Server) assemble(ctx context.Context, tc protocol.TaskContext, meta cal
 	history = compose.TrimOverlap(history, compose.ConversationTail(tc.Messages))
 
 	var core, relevant []string
+	var touched []int64
+	recallNow := nowFunc()
 	if s.longterm() != nil {
 		entries, err := s.longterm().ListActive()
 		if err != nil {
@@ -632,6 +651,7 @@ func (s *Server) assemble(ctx context.Context, tc protocol.TaskContext, meta cal
 		coreIDs := make(map[int64]bool, len(coreEntries))
 		for _, e := range coreEntries {
 			coreIDs[e.ID] = true
+			touched = append(touched, e.ID)
 			core = append(core, compose.EntryLine(e.Kind, e.Content))
 		}
 		rest := make([]longterm.Entry, 0, len(entries))
@@ -640,30 +660,40 @@ func (s *Server) assemble(ctx context.Context, tc protocol.TaskContext, meta cal
 				rest = append(rest, e)
 			}
 		}
-		for _, e := range s.rankRelevant(ctx, meta.trace, rest, recallQuery(tc.Messages), relLimit, relMaxChars) {
+		for _, e := range s.rankRelevant(ctx, meta.trace, rest, recallQuery(tc.Messages), relLimit, relMaxChars, recallNow) {
+			touched = append(touched, e.ID)
 			relevant = append(relevant, compose.EntryLine(e.Kind, e.Content))
 		}
 	}
 
 	final := compose.Inject(tc.Messages, compose.BuildMemory(history, core, relevant,
 		s.experienceLines(ctx, meta.trace, recallQuery(tc.Messages)), s.otherSessionLines(cid)))
+
+	// 只有组装成功才记访问：候选扫描/组装失败不算「注入过」。
+	if len(touched) > 0 {
+		if err := s.longterm().Touch(touched, recallNow); err != nil {
+			s.logger.Printf("长期记忆访问计数失败（不影响本轮）: %v", err)
+		}
+	}
+
 	return task, final, nil
 }
 
 // rankRelevant 返回"相关记忆"条目：语义召回为主、bigram 兜底（embedding 缺失/失败/超时 → 静默回落）。
-func (s *Server) rankRelevant(ctx context.Context, trace string, entries []longterm.Entry, query string, limit, maxChars int) []longterm.Entry {
+// now 参与生命周期加权；阈值仍只看原始相似度。
+func (s *Server) rankRelevant(ctx context.Context, trace string, entries []longterm.Entry, query string, limit, maxChars int, now time.Time) []longterm.Entry {
 	if strings.TrimSpace(query) == "" || len(entries) == 0 {
 		return nil
 	}
-	if ranked, ok := s.semanticRank(ctx, trace, entries, query, limit, maxChars); ok {
+	if ranked, ok := s.semanticRank(ctx, trace, entries, query, limit, maxChars, now); ok {
 		return ranked
 	}
-	return longterm.Rank(entries, query, limit, maxChars)
+	return longterm.RankLifecycle(entries, query, limit, maxChars, now)
 }
 
 // semanticRank：查询向量 + 条目向量（缺失/换模型后懒补齐）→ 余弦排序。
 // 返回 ok=false 表示"语义召回不可用"（调用方回落 bigram）；此时不得返回部分结果。
-func (s *Server) semanticRank(ctx context.Context, trace string, entries []longterm.Entry, query string, limit, maxChars int) ([]longterm.Entry, bool) {
+func (s *Server) semanticRank(ctx context.Context, trace string, entries []longterm.Entry, query string, limit, maxChars int, now time.Time) ([]longterm.Entry, bool) {
 	qvecs, model, err := s.embedTexts(ctx, trace, []string{query}, true)
 	if err != nil {
 		s.logger.Printf("语义召回不可用（回落 bigram）: %v", err)
@@ -672,7 +702,7 @@ func (s *Server) semanticRank(ctx context.Context, trace string, entries []longt
 	if err := s.backfillEmbeddings(ctx, trace, entries, model); err != nil {
 		s.logger.Printf("条目向量补齐部分失败（已有向量的条目照常参与）: %v", err)
 	}
-	return longterm.RankSemantic(entries, qvecs[0], limit, maxChars, recallMinScore), true
+	return longterm.RankSemanticLifecycle(entries, qvecs[0], limit, maxChars, recallMinScore, now), true
 }
 
 // backfillEmbeddings 为缺失/失效（模型不一致）的条目补算向量并落库（就地更新 entries）。
