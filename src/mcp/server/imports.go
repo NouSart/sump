@@ -269,7 +269,7 @@ func (i *Imports) Provides() []protocol.Provide {
 		if tool.config.Async {
 			output = "Accepted receipt: item_id, phase=accepted. Final result arrives via report_result; acceptance does not mean completion."
 		}
-		out = append(out, protocol.Provide{Action: tool.config.Action, Tool: true, Async: tool.config.Async,
+			out = append(out, protocol.Provide{Action: tool.config.Action, Tool: true, LongRunning: tool.config.Async,
 			Input:  tool.config.Description + " JSON Schema: " + string(tool.config.InputSchema),
 			Output: output})
 	}
@@ -278,7 +278,7 @@ func (i *Imports) Provides() []protocol.Provide {
 }
 
 // NativeMethods 返回与动态 provides 一一对应的 SPv2.1 method 声明。
-// Tool/LongRunning 直接映射 provide 的 Tool/Async；Input/Output 取自审查过的
+// Tool/LongRunning 直接映射 provide 的同名字段；Input/Output 取自审查过的
 // import 契约，缺失或不是 object 时退回 object，保证卡片与工具声明始终可读。
 func (i *Imports) NativeMethods() []spv2.Method {
 	provides := i.Provides()
@@ -288,7 +288,7 @@ func (i *Imports) NativeMethods() []spv2.Method {
 		out = append(out, spv2.Method{
 			Name:        provide.Action,
 			Tool:        provide.Tool,
-			LongRunning: provide.Async,
+				LongRunning: provide.LongRunning,
 			Description: tool.config.Description,
 			Input:       importMethodSchema(tool.config.InputSchema),
 			Output:      importMethodSchema(tool.config.OutputSchema),

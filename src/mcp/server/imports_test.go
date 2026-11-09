@@ -70,7 +70,7 @@ func TestImportsSuccessfulTranslation(t *testing.T) {
 	})
 	i := newTestImports(t, remote.URL, 2*time.Second, 16384, nil)
 	provides := i.Provides()
-	if len(provides) != 1 || provides[0].Action != "remote_lookup" || !provides[0].Tool || provides[0].Async || provides[0].Batchable {
+	if len(provides) != 1 || provides[0].Action != "remote_lookup" || !provides[0].Tool || provides[0].LongRunning || provides[0].Batchable {
 		t.Fatalf("wrong provides: %+v", provides)
 	}
 	got, err := callImport(i, context.Background(), "你好")

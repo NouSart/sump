@@ -156,7 +156,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{
 				Action: "run",
 				Tool:   true,
-				Async:  true,
+				LongRunning: true,
 				Input:  "{command: 要执行的命令行（交给服务的 shell 解释）; work_dir?: 工作目录（须在服务根目录内，可省略）}",
 				Output: "受理回执 {item_id, phase}；执行结果稍后由 report_result 补报送达（可能在你收尾之后才到）。并行还是串行由你决定：一次派发几条就并行几条，要串行就等上一条的结果再发",
 			},

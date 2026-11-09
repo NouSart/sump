@@ -16,9 +16,9 @@ type Provide struct {
 	// Tool 显式声明该动作是否作为 LLM 工具暴露给模型（默认 false）。
 	// 工具名 = <service>__<action>；链机制保留动作与调试动作即便声明也不暴露（第二道闸）。
 	Tool bool `msgpack:"tool,omitempty"`
-	// Async 显式声明该动作是“受理即回执”：响应只表示已受理（带回句柄 item_id），
+	// LongRunning 显式声明该动作是“受理即回执”：响应只表示已受理（带回句柄 item_id），
 	// 后续进展由该服务以 report_result 补报送达（可能晚于调用方收尾）。
-	Async bool `msgpack:"async,omitempty"`
+	LongRunning bool `msgpack:"long_running,omitempty"`
 	// Batchable 显式声明该动作可被 batch 服务批量调用（默认 false）。
 	// 与 Tool 同一套哲学：能力由服务自己表态，不由调度方猜。
 	Batchable bool `msgpack:"batchable,omitempty"`

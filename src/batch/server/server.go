@@ -124,7 +124,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{
 				Action: "run",
 				Tool:   true,
-				Async:  true,
+				LongRunning: true,
 				Input: "{service, action, items:[{input, key?, tag?}], concurrency?, on_error?, timeout_ms?, kind?, wake?}——" +
 					"对目标服务的某个动作批量执行；key 标记关键项，wake.mode=key 时关键项全部结束会提前叫你",
 				Output: "受理回执 {item_id, total, phase, kind}；之后最多三条补报（key 唤醒 / 首次失败 / 终态）",

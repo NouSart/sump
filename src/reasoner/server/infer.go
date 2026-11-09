@@ -223,7 +223,7 @@ func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCa
 	}
 	// 先登记待回执，再派发：远端后台补报可能抢在受理响应之前到达。
 	var pending *asyncJob
-	if p, ok := s.provideOf(svc, action); ok && p.Async {
+	if p, ok := s.provideOf(svc, action); ok && p.LongRunning {
 		pending, err = s.beginAsync(svc, st, call)
 		if err != nil {
 			return "", err
