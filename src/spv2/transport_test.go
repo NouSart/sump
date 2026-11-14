@@ -94,6 +94,22 @@ func wsDialRaw(t *testing.T, url string) *websocket.Conn {
 	return conn
 }
 
+// wsHandshake 在裸连接上完成 §5.1 首帧握手（hello），返回后服务端才接受其它帧。
+func wsHandshake(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	f, err := NewCall(wsTestWork, AgentRef("client"), ServiceRef(wsTestService), "hello", map[string]any{
+		"protocol": ProtocolVersion,
+	})
+	if err != nil {
+		t.Fatalf("构造 hello: %v", err)
+	}
+	wsWriteFrame(t, conn, f)
+	resp := wsReadFrame(t, conn)
+	if resp.Type != TypeReply || resp.Status != StatusOK {
+		t.Fatalf("握手失败: %+v", resp)
+	}
+}
+
 // wsReadFrame 从裸连接读一帧，带读超时，避免测试挂死。
 func wsReadFrame(t *testing.T, conn *websocket.Conn) Frame {
 	t.Helper()
@@ -273,12 +289,10 @@ func TestTransportWrongTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCall: %v", err)
 	}
-	resp, err := c.Call(ctx, call)
+	// §5.1 握手阶段就会校验目标服务名：to 不是本服务时连握手都过不去。
+	_, err = c.Call(ctx, call)
 	if err == nil || !IsCode(err, CodeInvalidArgument) {
 		t.Fatalf("目标不是本服务应回 invalid_argument, got %v", err)
-	}
-	if resp.Error == nil || resp.Error.Code != CodeInvalidArgument {
-		t.Fatalf("错误 reply 不符: %+v", resp)
 	}
 	if n := handled.Load(); n != 0 {
 		t.Fatalf("handler 不应被调用，实际 %d 次", n)
@@ -315,6 +329,7 @@ func TestTransportAgentOwnerAuthority(t *testing.T) {
 	}
 
 	raw := wsDialRaw(t, url)
+	wsHandshake(t, raw)
 	_ = raw.SetWriteDeadline(time.Now().Add(wsTestTimeout))
 	if err := raw.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		t.Fatalf("WriteMessage: %v", err)

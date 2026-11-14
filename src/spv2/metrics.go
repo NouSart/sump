@@ -40,6 +40,31 @@ func NewRegistry() *Registry {
 	return &Registry{series: map[string]*series{}}
 }
 
+// allowedLabels 是 spec §12.2 的 label 白名单。reason 是例外：§12.3 的
+// sump_dropped_total{reason} 明确要求它——标准这一处自相矛盾，按更具体的指标表执行。
+var allowedLabels = map[string]bool{
+	"service": true, "method": true, "status": true,
+	"code": true, "model": true, "outcome": true, "reason": true,
+	// 以下不是 §12.2 的通用白名单，但 §12.3 的具体指标表点名要求：
+	// sump_a2a_messages_total{state}、sump_llm_tokens_total{model,kind}。
+	"state": true, "kind": true, "tool": true,
+	// §12.3 审批指标：sump_approval_decisions_total{decision}。
+	"decision": true,
+}
+
+func sanitizeLabels(labels map[string]string) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(labels))
+	for k, v := range labels {
+		if allowedLabels[k] {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 func key(name string, labels map[string]string) string {
 	keys := make([]string, 0, len(labels))
 	for k := range labels {
@@ -62,6 +87,7 @@ func copyLabels(labels map[string]string) map[string]string {
 }
 
 func (r *Registry) get(name, typ, help, unit string, labels map[string]string) *series {
+	labels = sanitizeLabels(labels)
 	k := key(name, labels)
 	if s, ok := r.series[k]; ok {
 		return s
