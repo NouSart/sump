@@ -556,7 +556,7 @@ reply body: {
   "status": "ok | degraded | fail",
   "version": "0.1.0",
   "uptime_ms": 123456,
-  "checks": [ // 契约形状；当前参考实现不产此字段，见下方「现状」
+  "checks": [ // 可选；由服务注入的依赖探针产生
     { "name": "center", "status": "ok", "latency_ms": 1 },
     { "name": "db", "status": "ok", "latency_ms": 0 }
   ]
@@ -564,7 +564,7 @@ reply body: {
 ```
 
 - 本节是契约形状：`checks` 为可选字段（omitempty），探针由服务自己填。
-- **现状（未做）**：参考实现 `src/spv2` 的 `health` 与 HTTP 侧 `/readyz` 都还不产 `checks[]`，`/readyz` 当前与 `/healthz` 返回完全一致，没有"依赖不可用就不接流量"的就绪语义；缺什么以 [src/spv2/IMPLEMENTATION.md](../../src/spv2/IMPLEMENTATION.md) §5「已知未做」为准，这里不复制清单。
+- **参考实现**：`src/spv2` 支持用 `WithHealthChecks` 注入依赖探针；`health` method 与 HTTP `/readyz` 执行同一组探针，`/healthz` 保持纯存活检查。没有探针时 `checks` 省略且就绪状态为 `ok`；任一探针为 `fail` 时 `/readyz` 返回 503，`degraded` 仍返回 200。实现边界以 [src/spv2/IMPLEMENTATION.md](../../src/spv2/IMPLEMENTATION.md) §5「已知未做」为准，这里不复制清单。
 - `degraded` 不等于死；不要因为依赖慢就判 fail。
 
 ### 7.7 `metrics`

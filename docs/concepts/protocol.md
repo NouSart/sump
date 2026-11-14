@@ -50,7 +50,7 @@
   "work": "01J...",       // 必填；同一条用户请求全链共享（见 §7），也是 work 身份
   "from": { "kind": "service", "id": "qq", "authority": "none" },
   "to":   { "kind": "service", "id": "reasoner" },
-  "method": "user_message",
+  "method": "message",
   "content_type": "application/msgpack",
   "body": { }             // method 的数据；MsgPack 编码的字节
 }
@@ -93,8 +93,9 @@
 
 ### 5.1 保留 method（链机制，语义不可改）
 
-`user_message`（链入口）/ `step`（自跳继续）/ `deliver`（终点直达结果归属方）/
-`recall` `resume` `store`（记忆往返）/ `save` `fetch`（图片 / 文件链）/ `report_result`（异步受理的补报）。
+`message`（唯一入口：human / 入口 service / agent）/ `context`（reasoner 同步取上下文与任务）/
+`step`（自跳继续）/ `deliver`（终点直达结果归属方）/
+`store`（记忆写）/ `save` `fetch`（图片 / 文件链）/ `report_result`（异步受理的补报）。
 
 这些是**协议级词汇**：即便某个服务提供了同名 method，也**不作为 LLM 工具**暴露。
 另有**骨架保留 method** `configure`（设置下发专用，由 `src/service/` 骨架统一承接，同样不进 `provides`、不作 LLM 工具）。
@@ -155,11 +156,11 @@ LLM 工具名 = **`<service>__<method>`**（由 reasoner 依据名册 `provides`
 - **结果归属（`from`）**：SPv2.1 没有 `boss` 字段，**结果归属方就是帧头的 `from`**。每跳的 `from` 由发送方自定、**不可丢失**；任务发起者必须收到最终结果。入口服务必须把 `from` 设成**自己**（qq 与门户都如此）：少了它或认错，回答照样生成，但**回不来**——reasoner 只按 `from` 交付，认错就是静默丢弃。交付失败只记日志并按「送达后不重试」停住（v2 没有独立于结果归属方的第二入口）。
 - **`work`（链路 id）**：同一条用户请求全链共享，用于调试 / 审计；现有实现把 `work` 当 v1 的 `trace` 用，逐跳原样传递。
 - **deliver**：链终点判定结束后**直达结果归属方**（不沿链逆向回传）。发起任务的接入服务（如 qq）必须实现 `deliver`。
-- **完全启动（记忆往返）**：任务入口先 `recall` 把上下文托管给记忆服务；**只有收到 `from=memory` 的 `resume`** 才调用 LLM API。任务内的各轮由黑板延续——不再重复经记忆（上下文已在线程里）。
+- **同步取上下文**：入口 `message` 到达后，reasoner 同步调 memory `context`；**拿到组装好的 messages/task 才开黑板、调 LLM API**，失败直接回错误。任务内的各轮由黑板延续——不再每轮重复取上下文。
 - **工具结果入账**：结果到达 → 注入黑板 → 按通知模式唤醒下一轮（`each` 逐条 / `batch` 攒批）。**工具参数的数字一律按整数归一**（LLM 的 JSON 数字是 float64，直接进 msgpack 会让服务侧的整数字段解码失败）。
 - **发出即完**：一步 = 收到 → 处理 → 发出下一跳 → 结束；没有长挂起的链（`wait` 是唯一的阻塞点）。
 - **用户附注（`notes`）**：入口服务把「用户在界面上直接做的操作」以 `notes` 块随下一跳投递——与用户说的话在数据层分开，reasoner 渲染成前缀块。交给 `batch` 的 `user_hold` 的 `Notes` **不再重复**放进消息的 `notes`；被停手时未开始的项已作废、**不会自动重跑**，附注必须写明这一点，否则模型会以为任务还完整。规则见 [batch/README.md](../../src/batch/README.md)。
-- **来源标注（`user_message.sender`）**：入口服务把「谁说的、在哪说的、多少人看得见」作为**结构化事实**随消息带上（`channel` / 发送者 id 与名字 / 群 id 与群名 / `group_size` = 扩散面 / `owner` / `mentioned`）。渲染成正文标签的实现在协议包里只有一份（`protocol.Sender.Label()`），所以**记忆里存的、模型看到的**是同一句话：
+- **来源标注（`message.sender`）**：入口服务把「谁说的、在哪说的、多少人看得见」作为**结构化事实**随消息带上（`channel` / 发送者 id 与名字 / 群 id 与群名 / `group_size` = 扩散面 / `owner` / `mentioned`）。渲染成正文标签的实现在协议包里只有一份（`protocol.Sender.Label()`），所以**记忆里存的、模型看到的**是同一句话：
 
   ```text
   [私聊 · 张三(10001) · 主人] 你好
@@ -169,7 +170,7 @@ LLM 工具名 = **`<service>__<method>`**（由 reasoner 依据名册 `provides`
   标签是**事实不是权限**：授权与否由模型按主人的设置判断（`owner` 只说明这次发言是不是授权人本人）。取不到的项宁可写「人数未知」也不编数字——猜错的方向必须保守。单用户入口（门户）不带 `sender`，行为与旧版一致。
 
   同一条事实也以 `meta.sender`（JSON，键名与线路一致）随记录落库：入口服务直接落库（qq 的「只记录」路径）与推理侧代写记忆都调用 `protocol.MessageMeta`，所以**两条路径写出来的记录长得一样**；附件 id 只在有时才写，空数组不占键。
-- **来源标签与任务名**：正文带标签后，从第一行推任务名会推出一串标签，而任务名要显示在界面会话树里。入口服务因此在 `store`（`task_name`）与 `recall`（`context.task_name`）里显式给出人话标题；不给则沿用「取正文第一行」的旧规则。两条路径都要给：`store` 与 `recall` 是并发的（`Fire` 不保证先后）。
+- **来源标签与任务名**：正文带标签后，从第一行推任务名会推出一串标签，而任务名要显示在界面会话树里。入口服务因此在 `store`（`task_name`）与 `context`（`context.task_name`）里显式给出人话标题；不给则沿用「取正文第一行」的旧规则。`store` 是异步落库、`context` 是同步取上下文，两条路径都要给。
 - **失败处理（现状）**：拨号失败（连接未建立、消息可证明未送达）自动安全重试（+0.5s、+2s）；送达后的失败不重试——可能已被处理，重试需要幂等键（待定）。工具调用失败作为结果消息注入（错误文本交回模型决断）；单次工具超时（默认 60s）后按失败入账；任务被同会话新消息取代时在跑结果丢弃（日志可见）；交付结果归属方失败按「送达后不重试」原则停住（日志可见；失败上报归属方待定）。
 
 ## 8. 兼容与版本
@@ -195,7 +196,7 @@ LLM 工具名 = **`<service>__<method>`**（由 reasoner 依据名册 `provides`
 | 域判别字段（将来） | 新增第二个执行域时定义独立字段；当前协议尚未发送，不复用 `dialect` | 建议 `kind`，取值如 `exec` / `fs` / `http`；其他域各自声明执行字段组，裁决包、摘要绑定、有效期、fail-closed 共用 |
 | 审批枚举 | 取值由 approval 服务定义，见 [approval.md](approval.md) | `decision`：`allow` / `deny` / `review`；`reason_code`：`RULE_ALLOW` `POLICY_DENY` `DYNAMIC_BEHAVIOR` `NO_MATCHING_RULE` `PARSE_ERROR` `UNSUPPORTED_DIALECT` `CONTEXT_UNKNOWN` `RUNTIME_MISMATCH` `LIMIT_EXCEEDED`，第二层用户裁决：`USER_APPROVED` `USER_DENIED` |
 | 服务名 | 小写短名 | `settings-center` `reasoner` `memory` `images` `files` `qq` `shell` `timer` `batch` `mcp` `frontend` `embedding` `approval` |
-| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `concurrency` `max_concurrency` `max_inflight` `max_items` `item_timeout_ms` `preview_bytes` `job_ttl_ms` `resume_on_start`（batch 现状是裸键；按本行规则改名属于破坏性变更，见 TODO.md 的命名统一） `recall.history_limit` `recall.core_limit` `recall.core_max_chars` `recall.rel_limit` `recall.rel_max_chars` `recall.embedding` `share.on` `share.sessions_limit` `share.digest_chars` `shared_db` `max_mb` `read_max_chars` `owner` `group.mode` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.max_running` `approval.service` `approval.timeout_ms` `policy.json` `max_ms` `max_pending` `portal` `llm.base` `llm.model` `llm.key` `memory` `images` `files` `auto_approve` `reflect.on` `name` `addr` `center` `settings` `napcat.url` `napcat.token` `reasoner` `http.token` `db` `dir` `web` |
+| 设置键 | `<域>.<名>` 小写 + 下划线；由服务自己声明 | `tool.notify_mode` `tool.concurrency` `tool.timeout_ms` `concurrency` `max_concurrency` `max_inflight` `max_items` `item_timeout_ms` `preview_bytes` `job_ttl_ms` `resume_on_start`（batch 现状是裸键；按本行规则改名属于破坏性变更，见 TODO.md 的命名统一） `context.history_limit` `context.core_limit` `context.core_max_chars` `context.rel_limit` `context.rel_max_chars` `context.embedding` `share.on` `share.sessions_limit` `share.digest_chars` `shared_db` `max_mb` `read_max_chars` `owner` `group.mode` `sweep_ms` `heartbeat_fallback_ms` `exec.shell` `exec.root` `exec.timeout_ms` `exec.max_output_kb` `exec.max_running` `approval.service` `approval.timeout_ms` `policy.json` `max_ms` `max_pending` `portal` `llm.base` `llm.model` `llm.key` `memory` `images` `files` `auto_approve` `reflect.on` `name` `addr` `center` `settings` `napcat.url` `napcat.token` `reasoner` `http.token` `db` `dir` `web` |
 | 名片字段（`provides[]`） | 小写下划线；跨语言一致 | `action` `input` `output` `tool` `async` `batchable` |
 
 审批设置键补充：`policy.json`（approval 声明的规则快照配置）。`approval_result` 没有注册为动作；审批结果作为 `approval_request` 的响应返回，并由 shell 的 `report_result` 承载后续反馈。
