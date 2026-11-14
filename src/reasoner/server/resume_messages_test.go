@@ -1,6 +1,6 @@
 package server
 
-// resume 的任务提示插入位置（特征化测试，钉住「实际发生什么」）：
+// context 的任务提示插入位置（特征化测试，钉住「实际发生什么」）：
 //
 // 背景：审计报告认为 infer.go 的 resume「假定 Messages[0] 是 system，user 开头的链
 // 首条被无声顶掉」。实测不成立——那一行是
@@ -31,25 +31,19 @@ func resumeQuietServer(t *testing.T) *Server {
 	return New(Config{Name: "reasoner", SecretFile: "-"}, log.New(io.Discard, "", 0))
 }
 
-// resumeToBoard 以记忆服务的身份走一次 resume（from=memory 才受理），返回黑板里那个任务。
+// contextToBoard 用组装好的上下文开黑板（spec §7.2 的 context 同步路径），返回黑板里那个任务。
 // 返回的是 taskState：调用方要用 boardMessages 读消息链（后台轮次可能并发读写）。
-func resumeToBoard(t *testing.T, s *Server, cid string, msgs []llm.Message, task *protocol.Task) *taskState {
+func contextToBoard(t *testing.T, s *Server, cid string, msgs []llm.Message, task *protocol.Task) *taskState {
 	t.Helper()
-	raw, err := protocol.EncodePayload(protocol.ResumePayload{Context: protocol.TaskContext{
+	tc := protocol.TaskContext{
 		ConversationID: cid,
 		Messages:       msgs,
 		Boss:           "boss-from-context",
 		Task:           task,
-	}})
-	if err != nil {
-		t.Fatal(err)
 	}
-	out, err := s.resume("memory", "boss-from-frame", "trace-resume-1", raw)
-	if err != nil {
-		t.Fatalf("resume 被拒: %v", err)
-	}
+	out := s.startTask(tc, "boss-from-context", "trace-context-1")
 	if got, _ := out.(map[string]any); got["status"] != "accepted" {
-		t.Fatalf("resume 回执不符: %+v", out)
+		t.Fatalf("context 开任务回执不符: %+v", out)
 	}
 	st := s.boardGet(cid)
 	if st == nil {
@@ -97,7 +91,7 @@ func TestResumeUserFirstChainKeepsFirstMessage(t *testing.T) {
 		{Role: "assistant", Content: "上一轮的助手发言"},
 		{Role: "user", Content: "这一轮用户又说了"},
 	}
-	st := resumeToBoard(t, s, "c-user-first", in, &protocol.Task{ID: "task-7", Name: "排查端口"})
+	st := contextToBoard(t, s, "c-user-first", in, &protocol.Task{ID: "task-7", Name: "排查端口"})
 
 	got := boardMessages(st)
 	// 实际结果的角色顺序（不是「[0] 一定是 system」）：任务提示夹在第 0 条之后。
@@ -129,7 +123,7 @@ func TestResumeSystemFirstChainKeepsSystemPromptAtZero(t *testing.T) {
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: "现在几点了"},
 	}
-	st := resumeToBoard(t, s, "c-system-first", in, &protocol.Task{ID: "task-8", Name: "查时间"})
+	st := contextToBoard(t, s, "c-system-first", in, &protocol.Task{ID: "task-8", Name: "查时间"})
 
 	got := boardMessages(st)
 	if strings.Join(rolesOf(got), ",") != "system,system,user" {
@@ -152,7 +146,7 @@ func TestResumeWithoutTaskInsertsNothing(t *testing.T) {
 		{Role: "user", Content: "用户先开口"},
 		{Role: "assistant", Content: "助手回了一句"},
 	}
-	st := resumeToBoard(t, s, "c-no-task", in, nil)
+	st := contextToBoard(t, s, "c-no-task", in, nil)
 
 	got := boardMessages(st)
 	if strings.Join(rolesOf(got), ",") != "user,assistant" {
@@ -162,18 +156,18 @@ func TestResumeWithoutTaskInsertsNothing(t *testing.T) {
 	assertKept(t, got, 1, in[1])
 }
 
-// TestResumeAdoptsFrameWorkAsChainTrace 说明 resume 后这条链的 trace 从哪来：
+// TestContextAdoptsFrameWorkAsChainTrace 说明 context 开任务后这条链的 trace 从哪来：
 // 帧头 work 成为任务的 trace，上下文里的 boss 优先、缺省才用帧头 from。
 // （tests/ 里的全链断言依赖这个：work 不变，deliver/store/note 才谈得上「同一个工作号」。）
-func TestResumeAdoptsFrameWorkAsChainTrace(t *testing.T) {
+func TestContextAdoptsFrameWorkAsChainTrace(t *testing.T) {
 	s := resumeQuietServer(t)
 	in := []llm.Message{{Role: "system", Content: systemPrompt}, {Role: "user", Content: "继续"}}
-	st := resumeToBoard(t, s, "c-trace-keep", in, &protocol.Task{ID: "task-9", Name: "续跑"})
+	st := contextToBoard(t, s, "c-trace-keep", in, &protocol.Task{ID: "task-9", Name: "续跑"})
 
 	st.mu.Lock()
 	trace, boss, taskID := st.trace, st.boss, st.taskID
 	st.mu.Unlock()
-	if trace != "trace-resume-1" {
+	if trace != "trace-context-1" {
 		t.Fatalf("任务的 trace 应等于帧头 work，实际 %q", trace)
 	}
 	if boss != "boss-from-context" {

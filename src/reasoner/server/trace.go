@@ -61,7 +61,7 @@ func (s *Server) record(cid, boss, trace, taskID, kind, role, content string, me
 
 // recordTask 与 record 相同，但带上**入口服务给的任务名**：正文若是用户消息、
 // 且带着来源标注前缀（见 protocol.Sender.Label），记忆侧从第一行推会推出一串标签。
-// 只有 user_message 那一条需要它（其余记录都挂在已有任务上）。
+// 只有 message 那一条需要它（其余记录都挂在已有任务上）。
 func (s *Server) recordTask(cid, boss, trace, taskID, kind, role, content string, meta map[string]any, taskName string) {
 	s.recordNamed(cid, boss, trace, taskID, kind, role, content, meta, taskName)
 }

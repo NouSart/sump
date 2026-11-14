@@ -115,7 +115,7 @@ func (s *Server) reflectOnTask(st *taskState, finalAnswer string) {
 		prompt := fmt.Sprintf("这次任务的结局：%s\n\n%s", verdict, transcript)
 		ctx, cancel := context.WithTimeout(context.Background(), reflectTimeout)
 		defer cancel()
-		resp, err := client.Chat(ctx, llm.ChatRequest{
+		msg, err := s.chatLLM(ctx, llm.ChatRequest{
 			Messages: []llm.Message{
 				{Role: "system", Content: reflectSystemPrompt},
 				{Role: "user", Content: prompt},
@@ -126,7 +126,7 @@ func (s *Server) reflectOnTask(st *taskState, finalAnswer string) {
 			s.logger.Printf("会话 %s：复盘失败（不影响交付）: %v", cid, err)
 			return
 		}
-		digest, notes := parseReflect(resp.Content)
+		digest, notes := parseReflect(msg.Content)
 		// 目录摘要与经验各自独立：没有经验也要有"这个会话在干什么"。
 		if s.shareOn() {
 			s.Fire(s.memoryName(), "publish_session", protocol.PublishSessionPayload{

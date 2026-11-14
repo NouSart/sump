@@ -1,7 +1,7 @@
 package server
 
 // 单步推理：roster → LLM 工具、工具派发（异步）与交付（deliver）。
-// 完全启动链：任务入口先经记忆服务（recall 托管上下文）；只有“from=memory 的 resume”
+// 完全启动链：任务入口同步向记忆服务要 context；拿到组装后的上下文才
 // 才触发对 LLM API 的调用。任务上下文与在跑工具由内存黑板持有（见 board.go）：
 // 工具调用即时回执、结果注入黑板再唤醒下一轮；服务不驻留循环。
 
@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
 
@@ -51,7 +52,7 @@ const systemPrompt = `你是 SUMP 服务网络中的“单步推理器”（reas
 - 「已@我 / 未@我」说明这条有没有点到你：没点到的群消息可能只是在说说，先想清楚是否真的需要开口。
 - 群里拿不准该不该说、该不该外发敏感内容时，默认**不说、不发**：用 task_status 的 silent 收尾。`
 
-// taskPrompt 把"你在为哪个任务工作"插到系统提示之后（每次 resume 现拼，任务名可能已被改准）。
+// taskPrompt 把"你在为哪个任务工作"插到系统提示之后（每次 context 现拼，任务名可能已被改准）。
 func taskPrompt(name, id string) string {
 	if name == "" {
 		name = "未命名任务"
@@ -201,7 +202,9 @@ func (s *Server) provideOf(service, action string) (protocol.Provide, bool) {
 
 // runToolCall 执行一次工具调用并返回给 LLM 的内容文本（JSON）。
 // 声明为异步（Provide.Async）的动作：受理回执带回句柄，登记到在途表等补报（见 async.go）。
-func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCall) (string, error) {
+func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCall) (out string, err error) {
+	start := time.Now()
+	defer func() { s.recordTool(call.Function.Name, start, err) }()
 	svc, action, ok := parseToolName(call.Function.Name)
 	if !ok {
 		return "", fmt.Errorf("工具名无效: %s", call.Function.Name)
@@ -221,6 +224,10 @@ func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCa
 			return "", err
 		}
 		defer s.abandonAsync(pending)
+	}
+	// spec §6.4：真正执行工具前先扣租约；扣不到就不执行（工具错误回给模型，不静默放行）。
+	if err := s.chargeBeforeTool(ctx, st.trace); err != nil {
+		return "", err
 	}
 	data, err := s.Call(ctx, svc, action, rawIn, st.trace)
 	if err != nil {
@@ -316,29 +323,87 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 	return out
 }
 
-// startMemoryRound 开启一轮“记忆往返”：把任务上下文（含原 boss）托管给记忆服务。
-// 记忆服务的 resume（from=memory）回来时才真正调用 LLM API（完全启动）。
-// taskName 随上下文托管：store 与 recall 是两条并发路径（Fire 不保证先后），
-// 谁先建任务都不该把来源标注当成任务名。
-func (s *Server) startMemoryRound(boss, trace, conversationID, taskName string, messages []llm.Message) {
-	s.Fire(s.memoryName(), "recall", protocol.RecallPayload{Context: protocol.TaskContext{
+// fetchContext 同步向 memory 要上下文（spec §7.2）：拿不到就失败，绝不在没有记忆的
+// 状态下继续调 LLM。这里也同时完成 work 行登记——memory 是唯一 work 登记处。
+func (s *Server) fetchContext(ctx context.Context, boss, trace, conversationID, taskName string, messages []llm.Message) (protocol.TaskContext, error) {
+	data, err := s.Call(ctx, s.memoryName(), "context", protocol.ContextPayload{
+		Conversation: conversationID,
+		Messages:     messages,
+		Boss:         boss,
+		TaskName:     taskName,
+	}, trace)
+	if err != nil {
+		return protocol.TaskContext{}, fmt.Errorf("记忆 context 失败（本轮不启动）: %w", err)
+	}
+	var res struct {
+		Messages []llm.Message  `msgpack:"messages"`
+		Task     *protocol.Task `msgpack:"task"`
+		Work     map[string]any `msgpack:"work"`
+	}
+	if err := protocol.DecodeRaw(data, &res); err != nil {
+		return protocol.TaskContext{}, fmt.Errorf("context 回执无法解码: %w", err)
+	}
+	if len(res.Messages) == 0 {
+		return protocol.TaskContext{}, errors.New("context 回执为空（memory 必须返回组装后的 messages）")
+	}
+	return protocol.TaskContext{
 		ConversationID: conversationID,
-		Messages:       messages,
+		Messages:       res.Messages,
 		Boss:           boss,
-		TaskName:       taskName,
-	}}, trace)
+		Task:           res.Task,
+	}, nil
 }
 
-// userMessage 是链入口的共享实现：boss 是结果归属方（SPv2 的帧头 from），trace 是链路 id。
-func (s *Server) userMessage(boss, trace string, body []byte) (any, error) {
-	var p protocol.UserMessagePayload
-	if err := protocol.DecodeRaw(body, &p); err != nil {
-		return nil, err
+// startTask 用组装好的上下文开黑板并立即推进一轮（后台跑，入口只等受理）。
+func (s *Server) startTask(tc protocol.TaskContext, boss, trace string) any {
+	return s.startTaskWithStream(tc, boss, trace, nil)
+}
+
+// startTaskWithStream 同 startTask；stream 非 nil 时这一轮 LLM 的 token 增量会推给流式答复。
+func (s *Server) startTaskWithStream(tc protocol.TaskContext, boss, trace string, stream *streamSink) any {
+	if boss == "" {
+		boss = tc.Boss
 	}
+	cid := tc.ConversationID
+	if cid == "" {
+		cid = "default"
+	}
+	taskID, taskName := "", ""
+	if tc.Task != nil {
+		taskID, taskName = tc.Task.ID, tc.Task.Name
+	}
+	// 任务名写进系统提示：agent 始终知道自己在为哪个任务工作。
+	if taskID != "" && len(tc.Messages) > 0 {
+		tc.Messages = append(tc.Messages[:1:1], append([]llm.Message{{Role: "system", Content: taskPrompt(taskName, taskID)}}, tc.Messages[1:]...)...)
+	}
+	st := s.boardOpen(cid, boss, trace, taskID, taskName, tc.Messages)
+	st.stream = stream
+	// spec §6.8：先把排给这个 work 的 A2A 消息取回并注入（claim→注入→ack），再开轮。
+	claimCtx, claimCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	queued, claimErr := s.claimA2AMessages(claimCtx, trace)
+	claimCancel()
+	if claimErr != nil {
+		s.logger.Printf("会话 %s：A2A 队列领取失败（不阻塞主轮）: %v", cid, claimErr)
+		if m := s.metricsRegistry(); m != nil {
+			m.Counter("sump_a2a_claim_failures_total", "A2A claim failures", nil, 1)
+		}
+	} else if len(queued) > 0 {
+		st.mu.Lock()
+		st.messages = append(st.messages, queued...)
+		st.gen += 1
+		st.mu.Unlock()
+		s.logger.Printf("会话 %s：注入 %d 条 A2A 消息", cid, len(queued))
+	}
+	s.boardKick(st)
+	return map[string]any{"status": "accepted"}
+}
+
+// humanMessage 是链入口的共享实现：boss 是结果归属方（SPv2 的帧头 from），trace 是链路 id。
+func (s *Server) humanMessage(parent context.Context, boss, trace string, p protocol.MessagePayload) (any, error) {
 	if strings.TrimSpace(p.Text) == "" && len(p.Images) == 0 {
-		return nil, errors.New("user_message: text 与 images 至少必填其一")
+		return nil, errors.New("message: text 与 images 至少必填其一")
 	}
-	cid := p.ConversationID
+	cid := p.Conversation
 	if cid == "" {
 		cid = "default"
 	}
@@ -364,9 +429,18 @@ func (s *Server) userMessage(boss, trace string, body []byte) (any, error) {
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: text, ImageIDs: p.Images},
 	}
-	// SPv2 没有独立入口：结果归属方就是帧头 from，失败只能记日志（没有第二条回家路）。
-	s.startMemoryRound(boss, trace, cid, taskName, messages)
-	return map[string]any{"status": "accepted"}, nil
+	// spec §7.2：同步向 memory 要上下文；失败就回错误（入口能看到），不静默只回 accepted。
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	tc, err := s.fetchContext(ctx, boss, trace, cid, taskName, messages)
+	if err != nil {
+		return nil, err
+	}
+	var sink *streamSink
+	if p.Stream {
+		sink = newStreamSink()
+	}
+	return s.startTaskWithStream(tc, boss, trace, sink), nil
 }
 
 // withSender 把来源标注拼到正文前面（同一行，空标注原样返回）。
@@ -395,42 +469,4 @@ func taskNameOf(text string, images, files []string) string {
 		return "[文件]"
 	}
 	return ""
-}
-
-// resume 是完全启动的唯一入口：仅接受来自记忆服务的 resume（from 取自帧头）。
-// 记忆组装好的上下文到达后，开启任务（黑板）并立即受理——推理在后台推进（见 board.go）。
-// defaultBoss 是上下文里没带原 boss 时的兜底（原生取 Frame.From.ID）。
-func (s *Server) resume(from, defaultBoss, trace string, body []byte) (any, error) {
-	mem := s.memoryName()
-	if from != mem {
-		return nil, &permissionError{msg: fmt.Sprintf("resume 仅接受来自记忆服务（%s）的调用，拒绝来源 %q", mem, from)}
-	}
-	var p protocol.ResumePayload
-	if err := protocol.DecodeRaw(body, &p); err != nil {
-		return nil, err
-	}
-	tc := p.Context
-	if len(tc.Messages) == 0 {
-		return nil, errors.New("resume: 上下文为空")
-	}
-	// 任务原 boss 随上下文恢复；上下文没带时用调用来源兜底。
-	boss := tc.Boss
-	if boss == "" {
-		boss = defaultBoss
-	}
-	cid := tc.ConversationID
-	if cid == "" {
-		cid = "default"
-	}
-	taskID, taskName := "", ""
-	if tc.Task != nil {
-		taskID, taskName = tc.Task.ID, tc.Task.Name
-	}
-	// 任务名写进系统提示：agent 始终知道自己在为哪个任务工作。
-	if taskID != "" {
-		tc.Messages = append(tc.Messages[:1:1], append([]llm.Message{{Role: "system", Content: taskPrompt(taskName, taskID)}}, tc.Messages[1:]...)...)
-	}
-	st := s.boardOpen(cid, boss, trace, taskID, taskName, tc.Messages)
-	s.boardKick(st)
-	return map[string]any{"status": "accepted"}, nil
 }

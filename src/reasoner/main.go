@@ -33,7 +33,7 @@ func main() {
 
 	logger := log.New(os.Stdout, "[reasoner] ", log.LstdFlags|log.Lmicroseconds)
 	if *llmKey == "" {
-		logger.Printf("警告: 未配置 LLM Key（-llm-key 或环境变量 DEEPSEEK_API_KEY），user_message 将无法推理")
+		logger.Printf("警告: 未配置 LLM Key（-llm-key 或环境变量 DEEPSEEK_API_KEY），message 将无法推理")
 	}
 
 	// LLM 客户端由 server.New 按启动值构建（Key 非空才建，空 = nil 轮次停住）；llm.* 可在设置中心热改。
