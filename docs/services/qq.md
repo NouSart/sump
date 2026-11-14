@@ -24,7 +24,7 @@
 | --- | --- | --- |
 | `deliver` | `{text, conversation_id}` | `{}`（已发回 QQ） |
 
-入口侧（QQ → 链）不是动作，是内部流程：`user_message` 发给 reasoner（带 `sender` 标注）。
+入口侧（QQ → 链）不是动作，是内部流程：`message` 发给 reasoner（带 `sender` 标注，QQ 是人类的代理入口）。
 
 ## 设置项
 
@@ -50,7 +50,7 @@
 | `napcat`（外部网关） | `send_msg` / `get_group_info` | 回消息、取群资料 |
 | `images` | `save` | 消息里带图 |
 | `files` | `save` | 消息里带文件 |
-| `reasoner` | `user_message` | 该推理的消息（等受理回执） |
+| `reasoner` | `message` | 该推理的消息（等受理回执） |
 | `memory` | `store` / `conversation_open` | 被策略拦下的消息（只记录）、给会话起名 |
 
 ## 怎么测

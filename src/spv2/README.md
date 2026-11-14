@@ -91,17 +91,18 @@
 
 - `NewServer(card, ...)` 先校验卡片；默认注册 `hello` / `health` / `metrics`，其余 method 用 `Handle` 注册。
 - `Handler()` 返回挂在 `/spv2` 上的 HTTP handler；`Mux()` 返回完整 mux：`/spv2`、`/healthz`、`/readyz`、`/metrics`（OpenMetrics 文本）。
-- 选项有 `WithMaxMessageBytes`（默认 4 MiB）、`WithActionTimeout`（默认 30s）、`WithMaxInflight`（默认 64）、`WithMetrics`、`WithIdempotency`、`WithLogger`（默认 `log.Default()`；生产骨架传自己的 logger，见 `src/service/spv2_bridge.go`）。
+- 选项有 `WithMaxMessageBytes`（默认 4 MiB）、`WithActionTimeout`（默认 30s）、`WithMaxInflight`（默认 64）、`WithMetrics`、`WithIdempotency`、`WithLogger`（默认 `log.Default()`；生产骨架传自己的 logger，见 `src/service/spv2_bridge.go`）、`WithHealthChecks`。
 - 收到 call 后做 `Normalize` / `Validate` / `ValidateTo`；未知 method 回 `not_found`，并发超限回 `resource_exhausted`，每个 call 在独立 goroutine 中执行。
 - **丢弃必留痕**（spec 附录 A 第 1 条「无静默终态：drop 必计数」）：解不开 / 校验失败 / 超 body 上限 / 没有分发分支的入站帧，一律记 `sump_dropped_total{reason}` 并写一条日志（原因取值见 `server.go` 的常量表）。call 额外多回一帧错误 reply，只为不让调用方空等——同一种事件仍只记一次账，call 与 event 不分家。
 - **panic 不外溢**：handler 的 panic 在 `invoke` 里被收成 `internal` 错误，回给调用方、记 `sump_panics_total{method}`、把栈写进日志；进程与这条连接继续工作。event 的 panic 同理，但不再另记 `sump_event_errors_total`（一个事件一个指标）。
 - `Handler` 拿到的 `*Call` 提供 `Reply` / `ReplyError` / `SendEvent` / `SendStream` / `SendStreamError` / `Replied` / `WorkID`；handler 没回应时 server 会补错误 reply。
-- `hello` 校验请求协议版本并返回服务卡；`health` 返回 status/version/uptime；`metrics` 返回当前快照。event 交给同名 handler 处理，不产生 reply。
+- `hello` 校验请求协议版本并返回服务卡；`health` 返回 status/version/uptime/checks；`metrics` 返回当前快照。event 交给同名 handler 处理，不产生 reply。
+- `WithHealthChecks` 注入的探针由 `health` 与 `/readyz` 共用：按注册顺序执行，填充 `checks[].name/status/latency_ms` 并汇总 `ok | degraded | fail`；探针 panic 会收成单个 `fail`，不会带崩进程或连接。
 
 ### HTTP 观测
 
 - `Server.Mux()` 一次挂好 `/spv2`、`/healthz`、`/readyz`、`/metrics`。
-- `/healthz` 与 `/readyz` 都返回 JSON 的 `HealthResponse`；当前没有依赖探针，固定 `status=ok`（所以 `readyz` 还不具备“依赖不可用就不接流量”的语义）。
+- `/healthz` 是纯存活检查，始终返回 JSON 的 `HealthResponse{status:"ok"}`；`/readyz` 执行同一组依赖探针，没有探针时返回 `ok` 且省略 `checks`，任一探针 `fail` 时返回 503，`degraded` 仍返回 200。
 - `/metrics` 把 `Registry.Snapshot()` 渲染成 OpenMetrics 文本（counter/gauge/histogram，含 `_bucket` / `_sum` / `_count`）。
 
 ### 幂等
@@ -161,7 +162,7 @@ if err := client.CallDecode(ctx, call, &out); err != nil {
 
 阶段、范围、文件地图与待办以 [IMPLEMENTATION.md](IMPLEMENTATION.md) 为准；README 只记录当前代码事实。
 
-- 已落地：帧/卡片/校验、call/reply/event/stream、WS client/server、hello/health/metrics、HTTP `/healthz` `/readyz` `/metrics`、`MemStore`（work/lease/queue/sweep/renew）、可选幂等缓存、`ref/` 参考链路。
+- 已落地：帧/卡片/校验、call/reply/event/stream、WS client/server、hello/health/metrics、HTTP `/healthz` `/readyz` `/metrics`（含健康探针与就绪语义）、`MemStore`（work/lease/queue/sweep/renew）、可选幂等缓存、`ref/` 参考链路。
 - SQLite：`sqlitestore.go` 有 `SQLiteStore` / `NewSQLiteStore` 和 `sqlitestore_test.go`，测试已通过；但参考链路与默认测试仍用 `MemStore`，生产 memory 尚未接入，不把参考实现当成迁移完成。
 - 未接入：auth/tenant/capability、spawn/cross-owner；`cancel` 只在 `ref/memory` 有 handler，`renew` 只有 Store 方法，生产 method 未接。
 - 测试缺口：没有 reconnect/heartbeat、stream 缺口/重复、专门的并发压测；`go test -race` 已通过。

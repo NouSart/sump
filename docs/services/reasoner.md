@@ -3,7 +3,7 @@
 > **读者**：改单步推理、工具派发、任务判定的人 ｜ **读完能做**：知道一轮推理从哪进、结果从哪出、状态落在哪 ｜ **状态**：有效 ｜ **最后校验**：2026-11-01
 
 **单步推理器**：没有常驻循环，一次只决定「下一步做什么」。用户消息进来后先把上下文托管给 memory，
-收到 `resume` 才真正调模型；工具调用即时回执、结果注入黑板再唤醒下一轮。
+收到入口 `message` 先同步向 memory 取 `context`（消息 + 任务），拿到才开黑板调模型；工具调用即时回执、结果注入黑板再唤醒下一轮。
 
 ## 职责
 
@@ -21,8 +21,7 @@
 
 | 动作 | 输入 | 输出 | 说明 |
 | --- | --- | --- | --- |
-| `user_message` | `{text, conversation_id?, images?, files?, sender?, notes?}` | `{status: accepted}` | 链入口；随后经 memory 的 `resume` 完全启动 |
-| `resume` | `{context}` | `{status: accepted}` | **只接受 `from=memory`**（入站，不声明） |
+| `message` | `{text, conversation?, sender?, images?, files?, notes?, stream?}` | `{status: accepted}`（`stream=true` 时同一条 call 回 stream 帧） | 统一入口：human（owner）/ 入口 service（带 sender，代理人类）/ agent；入口路径同步取 `context` 后才开黑板 |
 | `report_result` | 补报载荷 | 回执 | 入站：异步工具的结果回灌（不声明） |
 | `think` | `{prompt, system?, model?, max_tokens?}` | `{text}` | 一次补全：不带工具、不开任务；所有非任务型模型调用的统一出口 |
 | `retry` | `{conversation_id}` | `{retried, conversation_id}` | 门户专用：对上一轮失败、任务还开着的会话再跑一轮 |
@@ -52,7 +51,7 @@
 
 | 目标 | 动作 | 什么时候 |
 | --- | --- | --- |
-| `memory` | `recall` / `store` / `task_finish` / `task_rename` / `note` / `publish_session` | 每轮入口托管、记录轨迹、判定落库、复盘 |
+| `memory` | `context` / `store` / `task_finish` / `task_rename` / `note` / `publish_session` | 入口同步取上下文、记录轨迹、判定落库、复盘 |
 | `images` | `fetch_full` | 最近一条带图消息内联给模型 |
 | 结果归属方（帧头 `from`） | `deliver` | 收尾 |
 | 名册里的任意服务 | 该服务 `tool: true` 的动作 | 模型决定调用时 |
