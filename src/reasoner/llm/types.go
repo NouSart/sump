@@ -38,11 +38,14 @@ type ChatRequest struct {
 	// Images 是待内联的图片数据（图片 id → data URL）。
 	// 携带数据的引用内联为多模态内容；无数据的引用转文本占位（不直接序列化进请求体）。
 	Images map[string]string `json:"-"`
+	// Stream 是内部开关：ChatStream 置 true，请求体带 stream:true（SSE）。
+	Stream bool `json:"-"`
 }
 
 // ChatResponse 是补全响应（OpenAI 兼容）。
 type ChatResponse struct {
 	Choices []Choice  `json:"choices"`
+	Usage   Usage     `json:"usage"`
 	Error   *APIError `json:"error,omitempty"`
 }
 
