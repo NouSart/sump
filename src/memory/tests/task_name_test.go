@@ -9,7 +9,6 @@ package tests
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/NouSart/sump/protocol"
 )
@@ -90,31 +89,23 @@ func TestStoreUsesExplicitTaskName(t *testing.T) {
 	}
 }
 
-// TestRecallHonorsExplicitTaskName 验证 recall 侧也认 task_name：
-// store 与 recall 是两条并发路径（Fire 不保证先后），谁先到都不能把标签当任务名。
-func TestRecallHonorsExplicitTaskName(t *testing.T) {
+// TestContextHonorsExplicitTaskName 验证 context 侧也认 task_name：
+// store 与 context 是两条路径，谁先到都不能把标签当任务名。
+func TestContextHonorsExplicitTaskName(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
 
-	task := protocol.RecallPayload{Context: protocol.TaskContext{
-		ConversationID: "qq:group:99",
-		Boss:           "qq",
-		TaskName:       "在吗",
+	req := protocol.ContextPayload{
+		Conversation: "qq:group:99",
+		Boss:         "qq",
+		TaskName:     "在吗",
 		Messages: []protocol.Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: "[群聊 · 群 99 · 5 人可见 · 李四(7) · 非主人 · 已@我] 在吗"},
 		},
-	}}
-	if rp := caller.recallUntilReady(t, srv.WsURL(), task); !rp.OK {
-		t.Fatalf("recall 失败: %s", rp.Error)
 	}
-	select {
-	case r := <-caller.resumes:
-		if r.tc.Task == nil || r.tc.Task.Name != "在吗" {
-			t.Fatalf("recall 未采用显式任务名: %+v", r.tc.Task)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("超时：未收到 resume")
+	if got := decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), req)); got.Task.Name != "在吗" {
+		t.Fatalf("context 未采用显式任务名: %+v", got.Task)
 	}
 }

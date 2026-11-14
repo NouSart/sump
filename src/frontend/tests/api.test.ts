@@ -5,9 +5,11 @@ import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { decode, encode } from '@msgpack/msgpack';
 import { WebSocket } from 'ws';
 import { startFrontend, type FrontendHandle } from '../src/server/app.ts';
-import { SPv2RemoteError, dialSPv2Once } from '../src/server/spv2.ts';
+import { SPv2RemoteError, decodeFrame, dialSPv2Once, encodeFrame } from '../src/server/spv2.ts';
+import { newID } from '../src/server/protocol.ts';
 import { StubNativeCenter } from './stub-native-center.ts';
 import { StubNativeService, type NativeCall } from './stub-native-service.ts';
 import { waitFor } from './util.ts';
@@ -69,6 +71,43 @@ function rawGet(addr: string, path: string, headers: Record<string, string>): Pr
   });
 }
 
+// rawDeliver 发一条完整原生 deliver（自定义 from.authority）：归属校验必须看到 runtime。
+async function rawDeliver(
+  addr: string,
+  from: { kind: string; id: string; authority?: string },
+  work: string,
+  body: Record<string, unknown>,
+): Promise<{ status: string; body?: unknown; error?: { code: string; message: string } }> {
+  const ws = new WebSocket(`ws://${addr}/spv2`);
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve());
+    ws.once('error', reject);
+  });
+  const read = (): Promise<Record<string, unknown>> =>
+    new Promise((resolve) => {
+      ws.once("message", (data) => resolve(decodeFrame(new Uint8Array(data as Buffer)) as unknown as Record<string, unknown>));
+    });
+  const hello = {
+    v: 'spv2.1', id: newID(), type: 'call', work: newID(),
+    from: { kind: 'service', id: 'frontend' }, to: { kind: 'service', id: 'frontend' },
+    method: 'hello', content_type: 'application/msgpack', body: encode({ protocol: 'spv2.1' }),
+  };
+  ws.send(encodeFrame(hello as never));
+  await read();
+  const call = {
+    v: 'spv2.1', id: newID(), type: 'call', work,
+    from, to: { kind: 'service', id: 'frontend' },
+    method: 'deliver', content_type: 'application/msgpack', body: encode(body),
+  };
+  ws.send(encodeFrame(call as never));
+  const reply = await read();
+  ws.close();
+  const rawBody = reply.body;
+  if (rawBody instanceof Uint8Array && rawBody.length > 0) {
+    reply.body = decode(rawBody);
+  }
+  return reply as { status: string; body?: unknown; error?: { code: string; message: string } };
+}
 interface OverviewBody {
   connected: boolean;
   center: string;
@@ -92,7 +131,7 @@ test('overview：连接状态 + 名册 + 设置清单', async (t) => {
   stub.roster = {
     services: [
       { name: 'frontend', addr: 'ws://127.0.0.1:9/spv2' },
-      { name: 'reasoner', addr: 'ws://127.0.0.1:8/spv2', provides: [{ action: 'user_message' }] },
+      { name: 'reasoner', addr: 'ws://127.0.0.1:8/spv2', provides: [{ action: 'message' }] },
     ],
     revision: 5,
   };
@@ -563,7 +602,7 @@ test('语言包：列目录 / 按语言读取 / 非法标识 400', async (t) => 
   assert.equal(bad.status, 400);
 });
 
-test('门户：POST /api/message 跳 user_message 给 reasoner，只回受理回执', async (t) => {
+test('门户：POST /api/message 跳 message 给 reasoner，只回受理回执', async (t) => {
   const reasoner = await startStubService({ ok: true, data: { item_id: 'h1', phase: 'queued' } });
   const stub = new StubNativeCenter();
   const centerURL = await stub.start();
@@ -587,8 +626,12 @@ test('门户：POST /api/message 跳 user_message 给 reasoner，只回受理回
   assert.deepEqual(await res.json(), { ok: true, conversationId: 'web:private:owner' });
 
   assert.equal(reasoner.calls.length, 1, '应恰好跳一次');
-  assert.equal(reasoner.calls[0]?.method, 'user_message');
-  assert.deepEqual(reasoner.calls[0]?.input, { text: '你好', conversation_id: 'web:private:owner' });
+  assert.equal(reasoner.calls[0]?.method, 'message');
+  assert.deepEqual(reasoner.calls[0]?.input, {
+    text: '你好',
+    conversation: 'web:private:owner',
+    sender: { channel: 'private', owner: true },
+  });
   // from 必须是门户自己：原生链路里回答沿 from 回来，少了它回答就没有回程
   assert.equal(reasoner.calls[0]?.from, 'frontend');
 });
@@ -604,6 +647,20 @@ test('门户：deliver 从 WS 端点进来 → 回执 + SSE 推给浏览器', as
     await stub.stop();
   });
   await waitFor(() => handle.link.connected, 3000, '前端接入中心');
+
+  // spec §6.5：deliver 要先问 memory 的 work 行；这里起一个记忆替身并让它进名册。
+  const mem = new StubNativeService();
+  mem.replyFor = (method) =>
+    method === 'work_get'
+      ? { ok: true, data: { work: { agent: { kind: 'agent', id: 'reasoner' }, owner: { kind: 'human', id: 'owner' } } } }
+      : { ok: false, error: 'unknown' };
+  const memURL = await mem.start();
+  t.after(async () => {
+    await mem.stop();
+  });
+  stub.roster = { services: [{ name: 'memory', addr: memURL }], revision: 9 };
+  stub.broadcastRoster();
+  await waitFor(() => (handle.link.roster?.services ?? []).some((x) => x.name === 'memory'), 3000, 'memory 入名册');
 
   // 先订阅再投递，否则事件赶在订阅之前。
   const res = await fetch(`http://${handle.addr}/api/events`, { signal: ctrl.signal });
@@ -628,11 +685,10 @@ test('门户：deliver 从 WS 端点进来 → 回执 + SSE 推给浏览器', as
   await readEvent(); // roster
   await readEvent(); // timers（冷启动补的空快照）
 
-  // 原生 call：deliver 是 method，回执沿 reply 回来；调用不抛错即表示受理。
-  const got = (await dialSPv2Once(`ws://${handle.addr}/spv2`, 'reasoner', 'frontend', 'deliver', { text: '任务完成' }, 2000)) as {
-    delivered?: boolean;
-  };
-  assert.equal(got.delivered, true, 'deliver 应被受理并回执');
+  // 原生 call：from=agent:reasoner + authority=runtime（spec §6.5 允许的 deliver 来源）。
+  const got = await rawDeliver(handle.addr, { kind: 'agent', id: 'reasoner', authority: 'runtime' }, 'w-deliver', { text: '任务完成' });
+  assert.equal(got.status, 'ok', JSON.stringify(got));
+  assert.deepEqual(got.body, { delivered: true });
 
   const ev = await readEvent();
   assert.match(ev, /event: deliver/);
@@ -640,6 +696,32 @@ test('门户：deliver 从 WS 端点进来 → 回执 + SSE 推给浏览器', as
   assert.match(ev, /web:private:owner/, '未给 conversation_id 时用单用户默认会话');
 });
 
+test('门户：deliver 来源不是 work.agent/owner → permission_denied（不静默放行）', async (t) => {
+  const stub = new StubNativeCenter();
+  const centerURL = await stub.start();
+  const handle = await startWithCenter(centerURL);
+  t.after(async () => {
+    await handle.close();
+    await stub.stop();
+  });
+  await waitFor(() => handle.link.connected, 3000, '前端接入中心');
+  const mem = new StubNativeService();
+  mem.replyFor = () => ({ ok: true, data: { work: { agent: { kind: 'agent', id: 'reasoner' }, owner: { kind: 'human', id: 'owner' } } } });
+  const memURL = await mem.start();
+  t.after(async () => {
+    await mem.stop();
+  });
+  stub.roster = { services: [{ name: 'memory', addr: memURL }], revision: 9 };
+  stub.broadcastRoster();
+  await waitFor(() => (handle.link.roster?.services ?? []).some((x) => x.name === 'memory'), 3000, 'memory 入名册');
+  // agent 但 authority=none：不能 deliver（runtime 不是随便写的）。
+  const denied = await rawDeliver(handle.addr, { kind: 'agent', id: 'reasoner', authority: 'none' }, 'w-deliver', { text: 'x' });
+  assert.equal(denied.status, 'error');
+  assert.equal(denied.error?.code, 'permission_denied');
+  // 冒充 work.agent 的另一个 agent 也不行。
+  const impostor = await rawDeliver(handle.addr, { kind: 'agent', id: 'intruder', authority: 'runtime' }, 'w-deliver', { text: 'x' });
+  assert.equal(impostor.error?.code, 'permission_denied');
+});
 test('门户：progress 从 WS 端点进来 → 回执 + SSE 推给浏览器；形状不对的丢弃', async (t) => {
   const stub = new StubNativeCenter();
   const centerURL = await stub.start();
@@ -934,4 +1016,31 @@ test('信任栅栏：伪造 Host / 跨站 Origin 一律 403，正常回环放行
 
   // 端口不符：不同端口是另一个服务，没理由放行。
   assert.equal((await rawGet(handle.addr, '/api/overview', { host: `127.0.0.1:${port + 1}` })).status, 403);
+});
+
+test('观测端点：healthz / readyz / metrics（OpenMetrics）', async (t) => {
+  const stub = new StubNativeCenter();
+  const centerURL = await stub.start();
+  const handle = await startWithCenter(centerURL);
+  t.after(async () => {
+    await handle.close();
+    await stub.stop();
+  });
+  await waitFor(() => handle.link.connected, 5000, '中心连接');
+
+  const health = await rawGet(handle.addr, '/healthz', { host: handle.addr });
+  assert.equal(health.status, 200);
+  assert.match(health.body, /^ok/);
+
+  const ready = await rawGet(handle.addr, '/readyz', { host: handle.addr });
+  assert.equal(ready.status, 200, '中心在线时就绪必须 200');
+  assert.equal((JSON.parse(ready.body) as { status: string }).status, 'ok');
+
+  const metrics = await rawGet(handle.addr, '/metrics', { host: handle.addr });
+  assert.equal(metrics.status, 200);
+  assert.match(metrics.body, /# EOF/);
+  assert.match(metrics.body, /sump_requests_total\{method="GET",status="200"\}/);
+  assert.match(metrics.body, /sump_request_duration_seconds_bucket\{le="\+Inf",method="GET"\}/);
+  // 抓取本身算在飞请求，所以只断言它是数字（不假装为 0）。
+  assert.match(metrics.body, /sump_inflight_requests \d+/);
 });

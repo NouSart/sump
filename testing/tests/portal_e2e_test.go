@@ -2,7 +2,7 @@ package tests
 
 // 门户投递端到端（真进程 + 真 WS + 真 SSE）：settings-center + memory + reasoner + frontend（Node）。
 //
-// 浏览器 POST /api/message → 门户调 user_message 给 reasoner（SPv2 没有 boss 字段：
+// 浏览器 POST /api/message → 门户调 message 给 reasoner（SPv2 没有 boss 字段：
 // 发起方 from 就是结果归属方）→ 记忆往返（recall → resume）→ 假 LLM → 收尾 deliver
 // 直达门户 → SSE `deliver` 事件。交付地址错了的话回答回不来，这个测试把回程钉住。
 //

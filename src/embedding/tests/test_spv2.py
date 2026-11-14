@@ -43,6 +43,9 @@ class StubCenter:
         try:
             async for raw in ws:
                 frame = spv2.decode(raw)
+                if frame.type == spv2.TYPE_CALL and frame.method == "hello":
+                    await ws.send(spv2.encode(spv2.new_reply(frame, spv2.service_ref("settings-center"), {"card": {"protocol": spv2.PROTOCOL_VERSION, "name": "settings-center", "actor": {"kind": "service", "id": "settings-center"}, "version": "stub", "capabilities": ["msgpack", "json"], "methods": [], "limits": {"max_body": 1 << 20, "max_stream": 32}, "observability": {"health": True, "metrics": True, "format": "spv2.metrics.v1"}}})))
+                    continue
                 if frame.type == spv2.TYPE_CALL and frame.method == "register":
                     self.registrations += 1
                     roster = {"services": [], "revision": 1}
@@ -76,6 +79,19 @@ async def running_service(**over: object) -> AsyncIterator[Service]:
         await center.stop()
 
 
+async def _native_hello(ws: websockets.ClientConnection, to_name: str = "embedding") -> None:
+    call = spv2.new_call(
+        work=spv2.new_id(),
+        from_=spv2.service_ref("tester"),
+        to=spv2.service_ref(to_name),
+        method="hello",
+        body={"protocol": spv2.PROTOCOL_VERSION, "capabilities": ["msgpack", "json"]},
+    )
+    await ws.send(spv2.encode(call))
+    reply = spv2.decode(await asyncio.wait_for(ws.recv(), TIMEOUT))
+    assert reply.type == spv2.TYPE_REPLY and reply.status == spv2.STATUS_OK, reply.error
+
+
 async def call_spv2(
     addr: str,
     method: str,
@@ -86,6 +102,7 @@ async def call_spv2(
     """以第三方身份发一跳原生 call，返回 (call, reply)。"""
     async with websockets.connect(f"ws://{addr}/spv2", max_size=None) as ws:
         if frame is None:
+            await _native_hello(ws)
             frame = spv2.new_call(
                 work="w-test",
                 from_=CLIENT,
@@ -290,10 +307,12 @@ def test_closing_one_native_connection_does_not_cancel_other_inflight() -> None:
         server, url = await start_native_endpoint(h)
         try:
             conn_b = await websockets.connect(url)
+            await _native_hello(conn_b, "probe")
             await send_native_call(conn_b, "slow")
             await asyncio.wait_for(h.started.wait(), 2.0)
 
             conn_a = await websockets.connect(url)
+            await _native_hello(conn_a, "probe")
             await send_native_call(conn_a, "work")
             reply = spv2.decode(await asyncio.wait_for(conn_a.recv(), 2.0))
             assert reply.status == spv2.STATUS_OK, reply.error
@@ -321,6 +340,7 @@ def test_closing_native_connection_cancels_its_own_inflight() -> None:
         server, url = await start_native_endpoint(h)
         try:
             conn = await websockets.connect(url)
+            await _native_hello(conn, "probe")
             await send_native_call(conn, "slow")
             await asyncio.wait_for(h.started.wait(), 2.0)
             await conn.close()

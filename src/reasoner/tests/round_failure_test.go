@@ -28,9 +28,9 @@ type failLLM struct {
 	err   error
 }
 
-func (f *failLLM) Chat(context.Context, llm.ChatRequest) (llm.Message, error) {
+func (f *failLLM) Chat(context.Context, llm.ChatRequest) (llm.ChatResult, error) {
 	f.calls.Add(1)
-	return llm.Message{}, f.err
+	return llm.ChatResult{}, f.err
 }
 
 // startEnvWithLLM 起一套最小环境（中心 / boss / 记忆 / reasoner），LLM 客户端由调用方给。

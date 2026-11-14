@@ -225,7 +225,7 @@ test('消息 / 历史 / 任务都按会话走：读能看别的入口，写只�
 
   // 缺省 = 默认会话（向后兼容：老界面不带这个字段也能用）。
   await postJSON(`http://${handle.addr}/api/message`, { text: '你好' });
-  assert.equal((reasoner.calls.at(-1)?.input as { conversation_id: string }).conversation_id, DEFAULT_CONVERSATION_ID);
+  assert.equal((reasoner.calls.at(-1)?.input as { conversation: string }).conversation, DEFAULT_CONVERSATION_ID);
   await fetch(`http://${handle.addr}/api/history?limit=5`);
   assert.equal((memory.calls.at(-1)?.input as { conversation_id: string }).conversation_id, DEFAULT_CONVERSATION_ID);
   await fetch(`http://${handle.addr}/api/tasks`);
@@ -235,7 +235,7 @@ test('消息 / 历史 / 任务都按会话走：读能看别的入口，写只�
   const custom = `${DEFAULT_CONVERSATION_ID}-z3`;
   const sent = await postJSON(`http://${handle.addr}/api/message`, { text: '你好', conversation_id: custom });
   assert.equal(sent.status, 200);
-  assert.equal((reasoner.calls.at(-1)?.input as { conversation_id: string }).conversation_id, custom);
+  assert.equal((reasoner.calls.at(-1)?.input as { conversation: string }).conversation, custom);
   const hist = await fetch(`http://${handle.addr}/api/history?conversation_id=${custom}`);
   assert.equal(((await hist.json()) as { conversationId: string }).conversationId, custom);
   await fetch(`http://${handle.addr}/api/tasks?conversation_id=${custom}`);

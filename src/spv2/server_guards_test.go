@@ -27,6 +27,7 @@ func TestServerRejectsWrongVersionOnWire(t *testing.T) {
 	})
 
 	conn := wsDialRaw(t, url)
+	wsHandshake(t, conn)
 	f := Frame{
 		V: "spv1", ID: "bad-v-1", Type: TypeCall, Work: wsTestWork,
 		From: AgentRef("client"), To: ServiceRef(wsTestService),
@@ -79,6 +80,7 @@ func TestServerCallCannotReplyTwice(t *testing.T) {
 	})
 
 	conn := wsDialRaw(t, url)
+	wsHandshake(t, conn)
 	f := Frame{
 		V: ProtocolVersion, ID: "twice-1", Type: TypeCall, Work: wsTestWork,
 		From: AgentRef("client"), To: ServiceRef(wsTestService),

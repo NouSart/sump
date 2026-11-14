@@ -46,8 +46,8 @@ func TestMaxMessageBytesInboundReport(t *testing.T) {
 		size   int
 		reject bool
 	}{
-		{name: "normal", limit: 1024, size: 16},
-		{name: "oversized", limit: 1024, size: 4096, reject: true},
+		{name: "normal", limit: 65536, size: 16},
+		{name: "oversized", limit: 65536, size: 131072, reject: true},
 		{name: "zero_uses_default", size: 65536},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,8 +110,9 @@ func TestMaxMessageBytesOutboundCall(t *testing.T) {
 		size   int
 		reject bool
 	}{
-		{name: "normal", limit: 1024, size: 16},
-		{name: "oversized", limit: 1024, size: 4096, reject: true},
+		// 上限要装得下 §5.1 握手的服务卡（否则连接首帧就被 max_body 拒掉）。
+		{name: "normal", limit: 65536, size: 16},
+		{name: "oversized", limit: 65536, size: 131072, reject: true},
 		{name: "zero_uses_default", size: 65536},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

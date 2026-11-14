@@ -188,6 +188,20 @@ func TestNativeSPv2Methods(t *testing.T) {
 		t.Fatal("原生裁决后调用方没被唤醒")
 	}
 
+	// §12.3：审批域最小指标必须真的落到服务的 SPv2 注册表（否则 /metrics 里看不到）。
+	var decisionOK, waitOK bool
+	for _, m := range s.Metrics().Snapshot() {
+		if m.Name == "sump_approval_decisions_total" && m.Labels["decision"] == protocol.DecisionAllow && m.Value >= 1 {
+			decisionOK = true
+		}
+		if m.Name == "sump_approval_wait_seconds" && m.Count >= 1 {
+			waitOK = true
+		}
+	}
+	if !decisionOK || !waitOK {
+		t.Fatalf("审批指标缺失: decisionOK=%v waitOK=%v snapshot=%+v", decisionOK, waitOK, s.Metrics().Snapshot())
+	}
+
 	listCall, err := spv2.NewCall("w-native", spv2.ServiceRef("tester"), spv2.ServiceRef("approval"), protocol.ApprovalListAction, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -36,7 +36,7 @@ func TestToolExposure(t *testing.T) {
 		}
 	}
 	for _, notWant := range []string{
-		"recall", "store", "history", "conversation_list", "conversation_rename", "note", "lineheads", "prune",
+		"context", "store", "history", "conversation_list", "conversation_rename", "note", "lineheads", "prune",
 		"publish_session", "shared_forget", "conversation_open", "conversation_archive",
 	} {
 		if _, ok := tools[notWant]; ok {

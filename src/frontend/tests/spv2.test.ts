@@ -8,6 +8,7 @@ import {
   SPv2RemoteError,
   SPv2Session,
   SPv2UnavailableError,
+  checkDeliverAuthority,
   checkSPv2Trust,
   createSPv2WSS,
   dialSPv2Once,
@@ -24,6 +25,58 @@ function listen(wss: WebSocketServer): Promise<number> {
       resolve(typeof a === 'object' && a !== null ? a.port : 0);
     });
   });
+}
+
+// spec §5.1：客户端第一条帧是 hello；测试桩必须回服务卡并把它与业务帧分开。
+function helloReplyObj(f: Record<string, unknown>): Record<string, unknown> {
+  const to = (f.to as { id?: string } | undefined)?.id ?? 'peer';
+  return {
+    v: 'spv2.1',
+    id: 'hello-reply',
+    type: 'reply',
+    work: f.work,
+    from: { kind: 'service', id: to },
+    to: f.from,
+    reply_to: f.id,
+    status: 'ok',
+    body: encode({
+      card: {
+        protocol: 'spv2.1',
+        name: to,
+        actor: { kind: 'service', id: to },
+        version: 'stub',
+        capabilities: ['msgpack', 'json'],
+        methods: [],
+        limits: { max_body: 1 << 20, max_stream: 32 },
+        observability: { health: true, metrics: true, format: 'spv2.metrics.v1' },
+      },
+    }),
+  };
+}
+
+function helloReplyFrame(f: Frame): Frame {
+  return {
+    v: 'spv2.1',
+    id: 'hello-reply',
+    type: 'reply',
+    work: f.work,
+    from: { kind: 'service', id: f.to.id },
+    to: f.from,
+    reply_to: f.id,
+    status: 'ok',
+    body: encode({
+      card: {
+        protocol: 'spv2.1',
+        name: f.to.id,
+        actor: { kind: 'service', id: f.to.id },
+        version: 'stub',
+        capabilities: ['msgpack', 'json'],
+        methods: [],
+        limits: { max_body: 1 << 20, max_stream: 32 },
+        observability: { health: true, metrics: true, format: 'spv2.metrics.v1' },
+      },
+    }),
+  };
 }
 
 test('newID：26 字符 ULID 形态且互不相同', () => {
@@ -65,6 +118,10 @@ test('dialSPv2Once 收发 call/reply', async () => {
   wss.on('connection', (ws) => {
     ws.on('message', (data) => {
       const f = decode(data as Uint8Array) as Record<string, unknown>;
+      if (f.method === 'hello') {
+        ws.send(encode(helloReplyObj(f)));
+        return;
+      }
       assert.equal(f.type, 'call');
       assert.equal(f.method, 'echo');
       const reply = {
@@ -95,6 +152,10 @@ test('dialSPv2Once 把 status=error 映射成 SPv2RemoteError', async () => {
   wss.on('connection', (ws) => {
     ws.on('message', (data) => {
       const f = decode(data as Uint8Array) as Record<string, unknown>;
+      if (f.method === 'hello') {
+        ws.send(encode(helloReplyObj(f)));
+        return;
+      }
       ws.send(
         encode({
           v: 'spv2.1',
@@ -133,6 +194,8 @@ test('createSPv2WSS 处理 deliver 并回执', async () => {
     'frontend',
     () => {},
     {
+      // 这个用例只验传输/回执形状；归属校验另有专门用例。
+      authorizeDeliver: async () => null,
       onDeliver: (m) => {
         delivered = { conversationId: m.conversationId, text: m.text };
       },
@@ -185,6 +248,10 @@ test('原生事件 body 为零长字节时按无 body 投递，不触发解码�
   wss.on('connection', (ws) => {
     ws.on('message', (data) => {
       const f = decodeFrame(new Uint8Array(data as Buffer));
+      if (f.type === 'call' && f.method === 'hello') {
+        ws.send(encodeFrame(helloReplyFrame(f)));
+        return;
+      }
       if (f.type !== 'call') return;
       ws.send(encodeFrame({
         v: 'spv2.1', id: 'r', type: 'reply', work: f.work,
@@ -203,7 +270,8 @@ test('原生事件 body 为零长字节时按无 body 投递，不触发解码�
       onEvent: (ev) => events.push(ev),
       onError: (err) => errors.push(err),
     });
-    assert.equal(await session.call('hello', undefined), undefined);
+    // §5.1 握手已在 Session.dial 内完成；这里直接用一条业务 call 验证零长 body。
+    assert.equal(await session.call('empty', undefined), undefined);
     const deadline = Date.now() + 2000;
     while (events.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
     assert.deepEqual(events, [{ method: 'tick', body: undefined }]);
@@ -225,6 +293,10 @@ test('dialSPv2Once 忽略 reply_to 不匹配的 reply', async () => {
   wss.on('connection', (ws) => {
     ws.on('message', (data) => {
       const f = decode(data as Uint8Array) as Record<string, unknown>;
+      if (f.method === 'hello') {
+        ws.send(encode(helloReplyObj(f)));
+        return;
+      }
       ws.send(
         encode({
           v: 'spv2.1',
@@ -256,6 +328,10 @@ test('dialSPv2Once 空错误码回落 internal', async () => {
   wss.on('connection', (ws) => {
     ws.on('message', (data) => {
       const f = decode(data as Uint8Array) as Record<string, unknown>;
+      if (f.method === 'hello') {
+        ws.send(encode(helloReplyObj(f)));
+        return;
+      }
       ws.send(
         encode({
           v: 'spv2.1', id: 'e', type: 'reply', work: f.work,
@@ -281,6 +357,10 @@ test('dialSPv2Once 空 body 解析为 undefined', async () => {
   wss.on('connection', (ws) => {
     ws.on('message', (data) => {
       const f = decode(data as Uint8Array) as Record<string, unknown>;
+      if (f.method === 'hello') {
+        ws.send(encode(helloReplyObj(f)));
+        return;
+      }
       ws.send(
         encode({
           v: 'spv2.1', id: 'b', type: 'reply', work: f.work,
@@ -367,6 +447,10 @@ test('SPv2Session 空 body/事件/错误/关闭边界', async () => {
     ws.on('message', (data) => {
       const f = decodeFrame(new Uint8Array(data as Buffer));
       if (f.type === 'call') {
+        if (f.method === 'hello') {
+          ws.send(encodeFrame(helloReplyFrame(f)));
+          return;
+        }
         if (f.method === 'error') {
           ws.send(encodeFrame({
             v: 'spv2.1', id: 'e', type: 'reply', work: f.work,
@@ -411,4 +495,43 @@ test('SPv2Session 空 body/事件/错误/关闭边界', async () => {
   } finally {
     await new Promise<void>((resolve) => wss.close(() => resolve()));
   }
+});
+
+test('createSPv2WSS deliver：authorizeDeliver 拒绝 → permission_denied', async () => {
+  const wss = createSPv2WSS('frontend', () => {}, {
+    authorizeDeliver: async () => '不是这条 work 的 agent/owner',
+    onDeliver: () => {
+      throw new Error('不该被投递');
+    },
+    onTimers: () => true,
+    onApproval: () => {},
+    onProgress: () => true,
+    onTerminal: () => true,
+  });
+  const server = createServer();
+  server.on('upgrade', (req, socket, head) => {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    await assert.rejects(
+      dialSPv2Once(`ws://127.0.0.1:${port}`, 'reasoner', 'frontend', 'deliver', { text: 'hi' }, 2000),
+      (err: unknown) => err instanceof SPv2RemoteError && err.code === 'permission_denied',
+    );
+  } finally {
+    for (const ws of wss.clients) ws.terminate();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('checkDeliverAuthority：只放行 work.agent+runtime / work.owner+owner', () => {
+  const work = { agent: { kind: 'agent', id: 'reasoner' }, owner: { kind: 'human', id: 'owner' } };
+  assert.equal(checkDeliverAuthority(work, { kind: 'agent', id: 'reasoner', authority: 'runtime' }), null);
+  assert.equal(checkDeliverAuthority(work, { kind: 'human', id: 'owner', authority: 'owner' }), null);
+  assert.notEqual(checkDeliverAuthority(work, { kind: 'agent', id: 'reasoner', authority: 'none' }), null);
+  assert.notEqual(checkDeliverAuthority(work, { kind: 'agent', id: 'intruder', authority: 'runtime' }), null);
+  assert.notEqual(checkDeliverAuthority(work, { kind: 'human', id: 'owner', authority: 'runtime' }), null);
+  assert.notEqual(checkDeliverAuthority(undefined, { kind: 'agent', id: 'reasoner', authority: 'runtime' }), null);
 });

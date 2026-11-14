@@ -17,6 +17,8 @@ func TestFailedTokenSavePreservesConnection(t *testing.T) {
 	sc := startStubCenter(t)
 	nc := startStubNapCat(t)
 	reasoner := startStubReasoner(t, sc)
+	// deliver 归属校验要读 memory work 行。
+	startStubMemory(t, sc)
 	path := filepath.Join(t.TempDir(), "secret.json")
 	s := server.New(server.Config{
 		Name: "qq", Listen: "127.0.0.1:0", Center: sc.URL(),
@@ -27,6 +29,13 @@ func TestFailedTokenSavePreservesConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Shutdown)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, _, err := s.Resolve("memory"); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	nc.waitConn(t, 5*time.Second)
 	reasoner.sendDeliver(t, s.WsURL(), "before", "qq:private:123")
 	nc.mu.Lock()

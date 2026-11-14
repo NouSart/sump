@@ -40,7 +40,7 @@ func TestChatParsesToolCalls(t *testing.T) {
 	defer srv.Close()
 
 	c := NewDeepSeekClient(srv.URL, "test-key", "deepseek-chat")
-	msg, err := c.Chat(context.Background(), ChatRequest{
+	res, err := c.Chat(context.Background(), ChatRequest{
 		Messages: []Message{{Role: "user", Content: "hello"}},
 		Tools: []Tool{{
 			Type:     "function",
@@ -50,6 +50,7 @@ func TestChatParsesToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	msg := res.Message
 	if gotAuth != "Bearer test-key" {
 		t.Fatalf("Authorization 头不符: %q", gotAuth)
 	}
@@ -91,15 +92,18 @@ func TestFakeSequence(t *testing.T) {
 	}}
 	ctx := context.Background()
 
-	m1, _ := f.Chat(ctx, ChatRequest{})
+	r1, _ := f.Chat(ctx, ChatRequest{})
+	m1 := r1.Message
 	if len(m1.ToolCalls) != 1 || m1.ToolCalls[0].Function.Name != "a" {
 		t.Fatalf("第 1 次应返回 tool_call: %+v", m1)
 	}
-	m2, _ := f.Chat(ctx, ChatRequest{})
+	r2, _ := f.Chat(ctx, ChatRequest{})
+	m2 := r2.Message
 	if m2.Content != "done" {
 		t.Fatalf("第 2 次应返回文本: %+v", m2)
 	}
-	m3, _ := f.Chat(ctx, ChatRequest{})
+	r3, _ := f.Chat(ctx, ChatRequest{})
+	m3 := r3.Message
 	if m3.Content != "done" {
 		t.Fatalf("第 3 次应重复最后一条: %+v", m3)
 	}
@@ -164,5 +168,16 @@ func TestRequestBodyMultimodal(t *testing.T) {
 	pure := marshalMessage(Message{Role: "user", ImageIDs: []string{"x"}}, nil)
 	if pure["content"] != "[图片]" {
 		t.Fatalf("纯图占位不符: %#v", pure["content"])
+	}
+}
+
+func TestFakeReportsUsage(t *testing.T) {
+	f := &Fake{Usage: Usage{PromptTokens: 3, CompletionTokens: 4}, Replies: []Message{{Role: "assistant", Content: "x"}}}
+	res, err := f.Chat(context.Background(), ChatRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Usage.PromptTokens != 3 || res.Usage.CompletionTokens != 4 {
+		t.Fatalf("Fake 没有回报 usage: %+v", res.Usage)
 	}
 }

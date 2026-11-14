@@ -23,7 +23,7 @@ func deliverOnce(t *testing.T, qqURL, text, conversationID string) outcome {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	call, err := spv2.NewCall("trace-deliver", spv2.ServiceRef("reasoner"), spv2.ServiceRef("qq"), "deliver",
+	call, err := spv2.NewCall("trace-deliver", spv2.AgentRef("reasoner").WithAuthority(spv2.AuthorityRuntime), spv2.ServiceRef("qq"), "deliver",
 		protocol.DeliverPayload{Text: text, ConversationID: conversationID})
 	if err != nil {
 		t.Fatal(err)

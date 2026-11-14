@@ -14,7 +14,6 @@ package tests
 import (
 	"context"
 	"fmt"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +22,6 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
-	"github.com/NouSart/sump/spv2"
 )
 
 // pythonExe 选择运行 embedding 服务的解释器：仓库内 venv 优先（本地开发），
@@ -66,36 +64,6 @@ func startEmbeddingProc(t *testing.T, centerURL string, port int) {
 	})
 }
 
-// ---------- resume 观察者（测试进程内的“调用方”替身） ----------
-
-type resumeProbe struct {
-	srv     *httptest.Server
-	resumes chan protocol.ResumePayload
-}
-
-func startResumeProbe(t *testing.T, centerURL string) *resumeProbe {
-	t.Helper()
-	p := &resumeProbe{resumes: make(chan protocol.ResumePayload, 16)}
-	srv := newStubServer(t, "probe", "e2e resume 观察者", spv2.Method{Name: "resume", Shape: spv2.ShapeCall})
-	srv.Handle("resume", func(_ context.Context, call *spv2.Call) error {
-		var p2 protocol.ResumePayload
-		if err := call.Frame.DecodeBody(&p2); err != nil {
-			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
-		}
-		select {
-		case p.resumes <- p2:
-		default:
-		}
-		return call.Reply(map[string]string{"status": "accepted"})
-	})
-	p.srv = serveStub(t, srv)
-	// 注册进中心：memory 依赖名册解析 resume 目标（probe 的名字必须与 recall 的 from 一致）。
-	registerService(t, centerURL, "probe", p.URL(), "e2e resume 观察者")
-	return p
-}
-
-func (p *resumeProbe) URL() string { return wsURL(p.srv) }
-
 // ---------- 用例 ----------
 
 // TestSemanticRecallCrossLanguageE2E：Go ↔ Python 跨语言语义召回全链（含热注册与懒补齐）。
@@ -121,7 +89,6 @@ func TestSemanticRecallCrossLanguageE2E(t *testing.T) {
 
 	obs, _ := registerObserver(t, centerURL)
 	waitRosterHas(t, obs, "memory", 60*time.Second)
-	probe := startResumeProbe(t, centerURL)
 
 	// 写入三条（embedding 尚未上线 → 向量留空）。
 	for _, content := range []string{"apple pie", "apples are red", "天气好"} {
@@ -137,7 +104,7 @@ func TestSemanticRecallCrossLanguageE2E(t *testing.T) {
 	waitWSReady(t, spv2URL(embPort), 60*time.Second)
 	waitRosterHas(t, obs, "embedding", 60*time.Second)
 
-	block := recallStable(t, probe, memURL, "apple", "e2e-semantic-1")
+	block := recallStable(t, memURL, "apple", "e2e-semantic-1")
 	if !strings.Contains(block, "apple pie") {
 		t.Fatalf("语义召回应命中「apple pie」: %q", block)
 	}
@@ -158,14 +125,14 @@ func memoryCall(t *testing.T, memURL, action string, input any) callResult {
 	return callJumpFrom(t, c, "e2e", "memory", action, input, ctx)
 }
 
-// recallStable 发起 recall 并返回记忆块；名册广播存在毫秒级异步窗口——
+// recallStable 发起 context 并返回记忆块；名册广播存在毫秒级异步窗口——
 // 若结果仍含 bigram 兜底特征（"apples are red"）则短暂重试，直到语义路径稳定或超时。
-func recallStable(t *testing.T, p *resumeProbe, memURL, query, conv string) string {
+func recallStable(t *testing.T, memURL, query, conv string) string {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	var lastBlock, lastErr string
 	for time.Now().Before(deadline) {
-		block, err := recallOnce(t, p, memURL, query, conv)
+		block, err := recallOnce(t, memURL, query, conv)
 		if err != nil {
 			lastErr = err.Error()
 			time.Sleep(200 * time.Millisecond)
@@ -181,32 +148,33 @@ func recallStable(t *testing.T, p *resumeProbe, memURL, query, conv string) stri
 	return ""
 }
 
-// recallOnce 以 probe 的身份发起一次 recall，等待 resume 并提取记忆块（【记忆】开头的 system 消息）。
-func recallOnce(t *testing.T, p *resumeProbe, memURL, query, conv string) (string, error) {
+// recallOnce 以 probe 的身份发起一次 context，同步取回组装后的消息并提取记忆块。
+func recallOnce(t *testing.T, memURL, query, conv string) (string, error) {
 	t.Helper()
 	c := dialSPV2(t, memURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	rp := callJumpFrom(t, c, "probe", "memory", "recall", protocol.RecallPayload{Context: protocol.TaskContext{
-		ConversationID: conv,
-		Boss:           "probe",
+	rp := callJumpFrom(t, c, "probe", "memory", "context", protocol.ContextPayload{
+		Conversation: conv,
+		Boss:         "probe",
 		Messages: []protocol.Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: query},
 		},
-	}}, ctx)
+	}, ctx)
 	if !rp.OK {
-		return "", fmt.Errorf("recall 未被受理: %s", rp.Error)
+		return "", fmt.Errorf("context 未被受理: %s", rp.Error)
 	}
-	select {
-	case r := <-p.resumes:
-		for _, m := range r.Context.Messages {
-			if m.Role == "system" && strings.HasPrefix(m.Content, "【记忆】") {
-				return m.Content, nil
-			}
+	var out struct {
+		Messages []protocol.Message `msgpack:"messages"`
+	}
+	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
+		return "", fmt.Errorf("context 回执无法解码: %w", err)
+	}
+	for _, m := range out.Messages {
+		if m.Role == "system" && strings.HasPrefix(m.Content, "【记忆】") {
+			return m.Content, nil
 		}
-		return "", nil
-	case <-time.After(20 * time.Second):
-		return "", fmt.Errorf("超时：未收到 resume")
 	}
+	return "", nil
 }

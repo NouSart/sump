@@ -102,7 +102,7 @@ go run ./cmd/run -suite orchestration -set reasoner.tool.notify_mode=batch -prof
 | 单次成功率 | 通过的 trial / 全部 trial | 最容易被误当作结论的那个数 |
 | **`pass^k`** | k 次 trial **全过**的任务占比 | 一次侥幸不能算过；τ-bench 的口径 |
 | 跳数 | 一次任务内 LLM 调用次数（含催办轮） | harness 有没有白跑 |
-| 耗时 | `user_message` → 交付（或预算耗尽） | 编排的等待与串行程度 |
+| 耗时 | `message` → 交付（或预算耗尽） | 编排的等待与串行程度 |
 | token | 假 LLM 回报的 usage（剧本没给则估算，口径与 reasoner 一致） | 成本 |
 | 标准差 | 同配置 k 次的跳数/耗时/token 波动 | **harness 改动的成本方差常大于换模型** |
 | 闸门拒绝 / 催办轮 / 契约违规 | 工具被闸门挡住次数 / 收尾门禁催了几轮 / 交付前未判定等 | 编排层自己出错 |
