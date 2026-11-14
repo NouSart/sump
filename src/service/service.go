@@ -78,7 +78,8 @@ type Service struct {
 	// 必须在 Start 前设置；运行期只读。
 	writeSecretsHook func(map[string]string) error
 
-	httpSrv *http.Server
+	httpSrv      *http.Server
+	healthChecks []spv2.HealthChecker // 依赖探针（AddHealthCheck 注入；Start 前）
 }
 
 // New 创建服务实例（尚未启动）。
@@ -105,6 +106,33 @@ func New(cfg Config) *Service {
 		appliedSecrets: map[string]bool{},
 		roster:         map[string]protocol.ServiceCard{},
 	}
+}
+
+// AddHealthCheck 注入依赖探针（必须在 Start 之前；Start 之后忽略并记日志）。
+// 骨架自带的 center 探针始终排在第一位；注入的探针按注入顺序追加。
+func (s *Service) AddHealthCheck(c spv2.HealthChecker) {
+	if c == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started {
+		s.logger.Printf("%s: 忽略 Start 之后注入的健康探针", s.cfg.Name)
+		return
+	}
+	s.healthChecks = append(s.healthChecks, c)
+}
+
+// centerHealthCheck 是骨架自带的依赖探针：设置中心连接是否在线。
+// 未注册/连接断开时 /readyz 必须返回 fail（就绪语义不能恒 ok）。
+func (s *Service) centerHealthCheck(context.Context) spv2.HealthCheck {
+	s.mu.Lock()
+	connected := s.centerNative != nil && !s.closed
+	s.mu.Unlock()
+	if connected {
+		return spv2.HealthCheck{Name: "center", Status: spv2.StatusOK}
+	}
+	return spv2.HealthCheck{Name: "center", Status: spv2.HealthFail}
 }
 
 // NativeHandler 是原生 SPv2.1 method：直接读 call.Frame.Body，自己 Reply/ReplyError。
@@ -139,6 +167,10 @@ func (s *Service) HandleNative(m spv2.Method, h NativeHandler) {
 
 // WsURL 返回自己的对外地址（Start 成功后有效）。
 func (s *Service) WsURL() string { return s.selfURL }
+
+// Metrics 返回本服务 SPv2 服务端的指标注册表（Start 之前为 nil）。
+// 服务自己的域指标（LLM / 工具 / 审批等）从这里记，才会出现在 /metrics 里。
+func (s *Service) Metrics() *spv2.Registry { return s.spv2Metrics() }
 
 // Roster 返回当前名册快照（按服务名排序）。
 func (s *Service) Roster() []protocol.ServiceCard {
@@ -181,9 +213,9 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	s.selfURL = "ws://" + ln.Addr().String() + "/spv2"
 
-	mux := http.NewServeMux()
-	mux.Handle("/spv2", s.spv2Srv.Handler())
-	s.httpSrv = &http.Server{Handler: mux}
+	// spv2.md §12.1：每个服务必须实现 health / metrics 与 HTTP /healthz /readyz /metrics。
+	// Mux() 一次挂好这四个端点；/spv2 仍由同一个 handler 承担。
+	s.httpSrv = &http.Server{Handler: s.spv2Srv.Mux()}
 	go func() {
 		if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			s.logger.Printf("%s 服务端退出: %v", s.cfg.Name, err)
@@ -301,6 +333,12 @@ func (s *Service) setRoster(r protocol.RosterPayload) {
 // 结果归属由帧头 from 逐跳自定（骨架在 spv2_bridge 里填本服务名），不是调用方的参数。
 // 送达后的失败不重试——可能已被处理，重试需要幂等键（待定）。
 func (s *Service) Call(ctx context.Context, to, action string, payload any, trace string) (msgpack.RawMessage, error) {
+	return s.CallWithRef(ctx, spv2.ServiceRef(s.cfg.Name), to, action, payload, trace)
+}
+
+// CallWithRef 与 Call 相同，但帧头 from 由调用方给（spec §6.5 的 deliver/cancel/renew 需要
+// from=agent + authority=runtime；普通跳转仍用 Call，from=本服务）。
+func (s *Service) CallWithRef(ctx context.Context, from spv2.Ref, to, action string, payload any, trace string) (msgpack.RawMessage, error) {
 	name, addr, err := s.Resolve(to)
 	if err != nil {
 		return nil, err
@@ -309,7 +347,7 @@ func (s *Service) Call(ctx context.Context, to, action string, payload any, trac
 	if err != nil {
 		return nil, err
 	}
-	return s.callSPv2(ctx, name, addr, action, raw, trace)
+	return s.callSPv2From(ctx, from, name, addr, action, raw, trace)
 }
 
 // Fire 后台发起一跳（发出即完；完成与否仅记日志）。
