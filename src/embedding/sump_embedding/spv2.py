@@ -357,6 +357,7 @@ class NativeEndpoint:
     async def handle_conn(self, ws: websockets.ServerConnection) -> None:
         lock = asyncio.Lock()
         tasks: set[asyncio.Task] = set()
+        hello_done = False
 
         async def send(frame: Frame) -> None:
             async with lock:  # websockets 允许并发 send，串行化更省心
@@ -374,8 +375,42 @@ class NativeEndpoint:
                     self.log.warning("SPv2 坏帧（丢弃）: %s", err)
                     continue
                 if frame.type != TYPE_CALL:
-                    self.log.debug("SPv2 忽略非 call 帧: %s", frame.type)
+                    if not hello_done:
+                        self.log.warning("SPv2 首帧不是 hello（丢弃 %s 帧）", frame.type)
+                    else:
+                        self.log.debug("SPv2 忽略非 call 帧: %s", frame.type)
                     continue
+                # 先做帧级校验（v/id/from/to），再判握手：非法帧仍得到具体错误码，
+                # 不是被"首帧必须是 hello"这句话兜底掩盖。
+                try:
+                    self._validate_call(frame)
+                except FrameError as err:
+                    await send(
+                        new_error_reply(frame, self.actor, err.code, err.message, err.retryable)
+                    )
+                    continue
+                # spec §5.1：连接后第一帧必须是 hello；未握手前的业务 call 一律拒绝。
+                if not hello_done and frame.method != "hello":
+                    await send(
+                        new_error_reply(
+                            frame, self.actor, CODE_INVALID_ARGUMENT, "连接首帧必须是 hello"
+                        )
+                    )
+                    continue
+                if frame.method == "hello":
+                    try:
+                        body = decode_body(frame.body) if frame.body else {}
+                        protocol = body.get("protocol") if isinstance(body, dict) else None
+                        if isinstance(protocol, str) and protocol and protocol != PROTOCOL_VERSION:
+                            raise FrameError(
+                                CODE_INVALID_ARGUMENT, f"protocol 不匹配: {protocol!r}"
+                            )
+                    except FrameError as err:
+                        await send(
+                            new_error_reply(frame, self.actor, err.code, err.message, err.retryable)
+                        )
+                        continue
+                    hello_done = True
                 task = asyncio.create_task(self._handle_call(send, frame))
                 tasks.add(task)
                 task.add_done_callback(tasks.discard)
