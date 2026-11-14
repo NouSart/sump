@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -132,6 +133,7 @@ func TestServerRejectsEventBeforeHello(t *testing.T) {
 // Send（事件）方向的第一帧同样必须是 hello。
 func TestClientAutoHandshakesBeforeFirstEvent(t *testing.T) {
 	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	var seenMu sync.Mutex
 	var seen []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := up.Upgrade(w, r, nil)
@@ -148,7 +150,9 @@ func TestClientAutoHandshakesBeforeFirstEvent(t *testing.T) {
 			if err != nil {
 				return
 			}
+			seenMu.Lock()
 			seen = append(seen, f.Type+":"+f.Method)
+			seenMu.Unlock()
 			if f.Method == "hello" {
 				card := testCard()
 				card.Name = "peer"
@@ -178,10 +182,19 @@ func TestClientAutoHandshakesBeforeFirstEvent(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	for len(seen) < 2 && time.Now().Before(deadline) {
+	for {
+		seenMu.Lock()
+		n := len(seen)
+		seenMu.Unlock()
+		if n >= 2 || time.Now().After(deadline) {
+			break
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if len(seen) < 2 || seen[0] != "call:hello" || seen[1] != "event:tick" {
-		t.Fatalf("线上前两帧 = %v, want [call:hello event:tick]", seen)
+	seenMu.Lock()
+	got := append([]string(nil), seen...)
+	seenMu.Unlock()
+	if len(got) < 2 || got[0] != "call:hello" || got[1] != "event:tick" {
+		t.Fatalf("线上前两帧 = %v, want [call:hello event:tick]", got)
 	}
 }
