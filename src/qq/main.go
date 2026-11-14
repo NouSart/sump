@@ -1,5 +1,5 @@
 // qq：SUMP v2 的 QQ 接入服务（私聊 + 群聊）。
-// NapCat（OneBot 11）正向 WS → user_message 任务链（带来源标注）；deliver → 发回 QQ。
+// NapCat（OneBot 11）正向 WS → message 任务链（带来源标注）；deliver → 发回 QQ。
 package main
 
 import (

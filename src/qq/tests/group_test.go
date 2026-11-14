@@ -44,6 +44,7 @@ func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
 		Version: "stub/1", Methods: []spv2.Method{
 			{Name: "store", Shape: spv2.ShapeCall},
 			{Name: "conversation_open", Shape: spv2.ShapeCall},
+			{Name: "work_get", Shape: spv2.ShapeCall},
 		},
 		Limits: spv2.Limits{MaxBody: 1 << 20},
 	})
@@ -64,6 +65,13 @@ func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
 		sm.stores = append(sm.stores, rec)
 		sm.mu.Unlock()
 		return call.Reply(map[string]any{"ok": true})
+	})
+	srv.Handle("work_get", func(_ context.Context, call *spv2.Call) error {
+		// spec §6.5：qq 作为 entry 校验 deliver 来源时要读 work 行。
+		return call.Reply(map[string]any{"work": spv2.Work{
+			ID: call.Frame.Work, Status: spv2.WorkRunning,
+			Agent: spv2.AgentRef("reasoner"), Owner: spv2.HumanRef("owner"), Entry: spv2.ServiceRef("qq"),
+		}})
 	})
 	srv.Handle("conversation_open", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.ConversationOpenPayload
@@ -158,12 +166,12 @@ func groupTextEvent(t *testing.T, groupID, userID int64, text string, mentionSel
 	}
 }
 
-// senderOf 解析 user_message 载荷里的 sender。
+// senderOf 解析 message 载荷里的 sender。
 func senderOf(t *testing.T, payload map[string]any) map[string]any {
 	t.Helper()
 	s, ok := payload["sender"].(map[string]any)
 	if !ok {
-		t.Fatalf("user_message 缺少 sender 标注: %+v", payload)
+		t.Fatalf("message 缺少 sender 标注: %+v", payload)
 	}
 	return s
 }
@@ -220,7 +228,7 @@ func TestGroupMessageCarriesSender(t *testing.T) {
 	nc.sendEvent(t, groupTextEvent(t, 67890, 12345, "今天几点开会", true))
 
 	req := al.waitRequest(t, 5*time.Second)
-	if req.Payload["conversation_id"] != "qq:group:67890" {
+	if req.Payload["conversation"] != "qq:group:67890" {
 		t.Fatalf("群会话标识不符: %+v", req.Payload)
 	}
 	s := senderOf(t, req.Payload)
@@ -300,7 +308,7 @@ func TestGroupObserveOnlyRecords(t *testing.T) {
 
 	time.Sleep(300 * time.Millisecond)
 	if al.count() != 0 {
-		t.Fatalf("观察档不应触发推理（收到 %d 条 user_message）", al.count())
+		t.Fatalf("观察档不应触发推理（收到 %d 条 message）", al.count())
 	}
 }
 
@@ -473,6 +481,6 @@ func TestGroupIgnoresOwnMessages(t *testing.T) {
 
 	time.Sleep(400 * time.Millisecond)
 	if al.count() != 0 || sm.storesLen() != 0 {
-		t.Fatalf("自己的消息不该触发任何处理: user_message=%d store=%d", al.count(), sm.storesLen())
+		t.Fatalf("自己的消息不该触发任何处理: message=%d store=%d", al.count(), sm.storesLen())
 	}
 }
