@@ -273,7 +273,7 @@ test('upload：下游回了个没有 id 的成功（形状不可用）→ 502', 
 });
 
 test('message：reasoner 拒绝时把原话转出去（400），不谎报受理', async (t) => {
-  const stub = await startStub({ ok: false, error: 'user_message: 会话忙，请稍后' });
+  const stub = await startStub({ ok: false, error: 'message: 会话忙，请稍后' });
   t.after(stub.stop);
   const handle = await startPortal({ roster: [{ name: 'reasoner', addr: stub.url }] });
   t.after(handle.close);
@@ -334,7 +334,7 @@ test('message：附件写成模型看得懂的一行，文件名里的换行被�
   });
   assert.equal(res.status, 200);
   const sent = stub.calls.at(-1);
-  assert.equal(sent?.method, 'user_message');
+  assert.equal(sent?.method, 'message');
   const text = (sent?.input as { text: string }).text;
   assert.match(text, /^看看这个\n\n\[附件\] 报告\.pdf（files:f9，312\.0 KB）——需要时用 files\.read \{id:"f9"\} 读/);
   assert.match(text, /\[附件\] 截图\.png（images:i7，10\.0 KB）——用 images\.fetch \{id:"i7"\}/);

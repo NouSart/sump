@@ -58,6 +58,34 @@ export class StubNativeService {
     if (frame.type !== 'call') return;
     const input = frame.body !== undefined && frame.body.length > 0 ? (decode(frame.body) as unknown) : undefined;
     const method = frame.method ?? '';
+    if (method === 'hello') {
+      // spec §5.1：客户端第一条帧是 hello；stub 要回服务卡，且不把 hello 算进业务 calls。
+      const out: Frame = {
+        v: 'spv2.1',
+        id: newID(),
+        type: 'reply',
+        work: frame.work,
+        from: { kind: 'service', id: frame.to.id },
+        to: frame.from,
+        reply_to: frame.id,
+        status: 'ok',
+        content_type: 'application/msgpack',
+        body: encode({
+          card: {
+            protocol: 'spv2.1',
+            name: frame.to.id,
+            actor: { kind: 'service', id: frame.to.id },
+            version: 'stub',
+            capabilities: ['msgpack', 'json'],
+            methods: [],
+            limits: { max_body: 1 << 20, max_stream: 32 },
+            observability: { health: true, metrics: true, format: 'spv2.metrics.v1' },
+          },
+        }),
+      };
+      ws.send(encodeFrame(out));
+      return;
+    }
     this.calls.push({ method, input, from: frame.from.id, to: frame.to.id });
     const reply = this.replyFor(method, input);
     const out: Frame = {

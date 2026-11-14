@@ -20,6 +20,7 @@ import {
   type TimerItem,
   type TrustConfig,
 } from './portal.ts';
+import { counter, gauge, observe, renderOpenMetrics } from './metrics.ts';
 import type { RosterPayload, ServiceSettings, SettingsResult } from './protocol.ts';
 
 export interface ApiConfig {
@@ -308,11 +309,11 @@ export function createRequestHandler(
     sendJSON(res, 200, { ok: true, services });
   };
 
-  // sendUserMessage 是门户的"用户 → 智能体"入口：跳 user_message 给 reasoner。
+  // sendUserMessage 是门户的"用户 → 智能体"入口：跳 message 给 reasoner（入口是人类的代理）。
   // 返回的只是**受理回执**——最终回答由 reasoner 经 deliver 送回来，走 SSE，不从这条 HTTP 出。
   //
   // 附件不进协议：门户把每个附件拼成一行正文（带动作名与 id），模型照常自己调
-  // files.read / images.fetch。协议只增不改，等真有必要再给 user_message 加字段。
+  // files.read / images.fetch。
   const sendUserMessage = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const body = asObject(await readJSON(req)) ?? {};
     const rawText = typeof body.text === 'string' ? body.text.trim() : '';
@@ -323,7 +324,12 @@ export function createRequestHandler(
     const text = [rawText, ...attachments.map((a) => attachmentLine(a))].filter((s) => s !== '').join('\n\n');
     const conversationId = conversationFrom(body.conversation_id);
     try {
-      await center.jumpTo(cfg.reasoner, 'user_message', { text, conversation_id: conversationId });
+      await center.jumpTo(cfg.reasoner, 'message', {
+        text,
+        conversation: conversationId,
+        // 门户是单用户入口：平台侧没有独立 human actor，sender 表明这是主人本人。
+        sender: { channel: 'private', owner: true },
+      });
     } catch (err) {
       throw mapCenterError(err);
     }
@@ -477,7 +483,7 @@ export function createRequestHandler(
   };
 
   // fetchHistory 把该会话最近的对话从 memory 取回来（门户启动时回填界面用）。
-  // 与 user_message 同一条链路：从名册解析 memory 的地址后直连，中心不转发。
+  // 与 message 同一条链路：从名册解析 memory 的地址后直连，中心不转发。
   // 读是宽的：QQ 里面发生的事也要能在门户里看（见 readableConversation）。
   const fetchTasks = async (res: ServerResponse, rawCid: unknown): Promise<void> => {
     const conversationId = readableConversation(rawCid);
@@ -816,6 +822,24 @@ export function createRequestHandler(
     const url = new URL(req.url ?? '/', 'http://localhost');
     const pathname = decodeURIComponent(url.pathname);
 
+    // spec §12：门户也必须有自己的存活/就绪/指标端点；就绪看中心连接，不恒 ok。
+    if (pathname === '/healthz') {
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('ok\n');
+      return;
+    }
+    if (pathname === '/readyz') {
+      const ok = center.connected;
+      res.writeHead(ok ? 200 : 503, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: ok ? 'ok' : 'fail', center: center.connected }));
+      return;
+    }
+    if (pathname === '/metrics') {
+      res.writeHead(200, { 'content-type': 'application/openmetrics-text; version=1.0.0; charset=utf-8' });
+      res.end(renderOpenMetrics());
+      return;
+    }
+
     if (pathname === '/api/overview' && req.method === 'GET') {
       sendJSON(res, 200, await overview());
       return;
@@ -936,7 +960,22 @@ export function createRequestHandler(
     await serveStatic(res, pathname);
   };
 
+  let inflight = 0;
   return (req, res) => {
+    inflight += 1;
+    gauge('sump_inflight_requests', 'In-flight HTTP requests', undefined, inflight);
+    const started = Date.now();
+    const method = req.method ?? 'GET';
+    res.once('finish', () => {
+      inflight -= 1;
+      gauge('sump_inflight_requests', 'In-flight HTTP requests', undefined, inflight);
+      const status = String(res.statusCode);
+      counter('sump_requests_total', 'HTTP requests', { method, status });
+      observe('sump_request_duration_seconds', 'HTTP request duration', 's', { method }, (Date.now() - started) / 1000);
+      if (res.statusCode >= 500) {
+        counter('sump_errors_total', 'HTTP 5xx errors', { method, code: status });
+      }
+    });
     route(req, res).catch((err: unknown) => {
       if (res.headersSent) {
         res.end();
