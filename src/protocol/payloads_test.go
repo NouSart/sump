@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// TestTaskContextRoundTrip 验证记忆往返上下文（含工具调用链）的编解码保真。
+// TestTaskContextRoundTrip 验证同步上下文（含工具调用链）的编解码保真。
 func TestTaskContextRoundTrip(t *testing.T) {
-	in := RecallPayload{Context: TaskContext{
-		ConversationID: "conv-1",
-		Boss:           "qq",
+	in := ContextPayload{
+		Conversation: "conv-1",
+		Boss:         "qq",
 		Messages: []Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: "你好", ImageIDs: []string{"img-1", "img-2"}, FileIDs: []string{"file-1"}},
@@ -20,54 +20,50 @@ func TestTaskContextRoundTrip(t *testing.T) {
 			}}},
 			{Role: "tool", Content: `{"ok":true}`, ToolCallID: "c1"},
 		},
-	}}
+	}
 	raw, err := EncodePayload(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out RecallPayload
+	var out ContextPayload
 	if err := DecodeRaw(raw, &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Context.ConversationID != in.Context.ConversationID || out.Context.Boss != in.Context.Boss {
-		t.Fatalf("上下文头不符: %+v", out.Context)
+	if out.Conversation != in.Conversation || out.Boss != in.Boss {
+		t.Fatalf("上下文头不符: %+v", out)
 	}
-	if len(out.Context.Messages) != len(in.Context.Messages) {
-		t.Fatalf("消息条数不符: %d != %d", len(out.Context.Messages), len(in.Context.Messages))
+	if len(out.Messages) != len(in.Messages) {
+		t.Fatalf("消息条数不符: %d != %d", len(out.Messages), len(in.Messages))
 	}
-	m := out.Context.Messages[2]
+	m := out.Messages[2]
 	if m.Role != "assistant" || len(m.ToolCalls) != 1 || m.ToolCalls[0].Function.Name != "svc__act" || m.ToolCalls[0].Function.Arguments != `{"a":1}` {
 		t.Fatalf("工具调用消息不符: %+v", m)
 	}
-	if out.Context.Messages[3].ToolCallID != "c1" {
-		t.Fatalf("tool_call_id 丢失: %+v", out.Context.Messages[3])
+	if out.Messages[3].ToolCallID != "c1" {
+		t.Fatalf("tool_call_id 丢失: %+v", out.Messages[3])
 	}
-	if len(out.Context.Messages[1].ImageIDs) != 2 || out.Context.Messages[1].ImageIDs[0] != "img-1" {
-		t.Fatalf("ImageIDs 丢失: %+v", out.Context.Messages[1])
+	if len(out.Messages[1].ImageIDs) != 2 || out.Messages[1].ImageIDs[0] != "img-1" {
+		t.Fatalf("ImageIDs 丢失: %+v", out.Messages[1])
 	}
-	if len(out.Context.Messages[1].FileIDs) != 1 || out.Context.Messages[1].FileIDs[0] != "file-1" {
-		t.Fatalf("FileIDs 丢失: %+v", out.Context.Messages[1])
+	if len(out.Messages[1].FileIDs) != 1 || out.Messages[1].FileIDs[0] != "file-1" {
+		t.Fatalf("FileIDs 丢失: %+v", out.Messages[1])
 	}
 
-	// Resume 与 Store 同构走一遍。
-	rp := ResumePayload{Context: out.Context}
-	if _, err := EncodePayload(rp); err != nil {
-		t.Fatal(err)
-	}
+	// Store 同构走一遍。
 	if _, err := EncodePayload(StorePayload{ConversationID: "conv-1", Role: "user", Content: "你好"}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// TestUserMessageSenderCompat 验证来源标注的线上兼容性：
+// TestMessageSenderCompat 验证来源标注的线上兼容性：
 //   - 不带 sender（老入口服务 / 门户）解码后 Sender 为 nil，行为与旧版完全一致；
 //   - 带 sender 时字段逐个保真（含"取不到就不填"的空群名 / 零人数）。
-func TestUserMessageSenderCompat(t *testing.T) {
-	old, err := EncodePayload(UserMessagePayload{Text: "你好"})
+func TestMessageSenderCompat(t *testing.T) {
+	old, err := EncodePayload(MessagePayload{Text: "你好"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var back UserMessagePayload
+	var back MessagePayload
 	if err := DecodeRaw(old, &back); err != nil {
 		t.Fatal(err)
 	}
@@ -80,14 +76,14 @@ func TestUserMessageSenderCompat(t *testing.T) {
 		t.Fatal("Sender 为 nil 时不应出现在载荷里")
 	}
 
-	partial := UserMessagePayload{Text: "在吗", ConversationID: "qq:group:1", Sender: &Sender{
+	partial := MessagePayload{Text: "在吗", Conversation: "qq:group:1", Sender: &Sender{
 		Channel: "group", ID: "2", GroupID: "1", Mentioned: true,
 	}}
 	raw, err := EncodePayload(partial)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got UserMessagePayload
+	var got MessagePayload
 	if err := DecodeRaw(raw, &got); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +213,7 @@ func TestClampTaskName(t *testing.T) {
 // TestSenderWireKeys 钉住 sender 的**线路键名**（snake_case）：它们是跨语言契约，
 // 改了就与既有读者/夹具静默漂移（结构体往返测试两种实现一起改，抓不到这种错误）。
 func TestSenderWireKeys(t *testing.T) {
-	in := UserMessagePayload{Text: "hi", Sender: &Sender{
+	in := MessagePayload{Text: "hi", Sender: &Sender{
 		Channel: "group", ID: "1", Name: "张三", GroupID: "2", GroupName: "群", GroupSize: 3,
 		Owner: true, Mentioned: true,
 	}}
@@ -264,13 +260,13 @@ func TestSenderWireKeys(t *testing.T) {
 	if _, has := store["task_name"]; !has {
 		t.Fatalf("store 载荷缺少线路键 task_name（当前键：%v）", keysOf(store))
 	}
-	recallRaw, err := EncodePayload(RecallPayload{Context: TaskContext{TaskName: "名字"}})
+	ctxRaw, err := EncodePayload(ContextPayload{TaskName: "名字"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, _ := decodeMap(t, recallRaw)["context"].(map[string]any)
+	ctx := decodeMap(t, ctxRaw)
 	if _, has := ctx["task_name"]; !has {
-		t.Fatalf("recall 上下文缺少线路键 task_name（当前键：%v）", keysOf(ctx))
+		t.Fatalf("context 缺少线路键 task_name（当前键：%v）", keysOf(ctx))
 	}
 
 	// 反方向：别的实现按文档写的键名，我们必须能解出来。
@@ -281,7 +277,7 @@ func TestSenderWireKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got UserMessagePayload
+	var got MessagePayload
 	if err := DecodeRaw(rawForeign, &got); err != nil {
 		t.Fatal(err)
 	}
@@ -307,14 +303,14 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 		out  any
 	}{
 		{"deliver", DeliverPayload{Text: "hi", ConversationID: "qq:private:10001"}, &DeliverPayload{}},
-		{"userMessage", UserMessagePayload{Text: "hi", ConversationID: "qq:private:10001", Images: []string{"img-1"}}, &UserMessagePayload{}},
-		{"userMessageFiles", UserMessagePayload{Text: "hi", Files: []string{"file-1", "file-2"}}, &UserMessagePayload{}},
-		{"userMessagePrivateSender", UserMessagePayload{Text: "hi", ConversationID: "qq:private:10001", Sender: &Sender{
+		{"message", MessagePayload{Text: "hi", Conversation: "qq:private:10001", Images: []string{"img-1"}}, &MessagePayload{}},
+		{"messageFiles", MessagePayload{Text: "hi", Files: []string{"file-1", "file-2"}}, &MessagePayload{}},
+		{"messagePrivateSender", MessagePayload{Text: "hi", Conversation: "qq:private:10001", Sender: &Sender{
 			Channel: "private", ID: "10001", Name: "主人", Owner: true, Mentioned: true,
-		}}, &UserMessagePayload{}},
-		{"userMessageGroupSender", UserMessagePayload{Text: "hi", ConversationID: "qq:group:67890", Sender: &Sender{
+		}}, &MessagePayload{}},
+		{"messageGroupSender", MessagePayload{Text: "hi", Conversation: "qq:group:67890", Sender: &Sender{
 			Channel: "group", ID: "12345", Name: "张三", GroupID: "67890", GroupName: "编程交流", GroupSize: 12,
-		}}, &UserMessagePayload{}},
+		}}, &MessagePayload{}},
 		{"fileSave", FileSavePayload{URL: "http://x/a.pdf", Filename: "a.pdf", Mime: "application/pdf"}, &FileSavePayload{}},
 		{"fileSaveResult", FileSaveResult{ID: "01J", Filename: "a.pdf", Mime: "application/pdf", Size: 123}, &FileSaveResult{}},
 		{"fileFetch", FileFetchPayload{ID: "01J"}, &FileFetchPayload{}},

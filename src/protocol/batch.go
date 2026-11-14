@@ -215,7 +215,7 @@ type UserHoldPayload struct {
 	ConversationID string   `msgpack:"conversation_id"`
 	Hold           string   `msgpack:"hold,omitempty"`         // ""/none | secondary | primary
 	PausedItems    []string `msgpack:"paused_items,omitempty"` // 被暂停/停止的异步句柄（不再算"可执行"）
-	Notes          []string `msgpack:"notes,omitempty"`        // 随之投递的附注（与 UserMessagePayload.Notes 同名同义）
+	Notes          []string `msgpack:"notes,omitempty"`        // 随之投递的附注（与 MessagePayload.Notes 同名同义）
 }
 
 // 停手级别的取值。
