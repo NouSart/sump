@@ -15,7 +15,7 @@ import (
 
 // nativeActions 是 server 注册的全部原生动作（顺序无关）。
 var nativeActions = []string{
-	"recall", "store", "history", "conversation_list", "conversation_rename",
+	"context", "store", "history", "conversation_list", "conversation_rename",
 	"note", "dig", "lineheads", "prune", "remember", "forget",
 	"publish_session", "shared_sessions", "shared_forget",
 	"conversation_open", "conversation_archive",
@@ -25,7 +25,6 @@ var nativeActions = []string{
 func TestMemoryNativeSPv2(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
-	caller := startStubCaller(t, sc.URL()) // 注册成 reasoner，recall 的 resume 回它
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -167,24 +166,20 @@ func TestMemoryNativeSPv2(t *testing.T) {
 		t.Fatal("lineheads 在缺少 embedding 服务时应报错")
 	}
 
-	// recall：原生入口也要把 resume 发回调用方（不经过 v1 入站跳转）。
-	ack := must("recall", protocol.RecallPayload{Context: protocol.TaskContext{
-		ConversationID: "native3",
-		Boss:           "stub-boss",
-		Messages:       []protocol.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "原生召回"}},
-	}}, nil)
-	var status struct {
-		Status string `msgpack:"status"`
+	// context：原生入口同步返回组装后的消息与 work/task（不再有 resume 回调）。
+	ack := must("context", protocol.ContextPayload{
+		Conversation: "native3",
+		Boss:         "stub-boss",
+		Messages:     []protocol.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "原生上下文"}},
+	}, nil)
+	var got struct {
+		Messages []protocol.Message `msgpack:"messages"`
+		Task     protocol.Task      `msgpack:"task"`
 	}
-	if err := ack.DecodeBody(&status); err != nil || status.Status != "accepted" {
-		t.Fatalf("recall 回执 = %+v err=%v", status, err)
+	if err := ack.DecodeBody(&got); err != nil {
+		t.Fatalf("context 回执解码失败: %v", err)
 	}
-	select {
-	case r := <-caller.resumes:
-		if r.from != "memory" || r.tc.ConversationID != "native3" || r.tc.Boss != "stub-boss" {
-			t.Fatalf("resume 不符: from=%q ctx=%+v", r.from, r.tc)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("超时：原生 recall 未发出 resume")
+	if len(got.Messages) == 0 || got.Task.ConversationID != "native3" {
+		t.Fatalf("context 回执不符: %+v", got)
 	}
 }

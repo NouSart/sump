@@ -1,5 +1,5 @@
 // memory 设置项测试：
-//   - 声明随名片上报；configure 下发即时生效（recall.history_limit）；
+//   - 声明随名片上报；configure 下发即时生效（context.history_limit）；
 //   - 五个预算键的**行为级**验证：core_limit / core_max_chars / rel_limit / rel_max_chars / history_limit；
 //   - 非法值与未声明键被拒、保持旧值。
 package tests
@@ -37,23 +37,23 @@ func pushConfigure(t *testing.T, addr string, p protocol.ConfigurePayload) callR
 	return callResult{OK: true, Data: resp.Body}
 }
 
-// TestSettingsLive 验证：名片声明 13 项（5 个 recall.* + recall.embedding + 2 个 share.* + 5 个只读）；
+// TestSettingsLive 验证：名片声明 13 项（5 个 context.* + context.embedding + 2 个 share.* + 5 个只读）；
 // configure 合法值即时生效（recall 只带最近一条历史）；非法值与未声明键被拒且保持旧值。
 func TestSettingsLive(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
 
-	// 名片声明（按声明顺序）：5 个 recall.* + recall.embedding + 2 个 share.* + 5 个只读项
+	// 名片声明（按声明顺序）：5 个 context.* + context.embedding + 2 个 share.* + 5 个只读项
 	declared := sc.DeclaredSettings("memory")
 	if len(declared) != 13 {
 		t.Fatalf("名片应声明 13 个设置项: %+v", declared)
 	}
-	if declared[0].Key != "recall.history_limit" || declared[0].Default != "12" {
-		t.Fatalf("recall.history_limit 声明不符: %+v", declared[0])
+	if declared[0].Key != "context.history_limit" || declared[0].Default != "12" {
+		t.Fatalf("context.history_limit 声明不符: %+v", declared[0])
 	}
-	if it := declared[5]; it.Key != "recall.embedding" || it.Default != "embedding" || it.ReadOnly {
-		t.Fatalf("recall.embedding 声明不符（应为普通项）：%+v", it)
+	if it := declared[5]; it.Key != "context.embedding" || it.Default != "embedding" || it.ReadOnly {
+		t.Fatalf("context.embedding 声明不符（应为普通项）：%+v", it)
 	}
 	for _, key := range []string{"db", "name", "addr", "center"} {
 		found := false
@@ -79,7 +79,7 @@ func TestSettingsLive(t *testing.T) {
 	}
 
 	// 非法值 / 未声明键：拒绝且保持旧值。
-	bad := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "recall.history_limit", Value: "-1"})
+	bad := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "context.history_limit", Value: "-1"})
 	if bad.OK || !strings.Contains(bad.Error, "≥0") {
 		t.Fatalf("非法值应被拒绝: %+v", bad)
 	}
@@ -93,15 +93,15 @@ func TestSettingsLive(t *testing.T) {
 		t.Fatalf("只读项应被拒绝: %+v", ro)
 	}
 
-	// recall.embedding 热改：换成另一个名字的服务 → 语义召回真的改叫新服务（行为断言，
+	// context.embedding 热改：换成另一个名字的服务 → 语义召回真的改叫新服务（行为断言，
 	// 不是只读 SettingValue）。前提：有长期记忆条目 + 名册里能看到新名字。
 	embB := startStubEmbeddingNamed(t, sc, "embedding-b")
 	remember(t, caller, srv, "偏好", "爱吃苹果")
 	waitRosterName(t, srv, "embedding-b")
-	if emb := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "recall.embedding", Value: "embedding-b", Default: "embedding", Overridden: true}); !emb.OK {
-		t.Fatalf("recall.embedding 应可热改: %+v", emb)
+	if emb := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "context.embedding", Value: "embedding-b", Default: "embedding", Overridden: true}); !emb.OK {
+		t.Fatalf("context.embedding 应可热改: %+v", emb)
 	}
-	if v := srv.SettingValue("recall.embedding"); v != "embedding-b" {
+	if v := srv.SettingValue("context.embedding"); v != "embedding-b" {
 		t.Fatalf("生效值应为 embedding-b，实际 %q", v)
 	}
 	recallBlock(t, caller, srv, "苹果偏好") // 触发一次 recall（内部会向 embedding 发 embed）
@@ -115,10 +115,10 @@ func TestSettingsLive(t *testing.T) {
 
 	// 空值 = 关闭语义召回（静默回落 bigram），改回默认再验一次
 	before := len(embB.Requests())
-	if emb := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "recall.embedding", Value: ""}); !emb.OK {
+	if emb := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "context.embedding", Value: ""}); !emb.OK {
 		t.Fatalf("清空 embedding 名应被接受: %+v", emb)
 	}
-	if v := srv.SettingValue("recall.embedding"); v != "" {
+	if v := srv.SettingValue("context.embedding"); v != "" {
 		t.Fatalf("清空后生效值应为空，实际 %q", v)
 	}
 	recallBlock(t, caller, srv, "苹果偏好")
@@ -128,71 +128,55 @@ func TestSettingsLive(t *testing.T) {
 	}
 
 	// 合法值：立即生效。
-	ok := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "recall.history_limit", Value: "1", Default: "12", Overridden: true})
+	ok := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "context.history_limit", Value: "1", Default: "12", Overridden: true})
 	if !ok.OK {
 		t.Fatalf("下发失败: %s", ok.Error)
 	}
-	if v := srv.SettingValue("recall.history_limit"); v != "1" {
+	if v := srv.SettingValue("context.history_limit"); v != "1" {
 		t.Fatalf("生效值应为 1，实际 %q", v)
 	}
 
-	// recall：只应注入最近一条历史（历史三）。
-	task := protocol.RecallPayload{Context: protocol.TaskContext{
-		ConversationID: "t9",
-		Boss:           "stub-boss",
+	// context：只应注入最近一条历史（历史三）。
+	req := protocol.ContextPayload{
+		Conversation: "t9",
+		Boss:         "stub-boss",
 		Messages: []protocol.Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: "新一轮"},
 		},
-	}}
-	if rp := caller.recallUntilReady(t, srv.WsURL(), task); !rp.OK {
-		t.Fatalf("recall 失败: %s", rp.Error)
 	}
-	select {
-	case r := <-caller.resumes:
-		block := ""
-		for _, m := range r.tc.Messages {
-			if strings.HasPrefix(m.Content, compose.MemoryPrefix) {
-				block = m.Content
-			}
+	messages := decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), req)).Messages
+	block := ""
+	for _, m := range messages {
+		if strings.HasPrefix(m.Content, compose.MemoryPrefix) {
+			block = m.Content
 		}
-		if block == "" {
-			t.Fatalf("应有记忆块: %+v", r.tc.Messages)
-		}
-		if !strings.Contains(block, "历史三") || strings.Contains(block, "历史一") || strings.Contains(block, "历史二") {
-			t.Fatalf("history_limit=1 应只注入最近一条: %q", block)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("超时：未收到 resume")
+	}
+	if block == "" {
+		t.Fatalf("应有记忆块: %+v", messages)
+	}
+	if !strings.Contains(block, "历史三") || strings.Contains(block, "历史一") || strings.Contains(block, "历史二") {
+		t.Fatalf("history_limit=1 应只注入最近一条: %q", block)
 	}
 }
 
-// recallBlock 发起一次 recall（查询词「苹果」）并返回注入的记忆块内容（无块则空串）。
+// recallBlock 发起一次 context（查询词「苹果」）并返回注入的记忆块内容（无块则空串）。
 func recallBlock(t *testing.T, caller *stubCaller, srv *server.Server, conv string) string {
 	t.Helper()
-	task := protocol.RecallPayload{Context: protocol.TaskContext{
-		ConversationID: conv,
-		Boss:           "stub-boss",
+	req := protocol.ContextPayload{
+		Conversation: conv,
+		Boss:         "stub-boss",
 		Messages: []protocol.Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: "苹果"},
 		},
-	}}
-	if rp := caller.recallUntilReady(t, srv.WsURL(), task); !rp.OK {
-		t.Fatalf("recall 失败: %s", rp.Error)
 	}
-	select {
-	case r := <-caller.resumes:
-		for _, m := range r.tc.Messages {
-			if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
-				return m.Content
-			}
+	for _, m := range decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), req)).Messages {
+		if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
+			return m.Content
 		}
-		return ""
-	case <-time.After(5 * time.Second):
-		t.Fatal("超时：未收到 resume")
-		return ""
 	}
+	return ""
 }
 
 // TestRecallBudgetsLive 行为级验证其余四个预算键（cumulative 顺序执行，各步显式断言：
@@ -221,19 +205,19 @@ func TestRecallBudgetsLive(t *testing.T) {
 		notWant    []string // 记忆块中必须不出现
 	}{
 		// core_limit=1：核心节只留优先级最高那条；相关节不受影响（两条都在）。
-		{"recall.core_limit", "1",
+		{"context.core_limit", "1",
 			[]string{"核心甲高优", "苹果派好吃", "爱吃苹果"},
 			[]string{"核心乙低优"}},
 		// rel_limit=1：相关节只留新近那条（「苹果派好吃」后写入，ID 更大）。
-		{"recall.rel_limit", "1",
+		{"context.rel_limit", "1",
 			[]string{"核心甲高优", "苹果派好吃"},
 			[]string{"核心乙低优", "爱吃苹果"}},
 		// rel_max_chars=1：预算小于任何条目 → 相关节整体排除。
-		{"recall.rel_max_chars", "1",
+		{"context.rel_max_chars", "1",
 			[]string{"核心甲高优"},
 			[]string{"核心乙低优", "苹果派好吃", "爱吃苹果"}},
 		// core_max_chars=1：核心节整体排除；核心条目也不因预算溢出而漏进相关节（不命中查询词）。
-		{"recall.core_max_chars", "1",
+		{"context.core_max_chars", "1",
 			nil,
 			[]string{"核心甲高优", "核心乙低优", "苹果派好吃", "爱吃苹果"}},
 	}
@@ -252,5 +236,25 @@ func TestRecallBudgetsLive(t *testing.T) {
 				t.Fatalf("%s=%s：记忆块不应含 %q\n%s", step.key, step.value, notWant, block)
 			}
 		}
+	}
+}
+
+// 改名不是兼容层：旧 recall.* 键必须被明确拒绝（不能悄悄还能用）。
+func TestLegacyRecallSettingKeysRejected(t *testing.T) {
+	sc := startStubCenter(t)
+	srv := startMemory(t, sc.URL(), 12)
+	legacy := []string{
+		"recall.history_limit", "recall.core_limit", "recall.core_max_chars",
+		"recall.rel_limit", "recall.rel_max_chars", "recall.embedding",
+	}
+	for _, key := range legacy {
+		rp := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: key, Value: "1"})
+		if rp.OK {
+			t.Fatalf("旧键 %s 应被拒绝（改名不是兼容层）", key)
+		}
+	}
+	// 新键可用。
+	if rp := pushConfigure(t, srv.WsURL(), protocol.ConfigurePayload{Key: "context.history_limit", Value: "1"}); !rp.OK {
+		t.Fatalf("context.history_limit 应可下发: %s", rp.Error)
 	}
 }

@@ -9,7 +9,6 @@ package tests
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/NouSart/sump/memory/compose"
 	"github.com/NouSart/sump/memory/server"
@@ -17,32 +16,23 @@ import (
 	"github.com/NouSart/sump/protocol"
 )
 
-// recallBlock 跑一轮 recall 并把注入的记忆块取出来（没有就返回空）。
+// recallMemoryBlock 跑一轮 context 并把注入的记忆块取出来（没有就返回空）。
 func recallMemoryBlock(t *testing.T, caller *stubCaller, memoryURL, cid, userText string) string {
 	t.Helper()
-	p := protocol.RecallPayload{Context: protocol.TaskContext{
-		ConversationID: cid,
-		Boss:           "stub-boss",
+	req := protocol.ContextPayload{
+		Conversation: cid,
+		Boss:         "stub-boss",
 		Messages: []protocol.Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: userText},
 		},
-	}}
-	if rp := caller.recallUntilReady(t, memoryURL, p); !rp.OK {
-		t.Fatalf("recall 失败: %s", rp.Error)
 	}
-	select {
-	case r := <-caller.resumes:
-		for _, m := range r.tc.Messages {
-			if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
-				return m.Content
-			}
+	for _, m := range decodeContext(t, caller.contextUntilReady(t, memoryURL, req)).Messages {
+		if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
+			return m.Content
 		}
-		return ""
-	case <-time.After(5 * time.Second):
-		t.Fatal("超时：未收到 resume")
-		return ""
 	}
+	return ""
 }
 
 // publish 以 reasoner 的身份发布会话摘要。
