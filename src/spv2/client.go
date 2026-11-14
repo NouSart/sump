@@ -3,7 +3,9 @@ package spv2
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -128,8 +130,9 @@ func (c *Client) send(f Frame) error {
 		_ = c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 	}
 	if err := c.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-		// 对端已关闭时 gorilla 返回 ErrCloseSent；统一成 ErrConnClosed，调用方只需处理一种关闭错误。
-		if errors.Is(err, websocket.ErrCloseSent) {
+		// 对端已关闭的几种表现统一成 ErrConnClosed，调用方只需处理一种关闭错误：
+		// ErrCloseSent（gorilla 已知关闭）、net.ErrClosed、以及 RST/EPIPE（对端已消失）。
+		if connGone(err) {
 			_ = c.Close()
 			return ErrConnClosed
 		}
@@ -464,4 +467,15 @@ func HTTPToWS(addr string) string {
 		return "wss://" + addr[8:] + "/spv2"
 	}
 	return addr
+}
+
+// connGone 判断写失败是否只是"对端/本端已关闭"，而不是值得上抛的网络故障。
+func connGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, websocket.ErrCloseSent) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE)
 }
