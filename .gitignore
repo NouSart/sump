@@ -31,3 +31,11 @@ __pycache__/
 
 # 编辑器统计（VS Code Counter 之类）——本地产物，不入库
 .VSCodeCounter/
+
+# 本地工具/实验生成物（不入库）
+.qoder/
+experiments/bp-build/
+experiments/pitch-narrative-playbook.md
+
+# 商业计划书等非项目产物，防止误提交
+SUMP-*.pdf
