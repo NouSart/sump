@@ -63,7 +63,7 @@ func pushConfigure(t *testing.T, s *server.Server, p protocol.ConfigurePayload) 
 	return jump(t, c, "configure", p, ctx)
 }
 
-// sendMessage 以 from=stub-boss 发一条 user_message（payload 自定）并断言被受理。
+// sendMessage 以 from=stub-boss 发一条 message（payload 自定）并断言被受理。
 func sendMessage(t *testing.T, s *server.Server, payload map[string]any) {
 	t.Helper()
 	sendFrom(t, s, "stub-boss", payload)

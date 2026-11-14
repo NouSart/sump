@@ -1,18 +1,16 @@
 package tests
 
-// 从模型那一侧看 resume 的消息链形状（与 server/resume_messages_test.go 同一件事的另一半）：
-// 原生 resume 送来以 user 开头的上下文时，任务提示插在索引 1，第一条用户消息原样到达模型——
+// 从模型那一侧看 context 的消息链形状（与 server/resume_messages_test.go 同一件事的另一半）：
+// context 回以 user 开头的上下文时，任务提示插在索引 1，第一条用户消息原样到达模型——
 // 既没有被顶掉，也没有被丢掉。审计报告认为这里「首条被无声覆盖」，这条用例把实际形状钉住。
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/reasoner/llm"
-	"github.com/NouSart/sump/spv2"
 )
 
 // waitFirstRequest 等第一份到达模型的请求（Fake 记的是收到的请求，与轮次一一对应）。
@@ -29,38 +27,20 @@ func waitFirstRequest(t *testing.T, fake *llm.Fake) llm.ChatRequest {
 	return llm.ChatRequest{}
 }
 
-func TestNativeResumeUserFirstReachesModelUntouched(t *testing.T) {
+func TestNativeContextUserFirstReachesModelUntouched(t *testing.T) {
 	// 空回复：不派工具、也不交付，只把这一轮收到的请求留在 Fake 里供断言。
 	fake := &llm.Fake{Replies: []llm.Message{{Role: "assistant"}}}
-	s, _, _ := startAttrEnv(t, fake)
+	s, _, mem := startAttrEnv(t, fake)
+	mem.setTask(&protocol.Task{ID: "task-native-1", Name: "原生任务名"})
 
 	in := []protocol.Message{
 		{Role: "user", Content: "第一条：用户先开口"},
 		{Role: "assistant", Content: "上一轮的助手发言"},
 		{Role: "user", Content: "这一轮用户又说了"},
 	}
-	body := protocol.ResumePayload{Context: protocol.TaskContext{
-		ConversationID: "c-native-user-first",
-		Messages:       in,
-		Task:           &protocol.Task{ID: "task-native-1", Name: "原生任务名"},
-	}}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	c := dialNative(t, s)
-	f, err := spv2.NewCall("w-native-user-first", spv2.ServiceRef("memory"), spv2.ServiceRef("reasoner"), "resume", body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var resumed struct {
-		Status string `msgpack:"status"`
-	}
-	if err := c.CallDecode(ctx, f, &resumed); err != nil {
-		t.Fatal(err)
-	}
-	if resumed.Status != "accepted" {
-		t.Fatalf("resume 未被受理: %+v", resumed)
-	}
+	// memory 的 context 直接回这组以 user 开头的消息（模拟组装结果）。
+	mem.setContextOverride(in)
+	sendFrom(t, s, "stub-boss", protocol.MessagePayload{Text: "入口消息", Conversation: "c-native-user-first"})
 
 	req := waitFirstRequest(t, fake)
 	if len(req.Messages) != len(in)+1 {

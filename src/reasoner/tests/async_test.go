@@ -48,7 +48,7 @@ func startAsyncEnv(t *testing.T, sc *stubCenter, client llm.Client, notify strin
 	return s, boss
 }
 
-// sendUser 向 reasoner 发一条 user_message（from=stub-boss：SPv2 里 from 即结果归属方）并断言被受理。
+// sendUser 向 reasoner 发一条 message（from=stub-boss：SPv2 里 from 即结果归属方）并断言被受理。
 func sendUser(t *testing.T, s *server.Server, text string) {
 	t.Helper()
 	sendFrom(t, s, "stub-boss", map[string]any{"text": text})

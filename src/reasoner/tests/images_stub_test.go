@@ -1,6 +1,6 @@
 package tests
 
-// 图片链测试：user_message（含图片引用）→ 记忆往返 → 取图（images 服务）→ Fake LLM 收到内联图 → 交付带回会话标识。
+// 图片链测试：message（含图片引用）→ 记忆往返 → 取图（images 服务）→ Fake LLM 收到内联图 → 交付带回会话标识。
 
 import (
 	"context"

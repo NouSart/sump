@@ -30,7 +30,7 @@ type callingLLM struct {
 	tools []string // 第一轮里发起的工具名
 }
 
-func (c *callingLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.Message, error) {
+func (c *callingLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.ChatResult, error) {
 	isReflect := false
 	for _, m := range req.Messages {
 		if m.Role == "system" && strings.Contains(m.Content, "复盘器") {
@@ -41,7 +41,7 @@ func (c *callingLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.Message, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if isReflect {
-		return llm.Message{Role: "assistant", Content: `{"digest":{"goal":"跑了一次工具","outcome":"成功"},"notes":[]}`}, nil
+		return llm.ChatResult{Message: llm.Message{Role: "assistant", Content: `{"digest":{"goal":"跑了一次工具","outcome":"成功"},"notes":[]}`}}, nil
 	}
 	c.turn++
 	switch c.turn {
@@ -54,14 +54,14 @@ func (c *callingLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.Message, 
 				Function: llm.FunctionCall{Name: name, Arguments: `{}`},
 			})
 		}
-		return llm.Message{Role: "assistant", ToolCalls: calls}, nil
+		return llm.ChatResult{Message: llm.Message{Role: "assistant", ToolCalls: calls}}, nil
 	case 2:
-		return llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{
+		return llm.ChatResult{Message: llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{
 			ID: "call_judge", Type: "function",
 			Function: llm.FunctionCall{Name: "task_status", Arguments: `{"status":"done"}`},
-		}}}, nil
+		}}}}, nil
 	default:
-		return llm.Message{Role: "assistant", Content: "任务答复"}, nil
+		return llm.ChatResult{Message: llm.Message{Role: "assistant", Content: "任务答复"}}, nil
 	}
 }
 
