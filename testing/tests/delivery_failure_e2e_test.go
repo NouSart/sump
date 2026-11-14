@@ -55,9 +55,9 @@ func TestDeliverFailureKeepsTaskRetryableE2E(t *testing.T) {
 	defer cancel()
 	const conv = "e2e-deliver-fail"
 
-	ack := callJumpFrom(t, rc, "e2e-boss", "reasoner", "user_message", map[string]any{"text": "第一次", "conversation_id": conv}, ctx)
+	ack := callJumpFrom(t, rc, "e2e-boss", "reasoner", "message", map[string]any{"text": "第一次", "conversation": conv, "sender": map[string]any{"channel": "private", "owner": true}}, ctx)
 	if !ack.OK {
-		t.Fatalf("user_message 未被受理: %s", ack.Error)
+		t.Fatalf("message 未被受理: %s", ack.Error)
 	}
 
 	// 第一次交付确实发生了（并被注入失败），不能计入成功。
@@ -76,9 +76,9 @@ func TestDeliverFailureKeepsTaskRetryableE2E(t *testing.T) {
 	}
 
 	// 失败之后同一会话继续说话：仍应被受理并最终交付。
-	ack2 := callJumpFrom(t, rc, "e2e-boss", "reasoner", "user_message", map[string]any{"text": "第二次", "conversation_id": conv}, ctx)
+	ack2 := callJumpFrom(t, rc, "e2e-boss", "reasoner", "message", map[string]any{"text": "第二次", "conversation": conv, "sender": map[string]any{"channel": "private", "owner": true}}, ctx)
 	if !ack2.OK {
-		t.Fatalf("失败后的第二条 user_message 未被受理: %s", ack2.Error)
+		t.Fatalf("失败后的第二条 message 未被受理: %s", ack2.Error)
 	}
 	select {
 	case text := <-boss.delivered:

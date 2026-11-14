@@ -114,6 +114,7 @@ func (s *Server) awaitUserDecision(ctx context.Context, caller, trace string, re
 
 	timer := time.NewTimer(ttl)
 	defer timer.Stop()
+	waitStart := time.Now()
 	var decision protocol.ApprovalDecision
 	select {
 	case decision = <-entry.ch:
@@ -129,11 +130,13 @@ func (s *Server) awaitUserDecision(ctx context.Context, caller, trace string, re
 		return result, ctx.Err()
 	}
 
+	s.recordApprovalWait(time.Since(waitStart))
 	note := ""
 	if decision.Note != "" {
 		note = "（用户备注：" + decision.Note + "）"
 	}
 	if decision.Decision == protocol.DecisionAllow {
+		s.recordApprovalDecision(protocol.DecisionAllow)
 		result.Decision = protocol.DecisionAllow
 		result.ReasonCode = protocol.ReasonUserApproved
 		result.ValidForMS = 30000
@@ -141,6 +144,7 @@ func (s *Server) awaitUserDecision(ctx context.Context, caller, trace string, re
 		s.logger.Printf("待审 %s：用户批准", req.ItemID)
 		return result, nil
 	}
+	s.recordApprovalDecision(protocol.DecisionDeny)
 	result.Decision = protocol.DecisionDeny
 	result.ReasonCode = protocol.ReasonUserDenied
 	result.ValidForMS = 0
@@ -187,4 +191,18 @@ func (s *Server) list(from string) (any, error) {
 		return nil, fmt.Errorf("approval_list: 只有门户（%s）可以拉取待审项", portal)
 	}
 	return protocol.PendingApprovalList{Items: s.pendingSnapshot()}, nil
+}
+
+// recordApprovalDecision / recordApprovalWait 是 §12.3 的审批域最小指标。
+// 未 Start 的测试服务没有指标注册表时是 no-op（不伪造、也不 panic）。
+func (s *Server) recordApprovalDecision(decision string) {
+	if m := s.Metrics(); m != nil {
+		m.Counter("sump_approval_decisions_total", "审批裁决次数", map[string]string{"decision": decision}, 1)
+	}
+}
+
+func (s *Server) recordApprovalWait(d time.Duration) {
+	if m := s.Metrics(); m != nil {
+		m.Observe("sump_approval_wait_seconds", "用户裁决等待时长", "s", nil, d.Seconds())
+	}
 }

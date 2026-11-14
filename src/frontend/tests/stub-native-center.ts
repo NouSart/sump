@@ -108,6 +108,22 @@ export class StubNativeCenter {
     if (frame.type !== 'call') return;
     const input = frame.body && frame.body.length > 0 ? (decode(frame.body) as unknown) : undefined;
     const method = frame.method ?? '';
+    if (method === 'hello') {
+      // spec §5.1：前端作为客户端连中心时，第一帧是 hello。
+      this.reply(ws, frame, {
+        card: {
+          protocol: 'spv2.1',
+          name: 'settings-center',
+          actor: { kind: 'service', id: 'settings-center' },
+          version: 'stub-center',
+          capabilities: ['msgpack', 'json'],
+          methods: [],
+          limits: { max_body: 1 << 20, max_stream: 32 },
+          observability: { health: true, metrics: true, format: 'spv2.metrics.v1' },
+        },
+      });
+      return;
+    }
     this.calls.push({ method, input, from: frame.from.id });
     if (method === 'register') {
       const reg = (input as Record<string, unknown> | undefined) ?? {};

@@ -1,5 +1,5 @@
 // qq 服务的核心：把 deliver 动作注册到服务骨架（注册 / 心跳 / 名册 /
-// 断线自愈 / 告别见 service 包），并桥接 QQ 消息 → user_message 任务链（NapCat/OneBot 11 正向 WS）。
+// 断线自愈 / 告别见 service 包），并桥接 QQ 消息 → message 任务链（NapCat/OneBot 11 正向 WS）。
 // 零信任：私聊只认主人（其余礼貌拒绝且不触发任务）；群聊任何人都能进来，但入口只负责把
 // 「谁说的、群里多少人看得见、是不是主人、有没有@我」标清楚，说不说由模型按主人设置判断。
 package server
@@ -261,7 +261,7 @@ func (s *Server) setNapcatToken(v string) {
 	s.napcat.SetEndpoint(rawURL, token)
 }
 
-// reasonerName 返回当前任务跳转目标（后续 user_message 走新名）。
+// reasonerName 返回当前任务跳转目标。
 func (s *Server) reasonerName() string {
 	s.setMu.Lock()
 	defer s.setMu.Unlock()
@@ -345,17 +345,52 @@ func (s *Server) Start(ctx context.Context) error {
 
 // ---------- 动作 ----------
 
+// authzError 是 deliver 归属校验失败的专用错误（原生入口映射成 permission_denied）。
+type authzError struct{ msg string }
+
+func (e *authzError) Error() string { return e.msg }
+
 // nativeDeliver 是 deliver 的原生入口：body 直接就是 DeliverPayload。
 func (s *Server) nativeDeliver(ctx context.Context, call *spv2.Call) error {
-	out, err := s.deliver(ctx, call.Frame.Body)
+	out, err := s.deliver(ctx, call, call.Frame.Body)
 	if err != nil {
+		var denied *authzError
+		if errors.As(err, &denied) {
+			return call.ReplyError(spv2.CodePermissionDenied, denied.Error(), false, nil)
+		}
 		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
 	return call.Reply(out)
 }
 
+// authorizeDeliver 按 spec §6.5 校验交付来源：只有 work.agent+runtime 或 work.owner+owner。
+// 校验以 memory 的 work 行为准（qq 是 work.entry，允许读自己那条 work）；查不到就 fail-closed。
+func (s *Server) authorizeDeliver(ctx context.Context, call *spv2.Call) error {
+	workID := call.Frame.Work
+	if workID == "" {
+		return &authzError{msg: "deliver 必须带 work（无法定位归属）"}
+	}
+	s.setMu.Lock()
+	mem := s.memory
+	s.setMu.Unlock()
+	data, err := s.Call(ctx, mem, "work_get", map[string]any{"work": workID}, workID)
+	if err != nil {
+		return &authzError{msg: fmt.Sprintf("deliver 归属校验失败（memory %s 不可用）: %v", mem, err)}
+	}
+	var out struct {
+		Work spv2.Work `msgpack:"work"`
+	}
+	if err := protocol.DecodeRaw(data, &out); err != nil {
+		return &authzError{msg: "deliver 归属校验失败（work_get 回执无法解码）"}
+	}
+	if deliverAuthorized(out.Work, call.Frame.From) {
+		return nil
+	}
+	return &authzError{msg: fmt.Sprintf("deliver 来源无权限（from=%s:%s/%s）", call.Frame.From.Kind, call.Frame.From.ID, call.Frame.From.Authority)}
+}
+
 // deliver 是 deliver 动作的业务实现：把任务结果发回原 QQ 会话。
-func (s *Server) deliver(ctx context.Context, body []byte) (any, error) {
+func (s *Server) deliver(ctx context.Context, call *spv2.Call, body []byte) (any, error) {
 	var p protocol.DeliverPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
@@ -374,6 +409,11 @@ func (s *Server) deliver(ctx context.Context, body []byte) (any, error) {
 	// 私聊与群聊只差一个参数名（user_id / group_id），send 里按 kind 选。
 	if kind != "private" && kind != "group" {
 		return nil, fmt.Errorf("deliver: 未知会话类型 %q（只认 private / group）", kind)
+	}
+	// spec §6.5：校验放在参数校验之后、真正发送之前——非法载荷仍回 invalid_argument，
+	// 未授权来源回 permission_denied，两者不互相掩盖。
+	if err := s.authorizeDeliver(ctx, call); err != nil {
+		return nil, err
 	}
 	if err := s.send(ctx, kind, target, p.Text); err != nil {
 		return nil, fmt.Errorf("发送 QQ 消息失败（%s）: %w", kind, err)
@@ -438,10 +478,10 @@ func (s *Server) onPrivate(ev napcat.Event) {
 	}
 	s.titleLater(cid, "QQ 私聊 · "+name)
 	// 私聊里只有主人能进来，扩散面恒为"只有他"——不需要额外的策略附加信息。
-	if err := s.callReasoner("user_message", protocol.UserMessagePayload{
-		Text: text, ConversationID: cid, Images: ids, Files: fileIDs, Sender: sender,
+	if err := s.callReasoner("message", protocol.MessagePayload{
+		Text: text, Conversation: cid, Images: ids, Files: fileIDs, Sender: sender,
 	}); err != nil {
-		s.logger.Printf("user_message 未受理: %v", err)
+		s.logger.Printf("message 未受理: %v", err)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err2 := s.send(ctx, "private", ev.UserID, "抱歉，服务暂时不可用。"); err2 != nil {
@@ -490,10 +530,10 @@ func (s *Server) onGroup(ev napcat.Event) {
 		s.storeQuietly(cid, sender, text, ids, fileIDs)
 		return
 	}
-	if err := s.callReasoner("user_message", protocol.UserMessagePayload{
-		Text: text, ConversationID: cid, Images: ids, Files: fileIDs, Sender: sender,
+	if err := s.callReasoner("message", protocol.MessagePayload{
+		Text: text, Conversation: cid, Images: ids, Files: fileIDs, Sender: sender,
 	}); err != nil {
-		s.logger.Printf("群 %s：user_message 未受理: %v", gid, err)
+		s.logger.Printf("群 %s：message 未受理: %v", gid, err)
 		if sender.Mentioned {
 			// 被点名了却没接住：在群里说一声，别让人干等。
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -591,7 +631,7 @@ func appendLine(text, line string) string {
 	return text + "\n" + line
 }
 
-// callReasoner 向 reasoner 发 user_message（等受理回执；boss=本服务）。
+// callReasoner 向 reasoner 发 message（等受理回执；结果归属=本服务）。
 func (s *Server) callReasoner(action string, payload any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -757,4 +797,16 @@ func (s *Server) convLock(key string) *sync.Mutex {
 		s.locks[key] = l
 	}
 	return l
+}
+
+// deliverAuthorized 是 spec §6.5 的 deliver 归属判定（纯函数，便于单测）：
+// 只有 work.agent+runtime 或 work.owner+owner 可以交付。
+func deliverAuthorized(work spv2.Work, from spv2.Ref) bool {
+	if from.Kind == "agent" && from.Authority == spv2.AuthorityRuntime && from.ID == work.Agent.ID {
+		return true
+	}
+	if from.Kind == "human" && from.Authority == spv2.AuthorityOwner && from.ID == work.Owner.ID {
+		return true
+	}
+	return false
 }

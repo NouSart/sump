@@ -269,14 +269,55 @@ func callFrom(t *testing.T, c *spv2.Client, from, work, action string, input any
 	return outcome{OK: true, Data: resp.Body}
 }
 
-// sendFrom 以 from 的身份发一条 user_message 并断言受理。
+// sendFrom 以入口服务身份发一条 message 并断言受理（spec §7.1 唯一入口）。
 // SPv2 没有 boss 字段：from 既是入口，也是结果的归属方。
 func sendFrom(t *testing.T, s *server.Server, from string, payload any) {
 	t.Helper()
+	var mp protocol.MessagePayload
+	switch v := payload.(type) {
+	case protocol.MessagePayload:
+		mp = v
+	case map[string]any:
+		if text, ok := v["text"].(string); ok {
+			mp.Text = text
+		}
+		if cid, ok := v["conversation_id"].(string); ok {
+			mp.Conversation = cid
+		}
+		if sender, ok := v["sender"].(*protocol.Sender); ok {
+			mp.Sender = sender
+		}
+		for _, key := range []string{"images", "files", "notes"} {
+			var out []string
+			switch val := v[key].(type) {
+			case []string:
+				out = val
+			case []any:
+				for _, item := range val {
+					if str, ok := item.(string); ok {
+						out = append(out, str)
+					}
+				}
+			}
+			switch key {
+			case "images":
+				mp.Images = out
+			case "files":
+				mp.Files = out
+			case "notes":
+				mp.Notes = out
+			}
+		}
+	default:
+		t.Fatalf("sendFrom 不支持的 payload 类型 %T", payload)
+	}
+	if mp.Sender == nil {
+		mp.Sender = &protocol.Sender{Channel: "private", Name: "boss", Owner: true}
+	}
 	c := dialReasoner(t, s)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef(from), spv2.ServiceRef("reasoner"), "user_message", payload)
+	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef(from), spv2.ServiceRef("reasoner"), "message", mp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,10 +325,10 @@ func sendFrom(t *testing.T, s *server.Server, from string, payload any) {
 		Status string `msgpack:"status"`
 	}
 	if err := c.CallDecode(ctx, call, &ack); err != nil {
-		t.Fatalf("user_message 未被受理: %v", err)
+		t.Fatalf("message 未被受理: %v", err)
 	}
 	if ack.Status != "accepted" {
-		t.Fatalf("user_message 未被受理: %+v", ack)
+		t.Fatalf("message 未被受理: %+v", ack)
 	}
 }
 

@@ -18,7 +18,7 @@ import (
 )
 
 // idleWindow 是"什么都不再发生"的判定窗口：超时或卡死的任务不该干等到墙钟上限。
-// 取 5s：正常链路从 user_message 到第一次 LLM 调用是毫秒级，留够余量给慢模型。
+// 取 5s：正常链路从 message 到第一次 LLM 调用是毫秒级，留够余量给慢模型。
 const idleWindow = 5 * time.Second
 
 // Result 是一次 trial 的全部事实与判定。

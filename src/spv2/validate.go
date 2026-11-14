@@ -60,6 +60,10 @@ func (f Frame) Validate() error {
 	if f.To.Kind == "capability" {
 		return ErrCode(CodeNotSupported, "capability 在 v2.1 未设计", false, nil)
 	}
+	// spec §18：tenant 未设计，字段只保留不依赖——带了 tenant 就明确 not_supported，不能静默忽略。
+	if f.From.Tenant != "" || f.To.Tenant != "" {
+		return ErrCode(CodeNotSupported, "tenant 在 v2.1 未设计", false, nil)
+	}
 	if err := validateAuthority(f.From); err != nil {
 		return err
 	}
@@ -117,6 +121,10 @@ func (f Frame) Validate() error {
 	}
 	return nil
 }
+
+// notDesignedMethods 是 spec §18 明确"未设计"的 method：必须回 not_supported，不能静默成功
+// 或退化成 not_found（那会让调用方以为只是拼错了名字）。
+var notDesignedMethods = map[string]bool{"spawn": true, "drain": true, "retire": true}
 
 func validateAuthority(from Ref) error {
 	switch from.Kind {

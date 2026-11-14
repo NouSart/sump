@@ -1,7 +1,7 @@
 package tests
 
 // 来源标注与静默收尾：
-//   1) user_message 带 sender 时，落库正文与 LLM 上下文都带同一份标注，任务名不带标签；
+//   1) message 带 sender 时，落库正文与 LLM 上下文都带同一份标注，任务名不带标签；
 //   2) 落库的 user 记录把 task_name 交给记忆侧（任务名取自正文，不取自标注）；
 //   3) task_status{silent:true} → 这一轮不发出去，但把文字留在记录里（门户看得见它想过什么）。
 
@@ -46,13 +46,13 @@ func startAttrEnv(t *testing.T, fake llm.Client) (*server.Server, *stubBoss, *st
 	return s, boss, mem
 }
 
-// sendGroupUser 向 reasoner 发一条带来源标注的 user_message。
+// sendGroupUser 向 reasoner 发一条带来源标注的 message。
 // 会话号保持在群里；from=stub-boss 是这批测试的替身入口（deliver 的落点）——
 // SPv2 没有 boss 字段，from 既是入口也是结果归属方。
 func sendGroupUser(t *testing.T, s *server.Server, text string, sender protocol.Sender) {
 	t.Helper()
-	sendFrom(t, s, "stub-boss", protocol.UserMessagePayload{
-		Text: text, ConversationID: "qq:group:67890", Sender: &sender,
+	sendFrom(t, s, "stub-boss", protocol.MessagePayload{
+		Text: text, Conversation: "qq:group:67890", Sender: &sender,
 	})
 }
 

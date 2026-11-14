@@ -207,7 +207,7 @@ func (b *e2eBoss) register(t *testing.T, centerURL string) *spv2.Client {
 	return c
 }
 
-// TestInferChainE2E 真进程版全链（完全启动）：user_message → 记忆往返（recall → resume）
+// TestInferChainE2E 真进程版全链（完全启动）：message → 记忆往返（recall → resume）
 // → 工具派发（异步受理回执；echo 被闸门拒绝、memory__remember 成功）→ 自跳 → wait 等到结果 → 收尾轮 → deliver；
 // 以预置会话历史验证记忆注入，并以第二轮对话验证长期记忆召回（remember 写入的条目被注入）。
 func TestInferChainE2E(t *testing.T) {
@@ -274,9 +274,13 @@ func TestInferChainE2E(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	ack := callJumpFrom(t, ac, "e2e-boss", "reasoner", "user_message", map[string]any{"text": "你好", "conversation_id": "e2e-conv"}, ctx)
-	if !ack.OK {
-		t.Fatalf("user_message 未被受理: %s", ack.Error)
+	// 固定 work id，便于事后从 memory 账本按 id 核对 work 行与租约扣减。
+	userCall, err := spv2.NewCall("e2e-work-lease", spv2.ServiceRef("e2e-boss"), spv2.ServiceRef("reasoner"), "message", map[string]any{"text": "你好", "conversation": "e2e-conv", "sender": map[string]any{"channel": "private", "owner": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ac.Call(ctx, userCall); err != nil {
+		t.Fatalf("message 未被受理: %v", err)
 	}
 
 	select {
@@ -286,6 +290,36 @@ func TestInferChainE2E(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("超时：boss 未收到 deliver")
+	}
+
+	// §6.4/§6.3 生产证据：memory 账本里这条 work 必须存在、租约被扣过、终态为 done。
+	// 只跑了一个远端工具（memory__remember）；被闸门拒绝的 echo 与内置 wait/task_status 不扣。
+	var ledger struct {
+		Work      spv2.Work      `msgpack:"work"`
+		Remaining spv2.Remaining `msgpack:"remaining"`
+	}
+	ledgerOK := false
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		rp := callJumpFrom(t, mc, "e2e-boss", "memory", "work_get", map[string]any{"work": "e2e-work-lease"}, ctx)
+		if rp.OK {
+			if err := protocol.DecodeRaw(rp.Data, &ledger); err != nil {
+				t.Fatal(err)
+			}
+			if ledger.Work.Status == spv2.WorkDone {
+				ledgerOK = true
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !ledgerOK {
+		t.Fatalf("memory work 账本未出现 done 的 work: %+v", ledger.Work)
+	}
+	if ledger.Work.Agent.ID != "reasoner" || ledger.Work.Entry.ID != "e2e-boss" {
+		t.Fatalf("work 归属不对: %+v", ledger.Work)
+	}
+	if ledger.Remaining.ToolCalls != 49 {
+		t.Fatalf("work 租约 tool_calls = %d, want 49（一次远端工具）", ledger.Remaining.ToolCalls)
 	}
 
 	if fakeLLM.Calls() != 4 {
@@ -373,9 +407,9 @@ func TestInferChainE2E(t *testing.T) {
 	}
 
 	// ---------- 第二轮对话：长期记忆召回（remember 的条目应被注入） ----------
-	ack2 := callJumpFrom(t, ac, "e2e-boss", "reasoner", "user_message", map[string]any{"text": "给我推荐点美式咖啡吧", "conversation_id": "e2e-conv"}, ctx)
+	ack2 := callJumpFrom(t, ac, "e2e-boss", "reasoner", "message", map[string]any{"text": "给我推荐点美式咖啡吧", "conversation": "e2e-conv", "sender": map[string]any{"channel": "private", "owner": true}}, ctx)
 	if !ack2.OK {
-		t.Fatalf("第二轮 user_message 未被受理: %s", ack2.Error)
+		t.Fatalf("第二轮 message 未被受理: %s", ack2.Error)
 	}
 	select {
 	case text := <-boss.delivered:

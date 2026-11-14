@@ -32,7 +32,7 @@ test('原生：注册 → roster/settings 事件 → 心跳 → 调用', async (
     centerURL: url,
     selfURL: 'ws://127.0.0.1:1/spv2',
     description: '测试面板',
-    provides: [{ action: 'user_message' }],
+    provides: [{ action: 'message' }],
     settings: [{ key: 'center', default: 'ws://127.0.0.1:9000/spv2' }],
     heartbeatMS: 30,
     log: silent,
@@ -51,7 +51,7 @@ test('原生：注册 → roster/settings 事件 → 心跳 → 调用', async (
   assert.equal(reg.title, '门户');
   assert.equal(reg.addr, 'ws://127.0.0.1:1/spv2');
   assert.equal(reg.description, '测试面板');
-  assert.deepEqual(reg.provides, [{ action: 'user_message' }]);
+  assert.deepEqual(reg.provides, [{ action: 'message' }]);
   assert.deepEqual(reg.settings, [{ key: 'center', default: 'ws://127.0.0.1:9000/spv2' }]);
   assert.equal(reg.heartbeat_ms, 30);
   assert.equal(stub.calls[0]?.method, 'register');

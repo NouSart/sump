@@ -3,6 +3,7 @@ package ref
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/NouSart/sump/spv2"
@@ -12,6 +13,12 @@ import (
 type Memory struct {
 	store *spv2.MemStore
 	srv   *spv2.Server
+
+	// workStatus 是 work id → 最近一次观察到的状态；sump_work_active{status} 由它聚合。
+	// spec §12.2 禁止 work/actor 这类高基数 label，所以 gauge 只按 status 聚合。
+	workMu     sync.Mutex
+	workStatus map[string]string
+	statusSeen map[string]bool
 }
 
 // NewMemory 创建 memory 服务。
@@ -23,7 +30,7 @@ func NewMemory(store *spv2.MemStore) (*Memory, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Memory{store: store, srv: srv}
+	m := &Memory{store: store, srv: srv, workStatus: map[string]string{}, statusSeen: map[string]bool{}}
 	srv.Handle("context", m.handleContext)
 	srv.Handle("work_get", m.handleWorkGet)
 	srv.Handle("cancel", m.handleCancel)
@@ -40,6 +47,29 @@ func (m *Memory) Server() *spv2.Server { return m.srv }
 
 // Store 返回 work 账本。
 func (m *Memory) Store() *spv2.MemStore { return m.store }
+
+func (m *Memory) metrics() *spv2.Registry { return m.srv.Metrics() }
+
+// trackWork 记录 work 的最近状态，并按状态重算 sump_work_active{status}。
+func (m *Memory) trackWork(w spv2.Work) {
+	m.workMu.Lock()
+	m.workStatus[w.ID] = w.Status
+	counts := map[string]int{}
+	for _, status := range m.workStatus {
+		counts[status]++
+		m.statusSeen[status] = true
+	}
+	m.workMu.Unlock()
+	// 状态计数归零也要把 series 显式写 0，否则旧值会永远挂在 gauge 上。
+	for status := range m.statusSeen {
+		m.metrics().Gauge("sump_work_active", "Active works by status", map[string]string{"status": status}, float64(counts[status]))
+	}
+}
+
+// trackA2A 记一条 A2A 队列消息的状态（pending/claimed/delivered）。
+func (m *Memory) trackA2A(state string) {
+	m.metrics().Counter("sump_a2a_messages_total", "A2A messages by state", map[string]string{"state": state}, 1)
+}
 
 func (m *Memory) handleContext(ctx context.Context, call *spv2.Call) error {
 	workID := call.WorkID()
@@ -59,6 +89,7 @@ func (m *Memory) handleContext(ctx context.Context, call *spv2.Call) error {
 	if err != nil {
 		return storeError(err, "memory.context")
 	}
+	m.trackWork(work)
 	return call.Reply(ContextResponse{Messages: req.Messages, Work: work})
 }
 
@@ -107,6 +138,7 @@ func (m *Memory) handleCancel(ctx context.Context, call *spv2.Call) error {
 	if err != nil {
 		return storeError(err, "memory.cancel")
 	}
+	m.trackWork(work)
 	return call.Reply(CancelResponse{Work: work, Cancelled: true})
 }
 
@@ -133,6 +165,7 @@ func (m *Memory) handleRenew(ctx context.Context, call *spv2.Call) error {
 	if err != nil {
 		return storeError(err, "memory.renew")
 	}
+	m.trackWork(work)
 	return call.Reply(RenewResponse{Work: work})
 }
 
@@ -150,6 +183,9 @@ func (m *Memory) handleLeaseCharge(ctx context.Context, call *spv2.Call) error {
 	}
 	remaining, err := m.store.Charge(ctx, workID, req.Delta)
 	if err != nil {
+		if errors.Is(err, spv2.ErrLeaseExhausted) {
+			m.metrics().Counter("sump_lease_exhausted_total", "Lease exhausted", nil, 1)
+		}
 		return storeError(err, "memory.lease_charge")
 	}
 	return call.Reply(LeaseChargeResponse{Remaining: remaining})
@@ -177,6 +213,7 @@ func (m *Memory) handleMessagePost(ctx context.Context, call *spv2.Call) error {
 	if err != nil {
 		return storeError(err, "memory.message_post")
 	}
+	m.trackA2A(spv2.MessagePending)
 	return call.Reply(MessagePostResponse{ID: id})
 }
 
@@ -199,6 +236,9 @@ func (m *Memory) handleMessageClaim(ctx context.Context, call *spv2.Call) error 
 	if err != nil {
 		return storeError(err, "memory.message_claim")
 	}
+	if msg != nil {
+		m.trackA2A(spv2.MessageClaimed)
+	}
 	return call.Reply(MessageClaimResponse{Message: msg})
 }
 
@@ -213,6 +253,7 @@ func (m *Memory) handleMessageAck(ctx context.Context, call *spv2.Call) error {
 	if err := m.store.AckMessage(ctx, req.ID); err != nil {
 		return storeError(err, "memory.message_ack")
 	}
+	m.trackA2A(spv2.MessageDelivered)
 	return call.Reply(MessageAckResponse{Acked: true})
 }
 

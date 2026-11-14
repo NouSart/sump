@@ -49,8 +49,6 @@ func TestMemnetDataFlowE2E(t *testing.T) {
 	waitWSReady(t, spv2URL(embPort), 60*time.Second)
 	waitRosterHas(t, obs, "embedding", 60*time.Second)
 
-	probe := startResumeProbe(t, centerURL)
-
 	const (
 		relevant  = "进程内计数器做消息 seq，重启之后序号会倒流"
 		unrelated = "用户喜欢整站配色跟随本地时间变化"
@@ -73,7 +71,7 @@ func TestMemnetDataFlowE2E(t *testing.T) {
 	}
 
 	// 一次 recall：记忆块里必须出现「经验线头」，且只带相关的那条。
-	block := recallEventually(t, probe, memURL, "消息顺序 进程内计数器 seq 重启 倒流", "e2e-memnet", func(b string) bool {
+	block := recallEventually(t, memURL, "消息顺序 进程内计数器 seq 重启 倒流", "e2e-memnet", func(b string) bool {
 		return strings.Contains(b, "（经验线头）")
 	})
 	if !strings.Contains(block, "进程内计数器") {
@@ -126,14 +124,14 @@ func TestMemnetDataFlowE2E(t *testing.T) {
 	}
 }
 
-// recallEventually 反复 recall 直到记忆块满足条件（embedding/种子补齐是异步的）。
-func recallEventually(t *testing.T, p *resumeProbe, memURL, query, conv string, ok func(string) bool) string {
+// recallEventually 反复要 context 直到记忆块满足条件（embedding/种子补齐是异步的）。
+func recallEventually(t *testing.T, memURL, query, conv string, ok func(string) bool) string {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	var last string
 	var lastErr error
 	for time.Now().Before(deadline) {
-		block, err := recallOnce(t, p, memURL, query, conv)
+		block, err := recallOnce(t, memURL, query, conv)
 		if err != nil {
 			lastErr = err
 			time.Sleep(200 * time.Millisecond)
@@ -147,4 +145,10 @@ func recallEventually(t *testing.T, p *resumeProbe, memURL, query, conv string, 
 	}
 	t.Fatalf("等待记忆块满足条件超时；最后一次:\n%s\n错误: %v", last, lastErr)
 	return ""
+}
+
+// contextBlockOnce 是 context 版的最小探针（embedding_e2e 里的 recallOnce 同名逻辑共用）。
+func contextBlockOnce(t *testing.T, memURL, query, conv string) (string, error) {
+	t.Helper()
+	return recallOnce(t, memURL, query, conv)
 }

@@ -52,6 +52,9 @@ class StubCenter:
         try:
             async for raw in ws:
                 frame = spv2.decode(raw)
+                if frame.type == spv2.TYPE_CALL and frame.method == "hello":
+                    await ws.send(spv2.encode(spv2.new_reply(frame, spv2.service_ref("settings-center"), {"card": {"protocol": spv2.PROTOCOL_VERSION, "name": "settings-center", "actor": {"kind": "service", "id": "settings-center"}, "version": "stub", "capabilities": ["msgpack", "json"], "methods": [], "limits": {"max_body": 1 << 20, "max_stream": 32}, "observability": {"health": True, "metrics": True, "format": "spv2.metrics.v1"}}})))
+                    continue
                 if frame.type == spv2.TYPE_CALL and frame.method == "register":
                     self.registrations.append(spv2.decode_body(frame.body))
                     await ws.send(spv2.encode(spv2.new_reply(frame, CENTER_REF, self.roster)))
@@ -102,6 +105,19 @@ def make_service(center_url: str, heartbeat_ms: int = 100, **over: object) -> Se
     return Service(cfg, FakeBackend(dim=32), log)
 
 
+async def _native_hello(ws) -> None:
+    call = spv2.new_call(
+        work=spv2.new_id(),
+        from_=spv2.service_ref("tester"),
+        to=spv2.service_ref("embedding"),
+        method="hello",
+        body={"protocol": spv2.PROTOCOL_VERSION, "capabilities": ["msgpack", "json"]},
+    )
+    await ws.send(spv2.encode(call))
+    reply = spv2.decode(await asyncio.wait_for(ws.recv(), TIMEOUT))
+    assert reply.type == spv2.TYPE_REPLY and reply.status == spv2.STATUS_OK, reply.error
+
+
 async def call(
     addr: str,
     method: str,
@@ -112,6 +128,7 @@ async def call(
     """以第三方身份对服务发起一跳原生 call，返回 reply 帧。"""
     async with websockets.connect(f"ws://{addr}/spv2", max_size=None) as ws:
         if frame is None:
+            await _native_hello(ws)
             frame = spv2.new_call(
                 work=spv2.new_id(),
                 from_=CLIENT,

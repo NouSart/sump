@@ -140,7 +140,7 @@ func compileImports(remotes []RemoteConfig, configs []ImportConfig) (map[string]
 	}
 	tools := make(map[string]importedTool, len(configs))
 	// hello/health/metrics 是 SPv2 服务端内建 method；同名 import 会覆盖握手/健康检查。
-	reserved := map[string]bool{"configure": true, "report_result": true, "cancel_import": true, "user_message": true, "step": true, "deliver": true, "recall": true, "store": true, "resume": true, "save": true, "fetch": true, "echo": true, "debug_jump": true, "ping": true, "roster": true, "report": true, "list_settings": true, "set_setting": true, "reset_setting": true, "report_setting": true, "capabilities": true, "hello": true, "health": true, "metrics": true}
+	reserved := map[string]bool{"configure": true, "report_result": true, "cancel_import": true, "step": true, "deliver": true, "store": true, "save": true, "fetch": true, "echo": true, "debug_jump": true, "ping": true, "roster": true, "report": true, "list_settings": true, "set_setting": true, "reset_setting": true, "report_setting": true, "capabilities": true, "hello": true, "health": true, "metrics": true}
 	for _, c := range configs {
 		if !importName.MatchString(c.Action) || reserved[c.Action] {
 			return nil, nil, fmt.Errorf("invalid or reserved import action %q", c.Action)

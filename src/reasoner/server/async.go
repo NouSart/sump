@@ -316,7 +316,7 @@ func (s *Server) deliverFollowUp(j *asyncJob, text string) string {
 	s.boardMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := s.Call(ctx, j.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: j.cid, TaskID: j.taskID}, j.trace); err != nil {
+	if _, err := s.CallWithRef(ctx, s.deliverRef(), j.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: j.cid, TaskID: j.taskID}, j.trace); err != nil {
 		s.logger.Printf("会话 %s：原任务 %s 补报未确认送达: %v", j.cid, j.taskID, err)
 		return "delivery_failed"
 	}

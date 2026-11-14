@@ -1,8 +1,8 @@
 package tests
 
 // qq 服务级测试：真 qq 服务 + stub NapCat / stub center / stub reasoner / stub images。
-// 覆盖：主人文本 → user_message（boss/cid 正确）→ deliver → 发回 QQ；
-//       图片消息 → images.save → user_message 携带图片 id；
+// 覆盖：主人文本 → message（boss/cid 正确）→ deliver → 发回 QQ；
+//       图片消息 → images.save → message 携带图片 id；
 //       非主人私聊被拒绝（回拒绝语、不触发任务）。
 
 import (
@@ -85,6 +85,14 @@ func (sc *stubCenter) handleRegister(_ context.Context, call *spv2.Call) error {
 	}
 	sc.broadcast(roster)
 	return nil
+}
+
+// hasService 判断某个替身是否已注册（startQQ 用它避免重复启动 memory 替身）。
+func (sc *stubCenter) hasService(name string) bool {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	_, ok := sc.cards[name]
+	return ok
 }
 
 func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
@@ -334,14 +342,14 @@ func startStubReasoner(t *testing.T, center *stubCenter) *stubReasoner {
 	a := &stubReasoner{}
 	srv, err := spv2.NewServer(spv2.Card{
 		Protocol: spv2.ProtocolVersion, Name: "reasoner", Actor: spv2.ServiceRef("reasoner"),
-		Version: "stub/1", Methods: []spv2.Method{{Name: "user_message", Shape: spv2.ShapeCall}},
+		Version: "stub/1", Methods: []spv2.Method{{Name: "message", Shape: spv2.ShapeCall}},
 		Limits: spv2.Limits{MaxBody: 1 << 20},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	a.srv = srv
-	srv.Handle("user_message", func(_ context.Context, call *spv2.Call) error {
+	srv.Handle("message", func(_ context.Context, call *spv2.Call) error {
 		var payload map[string]any
 		_ = call.Frame.DecodeBody(&payload)
 		from := call.Frame.From.ID
@@ -373,7 +381,7 @@ func (a *stubReasoner) waitRequest(t *testing.T, timeout time.Duration) reasoner
 		a.mu.Unlock()
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatal("等待 user_message 超时")
+	t.Fatal("等待 message 超时")
 	return reasonerRequest{}
 }
 
@@ -383,7 +391,7 @@ func (a *stubReasoner) count() int {
 	return len(a.reqs)
 }
 
-// snapshot 返回已收到的全部 user_message（按到达顺序，浅拷贝）。
+// snapshot 返回已收到的全部 message（按到达顺序，浅拷贝）。
 func (a *stubReasoner) snapshot() []reasonerRequest {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -402,7 +410,7 @@ func (a *stubReasoner) sendDeliver(t *testing.T, qqURL, text, cid string) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	call, err := spv2.NewCall("trace-deliver", spv2.ServiceRef("reasoner"), spv2.ServiceRef("qq"), "deliver",
+	call, err := spv2.NewCall("trace-deliver", spv2.AgentRef("reasoner").WithAuthority(spv2.AuthorityRuntime), spv2.ServiceRef("qq"), "deliver",
 		protocol.DeliverPayload{Text: text, ConversationID: cid})
 	if err != nil {
 		t.Fatal(err)
@@ -555,6 +563,10 @@ func startQQ(t *testing.T, sc *stubCenter, nc *stubNapCat, owner string) *server
 // startQQWithLog 同 startQQ，但把日志写到指定 writer（断言"失败有信号"时用）。
 func startQQWithLog(t *testing.T, sc *stubCenter, nc *stubNapCat, owner string, out io.Writer) *server.Server {
 	t.Helper()
+	// deliver 归属校验要读 memory 的 work 行；测试没自建 memory 时补一个最小替身。
+	if !sc.hasService("memory") {
+		startStubMemory(t, sc)
+	}
 	logger := log.New(out, "[qq-test] ", log.LstdFlags)
 	srv := server.New(server.Config{
 		Name:              "qq",
@@ -573,12 +585,20 @@ func startQQWithLog(t *testing.T, sc *stubCenter, nc *stubNapCat, owner string, 
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Shutdown)
+	// deliver 归属校验要解析 memory；等名册广播到 qq 再让用例继续（避免瞬时未知目标服务）。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, _, err := srv.Resolve("memory"); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	return srv
 }
 
 // ---------- 用例 ----------
 
-// TestPrivateTextFlow 主人文本消息的完整桥接：user_message → deliver → send_msg。
+// TestPrivateTextFlow 主人文本消息的完整桥接：message → deliver → send_msg。
 func TestPrivateTextFlow(t *testing.T) {
 	sc := startStubCenter(t)
 	nc := startStubNapCat(t)
@@ -593,7 +613,7 @@ func TestPrivateTextFlow(t *testing.T) {
 	if req.Payload["text"] != "你好" {
 		t.Fatalf("文本不符: %+v", req.Payload)
 	}
-	if req.Payload["conversation_id"] != "qq:private:2271917353" {
+	if req.Payload["conversation"] != "qq:private:2271917353" {
 		t.Fatalf("会话标识不符: %+v", req.Payload)
 	}
 	if req.Boss != "qq" || req.From != "qq" {
@@ -611,7 +631,7 @@ func TestPrivateTextFlow(t *testing.T) {
 	}
 }
 
-// TestPrivateImageFlow 图片消息：先存 images 服务，再随 user_message 传 id。
+// TestPrivateImageFlow 图片消息：先存 images 服务，再随 message 传 id。
 func TestPrivateImageFlow(t *testing.T) {
 	sc := startStubCenter(t)
 	nc := startStubNapCat(t)
@@ -635,7 +655,7 @@ func TestPrivateImageFlow(t *testing.T) {
 	}
 }
 
-// TestPrivateFileFlow 文件消息：先存 files 服务（URL+文件名），占位文本带 id，再随 user_message 传文件 id。
+// TestPrivateFileFlow 文件消息：先存 files 服务（URL+文件名），占位文本带 id，再随 message 传文件 id。
 func TestPrivateFileFlow(t *testing.T) {
 	sc := startStubCenter(t)
 	nc := startStubNapCat(t)

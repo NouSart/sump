@@ -16,10 +16,10 @@ import {
   type TrustConfig,
 } from './portal.ts';
 import { attachSPv2Endpoint, parseTimerItems, portalProvides, portalSettings } from './service.ts';
-import { createSPv2WSS } from './spv2.ts';
+import { checkDeliverAuthority, createSPv2WSS, dialSPv2Once, spv2Addr, type Frame } from './spv2.ts';
 
 export const frontendDescription =
-  '用户交互门户（与 qq 同类）：对外提供 deliver（智能体 → 用户，推给浏览器），自己跳 user_message 给 reasoner（用户 → 智能体）；另附设置中心可视化面板';
+  '用户交互门户（与 qq 同类）：对外提供 deliver（智能体 → 用户，推给浏览器），自己跳 message 给 reasoner（用户 → 智能体）；另附设置中心可视化面板';
 
 export interface FrontendConfig {
   name: string;
@@ -198,7 +198,23 @@ export async function startFrontend(cfg: FrontendConfig, log: (m: string) => voi
     if (u.final) recordTerminal(link, cfg.memory, u, conversationId, log);
     return true;
   };
-  const spv2Wss = createSPv2WSS(cfg.name, log, { onDeliver, onTimers, onApproval, onProgress, onTerminal });
+  // spec §6.5：deliver 归属校验——问 memory 要 work 行，只放行 work.agent+runtime 或 work.owner+owner。
+  // 校验失败一律拒绝（fail-closed）；门户是 entry，允许读自己那条 work。
+  const authorizeDeliver = async (frame: Frame): Promise<string | null> => {
+    if (!frame.work) return 'deliver 必须带 work（无法定位归属）';
+    if (!link.connected) return '设置中心未连接，无法校验 deliver 归属';
+    const card = (link.roster?.services ?? []).find((svc) => svc.name === cfg.memory);
+    if (card?.addr === undefined || card.addr === '') return 'memory 不在名册，无法校验 deliver 归属';
+    let res: unknown;
+    try {
+      res = await dialSPv2Once(spv2Addr(card.addr), cfg.name, card.name, 'work_get', { work: frame.work }, 5000);
+    } catch (err) {
+      return '校验 deliver 归属失败（fail-closed）: ' + String(err);
+    }
+    const work = (res as { work?: { agent?: { kind?: string; id?: string }; owner?: { kind?: string; id?: string } } })?.work;
+    return checkDeliverAuthority(work, frame.from);
+  };
+  const spv2Wss = createSPv2WSS(cfg.name, log, { onDeliver, onTimers, onApproval, onProgress, onTerminal, authorizeDeliver });
   attachSPv2Endpoint(server, '/spv2', spv2Wss, trust, log);
   link.start();
 

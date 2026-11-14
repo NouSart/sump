@@ -62,6 +62,7 @@ type taskState struct {
 	closed     bool                  // 已交付 / 被取代：残留事件一律丢弃
 	finishing  bool                  // 正在把最终答复交付给 boss：此时注入的补报会被丢掉，按已收尾处理
 	lastError  string                // 上一轮 LLM 失败的原文（清空即可重试；空 = 没有待重试的失败）
+	stream     *streamSink           // 非 nil = 这个任务在给调用方做 token 级流式答复
 
 	taskID      string // 这次工作所属的任务（记忆服务在 recall 时确定）
 	taskName    string // 任务名（写进系统提示，也是历史列表的标题）
@@ -91,9 +92,11 @@ func (s *Server) boardOpen(cid, boss, trace, taskID, taskName string, messages [
 		old.mu.Lock()
 		old.closed = true
 		old.mu.Unlock()
+		s.updateWorkStatus(old.trace, "cancelled")
 		s.logger.Printf("会话 %s：新任务取代进行中的旧任务（旧任务的在跑结果将被丢弃）", cid)
 	}
 	s.logger.Printf("会话 %s：任务开启（%d 条消息，boss=%q）", cid, len(messages), boss)
+	// 新任务取代旧任务：旧 work 以 cancelled 收尾（新 work 由 recall 登记时置 running）。
 	return st
 }
 
@@ -108,7 +111,19 @@ func (s *Server) boardGet(cid string) *taskState {
 func (s *Server) boardClose(st *taskState) {
 	st.mu.Lock()
 	st.closed = true
+	sink := st.stream
+	pending := len(st.pending)
 	st.mu.Unlock()
+	if sink != nil {
+		sink.close()
+	}
+	// §17.2 指鹿为马：done 前必须没有在飞工具；否则只能 waiting，不能把"没干完"标成完成。
+	if pending > 0 {
+		s.logger.Printf("会话 %s：还有 %d 个在飞工具，work 记 waiting（不能 done）", st.cid, pending)
+		s.updateWorkStatus(st.trace, "waiting")
+	} else {
+		s.updateWorkStatus(st.trace, "done")
+	}
 	s.boardMu.Lock()
 	if s.board[st.cid] == st {
 		delete(s.board, st.cid)
@@ -173,16 +188,41 @@ func (s *Server) boardRound(st *taskState) {
 		s.logger.Printf("会话 %s：LLM 未配置，任务停住（等下一次事件）", st.cid)
 		return
 	}
-	resp, err := client.Chat(context.Background(), llm.ChatRequest{
+	req := llm.ChatRequest{
 		Messages: snapshot,
 		Tools:    s.rosterTools(),
 		Images:   s.resolveImages(context.Background(), st.trace, snapshot),
-	})
+	}
+	var resp llm.Message
+	var usage llm.Usage
+	var err error
+	st.mu.Lock()
+	sink := st.stream
+	st.mu.Unlock()
+	if sink != nil {
+		resp, usage, err = s.chatLLMStreamWithUsage(context.Background(), req, func(delta string) {
+			sink.push(delta)
+		})
+	} else {
+		resp, usage, err = s.chatLLMWithUsage(context.Background(), req)
+	}
 	if err != nil {
 		s.logger.Printf("会话 %s：LLM 调用失败: %v（任务保留，可在门户重试）", st.cid, err)
 		st.mu.Lock()
 		st.lastError = err.Error()
 		st.mu.Unlock()
+		// LLM 失败不是终态：work 记 waiting，门户重试时同一 work 还能继续。
+		s.updateWorkStatus(st.trace, "waiting")
+		s.notifyRoundFailure(st, err)
+		return
+	}
+	// spec §6.4：LLM usage 计入 token 租约；扣不到就中止本轮（不许先花后记账地静默放行）。
+	if err := s.chargeTokenLease(context.Background(), st.trace, usage); err != nil {
+		s.logger.Printf("会话 %s：%v（本轮中止）", st.cid, err)
+		st.mu.Lock()
+		st.lastError = err.Error()
+		st.mu.Unlock()
+		s.updateWorkStatus(st.trace, "stalled")
 		s.notifyRoundFailure(st, err)
 		return
 	}
@@ -499,7 +539,7 @@ func (s *Server) notifyRoundFailure(st *taskState, cause error) {
 	text := fmt.Sprintf("⚠️ 本轮推理失败：%v\n任务还开着（没有关闭）：可以点「重试」再跑一次，或直接发新消息。", cause)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := s.Call(ctx, boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: cid, TaskID: taskID}, trace); err != nil {
+	if _, err := s.CallWithRef(ctx, s.deliverRef(), boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: cid, TaskID: taskID}, trace); err != nil {
 		s.logger.Printf("会话 %s：失败说明没能送达 boss(%s): %v", cid, boss, err)
 	}
 }
@@ -571,7 +611,7 @@ func (s *Server) deliverToBoss(st *taskState, text string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := s.Call(ctx, st.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: st.cid, TaskID: st.taskID}, st.trace); err != nil {
+	if _, err := s.CallWithRef(ctx, s.deliverRef(), st.boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: st.cid, TaskID: st.taskID}, st.trace); err != nil {
 		return fmt.Errorf("交付 boss(%s) 失败: %w", st.boss, err)
 	}
 	return nil

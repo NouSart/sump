@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )
 
@@ -82,23 +83,19 @@ func (s *Server) registerNativeMethods() {
 		},
 	}, s.nativeThink)
 	s.HandleNative(spv2.Method{
-		Name:        "user_message",
-		Description: "链入口：用户消息先托管给记忆服务，收到 resume 才完全启动",
+		Name:        "message",
+		Tool:        true,
+		Description: "统一消息入口（human=authority owner / agent=authority none；agent 只能回复进行中的任务）",
 		Input: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"text":            map[string]any{"type": "string"},
-				"conversation_id": map[string]any{"type": "string"},
-				"images":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-				"files":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-				"sender":          map[string]any{"type": "object", "description": "来源标注（谁 / 群聊 / 扩散面）"},
-				"notes":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"text":         map[string]any{"type": "string"},
+				"sender":       map[string]any{"type": "object"},
+				"intent":       map[string]any{"type": "string"},
+				"reply_to":     map[string]any{"type": "string"},
+				"conversation": map[string]any{"type": "string"},
 			},
-			// 与 v1 校验一致：text 与 images 至少一个。
-			"anyOf": []any{
-				map[string]any{"required": []any{"text"}},
-				map[string]any{"required": []any{"images"}},
-			},
+			"required": []any{"text"},
 		},
 		Output: map[string]any{
 			"type": "object",
@@ -106,7 +103,7 @@ func (s *Server) registerNativeMethods() {
 				"status": map[string]any{"type": "string"},
 			},
 		},
-	}, s.nativeUserMessage)
+	}, s.nativeMessage)
 	s.HandleNative(spv2.Method{
 		Name:        "step",
 		Description: "自跳：把黑板上的任务推进到下一轮",
@@ -123,33 +120,6 @@ func (s *Server) registerNativeMethods() {
 			},
 		},
 	}, s.nativeStep)
-	s.HandleNative(spv2.Method{
-		Name:        "resume",
-		Description: "完全启动：仅接受记忆服务的 resume，开启任务并推进推理",
-		Input: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"context": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"conversation_id": map[string]any{"type": "string"},
-						"messages":        map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
-						"boss":            map[string]any{"type": "string"},
-						"task":            map[string]any{"type": "object"},
-						"task_name":       map[string]any{"type": "string"},
-					},
-					"required": []any{"messages"},
-				},
-			},
-			"required": []any{"context"},
-		},
-		Output: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"status": map[string]any{"type": "string"},
-			},
-		},
-	}, s.nativeResume)
 	s.HandleNative(spv2.Method{
 		Name:        "report_result",
 		Description: "补报：异步动作的后续结果，按来源 / trace / item_id 关联",
@@ -239,9 +209,15 @@ func (s *Server) nativeThink(ctx context.Context, call *spv2.Call) error {
 	return call.Reply(out)
 }
 
-func (s *Server) nativeUserMessage(_ context.Context, call *spv2.Call) error {
-	// SPv2 没有 boss：from 既是入口，也是结果的归属方。
-	out, err := s.userMessage(call.Frame.From.ID, call.Frame.Work, call.Frame.Body)
+func (s *Server) nativeMessage(ctx context.Context, call *spv2.Call) error {
+	var probe protocol.MessagePayload
+	if err := call.Frame.DecodeBody(&probe); err != nil {
+		return replyNativeError(call, err)
+	}
+	if probe.Stream && (call.Frame.From.Kind == "human" || call.Frame.From.Kind == "service") {
+		return s.streamHumanMessage(ctx, call, probe)
+	}
+	out, err := s.message(ctx, call.Frame.From, call.Frame.Work, call.Frame.Body)
 	if err != nil {
 		return replyNativeError(call, err)
 	}
@@ -250,15 +226,6 @@ func (s *Server) nativeUserMessage(_ context.Context, call *spv2.Call) error {
 
 func (s *Server) nativeStep(_ context.Context, call *spv2.Call) error {
 	out, err := s.step(call.Frame.Body)
-	if err != nil {
-		return replyNativeError(call, err)
-	}
-	return call.Reply(out)
-}
-
-func (s *Server) nativeResume(_ context.Context, call *spv2.Call) error {
-	// SPv2 没有 boss：缺省结果归属方取 from；任务原 boss 随 context 回来时优先。
-	out, err := s.resume(call.Frame.From.ID, call.Frame.From.ID, call.Frame.Work, call.Frame.Body)
 	if err != nil {
 		return replyNativeError(call, err)
 	}

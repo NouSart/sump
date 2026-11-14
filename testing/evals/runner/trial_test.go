@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/NouSart/sump/evals/dataset"
@@ -213,9 +214,13 @@ func TestSplitSettingKey(t *testing.T) {
 	}
 }
 
+// claimTestPort 让同一进程里重复跑（-count>1）也有新的端口号：
+// 端口认领表按 run 生命周期设计，测试必须自带隔离，不能指望全局表被复位。
+var claimTestPort atomic.Int32
+
 // TestClaimPort：同一个端口号只能被一次 run 认领。
 func TestClaimPort(t *testing.T) {
-	const p = 1 // 最小端口号：FreePort 不会发它，测试用不冲突
+	p := 100000 + int(claimTestPort.Add(1))
 	if !claimPort(p) {
 		t.Fatal("首次认领应成功")
 	}

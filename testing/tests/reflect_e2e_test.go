@@ -176,9 +176,9 @@ func TestReflectWritesExperienceE2E(t *testing.T) {
 	ac := dialSPV2(t, reasonerURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	ack := callJumpFrom(t, ac, "e2e-boss", "reasoner", "user_message", map[string]any{"text": "把并发写的序号问题修一下", "conversation_id": "e2e-reflect"}, ctx)
+	ack := callJumpFrom(t, ac, "e2e-boss", "reasoner", "message", map[string]any{"text": "把并发写的序号问题修一下", "conversation": "e2e-reflect", "sender": map[string]any{"channel": "private", "owner": true}}, ctx)
 	if !ack.OK {
-		t.Fatalf("user_message 未被受理: %s", ack.Error)
+		t.Fatalf("message 未被受理: %s", ack.Error)
 	}
 	select {
 	case text := <-boss.delivered:

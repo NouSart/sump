@@ -18,12 +18,13 @@ func buildRequestBody(req ChatRequest) ([]byte, error) {
 		Messages  []map[string]any `json:"messages"`
 		Tools     []Tool           `json:"tools,omitempty"`
 		MaxTokens int              `json:"max_tokens,omitempty"`
+		Stream    bool             `json:"stream,omitempty"`
 	}
 	msgs := make([]map[string]any, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		msgs = append(msgs, marshalMessage(m, req.Images))
 	}
-	return json.Marshal(requestBody{Model: req.Model, Messages: msgs, Tools: req.Tools, MaxTokens: req.MaxTokens})
+	return json.Marshal(requestBody{Model: req.Model, Messages: msgs, Tools: req.Tools, MaxTokens: req.MaxTokens, Stream: req.Stream})
 }
 
 // marshalMessage 序列化一条消息；Images 是 图片 id → data URL。

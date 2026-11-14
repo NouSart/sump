@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 
 import websockets
@@ -53,6 +54,9 @@ class Service:
         self.backend = backend
         self.log = log
         self.addr = cfg.addr  # 实际监听地址（绑定后含真实端口）
+        # 最小指标集（spec §12.3 的 embed 域）：只记低基数计数，不编造 duration 分桶。
+        self.metrics = {"embed_requests_total": 0, "embed_texts_total": 0, "embed_errors_total": 0}
+        self.started_at = time.monotonic()
         self._server: websockets.Server | None = None
         self._watch: asyncio.Task | None = None
         # 原生 SPv2.1 端点：/spv2 的 call 直接解 body 调 action_embed，不合成任何信封。
@@ -138,12 +142,50 @@ class Service:
     # ---------- 传输 ----------
 
     def _process_request(self, _conn: object, request: object) -> Response | None:
-        """握手阶段只放行 /spv2；其余路径（尤其 /ws）明确回 404，绝不落到原生端点。"""
+        """HTTP 侧：/healthz /readyz /metrics 是本服务的观测面，/spv2 交给原生端点；
+        其余路径（尤其 /ws）明确回 404，绝不落到原生端点。"""
         path = str(getattr(request, "path", "")).split("?", 1)[0]
         if path == NATIVE_PATH:
             return None
+        if path == "/healthz":
+            return Response(200, "OK", Headers([("Content-Type", "text/plain; charset=utf-8")]), b"ok\n")
+        if path == "/readyz":
+            ready = self.link is not None and self.link.registered
+            body = b'{"status":"ok"}' if ready else b'{"status":"fail"}'
+            return Response(
+                200 if ready else 503,
+                "OK" if ready else "Service Unavailable",
+                Headers([("Content-Type", "application/json; charset=utf-8")]),
+                body,
+            )
+        if path == "/metrics":
+            return Response(
+                200,
+                "OK",
+                Headers([("Content-Type", "application/openmetrics-text; version=1.0.0; charset=utf-8")]),
+                self._render_metrics().encode("utf-8"),
+            )
         self.log.warning("拒绝非原生路径 %s（只接受 %s）", path or "/", NATIVE_PATH)
         return Response(404, "Not Found", Headers())
+
+    def _render_metrics(self) -> str:
+        """OpenMetrics 文本（含 # EOF）；指标名遵循 sump_<域>_<名>。"""
+        lines = [
+            "# HELP sump_embed_requests_total Embedding requests",
+            "# TYPE sump_embed_requests_total counter",
+            f"sump_embed_requests_total {self.metrics['embed_requests_total']}",
+            "# HELP sump_embed_texts_total Embedded texts",
+            "# TYPE sump_embed_texts_total counter",
+            f"sump_embed_texts_total {self.metrics['embed_texts_total']}",
+            "# HELP sump_embed_errors_total Embedding errors",
+            "# TYPE sump_embed_errors_total counter",
+            f"sump_embed_errors_total {self.metrics['embed_errors_total']}",
+            "# HELP sump_uptime_seconds Process uptime",
+            "# TYPE sump_uptime_seconds gauge",
+            f"sump_uptime_seconds {time.monotonic() - self.started_at:.3f}",
+            "# EOF",
+        ]
+        return "\n".join(lines) + "\n"
 
     async def handle_conn(self, ws: websockets.ServerConnection) -> None:
         """只接受原生 /spv2；其它路径（含 /ws）断开，不进入任何动作分派。"""
@@ -159,7 +201,17 @@ class Service:
 
     async def native_embed(self, body: bytes) -> object:
         """原生 embed：body 是 msgpack 的 {texts, query?}；返回值由端点编码成 reply body。"""
-        return await self.action_embed(decode_body(body))
+        self.metrics["embed_requests_total"] += 1
+        input_ = decode_body(body)
+        try:
+            out = await self.action_embed(input_)
+        except Exception:
+            self.metrics["embed_errors_total"] += 1
+            raise
+        texts = input_.get("texts") if isinstance(input_, dict) else None
+        if isinstance(texts, list):
+            self.metrics["embed_texts_total"] += len(texts)
+        return out
 
     async def action_embed(self, input_: object) -> object:
         if not isinstance(input_, dict):

@@ -57,7 +57,7 @@ func TestSettingsOwnerLive(t *testing.T) {
 	}
 	nc.sendEvent(t, privateTextEvent(20002, "你好"))
 	req := al.waitRequest(t, 5*time.Second)
-	if req.Payload["conversation_id"] != "qq:private:20002" {
+	if req.Payload["conversation"] != "qq:private:20002" {
 		t.Fatalf("会话标识不符: %+v", req.Payload)
 	}
 

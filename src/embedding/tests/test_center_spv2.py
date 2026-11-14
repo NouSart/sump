@@ -75,6 +75,29 @@ class StubCenter:
                 frame = spv2.decode(raw)
                 if frame.type == spv2.TYPE_CALL:
                     self.native_calls.append(frame)
+                    if frame.method == "hello":
+                        # spec §5.1：连接第一帧是 hello；假中心要回服务卡。
+                        await ws.send(
+                            spv2.encode(
+                                spv2.new_reply(
+                                    frame,
+                                    CENTER_REF,
+                                    {
+                                        "card": {
+                                            "protocol": spv2.PROTOCOL_VERSION,
+                                            "name": "settings-center",
+                                            "actor": {"kind": "service", "id": "settings-center"},
+                                            "version": "stub-center",
+                                            "capabilities": ["msgpack", "json"],
+                                            "methods": [],
+                                            "limits": {"max_body": 1 << 20, "max_stream": 32},
+                                            "observability": {"health": True, "metrics": True, "format": "spv2.metrics.v1"},
+                                        }
+                                    },
+                                )
+                            )
+                        )
+                        continue
                     if frame.method != "register":
                         continue
                     if self.reject_register:
@@ -141,9 +164,23 @@ def make_service(center_url: str, heartbeat_ms: int = 100) -> Service:
     )
 
 
+async def _native_hello(ws) -> None:
+    call = spv2.new_call(
+        work=spv2.new_id(),
+        from_=spv2.service_ref("tester"),
+        to=spv2.service_ref("embedding"),
+        method="hello",
+        body={"protocol": spv2.PROTOCOL_VERSION, "capabilities": ["msgpack", "json"]},
+    )
+    await ws.send(spv2.encode(call))
+    reply = spv2.decode(await asyncio.wait_for(ws.recv(), TIMEOUT))
+    assert reply.type == spv2.TYPE_REPLY and reply.status == spv2.STATUS_OK, reply.error
+
+
 async def call_spv2(addr: str, method: str, body: object) -> spv2.Frame:
     """以第三方身份对服务发起一跳原生 call，返回 reply 帧。"""
     async with websockets.connect(f"ws://{addr}/spv2", max_size=None) as ws:
+        await _native_hello(ws)
         frame = spv2.new_call(
             work=spv2.new_id(),
             from_=spv2.service_ref("probe"),
@@ -211,8 +248,10 @@ def test_native_register_heartbeat_and_roster() -> None:
             # register 是 call；from / to / method 与 Go 侧一致
             assert center.native_attempts == 1
             assert center.native_calls, "没有收到原生 call"
-            reg = center.native_calls[0]
-            assert reg.type == spv2.TYPE_CALL and reg.method == "register"
+            # spec §5.1：连接后第一帧是 hello，register 在其后。
+            assert center.native_calls[0].method == "hello"
+            reg = next(call for call in center.native_calls if call.method == "register")
+            assert reg.type == spv2.TYPE_CALL
             assert reg.from_.kind == "service" and reg.from_.id == "embedding"
             assert reg.to.kind == "service" and reg.to.id == "settings-center"
             assert reg.work and reg.content_type == spv2.CONTENT_TYPE_MSGPACK
@@ -319,7 +358,7 @@ def test_start_fails_when_native_register_rejected() -> None:
         try:
             with pytest.raises(RuntimeError, match="被拒"):
                 await svc.start()
-            assert center.native_calls and center.native_calls[0].method == "register"
+            assert any(call.method == "register" for call in center.native_calls)
             assert center.native_registrations == []
         finally:
             await svc.stop()

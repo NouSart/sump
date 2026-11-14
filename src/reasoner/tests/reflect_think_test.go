@@ -41,7 +41,7 @@ type scriptedLLM struct {
 	seen       []llm.ChatRequest
 }
 
-func (s *scriptedLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.Message, error) {
+func (s *scriptedLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.ChatResult, error) {
 	isReflect := false
 	for _, m := range req.Messages {
 		if m.Role == "system" && strings.Contains(m.Content, "复盘器") {
@@ -56,21 +56,21 @@ func (s *scriptedLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.Message,
 	case isReflect:
 		s.reflects++
 		if s.failWith != nil {
-			return llm.Message{}, s.failWith
+			return llm.ChatResult{}, s.failWith
 		}
-		return llm.Message{Role: "assistant", Content: s.notes}, nil
+		return llm.ChatResult{Message: llm.Message{Role: "assistant", Content: s.notes}}, nil
 	case len(req.Tools) == 0:
 		// think：单步推理不带工具。
-		return llm.Message{Role: "assistant", Content: s.thinkReply}, nil
+		return llm.ChatResult{Message: llm.Message{Role: "assistant", Content: s.thinkReply}}, nil
 	}
 	s.turns++
 	if s.turns%2 == 1 {
-		return llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{
+		return llm.ChatResult{Message: llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{
 			ID: "call_judge", Type: "function",
 			Function: llm.FunctionCall{Name: "task_status", Arguments: `{"status":"done"}`},
-		}}}, nil
+		}}}}, nil
 	}
-	return llm.Message{Role: "assistant", Content: "任务答复"}, nil
+	return llm.ChatResult{Message: llm.Message{Role: "assistant", Content: "任务答复"}}, nil
 }
 
 func (s *scriptedLLM) Reflects() int {

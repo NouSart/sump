@@ -46,7 +46,7 @@ func startStubEmbedding(t *testing.T, center *stubCenter) *stubEmbedding {
 	return startStubEmbeddingNamed(t, center, "embedding")
 }
 
-// startStubEmbeddingNamed 同上，但可指定注册名（测 recall.embedding 热改用）。
+// startStubEmbeddingNamed 同上，但可指定注册名（测 context.embedding 热改用）。
 func startStubEmbeddingNamed(t *testing.T, center *stubCenter, name string) *stubEmbedding {
 	t.Helper()
 	e := &stubEmbedding{vectors: map[string][]float64{}}

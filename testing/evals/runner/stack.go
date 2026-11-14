@@ -47,27 +47,75 @@ func BuildBinariesCached(repoRoot string, outDir string, names []string, force b
 		if err != nil {
 			return nil, err
 		}
-		if !force {
-			if prev, err := os.ReadFile(stamp); err == nil && string(prev) == srcHash {
-				if _, err := os.Stat(bin); err == nil {
-					out[name] = bin
-					continue
+		// 多个评测测试进程会并行跑（同一个 data/evals/bin）：必须把「查缓存 → 编译 →
+		// 写 stamp」整段串行化。否则两个 go build 同时写同一个 exe，Windows 上会互相
+		// 抢文件；抢到半截二进制的那个 test 会以一个看不出根因的 2 秒失败收场。
+		if err := withBuildLock(outDir, name, func() error {
+			if !force {
+				if prev, err := os.ReadFile(stamp); err == nil && string(prev) == srcHash {
+					if _, err := os.Stat(bin); err == nil {
+						out[name] = bin
+						return nil
+					}
 				}
 			}
-		}
-
-		pkg := "github.com/NouSart/sump/" + name
-		cmd := exec.Command("go", "build", "-o", bin, pkg)
-		cmd.Dir = repoRoot
-		if b, err := cmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("构建 %s 失败: %w\n%s", name, err, b)
-		}
-		if err := os.WriteFile(stamp, []byte(srcHash), 0o644); err != nil {
+			pkg := "github.com/NouSart/sump/" + name
+			tmp := fmt.Sprintf("%s.tmp-%d", bin, os.Getpid())
+			cmd := exec.Command("go", "build", "-o", tmp, pkg)
+			cmd.Dir = repoRoot
+			b, err := cmd.CombinedOutput()
+			if err != nil {
+				_ = os.Remove(tmp)
+				return fmt.Errorf("构建 %s 失败: %w\n%s", name, err, b)
+			}
+			_ = os.Remove(bin) // Windows 上 rename 不覆盖已有文件
+			if err := os.Rename(tmp, bin); err != nil {
+				_ = os.Remove(tmp)
+				return err
+			}
+			// stamp 最后写，且原子替换：别让另一个进程读到「新二进制 + 旧 stamp」。
+			tmpStamp := stamp + fmt.Sprintf(".tmp-%d", os.Getpid())
+			if err := os.WriteFile(tmpStamp, []byte(srcHash), 0o644); err != nil {
+				return err
+			}
+			if err := os.Rename(tmpStamp, stamp); err != nil {
+				_ = os.Remove(tmpStamp)
+				return err
+			}
+			out[name] = bin
+			return nil
+		}); err != nil {
 			return nil, err
 		}
-		out[name] = bin
 	}
 	return out, nil
+}
+
+// withBuildLock 用「独占创建锁文件」做跨进程互斥。锁文件带 pid；超过 5 分钟视为
+// 崩溃遗留并回收（不静默跳过：等待超时会报错）。
+func withBuildLock(outDir, name string, fn func() error) error {
+	lock := filepath.Join(outDir, "."+name+".lock")
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+			_ = f.Close()
+			defer os.Remove(lock)
+			return fn()
+		}
+		if !os.IsExist(err) {
+			return fmt.Errorf("创建编译锁 %s: %w", lock, err)
+		}
+		if info, statErr := os.Stat(lock); statErr == nil && time.Since(info.ModTime()) > 5*time.Minute {
+			_ = os.Remove(lock)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("等待编译锁 %s 超时", lock)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // sourceFingerprint 把"这个服务可能依赖到的 Go 源码"折成一个哈希：
@@ -209,7 +257,26 @@ type StackOptions struct {
 }
 
 // StartStack 起 settings-center + memory + reasoner（+ extras），并注册一个 boss 替身。
+//
+// 端口是跨进程共享资源：FreePort 探测与实际绑定之间有窗口，并行跑多个评测包时
+// 可能被别的测试进程抢走（2026-11-14 全量跑出过一次 TestStackRoundTrip 偶发失败）。
+// 失败后换一组端口重试，失败原因保留在返回值里，不静默降级。
 func StartStack(opts StackOptions) (*Stack, error) {
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		s, err := startStackOnce(opts)
+		if err == nil {
+			return s, nil
+		}
+		lastErr = err
+		if opts.Logf != nil {
+			opts.Logf("起栈第 %d 次失败，换端口重试: %v", attempt, err)
+		}
+	}
+	return nil, fmt.Errorf("起栈连续 3 次失败（最后一次: %w）", lastErr)
+}
+
+func startStackOnce(opts StackOptions) (*Stack, error) {
 	if opts.Logf == nil {
 		opts.Logf = func(string, ...any) {}
 	}
@@ -650,8 +717,8 @@ func (s *Stack) Send(conversationID, text string) error {
 		return err
 	}
 	defer c.Close()
-	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef("eval-boss"), spv2.ServiceRef("reasoner"), "user_message",
-		map[string]any{"text": text, "conversation_id": conversationID})
+	call, err := spv2.NewCall(spv2.NewID(), spv2.ServiceRef("eval-boss"), spv2.ServiceRef("reasoner"), "message",
+		map[string]any{"text": text, "conversation": conversationID, "sender": map[string]any{"channel": "private", "owner": true}})
 	if err != nil {
 		return err
 	}
@@ -661,10 +728,10 @@ func (s *Stack) Send(conversationID, text string) error {
 		Status string `msgpack:"status"`
 	}
 	if err := c.CallDecode(ctx, call, &out); err != nil {
-		return fmt.Errorf("user_message 未被受理: %w", err)
+		return fmt.Errorf("message 未被受理: %w", err)
 	}
 	if out.Status == "" {
-		return fmt.Errorf("user_message 未被受理: 回执缺少 status")
+		return fmt.Errorf("message 未被受理: 回执缺少 status")
 	}
 	return nil
 }

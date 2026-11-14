@@ -52,8 +52,8 @@ func TestReasonerNativeMethods(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{
-		"echo", "debug_jump", "think", "user_message", "step",
-		"resume", "report_result", "user_hold", "retry",
+		"echo", "debug_jump", "think", "message", "step",
+		"report_result", "user_hold", "retry",
 	} {
 		m, ok := card.Method(name)
 		if !ok {
@@ -62,7 +62,13 @@ func TestReasonerNativeMethods(t *testing.T) {
 		if len(m.Input) == 0 || len(m.Output) == 0 {
 			t.Fatalf("method %q 缺 Input/Output JSON Schema: %+v", name, m)
 		}
-		// 工具标志与 Provides 对齐：reasoner 的动作都不是模型工具。
+		// 工具标志与 Provides 对齐：只有 message 按 spec §7.9 是 tool:true，其余都不是。
+		if name == "message" {
+			if !m.Tool {
+				t.Fatal("message 应按 spec §7.9 标记为模型工具")
+			}
+			continue
+		}
 		if m.Tool {
 			t.Fatalf("method %q 不应暴露为模型工具", name)
 		}
@@ -138,12 +144,6 @@ func TestReasonerNativeMethods(t *testing.T) {
 	if !spv2.IsCode(err, spv2.CodePermissionDenied) {
 		t.Fatalf("retry 非门户来源应回 permission_denied，得到 %v", err)
 	}
-	_, err = c.Call(ctx, nativeCall(t, "tester", "resume", protocol.ResumePayload{Context: protocol.TaskContext{
-		Messages: []protocol.Message{{Role: "user", Content: "x"}},
-	}}))
-	if !spv2.IsCode(err, spv2.CodePermissionDenied) {
-		t.Fatalf("resume 非记忆来源应回 permission_denied，得到 %v", err)
-	}
 
 	// think：没有 LLM 客户端时如实报错（原生路径同样不 panic）。
 	_, err = c.Call(ctx, nativeCall(t, "tester", "think", protocol.ThinkPayload{Prompt: "hi"}))
@@ -151,23 +151,9 @@ func TestReasonerNativeMethods(t *testing.T) {
 		t.Fatalf("think 未配置 LLM 时应报错，得到 %v", err)
 	}
 
-	// resume：from=memory 时接受（没有 LLM 就停在黑板里，不报错）。
-	var resumed struct {
-		Status string `msgpack:"status"`
-	}
-	resume := protocol.ResumePayload{Context: protocol.TaskContext{
-		ConversationID: "c-native-resume",
-		Messages:       []protocol.Message{{Role: "system", Content: "s"}, {Role: "user", Content: "x"}},
-	}}
-	if err := c.CallDecode(ctx, nativeCall(t, "memory", "resume", resume), &resumed); err != nil {
-		t.Fatal(err)
-	}
-	if resumed.Status != "accepted" {
-		t.Fatalf("resume 结果不符: %+v", resumed)
-	}
 }
 
-// TestReasonerNativeUserMessageBoss 验证原生 user_message 的 boss 来源：
+// TestReasonerNativeUserMessageBoss 验证原生 message 的 boss 来源：
 // SPv2 没有 boss 字段，Frame.From.ID 就是结果的归属方——最终 deliver 必须回到它，
 // 且 trace 原样沿链（Frame.Work）。
 func TestReasonerNativeUserMessageBoss(t *testing.T) {
@@ -195,8 +181,8 @@ func TestReasonerNativeUserMessageBoss(t *testing.T) {
 
 	c := dialNative(t, s)
 	// 原生 call 的 from 是 stub-boss：它既是入口，也是结果归属方。
-	f, err := spv2.NewCall("w-native-chain", spv2.ServiceRef("stub-boss"), spv2.ServiceRef("reasoner"), "user_message",
-		protocol.UserMessagePayload{Text: "你好"})
+	f, err := spv2.NewCall("w-native-chain", spv2.ServiceRef("stub-boss"), spv2.ServiceRef("reasoner"), "message",
+		protocol.MessagePayload{Text: "你好", Sender: &protocol.Sender{Channel: "private", Name: "boss", Owner: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +193,7 @@ func TestReasonerNativeUserMessageBoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ack.Status != "accepted" {
-		t.Fatalf("user_message 未被受理: %+v", ack)
+		t.Fatalf("message 未被受理: %+v", ack)
 	}
 
 	select {
@@ -221,10 +207,10 @@ func TestReasonerNativeUserMessageBoss(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("超时：boss 未收到 deliver（boss 是否没从 Frame.From.ID 承接？）")
 	}
-	// 记忆服务收到的 recall 里 boss 也应是 Frame.From.ID（否则 resume 后 boss 丢失）。
+	// 记忆服务收到的 context 里 boss 也应是 Frame.From.ID（否则开任务后 boss 丢失）。
 	recalls := mem.RecallContexts()
 	if len(recalls) == 0 {
-		t.Fatal("memory 没收到 recall")
+		t.Fatal("memory 没收到 context")
 	}
 	if recalls[0].Boss != "stub-boss" {
 		t.Fatalf("recall 的 boss = %q, want stub-boss", recalls[0].Boss)
@@ -232,11 +218,11 @@ func TestReasonerNativeUserMessageBoss(t *testing.T) {
 
 	// trace 真的原样沿链（上面注释承诺的事，这里才是断言）：入口 call 的帧头 work 是
 	// "w-native-chain"，它应当出现在链上每一帧的 work 里——
-	//   reasoner → memory 的 recall 带着它 →（替身用同一个 work 回 resume）→
+	//   reasoner → memory 的 context 带着它 →（替身用同一个 work 回 work）→
 	//   任务把帧头 work 当作自己的 trace → 交付 deliver 与落库 store 仍带着它。
 	const wantTrace = "w-native-chain"
-	if got := mem.Works("recall"); len(got) != 1 || got[0] != wantTrace {
-		t.Fatalf("recall 的帧头 work 应为 [%q]，实际 %q", wantTrace, got)
+	if got := mem.Works("context"); len(got) != 1 || got[0] != wantTrace {
+		t.Fatalf("context 的帧头 work 应为 [%q]，实际 %q", wantTrace, got)
 	}
 	if got := boss.Works("deliver"); len(got) != 1 || got[0] != wantTrace {
 		t.Fatalf("deliver 的帧头 work 应为 [%q]，实际 %q（trace 在最后一跳丢了？）", wantTrace, got)

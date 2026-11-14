@@ -1,6 +1,6 @@
 package tests
 
-// M5 全链测试（异步工具 + 完全启动）：user_message → 记忆往返（recall → resume）→ 工具派发
+// M5 全链测试（异步工具 + 完全启动）：message → 记忆往返（recall → resume）→ 工具派发
 // （即时受理回执）→ 自跳(step) → LLM 调 wait 阻塞至结果入账 → 收尾轮 → 交付(deliver) 直达 boss。
 
 import (
@@ -27,8 +27,9 @@ type stubBoss struct {
 	progress  chan protocol.ProgressPayload
 	delay     atomic.Int64 // 交付响应前的停顿：把补报卡在「正在交付」的窗口里（见 TestReportResultNotSwallowedWhileDelivering）
 
-	trMu sync.Mutex
-	trs  map[string][]string // method → 收到的帧头 work（按到达顺序）
+	trMu  sync.Mutex
+	trs   map[string][]string // method → 收到的帧头 work（按到达顺序）
+	froms []spv2.Ref          // deliver 帧的 from（按到达顺序）
 }
 
 // Works 返回某 method 收到的帧头 work 快照（按到达顺序；没有则空）。
@@ -48,6 +49,16 @@ func (b *stubBoss) noteWork(method, work string) {
 	b.trs[method] = append(b.trs[method], work)
 }
 
+// LastFrom 返回最近一次 deliver 帧的 from（没收到则零值）。
+func (b *stubBoss) LastFrom() spv2.Ref {
+	b.trMu.Lock()
+	defer b.trMu.Unlock()
+	if len(b.froms) == 0 {
+		return spv2.Ref{}
+	}
+	return b.froms[len(b.froms)-1]
+}
+
 // setDeliverDelay 设置交付响应的延迟（0 = 不延迟）。
 func (b *stubBoss) setDeliverDelay(d time.Duration) { b.delay.Store(int64(d)) }
 
@@ -63,6 +74,9 @@ func startStubBoss(t *testing.T, center *stubCenter) *stubBoss {
 		_ = call.Frame.DecodeBody(&p)
 		// 先记 work 再投递：测试从 delivered 拿到结果时，这帧的 trace 一定已经记下了。
 		b.noteWork("deliver", call.Frame.Work)
+		b.trMu.Lock()
+		b.froms = append(b.froms, call.Frame.From)
+		b.trMu.Unlock()
 		select {
 		case b.delivered <- p:
 		default:
@@ -95,7 +109,7 @@ func startStubBoss(t *testing.T, center *stubCenter) *stubBoss {
 }
 
 // TestInferChain 验证 Fake LLM 驱动的全链（异步工具）：
-// user_message（快速回执）→ LLM 决定调 stub-center__ping（已提供工具、真跳转、后台执行）
+// message（快速回执）→ LLM 决定调 stub-center__ping（已提供工具、真跳转、后台执行）
 // → 自跳后 LLM 调 wait（阻塞到结果入账）→ LLM 收尾输出文本 → deliver 直达 boss。
 func TestInferChain(t *testing.T) {
 	sc := startStubCenter(t)
@@ -225,7 +239,7 @@ func TestInferChain(t *testing.T) {
 	var seqUser, seqAssistant, seqCall, seqResult int64
 	for _, s := range stores {
 		switch {
-		case s.Role == "user" && s.Kind == "user" && s.Content == "你好":
+		case s.Role == "user" && s.Kind == "user" && strings.Contains(s.Content, "你好"):
 			gotUser, seqUser = true, s.Seq
 		case s.Role == "assistant" && s.Kind == "assistant" && s.Content == "最终答复：你好！":
 			gotAssistant, seqAssistant = true, s.Seq
@@ -357,8 +371,9 @@ func waitStoresUntil(t *testing.T, m *stubMemory, ok func([]protocol.StorePayloa
 	return nil
 }
 
-// TestResumeRejected 验证“完全启动”入口只接受 from=memory——其他来源一律拒绝。
-func TestResumeRejected(t *testing.T) {
+// TestResumeMethodRemoved 验证旧链已删：resume 回调不再存在，调用必须 not_found，
+// 不能被悄悄接住（否则等于留了个兼容层）。
+func TestResumeMethodRemoved(t *testing.T) {
 	sc := startStubCenter(t)
 	s := startReasoner(t, sc.URL())
 
@@ -366,13 +381,11 @@ func TestResumeRejected(t *testing.T) {
 	defer cancel()
 	c := dialReasoner(t, s)
 
-	rp := jump(t, c, "resume", protocol.ResumePayload{Context: protocol.TaskContext{
-		Messages: []llm.Message{{Role: "user", Content: "x"}},
-	}}, ctx)
+	rp := jump(t, c, "resume", map[string]any{"context": map[string]any{"messages": []any{map[string]any{"role": "user", "content": "x"}}}}, ctx)
 	if rp.OK {
-		t.Fatal("resume 应拒绝非记忆来源的调用")
+		t.Fatal("resume 已删除，调用应 not_found")
 	}
-	if !strings.Contains(rp.Error, "仅接受来自记忆服务") {
-		t.Fatalf("错误信息不符: %s", rp.Error)
+	if !strings.Contains(rp.Error, "not_found") {
+		t.Fatalf("resume 删除后应回 not_found: %s", rp.Error)
 	}
 }

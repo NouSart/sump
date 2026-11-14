@@ -409,8 +409,15 @@ func (s *SQLiteStore) Charge(ctx context.Context, workID string, c Charge) (Rema
 	if err != nil {
 		return Remaining{}, err
 	}
+	var status string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM works WHERE id = ?`, workID).Scan(&status); err != nil {
+		return Remaining{}, fmt.Errorf("读 work %s 状态: %w", workID, err)
+	}
+	if status == WorkStalled {
+		return rem, ErrCode(CodeStalled, "work "+workID+" 已 stalled（先 renew/resume）", false, nil)
+	}
 	if t, ok := sqliteParseTS(rem.DeadlineAt); ok && time.Now().After(t) {
-		return rem, ErrCode(CodeDeadlineExceeded, "work "+workID+" deadline exceeded", false, nil)
+		return rem, ErrCode(CodeDeadlineExceeded, "work "+workID+" deadline exceeded", true, nil)
 	}
 	if c.ToolCalls > rem.ToolCalls || c.Tokens > rem.Tokens || c.Approvals > rem.Approvals ||
 		c.Children > rem.Children || c.Depth > rem.Depth {
@@ -436,7 +443,7 @@ func (s *SQLiteStore) Charge(ctx context.Context, workID string, c Charge) (Rema
 			return Remaining{}, err
 		}
 		if t, ok := sqliteParseTS(cur.DeadlineAt); ok && time.Now().After(t) {
-			return cur, ErrCode(CodeDeadlineExceeded, "work "+workID+" deadline exceeded", false, nil)
+			return cur, ErrCode(CodeDeadlineExceeded, "work "+workID+" deadline exceeded", true, nil)
 		}
 		return cur, ErrLeaseExhausted
 	}

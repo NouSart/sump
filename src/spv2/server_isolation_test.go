@@ -139,6 +139,7 @@ func TestServerPanicAfterReplyDoesNotDoubleSend(t *testing.T) {
 	})
 
 	conn := wsDialRaw(t, url)
+	wsHandshake(t, conn)
 	wsWriteFrame(t, conn, wsCall(t, AgentRef("client"), "late", nil))
 	resp := wsReadFrame(t, conn)
 	if resp.Type != TypeReply || resp.Status != StatusOK {
@@ -201,6 +202,7 @@ func TestServerUndecodableFrameCountedAndLogged(t *testing.T) {
 	})
 
 	conn := wsDialRaw(t, url)
+	wsHandshake(t, conn)
 	junk := []byte("这一串不是 msgpack 帧")
 	if _, err := Unmarshal(junk); err == nil {
 		t.Fatal("用例前提不成立：这串字节竟然能解成帧")
@@ -237,6 +239,7 @@ func TestServerInvalidCallAndEventShareOneAccounting(t *testing.T) {
 	srv, url := wsStartServer(t, wsTestCard(wsTestMethod("echo")), WithLogger(log.New(&logged, "", 0)))
 
 	conn := wsDialRaw(t, url)
+	wsHandshake(t, conn)
 	// 两条都缺 method（非法），差别只在帧类型。
 	badCall := Frame{V: ProtocolVersion, ID: "bad-call", Type: TypeCall, Work: wsTestWork, From: AgentRef("client"), To: ServiceRef(wsTestService)}
 	badEvent := Frame{V: ProtocolVersion, ID: "bad-event", Type: TypeEvent, Work: wsTestWork, From: AgentRef("client"), To: ServiceRef(wsTestService)}
@@ -273,7 +276,7 @@ func TestServerInvalidCallAndEventShareOneAccounting(t *testing.T) {
 // 改之前只有 event 计数、call 只回错误不计数——同一种「超限被丢」却是两种账。
 func TestServerMaxBodyCallAndEventShareOneAccounting(t *testing.T) {
 	card := wsTestCard(wsTestMethod("echo"), wsTestMethod("evt"))
-	card.Limits.MaxBody = 4
+	card.Limits.MaxBody = 256
 	srv, url := wsStartServer(t, card)
 	var called atomic.Int32
 	srv.Handle("echo", func(context.Context, *Call) error {
@@ -286,9 +289,10 @@ func TestServerMaxBodyCallAndEventShareOneAccounting(t *testing.T) {
 	})
 
 	conn := wsDialRaw(t, url)
+	wsHandshake(t, conn)
 	wsWriteFrame(t, conn, Frame{
 		V: ProtocolVersion, ID: "big-call", Type: TypeCall, Work: wsTestWork,
-		From: AgentRef("client"), To: ServiceRef(wsTestService), Method: "echo", Body: []byte("12345"),
+		From: AgentRef("client"), To: ServiceRef(wsTestService), Method: "echo", Body: []byte(strings.Repeat("x", 257)),
 	})
 	resp := wsReadFrame(t, conn)
 	if resp.Status != StatusError || resp.Error == nil || !IsCode(resp.Error, CodeResourceExhausted) {
@@ -296,7 +300,7 @@ func TestServerMaxBodyCallAndEventShareOneAccounting(t *testing.T) {
 	}
 	wsWriteFrame(t, conn, Frame{
 		V: ProtocolVersion, ID: "big-event", Type: TypeEvent, Work: wsTestWork,
-		From: AgentRef("client"), To: ServiceRef(wsTestService), Method: "evt", Body: []byte("12345"),
+		From: AgentRef("client"), To: ServiceRef(wsTestService), Method: "evt", Body: []byte(strings.Repeat("x", 257)),
 	})
 	waitReasonCounter(t, srv, "sump_dropped_total", "max_body", 2)
 	if got := called.Load(); got != 0 {
@@ -311,6 +315,7 @@ func TestServerUnhandledFrameTypeCounted(t *testing.T) {
 	srv, url := wsStartServer(t, wsTestCard(wsTestMethod("echo")), WithLogger(log.New(&logged, "", 0)))
 
 	conn := wsDialRaw(t, url)
+	wsHandshake(t, conn)
 	replyFrame := Frame{
 		V: ProtocolVersion, ID: "stray-reply", Type: TypeReply, Work: wsTestWork,
 		From: ServiceRef(wsTestService), To: AgentRef("client"), ReplyTo: "nobody", Status: StatusOK,
@@ -331,6 +336,7 @@ func TestServerUnhandledFrameTypeCounted(t *testing.T) {
 func TestServerLoggerDefaultsWhenNotInjected(t *testing.T) {
 	srv, url := wsStartServer(t, wsTestCard(wsTestMethod("echo")))
 	conn := wsDialRaw(t, url)
+	wsHandshake(t, conn)
 	junk := []byte("still-not-a-frame")
 	if _, err := Unmarshal(junk); err == nil {
 		t.Fatal("用例前提不成立：这串字节竟然能解成帧")

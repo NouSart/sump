@@ -10,12 +10,12 @@ import (
 	"github.com/NouSart/sump/protocol"
 )
 
-func TestRecallRejectsEmptyContext(t *testing.T) {
+func TestContextRejectsEmptyMessages(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
 
-	rp := caller.call(t, srv.WsURL(), "recall", protocol.RecallPayload{})
+	rp := caller.call(t, srv.WsURL(), "context", protocol.ContextPayload{})
 	if rp.OK || !strings.Contains(rp.Error, "messages 为空") {
 		t.Fatalf("空上下文应被拒: ok=%v err=%q", rp.OK, rp.Error)
 	}

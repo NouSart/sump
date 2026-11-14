@@ -211,15 +211,50 @@ type TaskContext struct {
 	TaskName string `msgpack:"task_name,omitempty"`
 }
 
-// RecallPayload 是 recall（向记忆请求记忆）的 payload：把任务上下文交给记忆服务。
-type RecallPayload struct {
-	Context TaskContext `msgpack:"context"`
+// MessagePayload 是 message 的入参（spec §7.1）：统一的人类/agent 消息。
+type MessagePayload struct {
+	Text         string  `msgpack:"text" json:"text"`
+	Sender       *Sender `msgpack:"sender,omitempty" json:"sender,omitempty"`
+	Intent       string  `msgpack:"intent,omitempty" json:"intent,omitempty"`
+	ReplyTo      string  `msgpack:"reply_to,omitempty" json:"reply_to,omitempty"`
+	Conversation string  `msgpack:"conversation,omitempty" json:"conversation,omitempty"`
+	// Work 是 A2A 目标 work（agent 发给另一个 work 时用；为空 = 当前会话任务）。
+	Work string `msgpack:"work,omitempty" json:"work,omitempty"`
+	// Images / Files / Notes 是链入口随消息投递的引用（入口把附件拼进 text 是另一条路，
+	// 这里保留结构化引用给需要精确 id 的入口）。
+	// Stream 请求把这一轮 LLM 的 token 增量与终态以 stream 帧回给调用方（spec §16.3 的生产实现；
+	// 需要 LLM 客户端支持流式，Fake 与 DeepSeek 客户端都已实现）。
+	Stream bool     `msgpack:"stream,omitempty" json:"stream,omitempty"`
+	Images []string `msgpack:"images,omitempty" json:"images,omitempty"`
+	Files  []string `msgpack:"files,omitempty" json:"files,omitempty"`
+	Notes  []string `msgpack:"notes,omitempty" json:"notes,omitempty"`
 }
 
-// ResumePayload 是 resume 的 payload：记忆服务组装好上下文后发回，
-// 调用方收到来自记忆的消息时才“完全启动”（调用 LLM API）。
-type ResumePayload struct {
-	Context TaskContext `msgpack:"context"`
+// A2AMessage 是 memory work_messages 的一行（读取视图，正文来自 messages 表）。
+type A2AMessage struct {
+	ID     string   `msgpack:"id" json:"id"`
+	WorkID string   `msgpack:"work_id,omitempty" json:"work_id,omitempty"`
+	From   ActorRef `msgpack:"from,omitempty" json:"from,omitempty"`
+	Body   string   `msgpack:"body,omitempty" json:"body,omitempty"`
+}
+
+// ActorRef 是线上的 actor 引用（与 spv2.Ref 同形，避免 protocol 依赖 spv2）。
+type ActorRef struct {
+	Kind string `msgpack:"kind,omitempty" json:"kind,omitempty"`
+	ID   string `msgpack:"id,omitempty" json:"id,omitempty"`
+}
+
+// A2AClaimResult 是 message_claim 的回执。
+type A2AClaimResult struct {
+	Message A2AMessage `msgpack:"message" json:"message"`
+}
+
+// ContextPayload 是 context 的入参（spec §7.2）：reasoner 同步向 memory 要上下文。
+type ContextPayload struct {
+	Conversation string    `msgpack:"conversation,omitempty" json:"conversation,omitempty"`
+	Messages     []Message `msgpack:"messages" json:"messages"`
+	Boss         string    `msgpack:"boss,omitempty" json:"boss,omitempty"`
+	TaskName     string    `msgpack:"task_name,omitempty" json:"task_name,omitempty"`
 }
 
 // StorePayload 是 store 的 payload：向记忆服务记一条会话记录。
@@ -421,25 +456,6 @@ func MessageMeta(sender *Sender, images, files []string) map[string]any {
 		meta["files"] = files
 	}
 	return meta
-}
-
-// UserMessagePayload 是 user_message（链入口）的 payload：用户消息文本 + 图片/文件引用 + 来源标注。
-type UserMessagePayload struct {
-	Text           string   `msgpack:"text"`
-	ConversationID string   `msgpack:"conversation_id,omitempty"`
-	Images         []string `msgpack:"images,omitempty"` // 图片引用（images 服务中的 id）
-	Files          []string `msgpack:"files,omitempty"`  // 文件引用（files 服务中的 id；占位文本亦随行，供模型凭 id 调 files__read）
-	// Sender 是这条消息的来源（谁、群还是私聊、扩散面）。可选：不带 = 单用户入口（门户）。
-	Sender *Sender `msgpack:"sender,omitempty"`
-	// Notes 是随用户消息一起送进模型的附注：**不是用户说的话**，是入口服务替系统转达的事实。
-	//
-	// 通用通道。批量任务的用户操作是第一个使用者；以后别的东西（定时器触发、
-	// 后台任务结果……）需要"随用户下一条消息一起送到"时，都放这里。
-	//
-	// 规矩：只有入口服务（门户 / QQ）写；每条自描述（自带时间与前缀）；按时间正序；
-	// 最多 20 条 / 4 KiB；投递成功后清空。reasoner 把它渲染成前缀块，
-	// 首行必须写明"这不是用户现在说的话"。
-	Notes []string `msgpack:"notes,omitempty"`
 }
 
 // ---------- 交付与图片 ----------

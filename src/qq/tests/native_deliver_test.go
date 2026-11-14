@@ -48,7 +48,7 @@ func TestNativeDeliver(t *testing.T) {
 		t.Fatalf("deliver input schema 缺少 conversation_id: %+v", m.Input)
 	}
 
-	call, err := spv2.NewCall("trace-native-deliver", spv2.ServiceRef("reasoner"), spv2.ServiceRef("qq"), "deliver",
+	call, err := spv2.NewCall("trace-native-deliver", spv2.AgentRef("reasoner").WithAuthority(spv2.AuthorityRuntime), spv2.ServiceRef("qq"), "deliver",
 		protocol.DeliverPayload{Text: "原生回复", ConversationID: "qq:private:2271917353"})
 	if err != nil {
 		t.Fatal(err)
@@ -63,12 +63,49 @@ func TestNativeDeliver(t *testing.T) {
 	}
 
 	// 错误路径：空 text 必须在业务校验处被拒。
-	bad, err := spv2.NewCall("trace-native-deliver", spv2.ServiceRef("reasoner"), spv2.ServiceRef("qq"), "deliver",
+	bad, err := spv2.NewCall("trace-native-deliver", spv2.AgentRef("reasoner").WithAuthority(spv2.AuthorityRuntime), spv2.ServiceRef("qq"), "deliver",
 		protocol.DeliverPayload{Text: " ", ConversationID: "qq:private:2271917353"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.Call(ctx, bad); err == nil || !spv2.IsCode(err, spv2.CodeInvalidArgument) {
 		t.Fatalf("空 text 应以 invalid_argument 拒绝，得到 %v", err)
+	}
+}
+
+// spec §6.5：deliver 来源必须是 work.agent+runtime（或 owner+owner）；其余一律 permission_denied。
+func TestDeliverRejectsUnauthorizedSource(t *testing.T) {
+	sc := startStubCenter(t)
+	nc := startStubNapCat(t)
+	qq := startQQ(t, sc, nc, "2271917353")
+	nc.waitConn(t, 5*time.Second)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	c, err := spv2.Dial(ctx, qq.WsURL())
+	if err != nil {
+		t.Fatalf("连接 /spv2 失败: %v", err)
+	}
+	defer c.Close()
+
+	cases := []struct {
+		name string
+		from spv2.Ref
+	}{
+		{"agent 但 authority=none", spv2.AgentRef("reasoner")},
+		{"冒充 agent 的 runtime", spv2.AgentRef("intruder").WithAuthority(spv2.AuthorityRuntime)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			call, err := spv2.NewCall("trace-unauth", tc.from, spv2.ServiceRef("qq"), "deliver",
+				protocol.DeliverPayload{Text: "x", ConversationID: "qq:private:2271917353"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = c.Call(ctx, call)
+			if !spv2.IsCode(err, spv2.CodePermissionDenied) {
+				t.Fatalf("越权 deliver 应 permission_denied: %v", err)
+			}
+		})
 	}
 }

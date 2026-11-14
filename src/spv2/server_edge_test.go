@@ -29,9 +29,10 @@ func TestServerMaxBodyBoundary(t *testing.T) {
 		body    string
 		wantErr bool
 	}{
-		{name: "equal", maxBody: 4, body: "1234"},
-		{name: "over", maxBody: 4, body: "12345", wantErr: true},
-		{name: "zero_unlimited", maxBody: 0, body: "12345"},
+		// 上限至少容得下 §5.1 的 hello（否则连接无法完成握手，测不到业务帧边界）。
+		{name: "equal", maxBody: 256, body: strings.Repeat("x", 256)},
+		{name: "over", maxBody: 256, body: strings.Repeat("x", 257), wantErr: true},
+		{name: "zero_unlimited", maxBody: 0, body: strings.Repeat("x", 300)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,11 +143,18 @@ func TestServerUnknownAndFailedEventMetrics(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		ms := srv.Metrics().Snapshot()
-		if counterValue(ms, "sump_unknown_event_total", "unknown") >= 1 && counterValue(ms, "sump_event_errors_total", "boom") >= 1 {
+		// 未知 method 的 label 必须收敛到 other（spec §12.2 低基数）；已注册 handler 的
+		// method 名是有限集合，保留原名。
+		if counterValue(ms, "sump_unknown_event_total", "other") >= 1 && counterValue(ms, "sump_event_errors_total", "boom") >= 1 {
+			for _, m := range ms {
+				if m.Name == "sump_unknown_event_total" && m.Labels["method"] == "unknown" {
+					t.Fatalf("未知 method 把原名带进了指标 label: %+v", m)
+				}
+			}
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("event metrics missing: unknown=%v failed=%v", counterValue(ms, "sump_unknown_event_total", "unknown"), counterValue(ms, "sump_event_errors_total", "boom"))
+			t.Fatalf("event metrics missing: unknown=%v failed=%v", counterValue(ms, "sump_unknown_event_total", "other"), counterValue(ms, "sump_event_errors_total", "boom"))
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -299,7 +307,7 @@ func TestServerRejectsNonWebSocket(t *testing.T) {
 
 func TestServerMaxBodyEventDropped(t *testing.T) {
 	card := wsTestCard(wsTestMethod("evt"))
-	card.Limits.MaxBody = 4
+	card.Limits.MaxBody = 256
 	srv, url := wsStartServer(t, card)
 	var called atomic.Bool
 	srv.Handle("evt", func(context.Context, *Call) error {
@@ -307,7 +315,7 @@ func TestServerMaxBodyEventDropped(t *testing.T) {
 		return nil
 	})
 	c := wsDialClient(t, url)
-	ev, err := NewEvent("w", ServiceRef(wsTestService), ServiceRef(wsTestService), "evt", []byte("12345"))
+	ev, err := NewEvent("w", ServiceRef(wsTestService), ServiceRef(wsTestService), "evt", []byte(strings.Repeat("x", 257)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -147,42 +147,24 @@ func registerService(t *testing.T, centerURL, name, addr string) {
 // ---------- 调用方替身（扮演 reasoner） ----------
 
 type stubCaller struct {
-	srv     *spv2.Server
-	http    *httptest.Server
-	resumes chan resumeRecord
-}
-
-type resumeRecord struct {
-	from string
-	tc   protocol.TaskContext
+	srv  *spv2.Server
+	http *httptest.Server
 }
 
 func startStubCaller(t *testing.T, centerURL string) *stubCaller {
 	t.Helper()
-	c := &stubCaller{resumes: make(chan resumeRecord, 8)}
+	c := &stubCaller{}
 	srv, err := spv2.NewServer(spv2.Card{
 		Protocol: spv2.ProtocolVersion, Name: "reasoner", Actor: spv2.ServiceRef("reasoner"),
-		Version: "stub/1", Methods: []spv2.Method{{Name: "resume", Shape: spv2.ShapeCall}},
+		Version: "stub/1", Methods: []spv2.Method{},
 		Limits: spv2.Limits{MaxBody: 1 << 20},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.srv = srv
-	srv.Handle("resume", func(_ context.Context, call *spv2.Call) error {
-		var p protocol.ResumePayload
-		if err := call.Frame.DecodeBody(&p); err == nil {
-			select {
-			case c.resumes <- resumeRecord{from: call.Frame.From.ID, tc: p.Context}:
-			default:
-			}
-		}
-		return call.Reply(map[string]any{"ok": true})
-	})
 	c.http = httptest.NewServer(srv.Handler())
 	t.Cleanup(c.http.Close)
-
-	// 注册进设置中心（memory 的 resume 要经名册解析到我们）。
 	registerService(t, centerURL, "reasoner", c.URL())
 	return c
 }
@@ -212,22 +194,31 @@ func (c *stubCaller) call(t *testing.T, memoryURL, action string, input any) cal
 	return callResult{OK: true, Data: resp.Body}
 }
 
-// recallUntilReady 处理“caller 刚注册、memory 的 roster 可能还未更新”的时序：
-// resume 解析失败会同步回错（未知目标服务），重试即可。
-func (c *stubCaller) recallUntilReady(t *testing.T, memoryURL string, input protocol.RecallPayload) callResult {
+// contextMessages 是从 context 回执里解出的组装结果。
+type contextMessages struct {
+	Messages []protocol.Message `msgpack:"messages"`
+	Work     spv2.Work          `msgpack:"work"`
+	Task     protocol.Task      `msgpack:"task"`
+}
+
+// contextUntilReady 发一次 context 并返回组装后的消息（spec §7.2 的同步主链）。
+func (c *stubCaller) contextUntilReady(t *testing.T, memoryURL string, input protocol.ContextPayload) callResult {
 	t.Helper()
-	for i := 0; i < 20; i++ {
-		rp := c.call(t, memoryURL, "recall", input)
-		if rp.OK {
-			return rp
-		}
-		if !strings.Contains(rp.Error, "未知目标服务") {
-			t.Fatalf("recall 失败: %s", rp.Error)
-		}
-		time.Sleep(100 * time.Millisecond)
+	rp := c.call(t, memoryURL, "context", input)
+	if !rp.OK {
+		t.Fatalf("context 失败: %s", rp.Error)
 	}
-	t.Fatal("recall 重试超时：memory 名册中始终未见 reasoner")
-	return callResult{}
+	return rp
+}
+
+// decodeContext 解 context 回执；失败即测试失败。
+func decodeContext(t *testing.T, rp callResult) contextMessages {
+	t.Helper()
+	var out contextMessages
+	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
+		t.Fatalf("context 回执无法解码: %v", err)
+	}
+	return out
 }
 
 // startMemory 起一个真 memory server（临时库）。
@@ -283,45 +274,31 @@ func TestRecallResumeFlow(t *testing.T) {
 		t.Fatalf("store 失败: %s", rp.Error)
 	}
 
-	task := protocol.RecallPayload{Context: protocol.TaskContext{
-		ConversationID: "t1",
-		Boss:           "stub-boss",
+	ctxReq := protocol.ContextPayload{
+		Conversation: "t1",
+		Boss:         "stub-boss",
 		Messages: []protocol.Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: "新一轮问题"},
 		},
-	}}
-	rp := caller.recallUntilReady(t, srv.WsURL(), task)
-	var ack struct {
-		Status string `msgpack:"status"`
 	}
-	if err := protocol.DecodeRaw(rp.Data, &ack); err != nil || ack.Status != "accepted" {
-		t.Fatalf("recall 回执不符: %+v", ack)
+	rp := caller.contextUntilReady(t, srv.WsURL(), ctxReq)
+	got := decodeContext(t, rp)
+	if got.Task.ID == "" {
+		t.Fatal("context 应返回任务行")
 	}
-
-	select {
-	case r := <-caller.resumes:
-		if r.from != "memory" {
-			t.Fatalf("resume 来源不符: %q", r.from)
-		}
-		tc := r.tc
-		if tc.ConversationID != "t1" || tc.Boss != "stub-boss" {
-			t.Fatalf("上下文头不符: %+v", tc)
-		}
-		// 记忆块存在且在第一条 system 之后。
-		if len(tc.Messages) < 3 || tc.Messages[1].Role != "system" || !strings.HasPrefix(tc.Messages[1].Content, compose.MemoryPrefix) {
-			t.Fatalf("记忆块位置不符: %+v", tc.Messages)
-		}
-		if !strings.Contains(tc.Messages[1].Content, "上一轮的问题") || !strings.Contains(tc.Messages[1].Content, "上一轮的答复") {
-			t.Fatalf("记忆内容缺失: %q", tc.Messages[1].Content)
-		}
-		// 任务链消息原样保留。
-		last := tc.Messages[len(tc.Messages)-1]
-		if last.Role != "user" || last.Content != "新一轮问题" {
-			t.Fatalf("任务消息被改动: %+v", last)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("超时：未收到 resume")
+	messages := got.Messages
+	// 记忆块存在且在第一条 system 之后。
+	if len(messages) < 3 || messages[1].Role != "system" || !strings.HasPrefix(messages[1].Content, compose.MemoryPrefix) {
+		t.Fatalf("记忆块位置不符: %+v", messages)
+	}
+	if !strings.Contains(messages[1].Content, "上一轮的问题") || !strings.Contains(messages[1].Content, "上一轮的答复") {
+		t.Fatalf("记忆内容缺失: %q", messages[1].Content)
+	}
+	// 任务链消息原样保留。
+	last := messages[len(messages)-1]
+	if last.Role != "user" || last.Content != "新一轮问题" {
+		t.Fatalf("任务消息被改动: %+v", last)
 	}
 }
 
@@ -336,29 +313,19 @@ func TestRecallDedupAndReplace(t *testing.T) {
 	}
 
 	// 任务上下文里带着与历史尾部相同的消息 → 记忆中不应再出现它。
-	task := protocol.RecallPayload{Context: protocol.TaskContext{
-		ConversationID: "t2",
-		Boss:           "stub-boss",
+	ctxReq := protocol.ContextPayload{
+		Conversation: "t2",
+		Boss:         "stub-boss",
 		Messages: []protocol.Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: "重复消息"},
 		},
-	}}
-	if rp := caller.recallUntilReady(t, srv.WsURL(), task); !rp.OK {
-		t.Fatalf("recall 失败: %s", rp.Error)
 	}
-
-	var first protocol.TaskContext
-	select {
-	case r := <-caller.resumes:
-		first = r.tc
-	case <-time.After(5 * time.Second):
-		t.Fatal("超时：未收到第一次 resume")
-	}
+	first := decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), ctxReq)).Messages
 	// 历史仅有一条“重复消息”，被去重后应为空 → 不应注入记忆块。
-	for _, m := range first.Messages {
+	for _, m := range first {
 		if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
-			t.Fatalf("重复消息应被去重，不应有记忆块: %+v", first.Messages)
+			t.Fatalf("重复消息应被去重，不应有记忆块: %+v", first)
 		}
 	}
 
@@ -368,26 +335,19 @@ func TestRecallDedupAndReplace(t *testing.T) {
 		{Role: "system", Content: compose.MemoryPrefix + "\n旧内容"},
 		{Role: "user", Content: "再来一轮"},
 	}
-	task2 := protocol.RecallPayload{Context: protocol.TaskContext{ConversationID: "t2", Boss: "stub-boss", Messages: msgs}}
-	if rp := caller.recallUntilReady(t, srv.WsURL(), task2); !rp.OK {
-		t.Fatalf("recall 失败: %s", rp.Error)
-	}
-	select {
-	case r := <-caller.resumes:
-		count := 0
-		for _, m := range r.tc.Messages {
-			if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
-				count++
-				if strings.Contains(m.Content, "旧内容") {
-					t.Fatalf("旧记忆块应被替换: %q", m.Content)
-				}
+	ctxReq2 := protocol.ContextPayload{Conversation: "t2", Boss: "stub-boss", Messages: msgs}
+	second := decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), ctxReq2)).Messages
+	count := 0
+	for _, m := range second {
+		if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
+			count++
+			if strings.Contains(m.Content, "旧内容") {
+				t.Fatalf("旧记忆块应被替换: %q", m.Content)
 			}
 		}
-		if count != 1 {
-			t.Fatalf("记忆块数量应为 1，实际 %d: %+v", count, r.tc.Messages)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("超时：未收到第二次 resume")
+	}
+	if count != 1 {
+		t.Fatalf("记忆块数量应为 1，实际 %d: %+v", count, second)
 	}
 }
 
@@ -418,54 +378,36 @@ func TestRememberRecallInjection(t *testing.T) {
 		t.Fatalf("remember 失败: %s", rp.Error)
 	}
 
-	// recall：查询“我明天想喝咖啡”——核心必须带（不看相关性），相关命中“咖啡”（2 字词）。
-	task := protocol.RecallPayload{Context: protocol.TaskContext{
-		ConversationID: "t3",
-		Boss:           "stub-boss",
+	// context：查询“我明天想喝咖啡”——核心必须带（不看相关性），相关命中“咖啡”（2 字词）。
+	ctxReq := protocol.ContextPayload{
+		Conversation: "t3",
+		Boss:         "stub-boss",
 		Messages: []protocol.Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: "我明天想喝咖啡"},
 		},
-	}}
-	if rp := caller.recallUntilReady(t, srv.WsURL(), task); !rp.OK {
-		t.Fatalf("recall 失败: %s", rp.Error)
 	}
-	var first protocol.TaskContext
-	select {
-	case r := <-caller.resumes:
-		first = r.tc
-	case <-time.After(5 * time.Second):
-		t.Fatal("超时：未收到 resume")
-	}
-	block := memoryBlockText(first.Messages)
+	block := memoryBlockText(decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), ctxReq)).Messages)
 	for _, want := range []string{"（核心记忆）", "猫叫团子", "（相关记忆）", "美式咖啡"} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("记忆块缺少 %q: %q", want, block)
 		}
 	}
 
-	// forget 核心条目 → 再 recall 不再出现。
+	// forget 核心条目 → 再 context 不再出现。
 	if rp := caller.call(t, srv.WsURL(), "forget", protocol.ForgetPayload{ID: rr.ID}); !rp.OK {
 		t.Fatalf("forget 失败: %s", rp.Error)
 	}
-	task2 := protocol.RecallPayload{Context: protocol.TaskContext{
-		ConversationID: "t3",
-		Boss:           "stub-boss",
+	ctxReq2 := protocol.ContextPayload{
+		Conversation: "t3",
+		Boss:         "stub-boss",
 		Messages: []protocol.Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: "今天写点什么代码"},
 		},
-	}}
-	if rp := caller.recallUntilReady(t, srv.WsURL(), task2); !rp.OK {
-		t.Fatalf("recall 失败: %s", rp.Error)
 	}
-	select {
-	case r := <-caller.resumes:
-		if strings.Contains(memoryBlockText(r.tc.Messages), "团子") {
-			t.Fatalf("forget 后不应再注入核心条目: %q", memoryBlockText(r.tc.Messages))
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("超时：未收到第二次 resume")
+	if block := memoryBlockText(decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), ctxReq2)).Messages); strings.Contains(block, "团子") {
+		t.Fatalf("forget 后不应再注入核心条目: %q", block)
 	}
 
 	// 忘记不存在的 id → 报错。
