@@ -290,7 +290,7 @@ type recordingLLM struct {
 	observed chan string
 }
 
-func (f *recordingLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.Message, error) {
+func (f *recordingLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.ChatResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, m := range req.Messages {
@@ -303,9 +303,9 @@ func (f *recordingLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.Message
 	}
 	if !f.sent {
 		f.sent = true
-		return llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "command-1", Type: "function", Function: llm.FunctionCall{Name: "shell__run", Arguments: `{"command":"Write-Output llm-integration-ok"}`}}}}, nil
+		return llm.ChatResult{Message: llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "command-1", Type: "function", Function: llm.FunctionCall{Name: "shell__run", Arguments: `{"command":"Write-Output llm-integration-ok"}`}}}}}, nil
 	}
-	return llm.Message{Role: "assistant", Content: "已收到命令处理反馈。"}, nil
+	return llm.ChatResult{Message: llm.Message{Role: "assistant", Content: "已收到命令处理反馈。"}}, nil
 }
 
 func TestRealReasonerReceivesApprovalAndExecutionFeedback(t *testing.T) {
@@ -315,6 +315,21 @@ func TestRealReasonerReceivesApprovalAndExecutionFeedback(t *testing.T) {
 	memory := f.client(t, "memory")
 	memory.HandleNative(spv2.Method{Name: "store", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
 		return call.Reply(map[string]bool{"stored": true})
+	})
+	// spec §7.2：reasoner 现在同步要 context；替身返回固定上下文与 task（resume 回调已删）。
+	memory.HandleNative(spv2.Method{Name: "context", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]any{
+			"messages": []protocol.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "运行示例命令"}},
+			"work":     map[string]any{"id": call.Frame.Work, "status": "running"},
+			"task":     &protocol.Task{ID: "task-approval", Name: "审批链"},
+		})
+	})
+	// spec §6.4：reasoner 执行远端工具前要先扣租约；替身必须应答，否则审批链第一跳就断。
+	memory.HandleNative(spv2.Method{Name: "lease_charge", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]any{"remaining": spv2.Remaining{ToolCalls: 49}})
+	})
+	memory.HandleNative(spv2.Method{Name: "work_update", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]bool{"updated": true})
 	})
 	f.start(t, memory)
 	delivered := make(chan struct{}, 32)
@@ -341,9 +356,9 @@ func TestRealReasonerReceivesApprovalAndExecutionFeedback(t *testing.T) {
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
-	_, err := memory.Call(f.ctx, "reasoner", "resume", protocol.ResumePayload{Context: protocol.TaskContext{ConversationID: "approval-fixture", Boss: "user-service-stub", Messages: []protocol.Message{{Role: "user", Content: "运行示例命令"}}}}, "trace-llm")
-	if err != nil {
-		t.Fatal(err)
+	// 入口发起 message；reasoner 同步向 memory 要 context 后开黑板（resume 已删）。
+	if _, err := boss.Call(f.ctx, "reasoner", "message", protocol.MessagePayload{Text: "运行示例命令", Conversation: "approval-fixture", Sender: &protocol.Sender{Channel: "private", Owner: true}}, "trace-llm"); err != nil {
+		t.Fatalf("message 未被受理: %v", err)
 	}
 	approved, done := false, false
 	for !approved || !done {
@@ -479,7 +494,7 @@ type reviewLLM struct {
 	observed chan string
 }
 
-func (f *reviewLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.Message, error) {
+func (f *reviewLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.ChatResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, m := range req.Messages {
@@ -493,9 +508,9 @@ func (f *reviewLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.Message, e
 	if !f.sent {
 		f.sent = true
 		// Get-Process 不在白名单 → 必须走第二层。
-		return llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "review-1", Type: "function", Function: llm.FunctionCall{Name: "shell__run", Arguments: `{"command":"Get-Process"}`}}}}, nil
+		return llm.ChatResult{Message: llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "review-1", Type: "function", Function: llm.FunctionCall{Name: "shell__run", Arguments: `{"command":"Get-Process"}`}}}}}, nil
 	}
-	return llm.Message{Role: "assistant", Content: "命令已由用户批准并执行完毕。"}, nil
+	return llm.ChatResult{Message: llm.Message{Role: "assistant", Content: "命令已由用户批准并执行完毕。"}}, nil
 }
 
 func TestLLMReviewChain(t *testing.T) {
@@ -505,6 +520,21 @@ func TestLLMReviewChain(t *testing.T) {
 	memory := f.client(t, "memory")
 	memory.HandleNative(spv2.Method{Name: "store", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
 		return call.Reply(map[string]bool{"stored": true})
+	})
+	// spec §7.2：reasoner 现在同步要 context；替身返回固定上下文与 task（resume 回调已删）。
+	memory.HandleNative(spv2.Method{Name: "context", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]any{
+			"messages": []protocol.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "运行示例命令"}},
+			"work":     map[string]any{"id": call.Frame.Work, "status": "running"},
+			"task":     &protocol.Task{ID: "task-approval", Name: "审批链"},
+		})
+	})
+	// spec §6.4：reasoner 执行远端工具前要先扣租约；替身必须应答，否则审批链第一跳就断。
+	memory.HandleNative(spv2.Method{Name: "lease_charge", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]any{"remaining": spv2.Remaining{ToolCalls: 49}})
+	})
+	memory.HandleNative(spv2.Method{Name: "work_update", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]bool{"updated": true})
 	})
 	f.start(t, memory)
 	delivered := make(chan struct{}, 32)
@@ -540,11 +570,9 @@ func TestLLMReviewChain(t *testing.T) {
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
-	if _, err := memory.Call(f.ctx, "reasoner", "resume", protocol.ResumePayload{Context: protocol.TaskContext{
-		ConversationID: "llm-review", Boss: "user-service-stub",
-		Messages: []protocol.Message{{Role: "user", Content: "看看现在有哪些进程"}},
-	}}, "trace-llm-review"); err != nil {
-		t.Fatal(err)
+	// 入口发起 message；reasoner 同步向 memory 要 context 后开黑板（resume 已删）。
+	if _, err := boss.Call(f.ctx, "reasoner", "message", protocol.MessagePayload{Text: "看看现在有哪些进程", Conversation: "llm-review", Sender: &protocol.Sender{Channel: "private", Owner: true}}, "trace-llm-review"); err != nil {
+		t.Fatalf("message 未被受理: %v", err)
 	}
 
 	select {

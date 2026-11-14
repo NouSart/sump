@@ -42,8 +42,6 @@ func TestSharedExperienceE2E(t *testing.T) {
 	obs, _ := registerObserver(t, centerURL)
 	waitRosterHas(t, obs, "memory", 60*time.Second)
 
-	probe := startResumeProbe(t, centerURL)
-
 	const (
 		ownerCid = "qq:private:42"
 		otherCid = "web:private:owner"
@@ -70,7 +68,7 @@ func TestSharedExperienceE2E(t *testing.T) {
 	}
 
 	// 3) B 会话 recall：看到摘要，看不到原文。
-	block := recallEventually(t, probe, memURL, "继续改门户", otherCid, func(b string) bool {
+	block := recallEventually(t, memURL, "继续改门户", otherCid, func(b string) bool {
 		return strings.Contains(b, "（其他会话）")
 	})
 	if !strings.Contains(block, "QQ「排查 embedding」") {
@@ -121,7 +119,7 @@ func TestSharedExperienceE2E(t *testing.T) {
 
 	// 6) 原文并没有丢：A 自己 recall 时还在（只是别的会话读不到）。
 	// 这条与上面一起构成"私有 / 共享"的完整对照——不然"看不到原文"可能只是因为它根本没存下来。
-	own := recallEventually(t, probe, memURL, "继续", ownerCid, func(b string) bool {
+	own := recallEventually(t, memURL, "继续", ownerCid, func(b string) bool {
 		return strings.Contains(b, secret)
 	})
 	if strings.Contains(own, "（其他会话）") {

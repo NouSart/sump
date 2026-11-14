@@ -27,10 +27,22 @@ var handledButUndeclared = map[string]map[string]string{
 	// 别人调它（本服务是接收方），所以不进自己的 provides。
 	"reasoner": {
 		"report_result": "入站：工具/补报回灌",
-		"resume":        "入站：记忆服务回发上下文",
 	},
 	"approval": {"report_result": "入站：裁决回执"},
-	"mcp":      {"cancel_import": "入站：外部取消导入", "report_result": "入站：导入进度补报"},
+	"memory": {
+		"work_get":      "入站：work 账本由入口/reasoner 内部读，不进入名册",
+		"lease_charge":  "入站：租约扣减由 reasoner 工具链内部调用，不进入名册",
+		"lease_release": "入站：租约归还由内部调用，不进入名册",
+		"work_update":   "入站：work 状态推进由 reasoner 轮次边界内部调用，不进入名册",
+		"work_sweep":    "运维：手动触发 sweep，不属于能力名册",
+		"work_cancel":   "入站：取消 work 的内部 method",
+		"work_renew":    "入站：续租的内部 method",
+		"message_post":  "入站：A2A 队列写入（内部）",
+		"message_claim": "入站：A2A 队列领取（内部）",
+		"message_ack":   "入站：A2A 队列确认（内部）",
+		"message_nack":  "入站：A2A 队列失败重排（内部）",
+	},
+	"mcp": {"cancel_import": "入站：外部取消导入", "report_result": "入站：导入进度补报"},
 	// 服务自己发给自己的跳转（单步推理的自跳）。
 	"reasoner_self": {
 		"step":      "自跳：一轮结束推进下一轮",
