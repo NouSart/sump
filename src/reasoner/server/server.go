@@ -20,6 +20,7 @@ import (
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/reasoner/llm"
 	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
 )
 
 // Config 是 reasoner 的启动配置（引导只靠它：自己的名字/地址 + 设置中心地址）。
@@ -64,6 +65,13 @@ type Server struct {
 	holds        map[string]*holdState
 
 	retryFrom func(string) bool // 测试注入：retry 的来源校验（名册在 service 包里，测试拿不到 setter）
+
+	// 测试注入（生产不设置）：租约扣减 / work 状态推进的同包断言用。
+	a2a *a2aHooks // A2A 最小闭环的测试注入点（生产 nil）
+
+	leaseChargeHook func(context.Context, string) error
+	tokenChargeHook func(ctx context.Context, trace string, tokens int) error
+	workStatusHook  func(trace, status string)
 
 	memSeq int64 // 会话记录的单调序号（atomic）：并发写（Fire 是 goroutine）也按真实先后落库
 
@@ -128,9 +136,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		SecretFile:        cfg.SecretFile,
-		Description:       "LLM 单步推理：任务先经记忆服务托管，收到来自记忆的 resume 才完全启动（调 LLM API）",
+		Description:       "LLM 单步推理：任务先同步向记忆服务要 context，拿到组装后的上下文才开黑板并调 LLM API",
 		Provides: []protocol.Provide{
-			{Action: "user_message", Input: "用户消息文本 {text}", Output: "受理回执（最终结果由 deliver 另行送达）"},
+			{Action: "message", Tool: true, Input: "统一消息 {text, sender?, intent?, reply_to?, conversation?}（human=authority owner / agent=authority none）", Output: "受理回执（最终结果由 deliver 另行送达）"},
 			{Action: "think", Input: "单步推理 {prompt, system?, model?, max_tokens?}", Output: "{text}（一次补全：不带工具、不开任务、不进黑板；所有非任务型模型调用的统一出口）"},
 			{Action: "echo", Input: "任意", Output: "原样返回（测试用）"},
 			{Action: "debug_jump", Input: "{to, action, input}", Output: "目标服务的响应数据（调试用）"},
@@ -371,7 +379,12 @@ func (s *Server) setLLMKey(v string) {
 	s.liveMu.Unlock()
 }
 
-// memoryName 返回当前记忆服务名（recall / store / resume 来源校验用）。
+// deliverRef 是交付/取消/续租用的帧头：work.agent + authority=runtime（spec §6.5）。
+func (s *Server) deliverRef() spv2.Ref {
+	return spv2.AgentRef(s.cfg.Name).WithAuthority(spv2.AuthorityRuntime)
+}
+
+// memoryName 返回当前记忆服务名（context / store 来源校验用）。
 func (s *Server) memoryName() string {
 	s.liveMu.RLock()
 	defer s.liveMu.RUnlock()

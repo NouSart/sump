@@ -31,6 +31,8 @@ func (m Method) ToolName(service string) string { return service + "." + m.Name 
 type Limits struct {
 	MaxBody   int64 `msgpack:"max_body" json:"max_body"`
 	MaxStream int   `msgpack:"max_stream" json:"max_stream"`
+	// MaxHeader 是帧头（不含 body）上限，spec §3.5 默认 16 KiB；超限拒绝。
+	MaxHeader int64 `msgpack:"max_header,omitempty" json:"max_header,omitempty"`
 }
 
 // Observability 是可观测性声明。

@@ -68,7 +68,7 @@ type Server struct {
 	coreMaxChars  int        // 核心记忆字符预算
 	relLimit      int        // 相关记忆条数上限
 	relMaxChars   int        // 相关记忆字符预算
-	embedding     string     // 当前 embedding 服务名（recall.embedding 热改）
+	embedding     string     // 当前 embedding 服务名（context.embedding 热改）
 	shareSessions int        // 会话目录注入条数（share.sessions_limit）
 	shareChars    int        // 会话摘要单条字数（share.digest_chars）
 
@@ -120,9 +120,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
 		HeartbeatInterval: cfg.HeartbeatInterval,
-		Description:       "记忆服务：会话历史 + 长期记忆（remember/forget；语义召回 + bigram 兜底 + 核心注入）与上下文组装（recall 后向调用方回发 resume）",
+		Description:       "记忆服务：会话历史 + 长期记忆（remember/forget；语义召回 + bigram 兜底 + 核心注入）与上下文组装（context 同步返回）",
 		Provides: []protocol.Provide{
-			{Action: "recall", Input: "任务上下文 {conversation_id, messages, boss}", Output: "受理回执；随后向调用方发送 resume（注入记忆后的上下文）"},
+			{Action: "context", Input: "{conversation, messages, boss?, task_name?}（spec §7.2 同步上下文）", Output: "{messages, work, task}（组装后的上下文与 work 行）"},
 			{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
 			{Action: "history", Input: "{conversation_id, limit}", Output: "{conversation_id, messages:[{role, content, at}]}（按时间正序；供界面回填，不做记忆组装）"},
 			{Action: "conversation_list", Input: "{limit?, include_archived?}", Output: "{conversations:[{id, title, entry, status, created_at, updated_at}]}（按最近活跃排序；不暴露给模型 — 给界面列会话，不是给模型的工具）"},
@@ -150,7 +150,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Logger: logger,
 	})
 	// 可设置项：预设 = 本服务的启动引导值（来源由服务自己决定）。
-	s.HandleSetting("recall.history_limit", strconv.Itoa(cfg.HistoryLimit), func(v string) error {
+	s.HandleSetting("context.history_limit", strconv.Itoa(cfg.HistoryLimit), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
 			return err
@@ -163,7 +163,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Hint("每轮回答前，把最近这么多条对话一起交给模型；0 = 不带历史"),
 		service.As("number"),
 		service.Unit("count"))
-	s.HandleSetting("recall.core_limit", strconv.Itoa(defaultCoreLimit), func(v string) error {
+	s.HandleSetting("context.core_limit", strconv.Itoa(defaultCoreLimit), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
 			return err
@@ -176,7 +176,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Hint("你在长期记忆里标成「核心」的条目，每次对话最多带几条"),
 		service.As("number"),
 		service.Unit("count"))
-	s.HandleSetting("recall.core_max_chars", strconv.Itoa(defaultCoreMaxChars), func(v string) error {
+	s.HandleSetting("context.core_max_chars", strconv.Itoa(defaultCoreMaxChars), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
 			return err
@@ -189,7 +189,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Hint("核心记忆太多会挤占对话空间，这里卡一个总字数"),
 		service.As("number"),
 		service.Unit("chars"))
-	s.HandleSetting("recall.rel_limit", strconv.Itoa(defaultRelLimit), func(v string) error {
+	s.HandleSetting("context.rel_limit", strconv.Itoa(defaultRelLimit), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
 			return err
@@ -202,7 +202,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Hint("按语义相关度挑出来的长期记忆，最多带几条（不相关的不带）"),
 		service.As("number"),
 		service.Unit("count"))
-	s.HandleSetting("recall.rel_max_chars", strconv.Itoa(defaultRelMaxChars), func(v string) error {
+	s.HandleSetting("context.rel_max_chars", strconv.Itoa(defaultRelMaxChars), func(v string) error {
 		n, err := parseNonNeg(v)
 		if err != nil {
 			return err
@@ -218,7 +218,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	// 全部动作的 SPv2.1 原生入口（/spv2 直接解 body）。
 	s.registerNative()
 	// embedding 服务名：热改（空 = 关闭语义召回，静默回落 bigram）。
-	s.HandleSetting("recall.embedding", cfg.Embedding, func(v string) error {
+	s.HandleSetting("context.embedding", cfg.Embedding, func(v string) error {
 		s.setEmbeddingName(strings.TrimSpace(v))
 		return nil
 	}, service.Label("用哪个服务算语义向量"),
@@ -589,15 +589,10 @@ func recallQuery(messages []protocol.Message) string {
 	return ""
 }
 
-// recall 是“完全启动”链的上半段：收下任务上下文 → 组装（注入记忆）→ 以 resume 发回调用方。
-func (s *Server) recall(ctx context.Context, body []byte, meta callMeta) (any, error) {
-	var p protocol.RecallPayload
-	if err := protocol.DecodeRaw(body, &p); err != nil {
-		return nil, err
-	}
-	tc := p.Context
+// assemble 是真正的共用组装逻辑（recall 与 context 都走它，不各写一份）。
+func (s *Server) assemble(ctx context.Context, tc protocol.TaskContext, meta callMeta) (protocol.Task, []protocol.Message, error) {
 	if len(tc.Messages) == 0 {
-		return nil, errors.New("recall: context.messages 为空")
+		return protocol.Task{}, nil, errors.New("context.messages 为空")
 	}
 	cid := tc.ConversationID
 	if cid == "" {
@@ -608,29 +603,30 @@ func (s *Server) recall(ctx context.Context, body []byte, meta callMeta) (any, e
 
 	// 任务：agent 必须在任务里工作——没有进行中的任务就地新建（名字取这次用户消息）。
 	// 拿不到任务就不往下走：宁可这一轮失败，也不要在"无主"的状态下开工。
-	// 名字优先用入口服务给的那个：正文可能带来源标注前缀，从第一行推会推出一串标签。
 	newName := protocol.ClampTaskName(tc.TaskName)
 	if newName == "" {
 		newName = taskNameFrom(recallQuery(tc.Messages))
 	}
 	task, err := s.cfg.Store.EnsureTask(cid, newName)
 	if err != nil {
-		return nil, fmt.Errorf("任务解析失败: %w", err)
+		return protocol.Task{}, nil, fmt.Errorf("任务解析失败: %w", err)
+	}
+	// memory 是唯一 work 登记处（spec §1.6）：context/recall 必须把这条 work 登记进账本。
+	if err := s.ensureContextWork(ctx, meta, tc, task.Name); err != nil {
+		return protocol.Task{}, nil, err
 	}
 
 	history, err := s.cfg.Store.Recent(cid, historyLimit, task.ID)
 	if err != nil {
-		return nil, fmt.Errorf("查询历史失败: %w", err)
+		return protocol.Task{}, nil, fmt.Errorf("查询历史失败: %w", err)
 	}
-	// 去重：历史尾部与任务上下文尾部的对话消息相同时裁掉——任务链里已有的消息不重复注入。
 	history = compose.TrimOverlap(history, compose.ConversationTail(tc.Messages))
 
-	// 长期记忆：核心条目（priority>0，不看相关性）+ 相关召回（语义为主、bigram 兜底）。
 	var core, relevant []string
 	if s.longterm() != nil {
 		entries, err := s.longterm().ListActive()
 		if err != nil {
-			return nil, fmt.Errorf("查询长期记忆失败: %w", err)
+			return protocol.Task{}, nil, fmt.Errorf("查询长期记忆失败: %w", err)
 		}
 		coreEntries := longterm.Core(entries, coreLimit, coreMaxChars)
 		coreIDs := make(map[int64]bool, len(coreEntries))
@@ -649,20 +645,9 @@ func (s *Server) recall(ctx context.Context, body []byte, meta callMeta) (any, e
 		}
 	}
 
-	// 其他会话：只给摘要（读共享库，不发网络跳；失败只省略本节）。
 	final := compose.Inject(tc.Messages, compose.BuildMemory(history, core, relevant,
 		s.experienceLines(ctx, meta.trace, recallQuery(tc.Messages)), s.otherSessionLines(cid)))
-
-	if err := s.fireResume(meta.from, meta.trace, protocol.ResumePayload{Context: protocol.TaskContext{
-		ConversationID: cid,
-		Messages:       final,
-		Boss:           tc.Boss,
-		Task:           &task,
-	}}); err != nil {
-		return nil, err
-	}
-
-	return map[string]any{"status": "accepted"}, nil
+	return task, final, nil
 }
 
 // rankRelevant 返回"相关记忆"条目：语义召回为主、bigram 兜底（embedding 缺失/失败/超时 → 静默回落）。
@@ -769,17 +754,4 @@ func (s *Server) embedTexts(ctx context.Context, trace string, texts []string, q
 		vecs[i] = out
 	}
 	return vecs, res.Model, nil
-}
-
-// fireResume 向调用方发送组装完成的上下文——记忆往返期间 boss 是调用方。
-// resolve 失败会同步返回（调用方可收到错误）；投递本身异步进行（发出即完）。
-func (s *Server) fireResume(from, trace string, payload any) error {
-	if from == "" {
-		return errors.New("recall: 请求缺少 from，无法回发 resume")
-	}
-	if _, _, err := s.Resolve(from); err != nil {
-		return err
-	}
-	s.Fire(from, "resume", payload, trace)
-	return nil
 }

@@ -74,7 +74,16 @@ func (s *Service) buildSPv2() error {
 	}
 	// 骨架的日志必须接到 SPv2 服务端：丢弃帧与处理方 panic 要落在这个服务自己的日志里，
 	// 而不是默认的 process stderr（见 src/spv2/server.go 的 countDropped / countPanic）。
-	srv, err := spv2.NewServer(card, spv2.WithMaxMessageBytes(maxBody), spv2.WithLogger(s.logger))
+	// 依赖探针：center 由骨架保证，其余由服务在 Start 前 AddHealthCheck 注入。
+	s.mu.Lock()
+	extraChecks := append([]spv2.HealthChecker(nil), s.healthChecks...)
+	s.mu.Unlock()
+	checks := append([]spv2.HealthChecker{s.centerHealthCheck}, extraChecks...)
+	srv, err := spv2.NewServer(card,
+		spv2.WithMaxMessageBytes(maxBody),
+		spv2.WithLogger(s.logger),
+		spv2.WithHealthChecks(checks...),
+	)
 	if err != nil {
 		return err
 	}
@@ -87,6 +96,10 @@ func (s *Service) buildSPv2() error {
 
 // callSPv2 向目标 /spv2 发一跳。
 func (s *Service) callSPv2(ctx context.Context, name, addr, action string, raw msgpack.RawMessage, trace string) (msgpack.RawMessage, error) {
+	return s.callSPv2From(ctx, spv2.ServiceRef(s.cfg.Name), name, addr, action, raw, trace)
+}
+
+func (s *Service) callSPv2From(ctx context.Context, from spv2.Ref, name, addr, action string, raw msgpack.RawMessage, trace string) (msgpack.RawMessage, error) {
 	target := spv2Addr(addr)
 	c, err := spv2.Dial(ctx, target, spv2.WithClientMaxMessageBytes(s.maxMessageBytes()))
 	if err != nil {
@@ -97,7 +110,7 @@ func (s *Service) callSPv2(ctx context.Context, name, addr, action string, raw m
 	if work == "" {
 		work = spv2.NewID()
 	}
-	f, err := spv2.NewCall(work, spv2.ServiceRef(s.cfg.Name), spv2.ServiceRef(name), action, []byte(raw))
+	f, err := spv2.NewCall(work, from, spv2.ServiceRef(name), action, []byte(raw))
 	if err != nil {
 		return nil, err
 	}

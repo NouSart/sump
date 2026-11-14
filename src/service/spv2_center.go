@@ -58,6 +58,7 @@ func (s *Service) connectAndRegister(ctx context.Context) error {
 	s.regs++
 	regs := s.regs
 	s.mu.Unlock()
+	s.recordCenterConnected(regs)
 	s.setRoster(roster)
 	if regs == 1 {
 		s.logger.Printf("%s 已接入设置中心（名册 %d 个服务, rev %d）", s.cfg.Name, len(roster.Services), roster.Revision)
@@ -122,6 +123,7 @@ func (s *Service) watchCenter(ctx context.Context) {
 			}
 			closed := s.closed
 			s.mu.Unlock()
+			s.recordCenterDisconnected()
 			if closed {
 				return
 			}
@@ -136,15 +138,23 @@ func (s *Service) watchCenter(ctx context.Context) {
 }
 
 // heartbeatLoop 向中心发心跳；写失败即关闭连接（触发自愈）。
+// 同时每秒刷新 sump_heartbeat_age_seconds（spec §12.3 连接域指标）。
 func (s *Service) heartbeatLoop(ctx context.Context, c *spv2.Client) {
 	t := time.NewTicker(s.cfg.HeartbeatInterval)
 	defer t.Stop()
+	age := time.NewTicker(time.Second)
+	defer age.Stop()
+	last := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-c.Done():
 			return
+		case <-age.C:
+			if m := s.spv2Metrics(); m != nil {
+				m.Gauge("sump_heartbeat_age_seconds", "Seconds since last successful heartbeat", nil, time.Since(last).Seconds())
+			}
 		case <-t.C:
 			ev, err := spv2.NewEvent(spv2.NewID(), spv2.ServiceRef(s.cfg.Name), spv2.ServiceRef("settings-center"), "heartbeat",
 				protocol.HeartbeatPayload{Status: "ok"})
@@ -154,7 +164,40 @@ func (s *Service) heartbeatLoop(ctx context.Context, c *spv2.Client) {
 			if err := c.Send(ev); err != nil {
 				return
 			}
+			last = time.Now()
+			if m := s.spv2Metrics(); m != nil {
+				m.Gauge("sump_heartbeat_age_seconds", "Seconds since last successful heartbeat", nil, 0)
+			}
 		}
+	}
+}
+
+// spv2Metrics 返回本服务 SPv2 服务端的指标注册表（构建前为 nil）。
+func (s *Service) spv2Metrics() *spv2.Registry {
+	if s.spv2Srv == nil {
+		return nil
+	}
+	return s.spv2Srv.Metrics()
+}
+
+func (s *Service) recordCenterConnected(regs int64) {
+	m := s.spv2Metrics()
+	if m == nil {
+		return
+	}
+	m.Gauge("sump_connection_state", "Settings-center connection state (1=connected)", nil, 1)
+	m.Gauge("sump_heartbeat_age_seconds", "Seconds since last successful heartbeat", nil, 0)
+	delta := 0.0
+	if regs > 1 {
+		delta = 1
+	}
+	// 首次注册也建序列（0）：最小指标集契约要求名字可被发现，而不是等第一次重连。
+	m.Counter("sump_reconnects_total", "Settings-center reconnects", nil, delta)
+}
+
+func (s *Service) recordCenterDisconnected() {
+	if m := s.spv2Metrics(); m != nil {
+		m.Gauge("sump_connection_state", "Settings-center connection state (1=connected)", nil, 0)
 	}
 }
 

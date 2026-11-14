@@ -15,19 +15,6 @@ import (
 // Tool 与 provides 里的 Tool 对齐：只有 dig / remember / shared_sessions 是工具。
 func (s *Server) registerNative() {
 	s.HandleNative(spv2.Method{
-		Name:        "recall",
-		Description: "取回记忆：把核心/相关记忆与会话目录注入任务上下文后，以 resume 发回调用方",
-		Input: objectSchema(map[string]any{
-			"context": objectSchema(map[string]any{
-				"conversation_id": stringSchema(),
-				"messages":        map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
-				"boss":            stringSchema(),
-				"task_name":       stringSchema(),
-			}, "messages"),
-		}, "context"),
-		Output: objectSchema(map[string]any{"status": stringSchema()}, "status"),
-	}, s.nativeRecall)
-	s.HandleNative(spv2.Method{
 		Name:        "store",
 		Description: "记一条会话记录（同一任务下与上一条完全相同则幂等跳过）",
 		Input: objectSchema(map[string]any{
@@ -235,6 +222,127 @@ func (s *Server) registerNative() {
 		}),
 		Output: objectSchema(nil),
 	}, s.nativeTaskList)
+	s.HandleNative(spv2.Method{
+		Name:        "context",
+		Description: "同步返回组装后的上下文与 work 行（spec §7.2；替代 recall+resume 两跳）",
+		Input: objectSchema(map[string]any{
+			"conversation": stringSchema(),
+			"messages":     map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+			"boss":         stringSchema(),
+			"task_name":    stringSchema(),
+		}, "messages"),
+		Output: objectSchema(map[string]any{"messages": map[string]any{"type": "array"}, "work": map[string]any{"type": "object"}}),
+	}, s.nativeContext)
+	// work 账本（spec §6.8 内部 method）：给入口/reasoner 内部用，不进 provides、不暴露给模型。
+	s.HandleNative(spv2.Method{
+		Name:        "work_get",
+		Description: "读 work 行与租约余额（内部）",
+		Input: objectSchema(map[string]any{
+			"work": stringSchema(),
+		}),
+		Output: objectSchema(nil),
+	}, s.nativeWorkGet)
+	s.HandleNative(spv2.Method{
+		Name:        "lease_charge",
+		Description: "原子扣减 work 租约（内部；预算不足/过期/已 stalled 分别回 §8 错误码）",
+		Input: objectSchema(map[string]any{
+			"work": stringSchema(),
+			"delta": objectSchema(map[string]any{
+				"tool_calls": integerSchema(),
+				"tokens":     integerSchema(),
+				"approvals":  integerSchema(),
+				"children":   integerSchema(),
+				"depth":      integerSchema(),
+			}),
+		}),
+		Output: objectSchema(nil),
+	}, s.nativeLeaseCharge)
+	s.HandleNative(spv2.Method{
+		Name:        "lease_release",
+		Description: "归还 work 租约（内部；不超过初始上限）",
+		Input: objectSchema(map[string]any{
+			"work": stringSchema(),
+			"delta": objectSchema(map[string]any{
+				"tool_calls": integerSchema(),
+				"tokens":     integerSchema(),
+				"approvals":  integerSchema(),
+				"children":   integerSchema(),
+				"depth":      integerSchema(),
+			}),
+		}),
+		Output: objectSchema(nil),
+	}, s.nativeLeaseRelease)
+	s.HandleNative(spv2.Method{
+		Name:        "work_update",
+		Description: "推进 work 状态（内部；按 §6.3 状态机，非法转移回 conflict）",
+		Input: objectSchema(map[string]any{
+			"work":   stringSchema(),
+			"status": stringSchema(),
+		}, "status"),
+		Output: objectSchema(nil),
+	}, s.nativeWorkUpdate)
+	s.HandleNative(spv2.Method{
+		Name:        "work_sweep",
+		Description: "手动执行一次 work sweep（内部/运维用；周期 sweep 默认 30s）",
+		Input:       objectSchema(nil),
+		Output:      objectSchema(nil),
+	}, s.nativeWorkSweep)
+	// work 生命周期与 A2A 队列（spec §6.8/§7.4/§7.5）：内部 method，不进 provides。
+	s.HandleNative(spv2.Method{
+		Name:        "work_cancel",
+		Description: "取消 work（owner/runtime）；终态回 conflict",
+		Input: objectSchema(map[string]any{
+			"work":   stringSchema(),
+			"reason": stringSchema(),
+		}, "work"),
+		Output: objectSchema(nil),
+	}, s.nativeWorkCancel)
+	s.HandleNative(spv2.Method{
+		Name:        "work_renew",
+		Description: "续租 work（owner/runtime）：刷新 deadline/budget，stalled 拉回 running",
+		Input: objectSchema(map[string]any{
+			"work":  stringSchema(),
+			"lease": map[string]any{"type": "object"},
+		}, "work"),
+		Output: objectSchema(nil),
+	}, s.nativeWorkRenew)
+	s.HandleNative(spv2.Method{
+		Name:        "message_post",
+		Description: "A2A 入队一条消息（正文只存一份，work_messages 存 body_ref）",
+		Input: objectSchema(map[string]any{
+			"work":   stringSchema(),
+			"to":     map[string]any{"type": "object"},
+			"method": stringSchema(),
+			"body":   stringSchema(),
+		}, "to", "body"),
+		Output: objectSchema(nil),
+	}, s.nativeMessagePost)
+	s.HandleNative(spv2.Method{
+		Name:        "message_claim",
+		Description: "领取一条 A2A 消息（pending/租约过期的 claimed；to 不匹配的领不到）",
+		Input: objectSchema(map[string]any{
+			"work": stringSchema(),
+		}, "work"),
+		Output: objectSchema(nil),
+	}, s.nativeMessageClaim)
+	s.HandleNative(spv2.Method{
+		Name:        "message_ack",
+		Description: "确认 A2A 消息（claimed→delivered；状态不对回 conflict）",
+		Input: objectSchema(map[string]any{
+			"id": stringSchema(),
+		}, "id"),
+		Output: objectSchema(nil),
+	}, s.nativeMessageAck)
+	s.HandleNative(spv2.Method{
+		Name:        "message_nack",
+		Description: "A2A 消息处理失败：未超上限回 pending，超过进 failed（dead-letter）",
+		Input: objectSchema(map[string]any{
+			"id":           stringSchema(),
+			"error":        stringSchema(),
+			"max_attempts": integerSchema(),
+		}, "id"),
+		Output: objectSchema(nil),
+	}, s.nativeMessageNack)
 }
 
 // ---------- 原生 handler ----------
@@ -245,14 +353,6 @@ func (s *Server) registerNative() {
 // metaOfCall 把 SPv2 帧翻成动作需要的调用元信息。
 func metaOfCall(call *spv2.Call) callMeta {
 	return callMeta{from: call.Frame.From.ID, trace: call.Frame.Work}
-}
-
-func (s *Server) nativeRecall(ctx context.Context, call *spv2.Call) error {
-	out, err := s.recall(ctx, call.Frame.Body, metaOfCall(call))
-	if err != nil {
-		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
-	}
-	return call.Reply(out)
 }
 
 func (s *Server) nativeStore(_ context.Context, call *spv2.Call) error {

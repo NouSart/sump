@@ -155,13 +155,30 @@ class CenterLink:
 
     # ---------- 连接 + 注册 ----------
 
+    def hello_frame(self) -> spv2.Frame:
+        """§5.1 握手帧：连接后的第一帧必须是 hello。"""
+        return spv2.new_call(
+            work=new_id(),
+            from_=self._actor,
+            to=self._center,
+            method="hello",
+            body={
+                "protocol": spv2.PROTOCOL_VERSION,
+                "actor": self._actor.wire(),
+                "capabilities": ["msgpack", "json", "stream"],
+            },
+        )
+
     async def _connect_and_register_spv2(self) -> None:
-        """原生接入：register call 同步等回复；成功后在后台跑会话（读循环 + 心跳）。"""
+        """原生接入：先 hello 握手，再 register；成功后在后台跑会话（读循环 + 心跳）。"""
         ws = await websockets.connect(center_spv2_url(self.center_url), max_size=None)
         self._ws = ws
-        # 先起读循环：register 的 reply 要由它按 reply_to 派发——必须先于注册请求存在。
+        # 先起读循环：hello / register 的 reply 要由它按 reply_to 派发——必须先于请求存在。
         self._session_task = asyncio.create_task(self._run_session(ws))
         try:
+            card = await self._request_spv2(ws, self.hello_frame(), REGISTER_TIMEOUT)
+            if not isinstance(card, dict) or "card" not in card:
+                raise RuntimeError("SPv2 hello 回复不是服务卡")
             roster = await self._request_spv2(ws, self.register_frame(), REGISTER_TIMEOUT)
             if not isinstance(roster, dict):
                 raise RuntimeError("SPv2 register 回复不是名册对象")

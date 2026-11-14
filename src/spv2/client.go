@@ -3,7 +3,6 @@ package spv2
 import (
 	"context"
 	"errors"
-	"net/http"
 	"sync"
 	"time"
 
@@ -18,6 +17,8 @@ type ClientOptions struct {
 	MaxMessageBytes int64
 	WriteTimeout    time.Duration
 	OnEvent         func(Frame)
+	// Metrics 用于接收侧记账（spec §10：流 seq 缺口记 sump_stream_gap_total）。
+	Metrics *Registry
 }
 
 // ClientOption 修改 ClientOptions。
@@ -38,6 +39,11 @@ func WithOnEvent(fn func(Frame)) ClientOption {
 	return func(o *ClientOptions) { o.OnEvent = fn }
 }
 
+// WithClientMetrics 让客户端把接收侧异常（流 seq 缺口/重复）记进指标。
+func WithClientMetrics(r *Registry) ClientOption {
+	return func(o *ClientOptions) { o.Metrics = r }
+}
+
 // Client 是一条 SPv2.1 WS 连接。
 type Client struct {
 	conn         *websocket.Conn
@@ -46,8 +52,23 @@ type Client struct {
 
 	pendingMu sync.Mutex
 	pending   map[string]chan Frame
-	streams   map[string]chan Frame
 
+	// streams 的读/删/关闭统一由 streamMu 保护：CancelStream 与 readLoop 不能
+	// 一个在 close 一个在 send（否则 panic）。streamIDs 记 stream.id → call id。
+	streamMu  sync.Mutex
+	streams   map[string]chan Frame
+	streamIDs map[string]string
+	// streamSeq 记录每个 (reply_to, stream.id) 已收到的最大 seq，用于缺口/重复判定。
+	streamSeq map[string]int64
+
+	// §5.1：连接的第一帧必须是 hello。客户端在第一次真正收发前自动完成握手，
+	// 目标取该帧的 to（调用方本来就知道要访问哪个服务）。
+	hsMu        sync.Mutex
+	hsPerformMu sync.Mutex
+	handshook   bool
+	hsErr       error
+
+	metrics *Registry
 	onEvent func(Frame)
 	closed  chan struct{}
 	once    sync.Once
@@ -63,7 +84,8 @@ func Dial(ctx context.Context, url string, opts ...ClientOption) (*Client, error
 	d.HandshakeTimeout = 5 * time.Second
 	conn, _, err := d.DialContext(ctx, url, nil)
 	if err != nil {
-		return nil, err
+		// spec §8：目标不可达是 unavailable（retryable=true），不是裸网络错误。
+		return nil, ErrCode(CodeUnavailable, "连接 "+url+" 失败: "+err.Error(), true, nil)
 	}
 	if o.MaxMessageBytes > 0 {
 		conn.SetReadLimit(o.MaxMessageBytes)
@@ -71,6 +93,8 @@ func Dial(ctx context.Context, url string, opts ...ClientOption) (*Client, error
 	c := &Client{
 		conn: conn, writeTimeout: o.WriteTimeout,
 		pending: map[string]chan Frame{}, streams: map[string]chan Frame{},
+		streamIDs: map[string]string{},
+		streamSeq: map[string]int64{}, metrics: o.Metrics,
 		onEvent: o.OnEvent, closed: make(chan struct{}),
 	}
 	go c.readLoop()
@@ -103,25 +127,46 @@ func (c *Client) send(f Frame) error {
 	if c.writeTimeout > 0 {
 		_ = c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 	}
-	return c.conn.WriteMessage(websocket.BinaryMessage, data)
+	if err := c.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		// 对端已关闭时 gorilla 返回 ErrCloseSent；统一成 ErrConnClosed，调用方只需处理一种关闭错误。
+		if errors.Is(err, websocket.ErrCloseSent) {
+			_ = c.Close()
+			return ErrConnClosed
+		}
+		return err
+	}
+	return nil
 }
 
-// Send 发送一帧（事件/不等待回复的 call）。
-func (c *Client) Send(f Frame) error { return c.send(f) }
+// Send 发送一帧（事件/不等待回复的 call）。首帧前自动完成 §5.1 握手。
+func (c *Client) Send(f Frame) error {
+	if err := c.ensureHandshake(f.From, f.To); err != nil {
+		return err
+	}
+	return c.send(f)
+}
 
-// Call 发送 call 并等待 reply。
+// Call 发送 call 并等待 reply。首帧前自动完成 §5.1 握手。
 func (c *Client) Call(ctx context.Context, f Frame) (Frame, error) {
 	f.Normalize()
 	if err := f.Validate(); err != nil {
 		return Frame{}, err
 	}
+	if err := c.ensureHandshake(f.From, f.To); err != nil {
+		return Frame{}, err
+	}
+	return c.callRaw(ctx, f, f.ID)
+}
+
+// callRaw 是 Call 的发送/等待半段（不含握手），握手自己也用它。
+func (c *Client) callRaw(ctx context.Context, f Frame, id string) (Frame, error) {
 	ch := make(chan Frame, 1)
 	c.pendingMu.Lock()
-	c.pending[f.ID] = ch
+	c.pending[id] = ch
 	c.pendingMu.Unlock()
 	defer func() {
 		c.pendingMu.Lock()
-		delete(c.pending, f.ID)
+		delete(c.pending, id)
 		c.pendingMu.Unlock()
 	}()
 	if err := c.send(f); err != nil {
@@ -143,6 +188,37 @@ func (c *Client) Call(ctx context.Context, f Frame) (Frame, error) {
 	}
 }
 
+// CancelStream 取消一条正在接收的流（spec §10：call method=cancel 带 stream）。
+// 返回服务端释放的流数量（1 = 确实取消了；0 = 账本里已没有这条流）。
+// 取消后本地流通道会被关闭，调用方的 range 能正常退出。
+func (c *Client) CancelStream(ctx context.Context, from, to Ref, work, streamID string) (int, error) {
+	call, err := NewCall(work, from, to, "cancel", map[string]any{"stream": streamID})
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.Call(ctx, call)
+	if err != nil {
+		return 0, err
+	}
+	var out struct {
+		Cancelled int `msgpack:"cancelled"`
+	}
+	if err := resp.DecodeBody(&out); err != nil {
+		return 0, err
+	}
+	c.streamMu.Lock()
+	callID := c.streamIDs[streamID]
+	if callID != "" {
+		delete(c.streamIDs, streamID)
+		if ch := c.streams[callID]; ch != nil {
+			delete(c.streams, callID)
+			close(ch)
+		}
+	}
+	c.streamMu.Unlock()
+	return out.Cancelled, nil
+}
+
 // CallDecode 发送 call，成功时把 body 解码到 dst。
 func (c *Client) CallDecode(ctx context.Context, f Frame, dst any) error {
 	resp, err := c.Call(ctx, f)
@@ -152,20 +228,23 @@ func (c *Client) CallDecode(ctx context.Context, f Frame, dst any) error {
 	return resp.DecodeBody(dst)
 }
 
-// Stream 发送 call，返回流式帧通道。end=true 的帧到达后关闭。
+// Stream 发送 call，返回流式帧通道。end=true 的帧到达后关闭。首帧前自动握手。
 func (c *Client) Stream(ctx context.Context, f Frame) (<-chan Frame, error) {
 	f.Normalize()
 	if err := f.Validate(); err != nil {
 		return nil, err
 	}
+	if err := c.ensureHandshake(f.From, f.To); err != nil {
+		return nil, err
+	}
 	ch := make(chan Frame, 16)
-	c.pendingMu.Lock()
+	c.streamMu.Lock()
 	c.streams[f.ID] = ch
-	c.pendingMu.Unlock()
+	c.streamMu.Unlock()
 	if err := c.send(f); err != nil {
-		c.pendingMu.Lock()
+		c.streamMu.Lock()
 		delete(c.streams, f.ID)
-		c.pendingMu.Unlock()
+		c.streamMu.Unlock()
 		return nil, err
 	}
 	out := make(chan Frame)
@@ -189,6 +268,74 @@ func (c *Client) Stream(ctx context.Context, f Frame) (<-chan Frame, error) {
 		}
 	}()
 	return out, nil
+}
+
+// ensureHandshake 在第一次收发前发一条 hello（spec §5.1），并校验服务卡。
+// 目标服务名来自调用帧的 to：调用方本来就知道自己访问谁，不需要额外配置。
+func (c *Client) ensureHandshake(from, to Ref) error {
+	c.hsMu.Lock()
+	if c.handshook {
+		c.hsMu.Unlock()
+		return nil
+	}
+	if c.hsErr != nil {
+		err := c.hsErr
+		c.hsMu.Unlock()
+		return err
+	}
+	c.hsMu.Unlock()
+
+	c.hsPerformMu.Lock()
+	defer c.hsPerformMu.Unlock()
+	c.hsMu.Lock()
+	if c.handshook {
+		c.hsMu.Unlock()
+		return nil
+	}
+	if c.hsErr != nil {
+		err := c.hsErr
+		c.hsMu.Unlock()
+		return err
+	}
+	c.hsMu.Unlock()
+
+	fail := func(err error) error {
+		c.hsMu.Lock()
+		c.hsErr = err
+		c.hsMu.Unlock()
+		return err
+	}
+	if to.Kind != "service" || to.ID == "" {
+		return fail(ErrCode(CodeInvalidArgument, "握手目标必须是具名 service（to.kind=service 且 to.id 非空）", false, nil))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	f, err := NewCall(NewID(), from, to, "hello", map[string]any{
+		"protocol":     ProtocolVersion,
+		"actor":        from,
+		"capabilities": []string{"msgpack", "json", "stream"},
+	})
+	if err != nil {
+		return fail(err)
+	}
+	resp, err := c.callRaw(ctx, f, f.ID)
+	if err != nil {
+		return fail(err)
+	}
+	var hr HelloResponse
+	if err := resp.DecodeBody(&hr); err != nil {
+		return fail(ErrCode(CodeInvalidArgument, "hello 回执不是服务卡: "+err.Error(), false, nil))
+	}
+	if hr.Card.Protocol != ProtocolVersion {
+		return fail(ErrCode(CodeInvalidArgument, "对端协议不是 "+ProtocolVersion, false, nil))
+	}
+	if hr.Card.Name != to.ID {
+		return fail(ErrCode(CodeInvalidArgument, "对端服务名 "+hr.Card.Name+" 与目标 "+to.ID+" 不符", false, nil))
+	}
+	c.hsMu.Lock()
+	c.handshook = true
+	c.hsMu.Unlock()
+	return nil
 }
 
 // Hello 握手并取服务卡。
@@ -223,37 +370,48 @@ func (c *Client) readLoop() {
 		case TypeReply:
 			c.pendingMu.Lock()
 			ch := c.pending[f.ReplyTo]
-			stream := c.streams[f.ReplyTo]
 			c.pendingMu.Unlock()
 			if ch != nil {
 				ch <- f
 				continue
 			}
+			c.streamMu.Lock()
+			stream := c.streams[f.ReplyTo]
 			if stream != nil {
 				stream <- f
-				c.pendingMu.Lock()
 				delete(c.streams, f.ReplyTo)
-				c.pendingMu.Unlock()
+				if f.Stream != nil {
+					delete(c.streamIDs, f.Stream.ID)
+				}
 				close(stream)
+				c.streamMu.Unlock()
 				continue
 			}
+			c.streamMu.Unlock()
 			if c.onEvent != nil {
 				c.onEvent(f)
 			}
 		case TypeStream:
-			c.pendingMu.Lock()
+			c.observeStreamSeq(f)
+			c.streamMu.Lock()
 			stream := c.streams[f.ReplyTo]
-			c.pendingMu.Unlock()
 			if stream != nil {
+				if f.Stream != nil {
+					c.streamIDs[f.Stream.ID] = f.ReplyTo
+				}
+				end := f.Stream != nil && f.Stream.End
 				stream <- f
-				if f.Stream != nil && f.Stream.End {
-					c.pendingMu.Lock()
+				if end {
 					delete(c.streams, f.ReplyTo)
-					c.pendingMu.Unlock()
+					if f.Stream != nil {
+						delete(c.streamIDs, f.Stream.ID)
+					}
 					close(stream)
 				}
+				c.streamMu.Unlock()
 				continue
 			}
+			c.streamMu.Unlock()
 			if c.onEvent != nil {
 				c.onEvent(f)
 			}
@@ -262,6 +420,38 @@ func (c *Client) readLoop() {
 				c.onEvent(f)
 			}
 		}
+	}
+}
+
+// observeStreamSeq 记录接收侧的流 seq 连续性：跳号记 outcome=missing，
+// 回退/重复记 outcome=duplicate（spec §10）。
+func (c *Client) observeStreamSeq(f Frame) {
+	if f.Stream == nil {
+		return
+	}
+	key := f.ReplyTo + "|" + f.Stream.ID
+	c.pendingMu.Lock()
+	last := c.streamSeq[key]
+	c.streamSeq[key] = f.Stream.Seq
+	c.pendingMu.Unlock()
+	kind := ""
+	switch {
+	case last == 0 && f.Stream.Seq != 1:
+		kind = "missing"
+	case last != 0 && f.Stream.Seq == last+1:
+		kind = ""
+	case last != 0 && f.Stream.Seq > last+1:
+		kind = "missing"
+	case last != 0 && f.Stream.Seq <= last:
+		kind = "duplicate"
+	}
+	if kind != "" && c.metrics != nil {
+		c.metrics.Counter("sump_stream_gap_total", "Stream sequence gaps", map[string]string{"outcome": kind}, 1)
+	}
+	if f.Stream.End {
+		c.pendingMu.Lock()
+		delete(c.streamSeq, key)
+		c.pendingMu.Unlock()
 	}
 }
 
@@ -275,5 +465,3 @@ func HTTPToWS(addr string) string {
 	}
 	return addr
 }
-
-var _ = http.StatusOK

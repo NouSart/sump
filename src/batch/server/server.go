@@ -390,8 +390,12 @@ func (s *Server) recoverAfterRestart() {
 			s.logger.Printf("任务 %s：%d 项因服务重启中断（结果未知）", j.ItemID, n)
 			// 计数按项的真实状态重算——只改 items 不改 jobs 会让面板显示成 0 失败。
 			if counts, err := s.store.CountByStatus(j.ItemID); err == nil {
-				_ = s.store.SetCounts(j.ItemID, counts[protocol.BatchItemOK],
-					counts[protocol.BatchItemFailed], counts[protocol.BatchItemSkipped])
+				if err := s.store.SetCounts(j.ItemID, counts[protocol.BatchItemOK],
+					counts[protocol.BatchItemFailed], counts[protocol.BatchItemSkipped]); err != nil {
+					s.logger.Printf("重算任务 %s 计数失败: %v", j.ItemID, err)
+				}
+			} else {
+				s.logger.Printf("重算任务 %s 计数失败: %v", j.ItemID, err)
 			}
 			// 重算过的计数必须重新读回来：拿重启前的旧快照去重建，收尾时会把中断项
 			// 从总数里蒸发掉（3+0+0 对不上 total=4）。
@@ -404,7 +408,9 @@ func (s *Server) recoverAfterRestart() {
 		if autoResume {
 			if rj, err := s.rebuildJob(j); err != nil {
 				s.logger.Printf("恢复任务 %s 失败: %v", j.ItemID, err)
-				_ = s.store.SetPhase(j.ItemID, protocol.BatchPhasePaused)
+				if err := s.store.SetPhase(j.ItemID, protocol.BatchPhasePaused); err != nil {
+					s.logger.Printf("任务 %s 转暂停失败: %v", j.ItemID, err)
+				}
 			} else if s.reserve(rj.reserved) {
 				s.mu.Lock()
 				s.jobs[rj.id] = rj
@@ -417,7 +423,9 @@ func (s *Server) recoverAfterRestart() {
 				}
 			} else {
 				s.logger.Printf("恢复任务 %s 失败：全局槽位不足，转暂停", j.ItemID)
-				_ = s.store.SetPhase(j.ItemID, protocol.BatchPhasePaused)
+				if err := s.store.SetPhase(j.ItemID, protocol.BatchPhasePaused); err != nil {
+					s.logger.Printf("任务 %s 转暂停失败: %v", j.ItemID, err)
+				}
 			}
 			continue
 		}

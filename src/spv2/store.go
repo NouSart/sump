@@ -297,9 +297,12 @@ func (s *MemStore) Charge(_ context.Context, workID string, c Charge) (Remaining
 	if !ok {
 		return Remaining{}, ErrWorkNotFound
 	}
+	if rec.work.Status == WorkStalled {
+		return rec.remaining, ErrCode(CodeStalled, "work "+workID+" 已 stalled（先 renew/resume）", false, nil)
+	}
 	if rec.remaining.DeadlineAt != "" {
 		if t, err := time.Parse(time.RFC3339, rec.remaining.DeadlineAt); err == nil && time.Now().After(t) {
-			return rec.remaining, ErrCode(CodeDeadlineExceeded, "work deadline exceeded", false, nil)
+			return rec.remaining, ErrCode(CodeDeadlineExceeded, "work deadline exceeded", true, nil)
 		}
 	}
 	if c.ToolCalls > rec.remaining.ToolCalls || c.Tokens > rec.remaining.Tokens ||

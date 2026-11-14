@@ -131,9 +131,11 @@ export function dialSPv2Once(
 ): Promise<unknown> {
   return new Promise<unknown>((resolve, reject) => {
     const body = input === undefined ? new Uint8Array() : encode(input);
+    const callId = newID();
+    const helloId = newID();
     const call: Frame = {
       v: SPv2Version,
-      id: newID(),
+      id: callId,
       type: 'call',
       work: newID(),
       from: { kind: 'service', id: from },
@@ -142,9 +144,22 @@ export function dialSPv2Once(
       content_type: 'application/msgpack',
       body,
     };
+    // spec §5.1：连接后第一帧必须是 hello；握手成功后才发真正的 call。
+    const hello: Frame = {
+      v: SPv2Version,
+      id: helloId,
+      type: 'call',
+      work: newID(),
+      from: { kind: 'service', id: from },
+      to: { kind: 'service', id: to },
+      method: 'hello',
+      content_type: 'application/msgpack',
+      body: encode({ protocol: SPv2Version, capabilities: ['msgpack', 'json', 'stream'] }),
+    };
     const ws = new WebSocket(addr, { maxPayload: maxSPv2MessageBytes });
     let opened = false;
     let settled = false;
+    let helloDone = false;
     let timer: NodeJS.Timeout | undefined;
     const finish = (fn: () => void): void => {
       if (settled) return;
@@ -165,7 +180,7 @@ export function dialSPv2Once(
     });
     ws.on('open', () => {
       opened = true;
-      ws.send(encodeFrame(call), (err?: Error) => {
+      ws.send(encodeFrame(hello), (err?: Error) => {
         if (err) finish(() => reject(err));
       });
     });
@@ -176,7 +191,20 @@ export function dialSPv2Once(
       } catch {
         return;
       }
-      if (frame.type !== 'reply' || frame.reply_to !== call.id) return;
+      if (!helloDone) {
+        if (frame.type !== 'reply' || frame.reply_to !== helloId) return;
+        if (frame.status === 'error') {
+          const code = frame.error?.code || 'internal';
+          finish(() => reject(new SPv2RemoteError(code, frame.error?.message || '握手失败')));
+          return;
+        }
+        helloDone = true;
+        ws.send(encodeFrame(call), (err?: Error) => {
+          if (err) finish(() => reject(err));
+        });
+        return;
+      }
+      if (frame.type !== 'reply' || frame.reply_to !== callId) return;
       if (frame.status === 'error') {
         const code = frame.error?.code || 'internal';
         const message = frame.error?.message || '远端错误';
@@ -200,7 +228,6 @@ export function dialSPv2Once(
     });
   });
 }
-
 // SPv2NativeEvent 是原生长连接收到的事件（method + 已解码 body）。
 export interface SPv2NativeEvent {
   method: string;
@@ -270,9 +297,26 @@ export class SPv2Session {
       let settled = false;
       ws.on('open', () => {
         if (settled) return;
-        settled = true;
         session.opened = true;
-        resolve(session);
+        // spec §5.1：握手成功后才把 session 交给调用方，保证第一条业务帧之前已经有 hello。
+        session
+          .call('hello', { protocol: SPv2Version, capabilities: ['msgpack', 'json', 'stream'] })
+          .then(() => {
+            if (settled) return;
+            settled = true;
+            resolve(session);
+          })
+          .catch((err: Error) => {
+            if (settled) return;
+            settled = true;
+            session.closedFlag = true;
+            try {
+              ws.close();
+            } catch {
+              // 尽力
+            }
+            reject(new SPv2UnavailableError(err.message));
+          });
       });
       ws.on('error', (err: Error) => {
         if (settled) return;
@@ -436,6 +480,9 @@ export class SPv2Session {
 
 export interface SPv2PortalHandlers {
   onDeliver: (m: DeliverMessage) => void;
+  // authorizeDeliver 校验 deliver 归属（spec §6.5）：返回 null 放行，否则返回拒绝原因。
+  // 生产必须接；未配置时 deliver 一律 fail-closed，不允许默认信任 from。
+  authorizeDeliver?: (frame: Frame) => Promise<string | null>;
   onTimers: (s: TimerState) => boolean;
   onApproval: (item: PendingApprovalItem) => void;
   onProgress: (p: ProgressUpdate) => boolean;
@@ -447,6 +494,8 @@ export interface SPv2PortalHandlers {
 export function createSPv2WSS(name: string, log: (m: string) => void, handlers: SPv2PortalHandlers): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
   wss.on('connection', (ws: WebSocket) => {
+    // spec §5.1：连接后第一帧必须是 hello；未握手前只回错误，不执行业务动作。
+    let helloDone = false;
     ws.on('error', (err: Error) => {
       log(`SPv2 WS 连接出错（即将关闭）: ${err.message}`);
     });
@@ -477,6 +526,27 @@ export function createSPv2WSS(name: string, log: (m: string) => void, handlers: 
         ws.send(encodeFrame(out));
       };
 
+      if (method === 'hello') {
+        helloDone = true;
+        reply('ok', {
+          card: {
+            protocol: SPv2Version,
+            name,
+            actor: { kind: 'service', id: name },
+            version: 'spv2-ts/0.1',
+            capabilities: ['msgpack', 'json'],
+            methods: [],
+            limits: { max_body: 1 << 20, max_stream: 32 },
+            observability: { health: false, metrics: false, format: '' },
+          },
+        });
+        return;
+      }
+      if (!helloDone) {
+        reply('error', undefined, { code: 'invalid_argument', message: '连接首帧必须是 hello', retryable: false });
+        return;
+      }
+
       if (method === 'deliver') {
         const text = typeof input.text === 'string' ? input.text : '';
         if (text === '') {
@@ -488,8 +558,28 @@ export function createSPv2WSS(name: string, log: (m: string) => void, handlers: 
             ? input.conversation_id
             : PORTAL_CONVERSATION_ID;
         const taskId = typeof input.task_id === 'string' ? input.task_id : '';
-        handlers.onDeliver({ text, conversationId, taskId, at: new Date().toISOString() });
-        reply('ok', { delivered: true });
+        // spec §6.5：deliver 只有 work.agent+runtime 或 work.owner+owner 能发。
+        // 校验是异步的（要问 memory 的 work 行），失败一律 permission_denied，不静默放行。
+        const authorize = handlers.authorizeDeliver;
+        const check = async (): Promise<void> => {
+          if (authorize === undefined) {
+            reply('error', undefined, { code: 'permission_denied', message: 'deliver 未配置归属校验（fail-closed）', retryable: false });
+            return;
+          }
+          let denied: string | null;
+          try {
+            denied = await authorize(frame);
+          } catch (err) {
+            denied = 'deliver 归属校验失败（fail-closed）: ' + String(err);
+          }
+          if (denied !== null) {
+            reply('error', undefined, { code: 'permission_denied', message: denied, retryable: false });
+            return;
+          }
+          handlers.onDeliver({ text, conversationId, taskId, at: new Date().toISOString() });
+          reply('ok', { delivered: true });
+        };
+        void check();
         return;
       }
       if (method === 'timer_state') {
@@ -523,6 +613,21 @@ export function createSPv2WSS(name: string, log: (m: string) => void, handlers: 
     });
   });
   return wss;
+}
+
+
+// checkDeliverAuthority 是 spec §6.5 的 deliver 归属判定（纯函数，便于单测）：
+// 只放行 work.agent+authority=runtime，或 work.owner+authority=owner。
+export function checkDeliverAuthority(
+  work: { agent?: { kind?: string; id?: string }; owner?: { kind?: string; id?: string } } | undefined,
+  from: { kind: string; id: string; authority?: string },
+): string | null {
+  if (work === undefined) return 'work 不存在，拒绝 deliver';
+  if (from.kind === 'agent' && from.authority === 'runtime' && from.id === work.agent?.id) return null;
+  if (from.kind === 'human' && from.authority === 'owner' && from.id === work.owner?.id) return null;
+  return (
+    'deliver 来源无权限（from=' + from.kind + ':' + from.id + '/' + (from.authority ?? '') + '）'
+  );
 }
 
 // checkSPv2Trust 与门户 HTTP 层共用同一道信任栅栏。

@@ -10,22 +10,23 @@ import (
 type Fake struct {
 	mu       sync.Mutex
 	Replies  []Message     // 依次返回；耗尽后重复最后一条
+	Usage    Usage         // 每次回复都带同一份用量（供指标测试）
 	Requests []ChatRequest // 收到的请求（供断言）
 }
 
 // Chat 实现了 Client。
-func (f *Fake) Chat(_ context.Context, req ChatRequest) (Message, error) {
+func (f *Fake) Chat(_ context.Context, req ChatRequest) (ChatResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Requests = append(f.Requests, req)
 	if len(f.Replies) == 0 {
-		return Message{Role: "assistant", Content: "(fake: 无剧本)"}, nil
+		return ChatResult{Message: Message{Role: "assistant", Content: "(fake: 无剧本)"}, Usage: f.Usage}, nil
 	}
 	idx := len(f.Requests) - 1
 	if idx >= len(f.Replies) {
 		idx = len(f.Replies) - 1
 	}
-	return f.Replies[idx], nil
+	return ChatResult{Message: f.Replies[idx], Usage: f.Usage}, nil
 }
 
 // CallCount 返回已处理的请求数。
@@ -44,4 +45,23 @@ func (f *Fake) LastRequest() *ChatRequest {
 	}
 	req := f.Requests[len(f.Requests)-1]
 	return &req
+}
+
+// ChatStream 实现 StreamingClient：按内容分块回调，模拟 token 级流式。
+func (f *Fake) ChatStream(ctx context.Context, req ChatRequest, onDelta func(string)) (ChatResult, error) {
+	res, err := f.Chat(ctx, req)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	if onDelta != nil {
+		r := []rune(res.Message.Content)
+		for i := 0; i < len(r); i += 2 {
+			end := i + 2
+			if end > len(r) {
+				end = len(r)
+			}
+			onDelta(string(r[i:end]))
+		}
+	}
+	return res, nil
 }

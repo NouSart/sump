@@ -63,7 +63,7 @@ func (s *Server) think(ctx context.Context, body []byte) (any, error) {
 
 	cctx, cancel := context.WithTimeout(ctx, thinkTimeout)
 	defer cancel()
-	resp, err := client.Chat(cctx, llm.ChatRequest{
+	msg, err := s.chatLLM(cctx, llm.ChatRequest{
 		Model:     strings.TrimSpace(p.Model),
 		Messages:  msgs,
 		MaxTokens: maxTokens,
@@ -71,5 +71,5 @@ func (s *Server) think(ctx context.Context, body []byte) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("think: %w", err)
 	}
-	return protocol.ThinkResult{Text: resp.Content}, nil
+	return protocol.ThinkResult{Text: msg.Content}, nil
 }
