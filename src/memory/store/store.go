@@ -39,6 +39,14 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if _, err := db.Exec(workSchema); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec(a2aSchema); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	if err := migrate(db); err != nil {
 		_ = db.Close()
