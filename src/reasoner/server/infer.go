@@ -206,7 +206,7 @@ func (s *Server) provideOf(service, action string) (protocol.Provide, bool) {
 }
 
 // runToolCall 执行一次工具调用并返回给 LLM 的内容文本（JSON）。
-// 声明为异步（Provide.Async）的动作：受理回执带回句柄，登记到在途表等补报（见 async.go）。
+// 声明为异步（Provide.LongRunning）的动作：受理回执带回句柄，登记到在途表等补报（见 async.go）。
 func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCall) (out string, err error) {
 	start := time.Now()
 	defer func() { s.recordTool(call.Function.Name, start, err) }()

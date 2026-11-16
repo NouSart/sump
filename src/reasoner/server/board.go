@@ -310,7 +310,7 @@ func (s *Server) dispatchToolCalls(st *taskState, resp llm.Message) {
 }
 
 // waitPending 阻塞等待本任务的工具全部结束（上限 waitCap）。
-// 异步受理（Provide.Async）不在等待之列——受理已完成，但它尚未回报：如实披露，不假装“都完成了”。
+// 异步受理（Provide.LongRunning）不在等待之列——受理已完成，但它尚未回报：如实披露，不假装“都完成了”。
 func (s *Server) waitPending(st *taskState) string {
 	deadline := time.Now().Add(waitCap)
 	for {

@@ -51,7 +51,7 @@ func TestHelloWeb(t *testing.T) {
 	// 断言 b：reasoner → settings-center 调用（ping → pong）。
 	ctxB, cancelB := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelB()
-	rp := callJump(t, ac, "reasoner", "debug_jump", map[string]any{
+	rp := callJump(t, ac, "reasoner", "debug_call", map[string]any{
 		"to":     "settings-center",
 		"action": "ping",
 	}, ctxB)
@@ -72,7 +72,7 @@ func TestHelloWeb(t *testing.T) {
 	// 断言 c：自我跳转——循环地基。
 	ctxC, cancelC := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelC()
-	rp2 := callJump(t, ac, "reasoner", "debug_jump", map[string]any{
+	rp2 := callJump(t, ac, "reasoner", "debug_call", map[string]any{
 		"to":     "self",
 		"action": "echo",
 		"input":  map[string]any{"msg": "hello-web"},

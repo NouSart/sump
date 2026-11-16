@@ -132,7 +132,7 @@ func TestShellHotPathE2E(t *testing.T) {
 		for _, p := range card.Provides {
 			if p.Action == "run" {
 				found = true
-				if !p.Async || !p.Tool {
+				if !p.LongRunning || !p.Tool {
 					t.Fatalf("run 应声明 async + tool: %+v", p)
 				}
 			}

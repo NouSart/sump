@@ -347,7 +347,7 @@ func TestInferChainE2E(t *testing.T) {
 	for _, forbidden := range []string{
 		"settings-center__ping", "settings-center__roster", // 未声明 tool
 		"memory__recall", "memory__store", // 链机制动作（即便声明也不暴露）
-		"reasoner__echo", "reasoner__debug_jump", // 调试动作
+		"reasoner__echo", "reasoner__debug_call", // 调试动作
 		"e2e-boss__deliver", // 链终点动作
 	} {
 		if toolNames[forbidden] {

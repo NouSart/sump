@@ -942,7 +942,7 @@ type EmbedResult struct {
 
 // ---------- 异步受理的补报（report_result） ----------
 
-// AsyncResultPayload 是 report_result 的载荷：一个“受理即回执”（Provide.Async）的动作
+// AsyncResultPayload 是 report_result 的载荷：一个“受理即回执”（Provide.LongRunning）的动作
 // 在受理之后发回的后续消息（补报）。方向与服务 → 调用方（信封 to = 原先的调用方）。
 // ItemID 是受理回执里给出的句柄（调用方据此把补报配回自己的记账）；
 // Phase 是进展阶段（服务自定，如 approved / rejected / done / failed）；
