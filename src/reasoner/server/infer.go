@@ -60,6 +60,11 @@ func taskPrompt(name, id string) string {
 	return fmt.Sprintf("当前任务：《%s》（id=%s）。你的所有动作都属于这个任务；换任务时上下文会重新开始。", name, id)
 }
 
+// withTaskPrompt 把任务提示插到索引 1，第 0 条原样保留（三值切片防止外层 append 覆写）。
+func withTaskPrompt(msgs []llm.Message, name, id string) []llm.Message {
+	return append(msgs[:1:1], append([]llm.Message{{Role: "system", Content: taskPrompt(name, id)}}, msgs[1:]...)...)
+}
+
 // 内置工具名（不来自名册，由 reasoner 自己执行）。
 const taskStatusToolName = "task_status"
 
@@ -374,7 +379,7 @@ func (s *Server) startTaskWithStream(tc protocol.TaskContext, boss, trace string
 	}
 	// 任务名写进系统提示：agent 始终知道自己在为哪个任务工作。
 	if taskID != "" && len(tc.Messages) > 0 {
-		tc.Messages = append(tc.Messages[:1:1], append([]llm.Message{{Role: "system", Content: taskPrompt(taskName, taskID)}}, tc.Messages[1:]...)...)
+		tc.Messages = withTaskPrompt(tc.Messages, taskName, taskID)
 	}
 	st := s.boardOpen(cid, boss, trace, taskID, taskName, tc.Messages)
 	st.stream = stream
