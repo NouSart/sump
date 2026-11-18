@@ -60,6 +60,9 @@ var experienceMethods = map[string]bool{
 // methodAllowed 判断角色是否暴露某 method。门面暴露全部对外 method，
 // 但内部 method（context_base / inject）只在各自服务里可见。
 func (r Role) methodAllowed(name string) bool {
+	if name == "configure" {
+		return true // 设置下发由骨架注册，三个角色都要能收
+	}
 	switch r {
 	case RoleSession:
 		return sessionMethods[name]

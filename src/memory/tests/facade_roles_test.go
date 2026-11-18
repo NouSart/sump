@@ -102,6 +102,24 @@ func TestFacadeRoutesAcrossProcesses(t *testing.T) {
 	if len(got.Messages) < 2 || !containsAll(got.Messages[1].Content, "上一轮的问题", "用户喜欢简洁回答") {
 		t.Fatalf("记忆块应同时含历史与核心记忆: %+v", got.Messages)
 	}
+
+	// 设置下发必须真的转给 experience：核心记忆预算压到 1 字后不再注入。
+	if rp := caller.call(t, facade.WsURL(), "configure", protocol.ConfigurePayload{
+		Key: "context.core_max_chars", Value: "1",
+	}); !rp.OK {
+		t.Fatalf("configure 转发失败: %s", rp.Error)
+	}
+	got = decodeContext(t, caller.contextUntilReady(t, facade.WsURL(), protocol.ContextPayload{
+		Conversation: "t1",
+		Boss:         "stub-boss",
+		Messages: []protocol.Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "再问一次"},
+		},
+	}))
+	if len(got.Messages) < 2 || strings.Contains(got.Messages[1].Content, "用户喜欢简洁回答") {
+		t.Fatalf("核心记忆预算压到 1 字后不应再注入: %+v", got.Messages)
+	}
 }
 
 func containsAll(s string, parts ...string) bool {
