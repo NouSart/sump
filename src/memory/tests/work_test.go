@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NouSart/sump/memory/server"
 	"github.com/NouSart/sump/memory/store"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
@@ -126,7 +125,7 @@ func TestWorkLedgerViaRecall(t *testing.T) {
 func TestWorkSweepMarksExpiredStalled(t *testing.T) {
 	sc := startStubCenter(t)
 	var workStore *store.Store
-	srv := startMemory(t, sc.URL(), 12, func(_ *server.Config, st *store.Store) { workStore = st })
+	srv := startMemory(t, sc.URL(), 12, func(c *stackConfig) { workStore = c.Store })
 	caller := startStubCaller(t, sc.URL())
 	past := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	if _, err := workStore.EnsureWork(context.Background(), spv2.Work{

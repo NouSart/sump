@@ -10,8 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NouSart/sump/memory/compose"
-	"github.com/NouSart/sump/memory/server"
+	"github.com/NouSart/sump/memory/facade/compose"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )
@@ -161,7 +160,7 @@ func TestSettingsLive(t *testing.T) {
 }
 
 // recallBlock 发起一次 context（查询词「苹果」）并返回注入的记忆块内容（无块则空串）。
-func recallBlock(t *testing.T, caller *stubCaller, srv *server.Server, conv string) string {
+func recallBlock(t *testing.T, caller *stubCaller, srv *testStack, conv string) string {
 	t.Helper()
 	req := protocol.ContextPayload{
 		Conversation: conv,

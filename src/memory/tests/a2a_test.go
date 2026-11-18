@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NouSart/sump/memory/server"
 	"github.com/NouSart/sump/memory/store"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
@@ -149,7 +148,7 @@ func TestA2AQueueDepthMetric(t *testing.T) {
 }
 
 // queueDepth 读某 state 的 sump_queue_depth 快照。
-func queueDepth(srv *server.Server, state string) float64 {
+func queueDepth(srv *testStack, state string) float64 {
 	for _, m := range srv.Metrics().Snapshot() {
 		if m.Name == "sump_queue_depth" && m.Labels["state"] == state {
 			return m.Value

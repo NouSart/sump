@@ -73,6 +73,7 @@ type Service struct {
 
 	mu           sync.Mutex
 	roster       map[string]protocol.ServiceCard
+	peerOverride map[string]string // SetPeer 注入的地址（优先于 Config.Peers）
 	selfURL      string
 	centerNative *spv2.Client    // 当前 SPv2 中心连接（nil = 未连接）
 	spv2Srv      *spv2.Server    // /spv2 服务端
@@ -406,16 +407,34 @@ func (s *Service) Fire(to, action string, payload any, trace string) {
 	}()
 }
 
-// Resolve 解析跳转目标：支持 "self" 与服务名（查名册）。
+// SetPeer 热更新一个静态对端地址（名册不可见时优先于 Config.Peers）。
+// 供独立服务在启动后接入后上线的依赖；名册可见时仍以名册为准。
+func (s *Service) SetPeer(name, addr string) {
+	if name == "" || addr == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.peerOverride == nil {
+		s.peerOverride = map[string]string{}
+	}
+	s.peerOverride[name] = addr
+	s.mu.Unlock()
+}
+
+// Resolve 解析跳转目标：支持 "self" 与服务名（查名册/静态对端）。
 func (s *Service) Resolve(to string) (name, addr string, err error) {
 	if to == "self" {
 		return s.cfg.Name, s.selfURL, nil
 	}
 	s.mu.Lock()
 	card, ok := s.roster[to]
+	override := s.peerOverride[to]
 	s.mu.Unlock()
 	if ok {
 		return card.Name, card.Addr, nil
+	}
+	if override != "" {
+		return to, override, nil
 	}
 	if addr, ok := s.cfg.Peers[to]; ok {
 		return to, addr, nil

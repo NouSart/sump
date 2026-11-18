@@ -16,8 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NouSart/sump/memory/compose"
-	"github.com/NouSart/sump/memory/server"
+	"github.com/NouSart/sump/memory/experience"
+	"github.com/NouSart/sump/memory/facade"
+	"github.com/NouSart/sump/memory/facade/compose"
+	"github.com/NouSart/sump/memory/session"
 	"github.com/NouSart/sump/memory/shared"
 	"github.com/NouSart/sump/memory/store"
 	"github.com/NouSart/sump/protocol"
@@ -221,42 +223,81 @@ func decodeContext(t *testing.T, rp callResult) contextMessages {
 	return out
 }
 
-// startMemory 起一个真 memory server（临时库）。
-// opts 在 server.New 之前作用到 Config 上，同时把底层库交出去——经验网（memnet）要拿它开表。
-func startMemory(t *testing.T, centerURL string, historyLimit int, opts ...func(*server.Config, *store.Store)) *server.Server {
+// stackConfig 把三个进程的启动配置交给用例调整；Store/Shared 是底层句柄。
+type stackConfig struct {
+	Session    session.Config
+	Experience experience.Config
+	Store      *store.Store
+	Shared     *shared.Store
+}
+
+// testStack 是测试里的三进程栈。Metrics 取 session 的注册表（门面的远端聚合
+// 由 facade 包自己的用例覆盖）。
+type testStack struct {
+	*facade.Server
+	sess *session.Server
+	exp  *experience.Server
+}
+
+func (s *testStack) Metrics() *spv2.Registry { return s.sess.Metrics() }
+
+// addPeer 把测试里后上线的 embedding/reasoner 地址注入 experience。
+func (s *testStack) addPeer(name, addr string) { s.exp.SetPeer(name, addr) }
+
+// startMemory 起 session + experience + facade 三进程（临时库）。
+func startMemory(t *testing.T, centerURL string, historyLimit int, opts ...func(*stackConfig)) *testStack {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "memory.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	dir := t.TempDir()
-	sh, err := shared.Open(filepath.Join(dir, "experience.db"), time.Now())
+	sh, err := shared.Open(filepath.Join(t.TempDir(), "experience.db"), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sh.Close() })
-	cfg := server.Config{
-		Name:              "memory",
-		Listen:            "127.0.0.1:0",
-		Center:            centerURL,
-		HeartbeatInterval: 200 * time.Millisecond,
-		Store:             st,
-		Shared:            sh,
-		HistoryLimit:      historyLimit,
+	cfg := stackConfig{
+		Session: session.Config{
+			Name: "session", Listen: "127.0.0.1:0", Standalone: true,
+			Store: st, HistoryLimit: historyLimit, DBPath: "test-session.db",
+		},
+		Experience: experience.Config{
+			Name: "experience", Listen: "127.0.0.1:0", Standalone: true,
+			Shared: sh, SharedPath: "test-experience.db",
+		},
+		Store: st, Shared: sh,
 	}
 	for _, opt := range opts {
-		opt(&cfg, st)
+		opt(&cfg)
 	}
+	cfg.Session.Store = cfg.Store
+	cfg.Experience.Shared = cfg.Shared
 	logger := log.New(os.Stdout, "[memory-test] ", log.LstdFlags)
-	srv := server.New(cfg, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := srv.Start(ctx); err != nil {
+	sess := session.New(cfg.Session, logger)
+	if err := sess.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(srv.Shutdown)
-	return srv
+	t.Cleanup(sess.Shutdown)
+	// experience 的整理池访问必须知道 session 地址。
+	cfg.Experience.Peers = map[string]string{"session": sess.WsURL()}
+	exp := experience.New(cfg.Experience, logger)
+	if err := exp.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(exp.Shutdown)
+	f := facade.New(facade.Config{
+		Name: "memory", Listen: "127.0.0.1:0", Center: centerURL,
+		Peers:             map[string]string{"session": sess.WsURL(), "experience": exp.WsURL()},
+		HeartbeatInterval: 200 * time.Millisecond,
+	}, logger)
+	if err := f.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(f.Shutdown)
+	return &testStack{Server: f, sess: sess, exp: exp}
 }
 
 // ---------- 用例 ----------

@@ -10,9 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NouSart/sump/memory/compose"
-	"github.com/NouSart/sump/memory/server"
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/facade/compose"
 	"github.com/NouSart/sump/protocol"
 )
 
@@ -147,8 +145,8 @@ func TestSharedForgetRemoves(t *testing.T) {
 // TestRecallWithoutSharedStore 验证共享库缺席时 recall 照常完成（本节省略，不阻断链）。
 func TestRecallWithoutSharedStore(t *testing.T) {
 	sc := startStubCenter(t)
-	srv := startMemory(t, sc.URL(), 12, func(cfg *server.Config, _ *store.Store) {
-		cfg.Shared = nil
+	srv := startMemory(t, sc.URL(), 12, func(c *stackConfig) {
+		c.Shared = nil
 	})
 	caller := startStubCaller(t, sc.URL())
 

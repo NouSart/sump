@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NouSart/sump/memory/server"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )
@@ -130,12 +129,13 @@ func (e *stubEmbedding) handleEmbed(_ context.Context, call *spv2.Call) error {
 // ---------- 辅助 ----------
 
 // waitRosterName 等待 memory 的名册里出现某服务（注册广播是异步的）。
-func waitRosterName(t *testing.T, srv *server.Server, name string) {
+func waitRosterName(t *testing.T, srv *testStack, name string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		for _, c := range srv.Roster() {
 			if c.Name == name {
+				srv.addPeer(name, c.Addr)
 				return
 			}
 		}
@@ -145,7 +145,7 @@ func waitRosterName(t *testing.T, srv *server.Server, name string) {
 }
 
 // remember 向 memory 写一条长期记忆。
-func remember(t *testing.T, caller *stubCaller, srv *server.Server, kind, content string) {
+func remember(t *testing.T, caller *stubCaller, srv *testStack, kind, content string) {
 	t.Helper()
 	if rp := caller.call(t, srv.WsURL(), "remember", protocol.RememberPayload{Kind: kind, Content: content}); !rp.OK {
 		t.Fatalf("remember 失败: %s", rp.Error)
