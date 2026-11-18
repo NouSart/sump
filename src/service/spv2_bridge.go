@@ -85,11 +85,15 @@ func (s *Service) buildSPv2() error {
 	if !s.cfg.Standalone {
 		checks = append([]spv2.HealthChecker{s.centerHealthCheck}, checks...)
 	}
-	srv, err := spv2.NewServer(card,
+	opts := []spv2.ServerOption{
 		spv2.WithMaxMessageBytes(maxBody),
 		spv2.WithLogger(s.logger),
 		spv2.WithHealthChecks(checks...),
-	)
+	}
+	if s.cfg.MetricsExtra != nil {
+		opts = append(opts, spv2.WithMetricsExtra(s.cfg.MetricsExtra))
+	}
+	srv, err := spv2.NewServer(card, opts...)
 	if err != nil {
 		return err
 	}

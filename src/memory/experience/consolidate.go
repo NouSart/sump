@@ -19,9 +19,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NouSart/sump/memory/longterm"
-	"github.com/NouSart/sump/memory/memnet"
-	"github.com/NouSart/sump/memory/shared"
+	"github.com/NouSart/sump/memory/experience/longterm"
+	"github.com/NouSart/sump/memory/experience/memnet"
+	"github.com/NouSart/sump/memory/experience/shared"
 	"github.com/NouSart/sump/protocol"
 )
 

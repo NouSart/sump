@@ -38,12 +38,13 @@ func TestWorkTransitionMetricsOnRealCalls(t *testing.T) {
 		t.Fatalf("work_update done 失败: %v", err)
 	}
 	seen := map[string]bool{}
-	for _, m := range srv.Metrics().Snapshot() {
+	metrics := metricsOf(t, srv)
+	for _, m := range metrics {
 		if m.Name == "sump_work_transitions_total" {
 			seen[m.Labels["status"]] = true
 		}
 	}
 	if !seen[spv2.WorkDone] {
-		t.Fatalf("work_update→done 没进指标: %+v", srv.Metrics().Snapshot())
+		t.Fatalf("work_update→done 没进指标: %+v", metrics)
 	}
 }

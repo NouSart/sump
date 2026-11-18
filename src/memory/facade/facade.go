@@ -57,6 +57,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		Description:       "记忆服务：对外唯一卡片；context 拼装 + session/experience 路由",
 		Provides:          provides(),
+		MetricsExtra:      s.peerMetrics,
 		Logger:            logger,
 	})
 	return s
@@ -114,13 +115,13 @@ func (s *Server) registerMethods(cards map[string]spv2.Card) error {
 			s.HandleNative(m, s.forward(name, m.Name))
 		}
 	}
-	for method := range requiredMethods {
+	for method := range proxyMethods {
 		if owner[method] == "" {
 			return fmt.Errorf("门面自检: 没有内部服务声明 method %s", method)
 		}
 	}
 	for method := range owner {
-		if !requiredMethods[method] {
+		if !proxyMethods[method] {
 			return fmt.Errorf("门面自检: 内部服务声明了未知 method %s", method)
 		}
 	}

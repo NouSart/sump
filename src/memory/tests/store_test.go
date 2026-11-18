@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/session/store"
 )
 
 // TestStoreAppendRecent 验证落库、幂等与按会话查询。

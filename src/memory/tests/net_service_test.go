@@ -9,7 +9,7 @@ package tests
 import (
 	"testing"
 
-	"github.com/NouSart/sump/memory/memnet"
+	"github.com/NouSart/sump/memory/experience/memnet"
 	"github.com/NouSart/sump/protocol"
 )
 

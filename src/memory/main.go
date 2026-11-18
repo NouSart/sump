@@ -5,10 +5,7 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
-	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -17,25 +14,32 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/memory/experience"
+	"github.com/NouSart/sump/memory/experience/shared"
 	"github.com/NouSart/sump/memory/facade"
-	"github.com/NouSart/sump/memory/server"
 	"github.com/NouSart/sump/memory/session"
-	"github.com/NouSart/sump/memory/shared"
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/session/store"
 )
 
 type role string
 
 const (
-	roleMemory     role = "memory"
 	roleFacade     role = "facade"
 	roleSession    role = "session"
 	roleExperience role = "experience"
 )
 
 func main() {
-	roleFlag := flag.String("role", "memory", "进程角色：memory（旧单进程）/ facade / session / experience")
+	roleFlag := flag.String("role", "", "进程角色（必填）：facade / session / experience")
 	peers := flag.String("peers", "", "静态内部对端，逗号分隔：embedding=ws://127.0.0.1:9202/spv2,session=...")
+	name := flag.String("name", "", "服务名（空 = 按角色默认）")
+	addr := flag.String("addr", "", "监听地址（空 = 按角色默认）")
+	center := flag.String("center", "ws://127.0.0.1:9000/spv2", "设置中心 WS 地址（session/experience 独立模式不连接）")
+	dbPath := flag.String("db", "data/memory.db", "会话库（私有）路径")
+	sharedFlag := flag.String("shared-db", "", "共享经验库路径（空 = 与会话库同目录的 experience.db）")
+	history := flag.Int("history", 12, "context_base 返回的最近消息条数")
+	embedding := flag.String("embedding", "embedding", "embedding 服务名")
+	flag.Parse()
+
 	r := parseRole(*roleFlag)
 	nameDefault, addrDefault := "memory", "127.0.0.1:9201"
 	switch r {
@@ -43,15 +47,16 @@ func main() {
 		nameDefault, addrDefault = "session", "127.0.0.1:9311"
 	case roleExperience:
 		nameDefault, addrDefault = "experience", "127.0.0.1:9312"
+	case roleFacade:
+	default:
+		log.Fatalf("必须指定 -role facade|session|experience，收到 %q", *roleFlag)
 	}
-	name := flag.String("name", nameDefault, "服务名")
-	addr := flag.String("addr", addrDefault, "监听地址（host:port）")
-	center := flag.String("center", "ws://127.0.0.1:9000/spv2", "设置中心 WS 地址（session/experience 独立模式不连接）")
-	dbPath := flag.String("db", "data/memory.db", "会话库（私有）路径")
-	sharedFlag := flag.String("shared-db", "", "共享经验库路径（空 = 与会话库同目录的 experience.db）")
-	history := flag.Int("history", 12, "context_base 返回的最近消息条数")
-	embedding := flag.String("embedding", "embedding", "embedding 服务名")
-	flag.Parse()
+	if *name == "" {
+		*name = nameDefault
+	}
+	if *addr == "" {
+		*addr = addrDefault
+	}
 
 	logger := log.New(os.Stdout, "[memory] ", log.LstdFlags|log.Lmicroseconds)
 	sharedPath := *sharedFlag
@@ -67,10 +72,8 @@ func main() {
 		runSession(cfg)
 	case roleExperience:
 		runExperience(cfg)
-	case roleFacade:
-		runFacade(cfg)
 	default:
-		runLegacy(cfg)
+		runFacade(cfg)
 	}
 }
 
@@ -117,41 +120,6 @@ func runFacade(c runConfig) {
 	serve(s, c.logger)
 }
 
-// runLegacy 是旧单进程形态：同时开两个库，保留到端到端脚本迁完。
-func runLegacy(c runConfig) {
-	st, err := store.Open(c.dbPath)
-	if err != nil {
-		c.logger.Fatalf("打开会话库失败: %v", err)
-	}
-	defer st.Close()
-	if _, err := os.Stat(c.sharedPath); errors.Is(err, os.ErrNotExist) {
-		if _, err := os.Stat(c.dbPath); err == nil {
-			bak := fmt.Sprintf("%s.bak-%s", c.dbPath, time.Now().Format("20060102-150405"))
-			if err := copyFile(c.dbPath, bak); err != nil {
-				c.logger.Printf("备份会话库失败（继续迁移）: %v", err)
-			} else {
-				c.logger.Printf("迁移前已备份会话库: %s", bak)
-			}
-		}
-	}
-	sh, err := shared.Open(c.sharedPath, time.Now())
-	if err != nil {
-		c.logger.Fatalf("打开共享经验库: %v", err)
-	}
-	defer sh.Close()
-	if migrated, err := sh.MigrateFrom(st.DB()); err != nil {
-		c.logger.Printf("共享数据迁移未完成（共享库保持现状）: %v", err)
-	} else if migrated {
-		c.logger.Printf("共享数据已迁移到 %s（旧表改名为 legacy_*）", c.sharedPath)
-	}
-	s := server.New(server.Config{
-		Name: c.name, Role: server.RoleAll, Peers: c.peers, Listen: c.addr, Center: c.center,
-		Store: st, Shared: sh, HistoryLimit: c.history, Embedding: c.embedding,
-		DBPath: c.dbPath, SharedPath: c.sharedPath,
-	}, c.logger)
-	serve(s, c.logger)
-}
-
 type serveable interface {
 	Start(context.Context) error
 	Shutdown()
@@ -177,7 +145,7 @@ func parseRole(v string) role {
 	case "experience":
 		return roleExperience
 	default:
-		return roleMemory
+		return ""
 	}
 }
 
@@ -193,21 +161,4 @@ func parsePeers(v string) map[string]string {
 		}
 	}
 	return out
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
 }

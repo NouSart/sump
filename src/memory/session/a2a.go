@@ -7,7 +7,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/session/store"
 	"github.com/NouSart/sump/spv2"
 )
 

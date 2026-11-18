@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/session/store"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )
@@ -147,12 +147,13 @@ func TestWorkSweepMarksExpiredStalled(t *testing.T) {
 		t.Fatalf("过期 work 状态 = %q, want stalled", w.Status)
 	}
 	found := false
-	for _, m := range srv.Metrics().Snapshot() {
+	metrics := metricsOf(t, srv)
+	for _, m := range metrics {
 		if m.Name == "sump_work_stalled_total" && m.Labels["reason"] == "deadline" && m.Value == 1 {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("缺少 sump_work_stalled_total{reason=deadline}=1: %+v", srv.Metrics().Snapshot())
+		t.Fatalf("缺少 sump_work_stalled_total{reason=deadline}=1: %+v", metrics)
 	}
 }

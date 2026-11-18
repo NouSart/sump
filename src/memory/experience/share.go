@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NouSart/sump/memory/shared"
+	"github.com/NouSart/sump/memory/experience/shared"
 	"github.com/NouSart/sump/protocol"
 )
 

@@ -53,7 +53,7 @@ SUMP 是「服务的互联网」：每个服务是独立进程、独立数据库
 
 三个 Go **库**（不是服务）：`src/protocol/`（跨服务业务载荷 DTO 与 codec）、`src/service/`（服务骨架：注册 / 心跳 / 名册 / 重连 / 告别 / 设置接收 / 原生 method 注册）、`src/spv2/`（SPv2.1 帧、卡片、校验与 WS client/server 参考实现）。`testing/tests/` 是跨服务真进程端到端，不属于任何服务。
 
-memory 的拆分目标（`memory` 门面 + `session` / `experience` 服务 + `context` 模块）见 [memory-target.md](memory-target.md)；三进程角色化已落地，源码包拆分与 metrics 聚合仍待做。
+memory 的拆分目标（`memory` 门面 + `session` / `experience` 服务 + `context` 模块）见 [memory-target.md](memory-target.md)；三进程与三包边界已落地，剩余项见文档 §13。
 
 端口一览见 [../quickstart.md](../quickstart.md)。
 
@@ -141,7 +141,7 @@ sequenceDiagram
 | `data/memory.db`（会话库） | **只有当事会话** | `conversations`、`messages`（对话与轨迹）、`tasks` |
 | `data/experience.db`（共享库） | 所有会话（都是提炼物） | `memories`（偏好 / 事实）、经验网三表、`shared_sessions` / `shared_tasks`（会话目录） |
 
-- 共享库里**没有承载原文的字段**：没有 `messages`、没有工具输出、没有文件字节。但形状只是第一道：提炼物由模型写，正文里夹路径 / 链接、标识列里带真实账号都实际发生过。红线现在由代码在每格落库前执行（四条写入路 + 标识列 fail-closed），规则的唯一之家是 [../../src/memory/redact/redact.go](../../src/memory/redact/redact.go) 与 [../../src/memory/shared/db.go](../../src/memory/shared/db.go) 的包头注释，这里不重述。
+- 共享库里**没有承载原文的字段**：没有 `messages`、没有工具输出、没有文件字节。但形状只是第一道：提炼物由模型写，正文里夹路径 / 链接、标识列里带真实账号都实际发生过。红线现在由代码在每格落库前执行（四条写入路 + 标识列 fail-closed），规则的唯一之家是 [../../src/memory/experience/redact/redact.go](../../src/memory/experience/redact/redact.go) 与 [../../src/memory/experience/shared/db.go](../../src/memory/experience/shared/db.go) 的包头注释，这里不重述。
 - 会话目录每条只有「在做什么 / 做到哪了 / 用过哪些能力」，每个会话最多留最近 3 条；任务可标 `private`（只写经验、不进目录）。
 - 模型**没有任何动作**能读别的会话的记录（`history` / `task_*` 都不在 `provides` 的 `tool: true` 里）。
 - **人**的界面（门户）能不能看别的入口的会话，是门户侧的事（见 [agent-loop.md](agent-loop.md) §6.3）；模型侧没有任何这类路径。

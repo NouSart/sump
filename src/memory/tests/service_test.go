@@ -17,11 +17,11 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/memory/experience"
+	"github.com/NouSart/sump/memory/experience/shared"
 	"github.com/NouSart/sump/memory/facade"
 	"github.com/NouSart/sump/memory/facade/compose"
 	"github.com/NouSart/sump/memory/session"
-	"github.com/NouSart/sump/memory/shared"
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/session/store"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )
@@ -231,18 +231,40 @@ type stackConfig struct {
 	Shared     *shared.Store
 }
 
-// testStack 是测试里的三进程栈。Metrics 取 session 的注册表（门面的远端聚合
-// 由 facade 包自己的用例覆盖）。
+// testStack 是测试里的三进程栈。
 type testStack struct {
 	*facade.Server
 	sess *session.Server
 	exp  *experience.Server
 }
 
-func (s *testStack) Metrics() *spv2.Registry { return s.sess.Metrics() }
-
 // addPeer 把测试里后上线的 embedding/reasoner 地址注入 experience。
 func (s *testStack) addPeer(name, addr string) { s.exp.SetPeer(name, addr) }
+
+// metricsOf 读门面的 SPv2 metrics：这里必须看到内部服务聚合后的指标。
+func metricsOf(t *testing.T, srv *testStack) []spv2.Metric {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := spv2.Dial(ctx, srv.WsURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	frame, err := spv2.NewCall("metrics-read", spv2.ServiceRef("test"), spv2.ServiceRef("memory"), "metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := conn.Call(ctx, frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out spv2.MetricsResponse
+	if err := protocol.DecodeRaw(resp.Body, &out); err != nil {
+		t.Fatalf("解析 metrics 失败: %v", err)
+	}
+	return out.Metrics
+}
 
 // startMemory 起 session + experience + facade 三进程（临时库）。
 func startMemory(t *testing.T, centerURL string, historyLimit int, opts ...func(*stackConfig)) *testStack {

@@ -309,15 +309,28 @@ func startRedTeamMemory(t *testing.T) string {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
 	memBin := buildService(t, "github.com/NouSart/sump/memory")
 	scPort := freePort(t)
+	sessPort := freePort(t)
+	expPort := freePort(t)
 	memPort := freePort(t)
 	centerURL := spv2URL(scPort)
+	sessURL := spv2URL(sessPort)
+	expURL := spv2URL(expPort)
 	memURL := spv2URL(memPort)
+	dir := t.TempDir()
+	dbFile := filepath.Join(dir, "memory.db")
+	sharedFile := filepath.Join(dir, "experience.db")
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
-	startProc(t, memBin,
+	startProc(t, memBin, "-role", "session", "-addr", fmt.Sprintf("127.0.0.1:%d", sessPort),
+		"-db", dbFile, "-shared-db", sharedFile)
+	waitWSReady(t, sessURL, 60*time.Second)
+	startProc(t, memBin, "-role", "experience", "-addr", fmt.Sprintf("127.0.0.1:%d", expPort),
+		"-db", dbFile, "-shared-db", sharedFile, "-peers", "session="+sessURL)
+	waitWSReady(t, expURL, 60*time.Second)
+	startProc(t, memBin, "-role", "facade",
 		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
 		"-center", centerURL,
-		"-db", filepath.Join(t.TempDir(), "memory.db"),
+		"-peers", "session="+sessURL+",experience="+expURL,
 	)
 	waitWSReady(t, memURL, 60*time.Second)
 	return memURL

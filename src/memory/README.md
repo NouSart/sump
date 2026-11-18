@@ -8,7 +8,20 @@
 | `memory -role session` | 会话 | `data/memory.db`：conversation / message / task / work / 整理池 | 只监听 `/spv2`，不注册 |
 | `memory -role experience` | 经验 | `data/experience.db`：长期记忆 / 经验网 / 共享摘要 | 只监听 `/spv2`，不注册 |
 
-`memory -role memory`（默认）保留单进程全量形态，供测试与旧部署使用。
+`-role` 必填；不指定直接拒绝启动，不再保留单进程兼容分支。
+
+## 源码布局
+
+```text
+src/memory/
+  session/          # 会话服务 + session/store
+  experience/       # 经验服务 + shared/longterm/memnet/redact/audit/repair/compose
+  facade/           # 门面 + context 拼装 + facade/compose
+  tests/            # 三进程服务级用例
+  main.go           # 按 -role 启动上面三个进程之一
+```
+
+三个实现包互不 import；`architecture_test.go` 用 `go list` 钉住边界。
 
 ## 职责
 
@@ -30,7 +43,8 @@
 
 - 门面启动时 session / experience 不可达、method 重叠或漏声明 → 启动失败。
 - 运行中 `context` 任一内部调用失败 → 整个 `context` 失败，不静默降级。
-- `session` / `experience` 独立模式不连接设置中心，依赖靠 `-peers` 静态解析。
+- `session` / `experience` 独立模式不连接设置中心，依赖靠 `-peers` 静态解析；后上线依赖可 `SetPeer` 注入。
+- 门面 metrics 聚合 session / experience 的指标；任一对端失败只跳过该对端，不影响健康探针。
 
 ## 运行与测试
 

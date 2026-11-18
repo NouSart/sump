@@ -50,6 +50,8 @@ type Config struct {
 	// SecretFile 是秘密项（HandleSecret）的本地持久化文件路径。
 	// 留空 = <name> 的默认路径（data/<name>-secret.json）；传 "-" 表示只放内存不落盘。
 	SecretFile string
+	// MetricsExtra 在 /metrics 与 metrics method 的本地快照后追加外部指标。
+	MetricsExtra func(context.Context) []spv2.Metric
 }
 
 // Service 是服务实例：一条到设置中心的连接（注册 / 心跳 / 名册）+ 一个 SPv2 服务端。

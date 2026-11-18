@@ -189,19 +189,22 @@ src/memory/
 
 ## 13. 实施记录（2026-11-19）
 
-已落地的是**运行时边界**，不是最终源码布局：
+**运行时与源码边界都已落地**：
 
-- `src/memory` 仍是**单个 Go 模块、单个实现包**；`memory.exe -role session|experience|facade` 启动三个独立进程。
-- `service` 骨架新增 `Standalone`（不连设置中心）、`Peers`（静态内部地址）、`NativeFilter`（名片只发布本域 method）。
-- 角色只决定暴露哪些 method / 设置项：`session` 持有会话库，`experience` 持有共享库，`facade` 不打开数据库、只做路由与 `context` 拼装。
+- `src/memory` 是**单个 Go 模块、三个实现包**：`session` / `experience` / `facade`；域私有库分别归到 `session/store` 与 `experience/{shared,longterm,memnet,redact,audit,repair}`。
+- `memory.exe -role session|experience|facade` 启动三个独立进程；不指定 role 直接拒绝启动，不再保留单进程兼容分支。
+- `service` 骨架新增 `Standalone`（不连设置中心）、`Peers`（静态内部地址）、`SetPeer`（后上线依赖）、`MetricsExtra`（门面聚合指标）。
+- 三个包互不 import；`src/memory/architecture_test.go` 用 `go list` 钉住 import 规则，共享物只有 `protocol` / `spv2` / `service`。
 - 门面启动自检：两个内部服务必须可达、method 不得重叠、每个域内 method 必须有人声明；缺失或冲突直接启动失败。`/healthz` 带 session / experience 探针。
 - `context` 两跳：`session.context_base`（任务 / work / 历史）+ `experience.inject`（核心 / 相关 / 线头 / 其他会话），门面本地 `compose.Inject`。
 - 整理池跨域：`experience.consolidate` 通过 `session.staged_pending|mark|retry` 读写，不直接打开会话库。
 - 设置下发：门面保留 13 个键，按归属转发 `configure`；只读项由门面展示。内部服务用 `settings_schema` 报自己的键，门面启动时检查重复。Session / experience 只声明本域键（不再声明 name / addr / center）。
-- 测试：`tests/facade_roles_test.go` 覆盖跨进程读写与设置转发；`tests/role_cards_test.go` 钉住名片隔离与内部 method 不外泄；`tests/facade_start_test.go` 钉住启动硬门；`service/tests/standalone_test.go` 钉住独立模式与静态对端。
+- metrics：`spv2` 的 `metrics` 与 `/metrics` 都支持 `MetricsExtra`；门面把 session / experience 的指标追加到自己的响应里。
+- 测试：`session` / `experience` / `facade` 包各自有真 WS + 真 SQLite 用例；`src/memory/tests` 的旧服务级用例改跑三进程栈；`service/tests/standalone_test.go` 钉住独立模式与静态对端；`architecture_test.go` 钉住 import 边界。
 
 仍未做（已进 TODO）：
 
-- 把实现包拆成 `facade/` / `session/` / `experience/` 三个 Go 包（乃至独立 `go.mod`），并用 import 规则测试钉住。当前靠 `Role` 与 `NativeFilter` 在运行时隔离，编译期仍可互相 import。
-- 门面 metrics 聚合；`conversation_get` 补 `publish_session` 的会话标题；读取侧可见性过滤（`inject.viewer` 目前只是占位）。
+- `conversation_get` 补 `publish_session` 的会话标题（现在 experience 不跨域读标题，缺失留空）。
+- 读取侧可见性过滤（`inject.viewer` 目前只是占位）。
+- 拆成三个独立 `go.mod`（当前同模块、不同包；协议/骨架仍共享）。
 

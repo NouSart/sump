@@ -50,6 +50,25 @@ func (s *Server) peerSettings(ctx context.Context, peer string) ([]protocol.Sett
 	return out, nil
 }
 
+// peerMetrics 汇总内部服务的 /metrics 快照；单个对端失败只记日志，不拖垮整页。
+func (s *Server) peerMetrics(ctx context.Context) []spv2.Metric {
+	var out []spv2.Metric
+	for _, peer := range []string{"session", "experience"} {
+		raw, err := s.Call(ctx, peer, "metrics", nil, "")
+		if err != nil {
+			s.logger.Printf("聚合 %s 指标失败（跳过）: %v", peer, err)
+			continue
+		}
+		var res spv2.MetricsResponse
+		if err := protocol.DecodeRaw(raw, &res); err != nil {
+			s.logger.Printf("解析 %s 指标失败（跳过）: %v", peer, err)
+			continue
+		}
+		out = append(out, res.Metrics...)
+	}
+	return out
+}
+
 func (s *Server) peerHealth(peer string) spv2.HealthChecker {
 	return func(ctx context.Context) spv2.HealthCheck {
 		raw, err := s.Call(ctx, peer, "health", nil, "")

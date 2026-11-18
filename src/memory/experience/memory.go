@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NouSart/sump/memory/longterm"
-	"github.com/NouSart/sump/memory/redact"
+	"github.com/NouSart/sump/memory/experience/longterm"
+	"github.com/NouSart/sump/memory/experience/redact"
 	"github.com/NouSart/sump/protocol"
 )
 

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/session/store"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )

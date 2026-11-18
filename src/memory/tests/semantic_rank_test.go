@@ -4,7 +4,7 @@ package tests
 import (
 	"testing"
 
-	"github.com/NouSart/sump/memory/longterm"
+	"github.com/NouSart/sump/memory/experience/longterm"
 )
 
 func TestEmbeddingRoundTripAndModelTag(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"fmt"
 
 	"github.com/NouSart/sump/memory/experience/compose"
-	"github.com/NouSart/sump/memory/longterm"
+	"github.com/NouSart/sump/memory/experience/longterm"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )

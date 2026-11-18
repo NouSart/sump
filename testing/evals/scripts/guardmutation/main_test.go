@@ -157,7 +157,7 @@ func TestTestTarget(t *testing.T) {
 		wantMod string
 		wantPkg string
 	}{
-		{"src/memory/redact/redact.go", "src/memory", "./redact"},
+		{"src/memory/experience/redact/redact.go", "src/memory", "./experience/redact"},
 		{"src/spv2/server.go", "src/spv2", "./"},
 		{"src/approval/engine/tier_medium.go", "src/approval", "./engine"},
 	}
@@ -184,7 +184,7 @@ func TestTestTarget(t *testing.T) {
 func TestSelectGuardsFilters(t *testing.T) {
 	list := []guard{
 		{name: "甲", file: "src/spv2/server.go"},
-		{name: "乙", file: "src/memory/redact/redact.go"},
+		{name: "乙", file: "src/memory/experience/redact/redact.go"},
 		{name: "丙", file: "src/qq/napcat/napcat.go"},
 	}
 	cases := []struct {

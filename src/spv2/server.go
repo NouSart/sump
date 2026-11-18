@@ -45,6 +45,9 @@ type ServerOptions struct {
 	MaxStreamBuffer int64
 	// MaxHeader 是帧头上限（spec §3.5 默认 16 KiB）；<=0 时取卡片 max_header。
 	MaxHeader int64
+	// MetricsExtra 在本地指标快照后追加外部聚合指标（如门面汇总内部服务）。
+	// 只读；失败/超时由实现自己处理，不能阻塞 metrics 响应。
+	MetricsExtra func(context.Context) []Metric
 }
 
 // ServerOption 修改 ServerOptions。
@@ -96,6 +99,11 @@ func WithMaxStreamBuffer(n int64) ServerOption {
 // WithMaxHeader 覆盖帧头上限（默认取卡片 max_header，缺省 16 KiB）。
 func WithMaxHeader(n int64) ServerOption {
 	return func(o *ServerOptions) { o.MaxHeader = n }
+}
+
+// WithMetricsExtra 追加外部聚合指标（门面用）。
+func WithMetricsExtra(f func(context.Context) []Metric) ServerOption {
+	return func(o *ServerOptions) { o.MetricsExtra = f }
 }
 
 // Server 是一个 SPv2.1 服务端。
@@ -764,9 +772,13 @@ func (s *Server) handleHealth(ctx context.Context, c *Call) error {
 	return c.Reply(HealthResponse{Status: status, Version: s.card.Version, UptimeMS: time.Since(s.started).Milliseconds(), Checks: checks})
 }
 
-func (s *Server) handleMetrics(_ context.Context, c *Call) error {
+func (s *Server) handleMetrics(ctx context.Context, c *Call) error {
+	metrics := s.metrics.Snapshot()
+	if s.opts.MetricsExtra != nil {
+		metrics = append(metrics, s.opts.MetricsExtra(ctx)...)
+	}
 	return c.Reply(MetricsResponse{
 		Service: s.card.Name, Version: s.card.Version,
-		Timestamp: time.Now().UTC().Format(time.RFC3339), Metrics: s.metrics.Snapshot(),
+		Timestamp: time.Now().UTC().Format(time.RFC3339), Metrics: metrics,
 	})
 }

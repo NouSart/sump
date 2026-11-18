@@ -32,13 +32,26 @@ var requiredMethods = func() map[string]bool {
 	return out
 }()
 
+// proxyMethods 是门面需要透传的全部 method：对外 provides 的 22 个，
+// 加上 work / A2A 这组“不进入 provides、但调用方仍按 memory 名字调用”的内部面。
+var proxyMethods = func() map[string]bool {
+	out := map[string]bool{}
+	for m := range requiredMethods {
+		out[m] = true
+	}
+	for _, m := range []string{
+		"work_get", "lease_charge", "lease_release", "work_update", "work_sweep",
+		"work_cancel", "work_renew", "message_post", "message_claim", "message_ack", "message_nack",
+	} {
+		out[m] = true
+	}
+	return out
+}()
+
 // internalMethods 是域内 method：门面不得注册、不得出现在名片。
 var internalMethods = map[string]bool{
 	"context_base": true, "inject": true, "settings_schema": true,
 	"staged_pending": true, "staged_mark": true, "staged_retry": true,
-	"work_get": true, "lease_charge": true, "lease_release": true,
-	"work_update": true, "work_sweep": true, "work_cancel": true, "work_renew": true,
-	"message_post": true, "message_claim": true, "message_ack": true, "message_nack": true,
 }
 
 // internalSettingOwner 是 9 个内部设置键的唯一归属。

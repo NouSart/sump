@@ -99,7 +99,7 @@ QQ 这类多人入口，模型必须能分辨「主人在私聊里说的」和�
 
 会话记录是**流水**（按时间、给人看）；经验网是**联想**（按语义、给模型用）。两者永不混用：历史记录页只读流水的表，经验网只给 `context` 与 `dig`。
 
-实现是一个**独立 Go 包** `src/memory/memnet`：零依赖本仓库其他包、只吃一个 `*sql.DB`，表与阈值都是它自己的——将来整块搬走即成独立仓库 / 独立服务。细则见 [memory/memnet/README.md](../../src/memory/memnet/README.md)。
+实现是一个**独立 Go 包** `src/memory/experience/memnet`：零依赖本仓库其他包、只吃一个 `*sql.DB`，表与阈值都是它自己的——将来整块搬走即成独立仓库 / 独立服务。细则见 [memory/experience/memnet/README.md](../../src/memory/experience/memnet/README.md)。
 
 | 动作（jump 到 `memory`） | 输入 | 输出 |
 | --- | --- | --- |
@@ -157,7 +157,7 @@ QQ 这类多人入口，模型必须能分辨「主人在私聊里说的」和�
 | 会话私有 | 对话、工具调用与输出、任务与文件 | 只有当事会话 | `data/memory.db` |
 | 用户共享 | 偏好 / 事实（`remember`）、一句话经验（经验网）、会话目录 | 所有会话 | `data/experience.db` |
 
-判据很简单：**能进共享库的只有提炼物**。发布载荷里没有承载原话的字段，想加得先改协议；但形状挡不住模型把路径、链接、账号写进提炼物正文——这条红线由落库写入边界执行（规则一家，见 [../../src/memory/redact/redact.go](../../src/memory/redact/redact.go) 与 [../../src/memory/shared/db.go](../../src/memory/shared/db.go)），不靠调用方自觉。
+判据很简单：**能进共享库的只有提炼物**。发布载荷里没有承载原话的字段，想加得先改协议；但形状挡不住模型把路径、链接、账号写进提炼物正文——这条红线由落库写入边界执行（规则一家，见 [../../src/memory/experience/redact/redact.go](../../src/memory/experience/redact/redact.go) 与 [../../src/memory/experience/shared/db.go](../../src/memory/experience/shared/db.go)），不靠调用方自觉。
 
 ### 6.1 会话目录：别的会话在干「什么」
 
