@@ -122,8 +122,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Description:       "批处理：一次声明 N 项工作 + 并发度 + 唤醒时机；受理即回执，跑完推一条汇总",
 		Provides: []protocol.Provide{
 			{
-				Action: "run",
-				Tool:   true,
+				Action:      "run",
+				Tool:        true,
 				LongRunning: true,
 				Input: "{service, action, items:[{input, key?, tag?}], concurrency?, on_error?, timeout_ms?, kind?, wake?}——" +
 					"对目标服务的某个动作批量执行；key 标记关键项，wake.mode=key 时关键项全部结束会提前叫你",

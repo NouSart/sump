@@ -178,7 +178,7 @@ func (s *Server) nativeEcho(_ context.Context, call *spv2.Call) error {
 }
 
 func (s *Server) nativeDebugJump(ctx context.Context, call *spv2.Call) error {
-		out, err := s.debugCall(ctx, call.Frame.Work, call.Frame.Body)
+	out, err := s.debugCall(ctx, call.Frame.Work, call.Frame.Body)
 	if err != nil {
 		return replyNativeError(call, err)
 	}

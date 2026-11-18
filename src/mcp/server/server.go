@@ -235,7 +235,7 @@ func (s *Server) available(b Binding) bool {
 		}
 		for _, p := range card.Provides {
 			if p.Action == b.Action {
-						return p.Tool && p.LongRunning == b.Async
+				return p.Tool && p.LongRunning == b.Async
 			}
 		}
 	}

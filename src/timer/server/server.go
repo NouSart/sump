@@ -126,11 +126,11 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Description:       "计时器：受理「N 毫秒后唤醒我」，到点把补报跳回调用方（受理即回执，全程不阻塞）",
 		Provides: []protocol.Provide{
 			{
-				Action: "sleep",
-				Tool:   true,
+				Action:      "sleep",
+				Tool:        true,
 				LongRunning: true,
-				Input:  "{ms, note?}——ms 是时长（毫秒）；note 是到点补报里原样带回来的一句话（给你自己看的备注）",
-				Output: "受理回执 {item_id, phase, fire_at}；到点后由 report_result 补报送达（可能在你收尾之后才到）",
+				Input:       "{ms, note?}——ms 是时长（毫秒）；note 是到点补报里原样带回来的一句话（给你自己看的备注）",
+				Output:      "受理回执 {item_id, phase, fire_at}；到点后由 report_result 补报送达（可能在你收尾之后才到）",
 			},
 			{
 				Action: "cancel",

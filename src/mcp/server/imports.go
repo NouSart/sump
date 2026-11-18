@@ -269,7 +269,7 @@ func (i *Imports) Provides() []protocol.Provide {
 		if tool.config.Async {
 			output = "Accepted receipt: item_id, phase=accepted. Final result arrives via report_result; acceptance does not mean completion."
 		}
-			out = append(out, protocol.Provide{Action: tool.config.Action, Tool: true, LongRunning: tool.config.Async,
+		out = append(out, protocol.Provide{Action: tool.config.Action, Tool: true, LongRunning: tool.config.Async,
 			Input:  tool.config.Description + " JSON Schema: " + string(tool.config.InputSchema),
 			Output: output})
 	}
@@ -288,7 +288,7 @@ func (i *Imports) NativeMethods() []spv2.Method {
 		out = append(out, spv2.Method{
 			Name:        provide.Action,
 			Tool:        provide.Tool,
-				LongRunning: provide.LongRunning,
+			LongRunning: provide.LongRunning,
 			Description: tool.config.Description,
 			Input:       importMethodSchema(tool.config.InputSchema),
 			Output:      importMethodSchema(tool.config.OutputSchema),

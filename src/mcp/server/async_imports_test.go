@@ -96,7 +96,7 @@ func TestAsyncImportsAcceptedLifetimeAndParallelResults(t *testing.T) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "result:" + arg.Key}}, StructuredContent: map[string]any{"value": arg.Key}}, nil
 	})
 	s, reports := asyncImportGateway(t, remote.URL, Config{AsyncTimeout: 5 * time.Second})
-		if p := s.imports.Provides(); len(p) != 1 || !p[0].LongRunning || p[0].Batchable {
+	if p := s.imports.Provides(); len(p) != 1 || !p[0].LongRunning || p[0].Batchable {
 		t.Fatalf("async contract not advertised: %+v", p)
 	}
 	requestCtx, done := context.WithCancel(t.Context())
