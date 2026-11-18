@@ -68,7 +68,7 @@ func readJob(t *testing.T, c *mcp.ClientSession, uri string) JobSnapshot {
 }
 
 func timerCard(peer string) protocol.ServiceCard {
-	return protocol.ServiceCard{Name: "timer", Addr: peer, Provides: []protocol.Provide{{Action: "sleep", Tool: true, Async: true}, {Action: "cancel", Tool: true}}}
+	return protocol.ServiceCard{Name: "timer", Addr: peer, Provides: []protocol.Provide{{Action: "sleep", Tool: true, LongRunning: true}, {Action: "cancel", Tool: true}}}
 }
 
 func TestExportEarlyFinalAndCrossRequestRead(t *testing.T) {

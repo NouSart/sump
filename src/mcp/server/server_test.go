@@ -133,7 +133,7 @@ func TestGatewayToolContractAndRevocation(t *testing.T) {
 		}
 		return protocol.FileReadResult{ID: "sample", Filename: "sample.txt", Text: strings.Repeat("你好\n<", 10000)}, nil
 	})
-	s := startGateway(t, Config{}, []protocol.ServiceCard{{Name: "files", Addr: peer.URL(), Provides: []protocol.Provide{{Action: "read", Tool: true}}}, {Name: "shell", Addr: peer.URL(), Provides: []protocol.Provide{{Action: "run", Async: true, Tool: false}}}}, `{"exports":["files__read"]}`)
+	s := startGateway(t, Config{}, []protocol.ServiceCard{{Name: "files", Addr: peer.URL(), Provides: []protocol.Provide{{Action: "read", Tool: true}}}, {Name: "shell", Addr: peer.URL(), Provides: []protocol.Provide{{Action: "run", LongRunning: true, Tool: false}}}}, `{"exports":["files__read"]}`)
 	c := gatewayClient(t, s, gatewayToken)
 	list, err := c.ListTools(t.Context(), nil)
 	if err != nil || len(list.Tools) != 1 || list.Tools[0].Name != "files__read" {

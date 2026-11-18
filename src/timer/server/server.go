@@ -2,7 +2,7 @@ package server
 
 // timer 服务的核心：受理「N 毫秒后唤醒我」，到点把一条补报跳回调用方。
 //
-// 边界（与 shell 同一套「受理即回执」协议，见 protocol.Provide.Async）：
+// 边界（与 shell 同一套「受理即回执」协议，见 protocol.Provide.LongRunning）：
 //   - 受理回执立即返回（带 item 句柄），到点前**不占调用方的任何等待位**：调用方的收尾
 //     不被一条计时扣住，期内的其它工具照常派发、照常回来（这就是「不阻塞」的落点）；
 //   - 到点由本服务发 report_result 补报回调用方：调用方任务还在跑就注入并唤醒，已收尾
@@ -67,7 +67,7 @@ type Server struct {
 	mu      sync.Mutex
 	pending map[string]*timing // item → 在计时器
 	seq     int64              // 计时表的状态版本（每次受理/到点/撤销都 ++；快照与 list 都带它）
-	pushed  map[string]bool    // 上一轮推过门户的 boss（本轮没有的要补一条空快照）
+	pushed  map[string]bool    // 上一轮推过门户的 caller（本轮没有的要补一条空快照）
 }
 
 // portalName 返回当前门户服务名（空 = 不推快照）。
@@ -87,9 +87,8 @@ func (s *Server) setPortalName(v string) {
 // timing 是一条在计时器（受理后、到点前）。
 type timing struct {
 	item   string
-	caller string // 到点补报回谁（信封 from）
+	caller string // 到点补报回谁（帧头 from 原样带回）
 	trace  string // 链路 id（原样沿用）
-	boss   string // 任务原老板（补报轮回交付用；原样带回）
 	ms     int64
 	note   string
 	fireAt time.Time
@@ -127,11 +126,11 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Description:       "计时器：受理「N 毫秒后唤醒我」，到点把补报跳回调用方（受理即回执，全程不阻塞）",
 		Provides: []protocol.Provide{
 			{
-				Action: "sleep",
-				Tool:   true,
-				Async:  true,
-				Input:  "{ms, note?}——ms 是时长（毫秒）；note 是到点补报里原样带回来的一句话（给你自己看的备注）",
-				Output: "受理回执 {item_id, phase, fire_at}；到点后由 report_result 补报送达（可能在你收尾之后才到）",
+				Action:      "sleep",
+				Tool:        true,
+				LongRunning: true,
+				Input:       "{ms, note?}——ms 是时长（毫秒）；note 是到点补报里原样带回来的一句话（给你自己看的备注）",
+				Output:      "受理回执 {item_id, phase, fire_at}；到点后由 report_result 补报送达（可能在你收尾之后才到）",
 			},
 			{
 				Action: "cancel",
@@ -275,14 +274,14 @@ func (s *Server) StopAll() {
 
 // nativeSleep 受理一次计时：立即回执，到点由 report_result 补报（处理函数里不等待）。
 func (s *Server) nativeSleep(_ context.Context, call *spv2.Call) error {
-	out, err := s.sleep(call.Frame.From.ID, call.Frame.Work, call.Frame.From.ID, call.Frame.Body)
+	out, err := s.sleep(call.Frame.From.ID, call.Frame.Work, call.Frame.Body)
 	if err != nil {
 		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
 	return call.Reply(out)
 }
 
-func (s *Server) sleep(caller, trace, boss string, body []byte) (any, error) {
+func (s *Server) sleep(caller, trace string, body []byte) (any, error) {
 	var req protocol.TimerSleepPayload
 	if err := protocol.DecodeRaw(body, &req); err != nil {
 		return nil, err
@@ -299,7 +298,6 @@ func (s *Server) sleep(caller, trace, boss string, body []byte) (any, error) {
 		item:   protocol.NewID(),
 		caller: caller,
 		trace:  trace,
-		boss:   boss,
 		ms:     req.MS,
 		note:   note,
 		fireAt: time.Now().Add(time.Duration(req.MS) * time.Millisecond),
@@ -319,7 +317,7 @@ func (s *Server) sleep(caller, trace, boss string, body []byte) (any, error) {
 		return nil, fmt.Errorf("在计时器已满（%d 条），不排队：稍后再试或先 cancel 掉不用的", s.maxPendingValue())
 	}
 
-	s.logger.Printf("受理计时 %s（来自 %s，boss=%s）：%dms 后到点%s", t.item, t.caller, t.boss, req.MS, tripped(clipped))
+	s.logger.Printf("受理计时 %s（来自 %s）：%dms 后到点%s", t.item, t.caller, req.MS, tripped(clipped))
 	s.pushPortalState(trace)
 	return protocol.TimerSleepResult{
 		ItemID: t.item,
@@ -422,8 +420,8 @@ func (s *Server) pushPortalState(trace string) {
 	groups := map[string][]protocol.TimerItem{}
 	cur := map[string]bool{}
 	for _, t := range s.pending {
-		groups[t.boss] = append(groups[t.boss], timerItem(t))
-		cur[t.boss] = true
+		groups[t.caller] = append(groups[t.caller], timerItem(t))
+		cur[t.caller] = true
 	}
 	prev := s.pushed
 	s.pushed = cur

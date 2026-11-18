@@ -31,7 +31,6 @@ type runningJob struct {
 	service string
 	action  string
 	caller  string
-	boss    string
 	trace   string
 	kind    string
 
@@ -101,9 +100,9 @@ func tagOf(q queued) string {
 
 // run 受理一批：校验 → 预留槽位 → 落库 → 立即回执 → 后台开跑。
 //
-// caller/boss/trace 是任务的归属与链路（原生 SPv2 来自 call.Frame）；
+// caller/trace 是任务的归属与链路（原生 SPv2 来自 call.Frame）；
 // body 是 BatchRunPayload。原生入口只调它，不另写一份校验。
-func (s *Server) run(caller, boss, trace string, body []byte) (any, error) {
+func (s *Server) run(caller, trace string, body []byte) (any, error) {
 	var p protocol.BatchRunPayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
@@ -184,7 +183,7 @@ func (s *Server) run(caller, boss, trace string, body []byte) (any, error) {
 	id := protocol.NewID()
 	job := &runningJob{
 		id: id, service: service, action: action,
-		caller: caller, boss: boss, trace: trace,
+		caller: caller, trace: trace,
 		kind:     kindOf(p.Kind),
 		wakeMode: wakeMode, onError: onError, timeout: timeout,
 		concurrency: conc, reserved: conc,
@@ -195,7 +194,7 @@ func (s *Server) run(caller, boss, trace string, body []byte) (any, error) {
 		job.items = append(job.items, queued{seq: i, key: it.Key, tag: it.Tag, input: it.Input})
 	}
 
-	if err := s.store.CreateJob(id, service, action, caller, boss, trace, job.kind,
+	if err := s.store.CreateJob(id, service, action, caller, trace, job.kind,
 		store.Policy{
 			Concurrency: conc,
 			TimeoutMS:   int(timeout / time.Millisecond),

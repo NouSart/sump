@@ -1,5 +1,5 @@
 // 异步受理的补报（report_result）测试：
-//   - 受理即回执的动作（Provide.Async）→ 受理回执带回 item_id，句柄在 reasoner 侧登记；
+//   - 受理即回执的动作（Provide.LongRunning）→ 受理回执带回 item_id，句柄在 reasoner 侧登记；
 //   - 补报到达时任务还在跑 → 注入同一条任务链（响应自证 delivery=injected）；
 //   - 补报到达时任务已收尾 → 开补报轮，把结果补交给 boss（delivery=new_task，结果不丢）；
 //   - 无对应受理的补报被忽略（不打扰任何任务）；缺 item_id 明确报错；
@@ -66,7 +66,7 @@ func startStubAsync(t *testing.T, center *stubCenter, itemID string, kinds ...st
 
 	registerStub(t, center, protocol.RegisterPayload{
 		Name: "stub-async", Addr: e.URL(), Description: "异步工具测试替身",
-		Provides: []protocol.Provide{{Action: "run", Tool: true, Async: true, Input: "{command}", Output: "受理回执"}},
+		Provides: []protocol.Provide{{Action: "run", Tool: true, LongRunning: true, Input: "{command}", Output: "受理回执"}},
 	})
 	return a
 }

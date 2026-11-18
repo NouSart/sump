@@ -168,7 +168,7 @@ func TestInferChain(t *testing.T) {
 	}
 	first := fake.Requests[0]
 	// 名册动作映射为工具：显式声明 tool:true 的跨服务动作在列表中；未声明的动作、
-	// 调试动作（echo / debug_jump）不暴露；内置 wait 恒在。
+	// 调试动作（echo / debug_call）不暴露；内置 wait 恒在。
 	var hasPing, hasWait, hasEcho, hasDebug, hasHidden bool
 	for _, tool := range first.Tools {
 		switch tool.Function.Name {
@@ -178,7 +178,7 @@ func TestInferChain(t *testing.T) {
 			hasWait = true
 		case "reasoner__echo":
 			hasEcho = true
-		case "reasoner__debug_jump":
+		case "reasoner__debug_call":
 			hasDebug = true
 		case "stub-center__hidden_no_tool":
 			hasHidden = true
@@ -271,8 +271,8 @@ func TestUnadvertisedToolRejected(t *testing.T) {
 	fake := &llm.Fake{Replies: []llm.Message{
 		{Role: "assistant", ToolCalls: []llm.ToolCall{{
 			ID: "call_bad", Type: "function",
-			// 保留动作 + 借 debug_jump 伪造一次交付（“万能遥控”的典型用法）。
-			Function: llm.FunctionCall{Name: "reasoner__debug_jump", Arguments: `{"to":"stub-boss","action":"deliver","input":{"text":"绕过"}}`},
+			// 保留动作 + 借 debug_call 伪造一次交付（“万能遥控”的典型用法）。
+			Function: llm.FunctionCall{Name: "reasoner__debug_call", Arguments: `{"to":"stub-boss","action":"deliver","input":{"text":"绕过"}}`},
 		}}},
 		// 第二轮调 wait：阻塞到上面那次调用（应被拒）入账。
 		{Role: "assistant", ToolCalls: []llm.ToolCall{{
@@ -301,11 +301,11 @@ func TestUnadvertisedToolRejected(t *testing.T) {
 
 	sendFrom(t, s, "stub-boss", map[string]any{"text": "你好"})
 
-	// 链照常收尾：boss 收到的第一条交付是最终答复，而不是 debug_jump 若被执行会伪造的“绕过”。
+	// 链照常收尾：入口收到的第一条交付是最终答复，而不是 debug_call 若被执行会伪造的“绕过”。
 	select {
 	case d := <-boss.delivered:
 		if d.Text != "已被拒绝" {
-			t.Fatalf("交付内容不符（debug_jump 被真的执行了？）: %q", d.Text)
+			t.Fatalf("交付内容不符（debug_call 被真的执行了？）: %q", d.Text)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("超时：boss 未收到 deliver")
@@ -324,7 +324,7 @@ func TestUnadvertisedToolRejected(t *testing.T) {
 	hasReject := false
 	for _, m := range third.Messages {
 		if m.Role == "user" && strings.Contains(m.Content, "[工具结果]") &&
-			strings.Contains(m.Content, "reasoner__debug_jump") && strings.Contains(m.Content, "不可用") {
+			strings.Contains(m.Content, "reasoner__debug_call") && strings.Contains(m.Content, "不可用") {
 			hasReject = true
 		}
 	}

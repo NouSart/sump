@@ -25,8 +25,8 @@ func TestToolExposure(t *testing.T) {
 		byAction[p.Action] = p
 	}
 	sleep, ok := byAction["sleep"]
-	if !ok || !sleep.Tool || !sleep.Async {
-		t.Fatalf("sleep 应是 Tool:true + Async:true: %+v", sleep)
+	if !ok || !sleep.Tool || !sleep.LongRunning {
+		t.Fatalf("sleep 应是 Tool:true + LongRunning:true: %+v", sleep)
 	}
 	cancel, ok := byAction["cancel"]
 	if !ok || !cancel.Tool {

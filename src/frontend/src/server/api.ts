@@ -49,7 +49,7 @@ export interface ApiConfig {
     on: (fn: (items: PendingApprovalItem[]) => void) => () => void;
     remove: (itemId: string) => void;
   };
-  /** 审批服务名（裁决经 jumpTo 送到它那里；默认 approval）。 */
+  /** 审批服务名（裁决经 callService 送到它那里；默认 approval）。 */
   approval: string;
   /** 文件服务名：上传的文档转交给它（模型用 files.read 出正文）。 */
   files: string;
@@ -324,7 +324,7 @@ export function createRequestHandler(
     const text = [rawText, ...attachments.map((a) => attachmentLine(a))].filter((s) => s !== '').join('\n\n');
     const conversationId = conversationFrom(body.conversation_id);
     try {
-      await center.jumpTo(cfg.reasoner, 'message', {
+      await center.callService(cfg.reasoner, 'message', {
         text,
         conversation: conversationId,
         // 门户是单用户入口：平台侧没有独立 human actor，sender 表明这是主人本人。
@@ -374,7 +374,7 @@ export function createRequestHandler(
     const target = isImage ? cfg.images : cfg.files;
     let saved: { id?: unknown; size?: unknown; mime?: unknown } | undefined;
     try {
-      saved = (await center.jumpTo(
+      saved = (await center.callService(
         target,
         'save',
         isImage ? { data, mime } : { data, filename, mime },
@@ -412,7 +412,7 @@ export function createRequestHandler(
     if (kind === 'image') {
       let data: { mime?: unknown; data?: unknown } | undefined;
       try {
-        data = (await center.jumpTo(cfg.images, 'fetch', { id })) as { mime?: unknown; data?: unknown };
+        data = (await center.callService(cfg.images, 'fetch', { id })) as { mime?: unknown; data?: unknown };
       } catch (err) {
         throw mapCenterError(err);
       }
@@ -433,7 +433,7 @@ export function createRequestHandler(
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.trunc(rawLimit), 20000) : 0;
     let read: { filename?: unknown; text?: unknown; next?: unknown; total?: unknown } | undefined;
     try {
-      read = (await center.jumpTo(cfg.files, 'read', { id, offset, limit })) as {
+      read = (await center.callService(cfg.files, 'read', { id, offset, limit })) as {
         filename?: unknown;
         text?: unknown;
         next?: unknown;
@@ -465,7 +465,7 @@ export function createRequestHandler(
     const conversationId = conversationFrom(body.conversation_id);
     let receipt: { item_id?: unknown; phase?: unknown } | undefined;
     try {
-      receipt = (await center.jumpTo(
+      receipt = (await center.callService(
         cfg.shell,
         'run',
         workDir === '' ? { command } : { command, work_dir: workDir },
@@ -489,7 +489,7 @@ export function createRequestHandler(
     const conversationId = readableConversation(rawCid);
     let data: { tasks?: unknown } | undefined;
     try {
-      data = (await center.jumpTo(cfg.memory, 'task_list', {
+      data = (await center.callService(cfg.memory, 'task_list', {
         conversation_id: conversationId,
       })) as { tasks?: unknown };
     } catch (err) {
@@ -509,7 +509,7 @@ export function createRequestHandler(
     const conversationId = conversationFrom(body.conversation_id);
     let data: { task?: unknown; messages?: unknown } | undefined;
     try {
-      data = (await center.jumpTo(cfg.memory, 'task_resume', { task_id: taskId })) as {
+      data = (await center.callService(cfg.memory, 'task_resume', { task_id: taskId })) as {
         task?: unknown;
         messages?: unknown;
       };
@@ -531,7 +531,7 @@ export function createRequestHandler(
     const conversationId = readableConversation(body.conversation_id);
     let data: { retried?: unknown } | undefined;
     try {
-      data = (await center.jumpTo(cfg.reasoner, 'retry', { conversation_id: conversationId })) as {
+      data = (await center.callService(cfg.reasoner, 'retry', { conversation_id: conversationId })) as {
         retried?: unknown;
       };
     } catch (err) {
@@ -553,7 +553,7 @@ export function createRequestHandler(
     const conversationId = readableConversation(rawCid);
     let data: { messages?: unknown } | undefined;
     try {
-      data = (await center.jumpTo(cfg.memory, 'history', {
+      data = (await center.callService(cfg.memory, 'history', {
         conversation_id: conversationId,
         limit,
         after_seq: afterSeq,
@@ -575,7 +575,7 @@ export function createRequestHandler(
   const listConversations = async (res: ServerResponse, includeArchived: boolean): Promise<void> => {
     let data: { conversations?: unknown } | undefined;
     try {
-      data = (await center.jumpTo(cfg.memory, 'conversation_list', {
+      data = (await center.callService(cfg.memory, 'conversation_list', {
         limit: 50,
         include_archived: includeArchived,
       })) as { conversations?: unknown };
@@ -612,7 +612,7 @@ export function createRequestHandler(
     const id = newPortalConversationId();
     let data: { conversation?: unknown } | undefined;
     try {
-      data = (await center.jumpTo(cfg.memory, 'conversation_open', { id, title, entry: 'web' })) as {
+      data = (await center.callService(cfg.memory, 'conversation_open', { id, title, entry: 'web' })) as {
         conversation?: unknown;
       };
     } catch (err) {
@@ -627,7 +627,7 @@ export function createRequestHandler(
     const title = typeof body.title === 'string' ? body.title.trim().slice(0, 60) : '';
     let data: { conversation?: unknown } | undefined;
     try {
-      data = (await center.jumpTo(cfg.memory, 'conversation_rename', { id, title })) as { conversation?: unknown };
+      data = (await center.callService(cfg.memory, 'conversation_rename', { id, title })) as { conversation?: unknown };
     } catch (err) {
       throw mapCenterError(err);
     }
@@ -643,7 +643,7 @@ export function createRequestHandler(
     const archived = body.archived !== false; // 缺省 = 归档
     let data: { conversation?: unknown } | undefined;
     try {
-      data = (await center.jumpTo(cfg.memory, 'conversation_archive', { id, archived })) as {
+      data = (await center.callService(cfg.memory, 'conversation_archive', { id, archived })) as {
         conversation?: unknown;
       };
     } catch (err) {
@@ -661,7 +661,7 @@ export function createRequestHandler(
     if (decision !== 'allow' && decision !== 'deny') throw new HttpError(400, 'decision 只能是 allow 或 deny');
     const note = typeof body.note === 'string' ? body.note : '';
     try {
-      await center.jumpTo(cfg.approval, 'approval_decide', { item_id: itemId, decision, note });
+      await center.callService(cfg.approval, 'approval_decide', { item_id: itemId, decision, note });
     } catch (err) {
       throw mapCenterError(err);
     }

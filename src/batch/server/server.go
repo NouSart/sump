@@ -122,9 +122,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Description:       "批处理：一次声明 N 项工作 + 并发度 + 唤醒时机；受理即回执，跑完推一条汇总",
 		Provides: []protocol.Provide{
 			{
-				Action: "run",
-				Tool:   true,
-				Async:  true,
+				Action:      "run",
+				Tool:        true,
+				LongRunning: true,
 				Input: "{service, action, items:[{input, key?, tag?}], concurrency?, on_error?, timeout_ms?, kind?, wake?}——" +
 					"对目标服务的某个动作批量执行；key 标记关键项，wake.mode=key 时关键项全部结束会提前叫你",
 				Output: "受理回执 {item_id, total, phase, kind}；之后最多三条补报（key 唤醒 / 首次失败 / 终态）",
@@ -474,7 +474,7 @@ func (s *Server) rebuildJob(j store.Job) (*runningJob, error) {
 	}
 	rj := &runningJob{
 		id: j.ItemID, service: j.Service, action: j.Action,
-		caller: j.Caller, boss: j.Boss, trace: j.Trace, kind: kindOf(j.Kind),
+		caller: j.Caller, trace: j.Trace, kind: kindOf(j.Kind),
 		wakeMode: wakeMode, onError: onError,
 		timeout: timeout, concurrency: conc, reserved: conc,
 		ok: j.Ok, failed: j.Failed, skipped: j.Skipped,

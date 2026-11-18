@@ -10,7 +10,7 @@ const spv2 = ['tests/spv2.test.ts'];
 const service = ['tests/api.test.ts', 'tests/service.test.ts'];
 const mutants = [
   { id: 'TS02', file: 'center.ts', old: 'if (native === null || !this.connectedFlag) {', next: 'if (native === null || this.connectedFlag) {', tests: center },
-  // call 与 jumpTo 都有 RemoteError 映射：锚点带上前一行保证唯一。
+  // call 与 callService 都有 RemoteError 映射：锚点带上前一行保证唯一。
   { id: 'TS03', file: 'center.ts', old: "return await native.call(action, input, timeoutMS);\n    } catch (err) {\n      if (err instanceof SPv2RemoteError) throw new RemoteError(err.message);", next: "return await native.call(action, input, timeoutMS);\n    } catch (err) {\n      if (false) throw new RemoteError((err as Error).message);", tests: center },
   { id: 'TS05', file: 'center.ts', old: 'if (!card || !card.addr)', next: 'if (!card && !card.addr)', tests: center },
   { id: 'TS08', file: 'center.ts', old: "if (ev.method === 'roster')", next: "if (ev.method !== 'roster')", tests: center },
@@ -19,9 +19,9 @@ const mutants = [
   { id: 'TS14', file: 'spv2.ts', old: "if (addr.endsWith('/spv2'))", next: "if (!addr.endsWith('/spv2'))", tests: spv2 },
   { id: 'TS15', file: 'spv2.ts', old: "return addr.replace(/\\/$/, '') + '/spv2';", next: "return addr + '/spv2';", tests: spv2 },
   { id: 'TS16', file: 'spv2.ts', old: 'if (raw.body instanceof Uint8Array) f.body = raw.body;', next: 'if (raw.body instanceof Uint8Array) f.body = new Uint8Array();', tests: spv2 },
-  { id: 'TS17', file: 'spv2.ts', old: "if (frame.type !== 'reply' || frame.reply_to !== call.id) return;", next: "if (frame.type !== 'reply' && frame.reply_to !== call.id) return;", tests: spv2 },
+  { id: 'TS17', file: 'spv2.ts', old: "if (frame.type !== 'reply' || frame.reply_to !== callId) return;", next: "if (frame.type !== 'reply' && frame.reply_to !== callId) return;", tests: spv2 },
   { id: 'TS18', file: 'spv2.ts', old: "if (frame.status === 'error') {\n        const code", next: "if (frame.status !== 'error') {\n        const code", tests: spv2 },
-  { id: 'TS19', file: 'spv2.ts', old: "const code = frame.error?.code || 'internal';", next: "const code = frame.error?.code ?? 'internal';", tests: spv2 },
+  { id: 'TS19', file: 'spv2.ts', old: "const code = frame.error?.code || 'internal';\n        const message = frame.error?.message || '远端错误';", next: "const code = frame.error?.code ?? 'internal';\n        const message = frame.error?.message || '远端错误';", tests: spv2 },
   { id: 'TS20', file: 'spv2.ts', old: 'if (frame.body && frame.body.length > 0) {', next: 'if (frame.body && frame.body.length >= 0) {', tests: spv2 },
   { id: 'TS21', file: 'spv2.ts', old: 'if (this.closedFlag || !this.opened || this.ws.readyState !== WebSocket.OPEN) {', next: 'if (this.closedFlag && !this.opened && this.ws.readyState !== WebSocket.OPEN) {', tests: spv2 },
   { id: 'TS22', file: 'spv2.ts', old: "if (frame.type === 'reply') {", next: "if (frame.type !== 'reply') {", tests: spv2 },

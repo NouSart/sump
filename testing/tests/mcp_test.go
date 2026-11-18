@@ -318,7 +318,7 @@ func runMCPBidirectional(t *testing.T, useTLS bool) {
 			t.Fatalf("foreign server registered as service: %s", card.Name)
 		}
 		if card.Name == "mcp" {
-			if len(card.Provides) != 3 || card.Provides[0].Action != "async_lookup" || !card.Provides[0].Async || card.Provides[1].Action != "lookup" || card.Provides[2].Action != "offline_lookup" || !card.Provides[1].Tool || card.Provides[1].Async {
+			if len(card.Provides) != 3 || card.Provides[0].Action != "async_lookup" || !card.Provides[0].LongRunning || card.Provides[1].Action != "lookup" || card.Provides[2].Action != "offline_lookup" || !card.Provides[1].Tool || card.Provides[1].LongRunning {
 				t.Fatalf("wrong import declaration: %+v", card.Provides)
 			}
 			for _, provide := range card.Provides {

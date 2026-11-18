@@ -41,7 +41,7 @@ func rawInput(t *testing.T, s *Store, itemID string, seq int) []byte {
 // TestMarkItemClearsInput：项一终结，原始 input 必须从库里消失（只存摘要）。
 func TestMarkItemClearsInput(t *testing.T) {
 	s := newStore(t)
-	if err := s.CreateJob("j1", "worker", "ok", "caller", "boss", "", "async", pol, twoItems(), time.Now()); err != nil {
+	if err := s.CreateJob("j1", "worker", "ok", "caller", "", "async", pol, twoItems(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if got := rawInput(t, s, "j1", 0); string(got) != "first-raw-input" {
@@ -61,7 +61,7 @@ func TestMarkItemClearsInput(t *testing.T) {
 // TestSkipPendingClearsInput：跳过的项同样不留 input。
 func TestSkipPendingClearsInput(t *testing.T) {
 	s := newStore(t)
-	if err := s.CreateJob("j1", "worker", "ok", "caller", "boss", "", "async", pol, twoItems(), time.Now()); err != nil {
+	if err := s.CreateJob("j1", "worker", "ok", "caller", "", "async", pol, twoItems(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	n, err := s.SkipPending("j1")
@@ -84,7 +84,7 @@ func TestPruneOnlyTerminalAndOld(t *testing.T) {
 	now := time.Now()
 	old := now.Add(-2 * time.Hour)
 	for _, id := range []string{"old-done", "fresh-done", "old-running"} {
-		if err := s.CreateJob(id, "worker", "ok", "caller", "boss", "", "async", pol, twoItems(), old); err != nil {
+		if err := s.CreateJob(id, "worker", "ok", "caller", "", "async", pol, twoItems(), old); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -115,7 +115,7 @@ func TestPruneOnlyTerminalAndOld(t *testing.T) {
 // TestKeyDoneRoundTrip：KeyDone 落库能读回来（任务结束后 status 靠它）。
 func TestKeyDoneRoundTrip(t *testing.T) {
 	s := newStore(t)
-	if err := s.CreateJob("j1", "worker", "ok", "caller", "boss", "", "async", pol, twoItems(), time.Now()); err != nil {
+	if err := s.CreateJob("j1", "worker", "ok", "caller", "", "async", pol, twoItems(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetKeyDone("j1", 1); err != nil {
@@ -140,7 +140,7 @@ func TestKeyDoneRoundTrip(t *testing.T) {
 func TestPolicyRoundTrip(t *testing.T) {
 	s := newStore(t)
 	pol := Policy{Concurrency: 3, TimeoutMS: 1234, OnError: protocol.BatchOnErrorStop, WakeMode: protocol.BatchWakeKey}
-	if err := s.CreateJob("j1", "worker", "ok", "caller", "boss", "", "async", pol, twoItems(), time.Now()); err != nil {
+	if err := s.CreateJob("j1", "worker", "ok", "caller", "", "async", pol, twoItems(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	j, ok, err := s.Job("j1")
@@ -156,7 +156,7 @@ func TestPolicyRoundTrip(t *testing.T) {
 // TestMarkInterruptedClearsInput：中断项同样是终态，不留原始输入。
 func TestMarkInterruptedClearsInput(t *testing.T) {
 	s := newStore(t)
-	if err := s.CreateJob("j1", "worker", "ok", "caller", "boss", "", "async", pol, twoItems(), time.Now()); err != nil {
+	if err := s.CreateJob("j1", "worker", "ok", "caller", "", "async", pol, twoItems(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.SetItemStatus("j1", 0, protocol.BatchItemRunning)
@@ -175,7 +175,7 @@ func TestMarkInterruptedClearsInput(t *testing.T) {
 // TestItemsStatusFilter：明细按状态过滤，matched 是过滤后的总数。
 func TestItemsStatusFilter(t *testing.T) {
 	s := newStore(t)
-	if err := s.CreateJob("j1", "worker", "ok", "caller", "boss", "", "async", pol, twoItems(), time.Now()); err != nil {
+	if err := s.CreateJob("j1", "worker", "ok", "caller", "", "async", pol, twoItems(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.MarkItem("j1", Item{Seq: 0, Status: protocol.BatchItemOK})

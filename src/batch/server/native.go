@@ -233,9 +233,8 @@ func nativeReply(call *spv2.Call, out any, err error) error {
 }
 
 func (s *Server) nativeRun(_ context.Context, call *spv2.Call) error {
-	// SPv2 帧没有独立 boss，沿用调用方作为结果归属；trace 取 work。
-	caller := call.Frame.From.ID
-	out, err := s.run(caller, caller, call.Frame.Work, call.Frame.Body)
+	// 帧头 from 就是结果归属；trace 取 work。
+	out, err := s.run(call.Frame.From.ID, call.Frame.Work, call.Frame.Body)
 	return nativeReply(call, out, err)
 }
 

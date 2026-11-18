@@ -27,7 +27,6 @@ type Job struct {
 	Service    string
 	Action     string
 	Caller     string
-	Boss       string
 	Trace      string
 	Kind       string
 	Phase      string
@@ -99,7 +98,6 @@ CREATE TABLE IF NOT EXISTS jobs (
   service     TEXT NOT NULL,
   action      TEXT NOT NULL,
   caller      TEXT NOT NULL,
-  boss        TEXT NOT NULL DEFAULT '',
   trace       TEXT NOT NULL DEFAULT '',
   kind        TEXT NOT NULL DEFAULT 'once',
   phase       TEXT NOT NULL,
@@ -193,7 +191,7 @@ type Policy struct {
 }
 
 // CreateJob 落一个新任务：状态 accepted，全部项 pending（Tag/Key/策略一并落下来）。
-func (s *Store) CreateJob(itemID, service, action, caller, boss, trace, kind string, pol Policy,
+func (s *Store) CreateJob(itemID, service, action, caller, trace, kind string, pol Policy,
 	items []protocol.BatchItem, now time.Time) error {
 	keyTotal := 0
 	for _, it := range items {
@@ -207,10 +205,10 @@ func (s *Store) CreateJob(itemID, service, action, caller, boss, trace, kind str
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(`INSERT INTO jobs
-(item_id, service, action, caller, boss, trace, kind, phase, total, key_total, created_at,
+(item_id, service, action, caller, trace, kind, phase, total, key_total, created_at,
  concurrency, timeout_ms, on_error, wake_mode)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		itemID, service, action, caller, boss, trace, kind, protocol.BatchPhaseAccepted,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		itemID, service, action, caller, trace, kind, protocol.BatchPhaseAccepted,
 		len(items), keyTotal, now.UnixMilli(),
 		pol.Concurrency, pol.TimeoutMS, pol.OnError, pol.WakeMode); err != nil {
 		return err
@@ -312,14 +310,14 @@ func (s *Store) SkipPending(itemID string) (int, error) {
 
 // Job 读一个任务。
 func (s *Store) Job(itemID string) (Job, bool, error) {
-	row := s.db.QueryRow(`SELECT item_id, service, action, caller, boss, trace, kind, phase,
+	row := s.db.QueryRow(`SELECT item_id, service, action, caller, trace, kind, phase,
 total, ok, failed, skipped, key_total, key_done, woken, summary, created_at, started_at, finished_at,
 concurrency, timeout_ms, on_error, wake_mode
 FROM jobs WHERE item_id = ?`, itemID)
 	var j Job
 	var created, started, finished int64
 	var woken int
-	err := row.Scan(&j.ItemID, &j.Service, &j.Action, &j.Caller, &j.Boss, &j.Trace, &j.Kind, &j.Phase,
+	err := row.Scan(&j.ItemID, &j.Service, &j.Action, &j.Caller, &j.Trace, &j.Kind, &j.Phase,
 		&j.Total, &j.Ok, &j.Failed, &j.Skipped, &j.KeyTotal, &j.KeyDone, &woken, &j.Summary,
 		&created, &started, &finished, &j.Concurrency, &j.TimeoutMS, &j.OnError, &j.WakeMode)
 	if err == sql.ErrNoRows {
@@ -405,7 +403,7 @@ func (s *Store) List(phase, caller string, limit int) ([]Job, error) {
 		args = append(args, caller)
 	}
 	args = append(args, limit)
-	rows, err := s.db.Query(`SELECT item_id, service, action, caller, boss, trace, kind, phase,
+	rows, err := s.db.Query(`SELECT item_id, service, action, caller, trace, kind, phase,
 total, ok, failed, skipped, key_total, key_done, woken, summary, created_at, started_at, finished_at
 FROM jobs WHERE `+where+` ORDER BY created_at DESC LIMIT ?`, args...)
 	if err != nil {
@@ -417,7 +415,7 @@ FROM jobs WHERE `+where+` ORDER BY created_at DESC LIMIT ?`, args...)
 		var j Job
 		var created, started, finished int64
 		var woken int
-		if err := rows.Scan(&j.ItemID, &j.Service, &j.Action, &j.Caller, &j.Boss, &j.Trace, &j.Kind, &j.Phase,
+		if err := rows.Scan(&j.ItemID, &j.Service, &j.Action, &j.Caller, &j.Trace, &j.Kind, &j.Phase,
 			&j.Total, &j.Ok, &j.Failed, &j.Skipped, &j.KeyTotal, &j.KeyDone, &woken, &j.Summary,
 			&created, &started, &finished); err != nil {
 			return nil, err
@@ -437,7 +435,7 @@ FROM jobs WHERE `+where+` ORDER BY created_at DESC LIMIT ?`, args...)
 
 // Running 返回所有非终态任务（服务重启时转 paused、兜底判断都用它）。
 func (s *Store) Running() ([]Job, error) {
-	rows, err := s.db.Query(`SELECT item_id, service, action, caller, boss, trace, kind, phase,
+	rows, err := s.db.Query(`SELECT item_id, service, action, caller, trace, kind, phase,
 total, ok, failed, skipped, key_total, key_done, woken, summary, created_at, started_at, finished_at
 FROM jobs WHERE phase IN (?, ?, ?) ORDER BY created_at`, protocol.BatchPhaseAccepted,
 		protocol.BatchPhaseRunning, protocol.BatchPhasePaused)
@@ -450,7 +448,7 @@ FROM jobs WHERE phase IN (?, ?, ?) ORDER BY created_at`, protocol.BatchPhaseAcce
 		var j Job
 		var created, started, finished int64
 		var woken int
-		if err := rows.Scan(&j.ItemID, &j.Service, &j.Action, &j.Caller, &j.Boss, &j.Trace, &j.Kind, &j.Phase,
+		if err := rows.Scan(&j.ItemID, &j.Service, &j.Action, &j.Caller, &j.Trace, &j.Kind, &j.Phase,
 			&j.Total, &j.Ok, &j.Failed, &j.Skipped, &j.KeyTotal, &j.KeyDone, &woken, &j.Summary,
 			&created, &started, &finished); err != nil {
 			return nil, err

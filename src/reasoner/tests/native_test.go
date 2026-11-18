@@ -52,7 +52,7 @@ func TestReasonerNativeMethods(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{
-		"echo", "debug_jump", "think", "message", "step",
+		"echo", "debug_call", "think", "message",
 		"report_result", "user_hold", "retry",
 	} {
 		m, ok := card.Method(name)
@@ -88,7 +88,7 @@ func TestReasonerNativeMethods(t *testing.T) {
 		t.Fatalf("echo 结果不符: %+v", echo)
 	}
 
-	// debug_jump to=self 再回 echo：原生出口 + 原生入口。
+	// debug_call to=self 再回 echo：原生出口 + 原生入口。
 	var jumped struct {
 		Who  string `msgpack:"who"`
 		Echo struct {
@@ -96,11 +96,11 @@ func TestReasonerNativeMethods(t *testing.T) {
 		} `msgpack:"echo"`
 	}
 	body := map[string]any{"to": "self", "action": "echo", "input": map[string]any{"n": 42}}
-	if err := c.CallDecode(ctx, nativeCall(t, "tester", "debug_jump", body), &jumped); err != nil {
+	if err := c.CallDecode(ctx, nativeCall(t, "tester", "debug_call", body), &jumped); err != nil {
 		t.Fatal(err)
 	}
 	if jumped.Who != "reasoner" || jumped.Echo.N != 42 {
-		t.Fatalf("debug_jump 结果不符: %+v", jumped)
+		t.Fatalf("debug_call 结果不符: %+v", jumped)
 	}
 
 	// user_hold：控制面动作。
@@ -114,17 +114,6 @@ func TestReasonerNativeMethods(t *testing.T) {
 	}
 	if held.Status != "accepted" || held.Level != "primary" {
 		t.Fatalf("user_hold 结果不符: %+v", held)
-	}
-
-	// step：没有进行中的任务时忽略，而不是报错。
-	var stepped struct {
-		Status string `msgpack:"status"`
-	}
-	if err := c.CallDecode(ctx, nativeCall(t, "tester", "step", map[string]any{"conversation_id": "nope"}), &stepped); err != nil {
-		t.Fatal(err)
-	}
-	if stepped.Status != "ignored" {
-		t.Fatalf("step 结果不符: %+v", stepped)
 	}
 
 	// report_result：没有在途受理 → ignored。

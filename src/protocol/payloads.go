@@ -16,9 +16,9 @@ type Provide struct {
 	// Tool 显式声明该动作是否作为 LLM 工具暴露给模型（默认 false）。
 	// 工具名 = <service>__<action>；链机制保留动作与调试动作即便声明也不暴露（第二道闸）。
 	Tool bool `msgpack:"tool,omitempty"`
-	// Async 显式声明该动作是“受理即回执”：响应只表示已受理（带回句柄 item_id），
+	// LongRunning 显式声明该动作是“受理即回执”：响应只表示已受理（带回句柄 item_id），
 	// 后续进展由该服务以 report_result 补报送达（可能晚于调用方收尾）。
-	Async bool `msgpack:"async,omitempty"`
+	LongRunning bool `msgpack:"long_running,omitempty"`
 	// Batchable 显式声明该动作可被 batch 服务批量调用（默认 false）。
 	// 与 Tool 同一套哲学：能力由服务自己表态，不由调度方猜。
 	Batchable bool `msgpack:"batchable,omitempty"`
@@ -942,7 +942,7 @@ type EmbedResult struct {
 
 // ---------- 异步受理的补报（report_result） ----------
 
-// AsyncResultPayload 是 report_result 的载荷：一个“受理即回执”（Provide.Async）的动作
+// AsyncResultPayload 是 report_result 的载荷：一个“受理即回执”（Provide.LongRunning）的动作
 // 在受理之后发回的后续消息（补报）。方向与服务 → 调用方（信封 to = 原先的调用方）。
 // ItemID 是受理回执里给出的句柄（调用方据此把补报配回自己的记账）；
 // Phase 是进展阶段（服务自定，如 approved / rejected / done / failed）；
@@ -995,16 +995,29 @@ type ShellEventData struct {
 
 // RememberPayload 是 remember 的 payload：写入一条长期记忆条目。
 type RememberPayload struct {
-	Kind           string `msgpack:"kind"`                      // 分类（自由文本：偏好 / 身份 / 知识 / 事件……）
-	Content        string `msgpack:"content"`                   // 条目正文
-	Priority       int    `msgpack:"priority,omitempty"`        // >0 = 核心记忆（每次对话都注入，不看相关性）
-	ConversationID string `msgpack:"conversation_id,omitempty"` // 可空 = 全局条目
+	Kind           string  `msgpack:"kind"`                      // 分类（自由文本：偏好 / 身份 / 知识 / 事件……）
+	Content        string  `msgpack:"content"`                   // 条目正文
+	Priority       int     `msgpack:"priority,omitempty"`        // >0 = 核心记忆（每次对话都注入，不看相关性）
+	Salience       float64 `msgpack:"salience,omitempty"`        // 0..1 重要性：越大遗忘越慢（缺省 0）
+	ConversationID string  `msgpack:"conversation_id,omitempty"` // 可空 = 全局条目
 }
 
 // RememberResult 是 remember 的结果：条目 id 与是否新建（重复内容幂等跳过）。
 type RememberResult struct {
 	ID      int64 `msgpack:"id"`
 	Created bool  `msgpack:"created"`
+}
+
+// ConsolidateResult 是一次记忆整理的结果（整理池的计数，不含原文）。
+type ConsolidateResult struct {
+	Processed    int `msgpack:"processed"`
+	Archived     int `msgpack:"archived"`
+	Skipped      int `msgpack:"skipped"`
+	Failed       int `msgpack:"failed"`
+	MemnetFailed int `msgpack:"memnet_failed,omitempty"`
+	Conflicts    int `msgpack:"conflicts,omitempty"`
+	Superseded   int `msgpack:"superseded,omitempty"`
+	Unresolved   int `msgpack:"unresolved,omitempty"`
 }
 
 // ForgetPayload 是 forget 的 payload：软删一条长期记忆（不在 provides 里——不给 LLM 删记忆的按钮）。

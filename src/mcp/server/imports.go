@@ -140,7 +140,7 @@ func compileImports(remotes []RemoteConfig, configs []ImportConfig) (map[string]
 	}
 	tools := make(map[string]importedTool, len(configs))
 	// hello/health/metrics 是 SPv2 服务端内建 method；同名 import 会覆盖握手/健康检查。
-	reserved := map[string]bool{"configure": true, "report_result": true, "cancel_import": true, "step": true, "deliver": true, "store": true, "save": true, "fetch": true, "echo": true, "debug_jump": true, "ping": true, "roster": true, "report": true, "list_settings": true, "set_setting": true, "reset_setting": true, "report_setting": true, "capabilities": true, "hello": true, "health": true, "metrics": true}
+	reserved := map[string]bool{"configure": true, "report_result": true, "cancel_import": true, "step": true, "message": true, "context": true, "work_get": true, "deliver": true, "store": true, "save": true, "fetch": true, "echo": true, "debug_call": true, "ping": true, "roster": true, "report": true, "list_settings": true, "set_setting": true, "reset_setting": true, "report_setting": true, "capabilities": true, "hello": true, "health": true, "metrics": true}
 	for _, c := range configs {
 		if !importName.MatchString(c.Action) || reserved[c.Action] {
 			return nil, nil, fmt.Errorf("invalid or reserved import action %q", c.Action)
@@ -269,7 +269,7 @@ func (i *Imports) Provides() []protocol.Provide {
 		if tool.config.Async {
 			output = "Accepted receipt: item_id, phase=accepted. Final result arrives via report_result; acceptance does not mean completion."
 		}
-		out = append(out, protocol.Provide{Action: tool.config.Action, Tool: true, Async: tool.config.Async,
+		out = append(out, protocol.Provide{Action: tool.config.Action, Tool: true, LongRunning: tool.config.Async,
 			Input:  tool.config.Description + " JSON Schema: " + string(tool.config.InputSchema),
 			Output: output})
 	}
@@ -278,7 +278,7 @@ func (i *Imports) Provides() []protocol.Provide {
 }
 
 // NativeMethods 返回与动态 provides 一一对应的 SPv2.1 method 声明。
-// Tool/LongRunning 直接映射 provide 的 Tool/Async；Input/Output 取自审查过的
+// Tool/LongRunning 直接映射 provide 的同名字段；Input/Output 取自审查过的
 // import 契约，缺失或不是 object 时退回 object，保证卡片与工具声明始终可读。
 func (i *Imports) NativeMethods() []spv2.Method {
 	provides := i.Provides()
@@ -288,7 +288,7 @@ func (i *Imports) NativeMethods() []spv2.Method {
 		out = append(out, spv2.Method{
 			Name:        provide.Action,
 			Tool:        provide.Tool,
-			LongRunning: provide.Async,
+			LongRunning: provide.LongRunning,
 			Description: tool.config.Description,
 			Input:       importMethodSchema(tool.config.InputSchema),
 			Output:      importMethodSchema(tool.config.OutputSchema),

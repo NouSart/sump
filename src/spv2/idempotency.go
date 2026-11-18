@@ -7,9 +7,10 @@ import (
 
 // IdempotencyCache 是可选的幂等缓存。只缓存 unary reply；stream 不缓存。
 type IdempotencyCache struct {
-	mu      sync.Mutex
-	ttl     time.Duration
-	entries map[string]idemEntry
+	mu       sync.Mutex
+	ttl      time.Duration
+	entries  map[string]idemEntry
+	inflight map[string]chan struct{}
 }
 
 type idemEntry struct {
@@ -22,7 +23,7 @@ func NewIdempotencyCache(ttl time.Duration) *IdempotencyCache {
 	if ttl <= 0 {
 		ttl = time.Hour
 	}
-	return &IdempotencyCache{ttl: ttl, entries: map[string]idemEntry{}}
+	return &IdempotencyCache{ttl: ttl, entries: map[string]idemEntry{}, inflight: map[string]chan struct{}{}}
 }
 
 func idemKeyOf(f Frame) string {
@@ -48,6 +49,31 @@ func (c *IdempotencyCache) put(key string, f Frame) {
 	defer c.mu.Unlock()
 	f.Body = append([]byte(nil), f.Body...)
 	c.entries[key] = idemEntry{frame: f, expires: time.Now().Add(c.ttl)}
+}
+
+// begin 登记一个在途幂等键：leader=true 的执行，其余等它完成再读缓存。
+func (c *IdempotencyCache) begin(key string) (wait <-chan struct{}, leader bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ch, ok := c.inflight[key]; ok {
+		return ch, false
+	}
+	ch := make(chan struct{})
+	c.inflight[key] = ch
+	return ch, true
+}
+
+// finish 关闭在途登记（无论成功失败都要调，否则重复请求会一直等）。
+func (c *IdempotencyCache) finish(key string) {
+	c.mu.Lock()
+	ch, ok := c.inflight[key]
+	if ok {
+		delete(c.inflight, key)
+	}
+	c.mu.Unlock()
+	if ok {
+		close(ch)
+	}
 }
 
 // Len 返回当前缓存条数（测试/观测用）。
