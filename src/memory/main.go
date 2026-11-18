@@ -1,6 +1,6 @@
-// memory：SUMP v2 的记忆服务（第一批）。
-// 会话历史存储 + 上下文组装：recall 收到调用方托管的任务上下文 →
-// 注入记忆后以 resume 发回（触发其“完全启动”）。
+// memory 域进程入口。
+// 生产按角色拆成三进程：session（会话库）/ experience（共享库）/ facade（唯一对外）。
+// -role memory 保留旧单进程实现，供尚未迁移的本地脚本与端到端测试使用。
 package main
 
 import (
@@ -16,121 +16,171 @@ import (
 	"strings"
 	"time"
 
+	"github.com/NouSart/sump/memory/experience"
+	"github.com/NouSart/sump/memory/facade"
 	"github.com/NouSart/sump/memory/server"
+	"github.com/NouSart/sump/memory/session"
 	"github.com/NouSart/sump/memory/shared"
 	"github.com/NouSart/sump/memory/store"
 )
 
+type role string
+
+const (
+	roleMemory     role = "memory"
+	roleFacade     role = "facade"
+	roleSession    role = "session"
+	roleExperience role = "experience"
+)
+
 func main() {
-	roleFlag := flag.String("role", "memory", "进程角色：memory（整域）/ facade / session / experience")
+	roleFlag := flag.String("role", "memory", "进程角色：memory（旧单进程）/ facade / session / experience")
 	peers := flag.String("peers", "", "静态内部对端，逗号分隔：embedding=ws://127.0.0.1:9202/spv2,session=...")
-	role := parseRole(*roleFlag)
+	r := parseRole(*roleFlag)
 	nameDefault, addrDefault := "memory", "127.0.0.1:9201"
-	switch role {
-	case server.RoleSession:
+	switch r {
+	case roleSession:
 		nameDefault, addrDefault = "session", "127.0.0.1:9311"
-	case server.RoleExperience:
+	case roleExperience:
 		nameDefault, addrDefault = "experience", "127.0.0.1:9312"
 	}
 	name := flag.String("name", nameDefault, "服务名")
 	addr := flag.String("addr", addrDefault, "监听地址（host:port）")
 	center := flag.String("center", "ws://127.0.0.1:9000/spv2", "设置中心 WS 地址（session/experience 独立模式不连接）")
 	dbPath := flag.String("db", "data/memory.db", "会话库（私有）路径")
-	// 共享库默认与会话库同目录（data/experience.db）：换 -db 时不必记得同时换它，
-	// 测试也就不会把共享数据写进仓库的 data/。
-	sharedFlag := flag.String("shared-db", "", "共享经验库路径（跨会话只放提炼物；空 = 与会话库同目录的 experience.db）")
-	history := flag.Int("history", 12, "recall 返回的最近消息条数")
-	embedding := flag.String("embedding", "embedding", "embedding 服务名（语义召回；不可用时静默回落 bigram）")
+	sharedFlag := flag.String("shared-db", "", "共享经验库路径（空 = 与会话库同目录的 experience.db）")
+	history := flag.Int("history", 12, "context_base 返回的最近消息条数")
+	embedding := flag.String("embedding", "embedding", "embedding 服务名")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "[memory] ", log.LstdFlags|log.Lmicroseconds)
-
 	sharedPath := *sharedFlag
 	if sharedPath == "" {
 		sharedPath = filepath.Join(filepath.Dir(*dbPath), "experience.db")
 	}
-
-	var st *store.Store
-	if role == server.RoleAll || role == server.RoleSession {
-		var err error
-		st, err = store.Open(*dbPath)
-		if err != nil {
-			logger.Fatalf("打开会话库失败: %v", err)
-		}
-		defer st.Close()
+	cfg := runConfig{
+		name: *name, addr: *addr, center: *center, dbPath: *dbPath, sharedPath: sharedPath,
+		history: *history, embedding: *embedding, peers: parsePeers(*peers), logger: logger,
 	}
+	switch r {
+	case roleSession:
+		runSession(cfg)
+	case roleExperience:
+		runExperience(cfg)
+	case roleFacade:
+		runFacade(cfg)
+	default:
+		runLegacy(cfg)
+	}
+}
 
-	// 共享经验库是**另一个文件、另一个句柄**：这里没有 messages，只有偏好 / 经验 / 会话摘要。
-	// 首次从旧版 memory.db 迁移前先复制一份备份——迁移只改名不删表，但备份更省心。
-	if role == server.RoleAll {
-		if _, err := os.Stat(sharedPath); errors.Is(err, os.ErrNotExist) {
-			if _, err := os.Stat(*dbPath); err == nil && st != nil {
-				bak := fmt.Sprintf("%s.bak-%s", *dbPath, time.Now().Format("20060102-150405"))
-				if err := copyFile(*dbPath, bak); err != nil {
-					logger.Printf("备份会话库失败（继续迁移）: %v", err)
-				} else {
-					logger.Printf("迁移前已备份会话库: %s", bak)
-				}
+type runConfig struct {
+	name, addr, center, dbPath, sharedPath, embedding string
+	history                                           int
+	peers                                             map[string]string
+	logger                                            *log.Logger
+}
+
+func runSession(c runConfig) {
+	st, err := store.Open(c.dbPath)
+	if err != nil {
+		c.logger.Fatalf("打开会话库失败: %v", err)
+	}
+	defer st.Close()
+	s := session.New(session.Config{
+		Name: c.name, Listen: c.addr, Center: c.center, Standalone: true,
+		Peers: c.peers, Store: st, HistoryLimit: c.history, DBPath: c.dbPath,
+		Logger: c.logger,
+	}, c.logger)
+	serve(s, c.logger)
+}
+
+func runExperience(c runConfig) {
+	sh, err := shared.Open(c.sharedPath, time.Now())
+	if err != nil {
+		c.logger.Fatalf("打开共享经验库: %v", err)
+	}
+	defer sh.Close()
+	s := experience.New(experience.Config{
+		Name: c.name, Listen: c.addr, Center: c.center, Standalone: true,
+		Peers: c.peers, Shared: sh, Embedding: c.embedding, SharedPath: c.sharedPath,
+		Logger: c.logger,
+	}, c.logger)
+	serve(s, c.logger)
+}
+
+func runFacade(c runConfig) {
+	s := facade.New(facade.Config{
+		Name: c.name, Listen: c.addr, Center: c.center, Peers: c.peers,
+		Logger: c.logger,
+	}, c.logger)
+	serve(s, c.logger)
+}
+
+// runLegacy 是旧单进程形态：同时开两个库，保留到端到端脚本迁完。
+func runLegacy(c runConfig) {
+	st, err := store.Open(c.dbPath)
+	if err != nil {
+		c.logger.Fatalf("打开会话库失败: %v", err)
+	}
+	defer st.Close()
+	if _, err := os.Stat(c.sharedPath); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(c.dbPath); err == nil {
+			bak := fmt.Sprintf("%s.bak-%s", c.dbPath, time.Now().Format("20060102-150405"))
+			if err := copyFile(c.dbPath, bak); err != nil {
+				c.logger.Printf("备份会话库失败（继续迁移）: %v", err)
+			} else {
+				c.logger.Printf("迁移前已备份会话库: %s", bak)
 			}
 		}
 	}
-	var sh *shared.Store
-	if role == server.RoleAll || role == server.RoleExperience {
-		var err error
-		sh, err = shared.Open(sharedPath, time.Now())
-		if err != nil {
-			logger.Fatalf("打开共享经验库失败: %v", err)
-		}
-		defer sh.Close()
+	sh, err := shared.Open(c.sharedPath, time.Now())
+	if err != nil {
+		c.logger.Fatalf("打开共享经验库: %v", err)
 	}
-	// 迁移需要同时读会话库与共享库：只在整域进程里做。拆分后由一次性运维步骤负责。
-	if role == server.RoleAll {
-		if migrated, err := sh.MigrateFrom(st.DB()); err != nil {
-			logger.Printf("共享数据迁移未完成（共享库保持现状）: %v", err)
-		} else if migrated {
-			logger.Printf("共享数据已迁移到 %s（旧表改名为 legacy_*）", sharedPath)
-		}
+	defer sh.Close()
+	if migrated, err := sh.MigrateFrom(st.DB()); err != nil {
+		c.logger.Printf("共享数据迁移未完成（共享库保持现状）: %v", err)
+	} else if migrated {
+		c.logger.Printf("共享数据已迁移到 %s（旧表改名为 legacy_*）", c.sharedPath)
 	}
-
 	s := server.New(server.Config{
-		Name:         *name,
-		Role:         role,
-		Peers:        parsePeers(*peers),
-		Listen:       *addr,
-		Center:       *center,
-		Store:        st,
-		Shared:       sh,
-		HistoryLimit: *history,
-		Embedding:    *embedding,
-		DBPath:       *dbPath,
-		SharedPath:   sharedPath,
-	}, logger)
+		Name: c.name, Role: server.RoleAll, Peers: c.peers, Listen: c.addr, Center: c.center,
+		Store: st, Shared: sh, HistoryLimit: c.history, Embedding: c.embedding,
+		DBPath: c.dbPath, SharedPath: c.sharedPath,
+	}, c.logger)
+	serve(s, c.logger)
+}
+
+type serveable interface {
+	Start(context.Context) error
+	Shutdown()
+}
+
+func serve(s serveable, logger *log.Logger) {
 	if err := s.Start(context.Background()); err != nil {
 		logger.Fatalf("启动失败: %v", err)
 	}
 	defer s.Shutdown()
-
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	<-sig
 	logger.Println("退出")
 }
 
-// parseRole 把命令行角色名映射成服务角色；未知值回落到整域。
-func parseRole(v string) server.Role {
+func parseRole(v string) role {
 	switch strings.TrimSpace(v) {
 	case "facade", "memory-facade":
-		return server.RoleFacade
+		return roleFacade
 	case "session":
-		return server.RoleSession
+		return roleSession
 	case "experience":
-		return server.RoleExperience
+		return roleExperience
 	default:
-		return server.RoleAll
+		return roleMemory
 	}
 }
 
-// parsePeers 解析 name=ws://... 的静态对端表。
 func parsePeers(v string) map[string]string {
 	if strings.TrimSpace(v) == "" {
 		return nil
@@ -145,7 +195,6 @@ func parsePeers(v string) map[string]string {
 	return out
 }
 
-// copyFile 是迁移前的一次性文件备份（只在共享库不存在时做一次）。
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {

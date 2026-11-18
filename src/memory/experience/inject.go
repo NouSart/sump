@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/NouSart/sump/memory/compose"
+	"github.com/NouSart/sump/memory/experience/compose"
 	"github.com/NouSart/sump/memory/longterm"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
