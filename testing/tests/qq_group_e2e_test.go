@@ -14,7 +14,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -105,29 +104,21 @@ func jumpToService(t *testing.T, addr, to, action string, input any) map[string]
 // TestQQGroupE2E 群消息进上下文、来源标注带全、答复回到群里，且记忆里存的是同一句话。
 func TestQQGroupE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
-	memBin := buildService(t, "github.com/NouSart/sump/memory")
 	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
 	qqBin := buildService(t, "github.com/NouSart/sump/qq")
 	nc := startNapCatStub(t)
 	fakeLLM := startGroupFakeLLM(t)
 
 	scPort := freePort(t)
-	memPort := freePort(t)
 	alPort := freePort(t)
 	qqPort := freePort(t)
 	centerURL := spv2URL(scPort)
-	memURL := spv2URL(memPort)
 	alURL := spv2URL(alPort)
 	qqURL := spv2URL(qqPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
-	startProc(t, memBin,
-		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
-		"-center", centerURL,
-		"-db", filepath.Join(t.TempDir(), "memory.db"),
-	)
-	waitWSReady(t, memURL, 60*time.Second)
+	memURL := startMemoryStack(t, centerURL, nil)
 	startProc(t, alBin,
 		"-addr", fmt.Sprintf("127.0.0.1:%d", alPort),
 		"-center", centerURL,

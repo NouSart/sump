@@ -20,25 +20,15 @@ import (
 
 func TestSharedExperienceE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
-	memBin := buildService(t, "github.com/NouSart/sump/memory")
-
 	scPort := freePort(t)
-	memPort := freePort(t)
 	centerURL := spv2URL(scPort)
-	memURL := spv2URL(memPort)
+
 	dir := t.TempDir()
 	privDB := filepath.Join(dir, "memory.db")
 	sharedDB := filepath.Join(dir, "experience.db")
-
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
-
-	startProc(t, memBin,
-		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
-		"-center", centerURL,
-		"-db", privDB,
-	)
-	waitWSReady(t, memURL, 60*time.Second)
+	memURL := startMemoryStackAt(t, centerURL, nil, privDB, sharedDB)
 	obs, _ := registerObserver(t, centerURL)
 	waitRosterHas(t, obs, "memory", 60*time.Second)
 

@@ -12,7 +12,6 @@ package tests
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,29 +21,19 @@ import (
 
 func TestMemnetDataFlowE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
-	memBin := buildService(t, "github.com/NouSart/sump/memory")
 
 	scPort := freePort(t)
-	memPort := freePort(t)
+	embPort := freePort(t)
 	centerURL := spv2URL(scPort)
-	memURL := spv2URL(memPort)
-	dir := t.TempDir()
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
-
-	startProc(t, memBin,
-		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
-		"-center", centerURL,
-		"-db", filepath.Join(dir, "memory.db"),
-	)
-	waitWSReady(t, memURL, 60*time.Second)
+	memURL := startMemoryStack(t, centerURL, map[string]string{"embedding": spv2URL(embPort)})
 
 	obs, _ := registerObserver(t, centerURL)
 	waitRosterHas(t, obs, "memory", 60*time.Second)
 
 	// embedding 后上线：顺带验"种子向量懒补齐"（note 之前网里还没有大类向量）。
-	embPort := freePort(t)
 	startEmbeddingProc(t, centerURL, embPort)
 	waitWSReady(t, spv2URL(embPort), 60*time.Second)
 	waitRosterHas(t, obs, "embedding", 60*time.Second)

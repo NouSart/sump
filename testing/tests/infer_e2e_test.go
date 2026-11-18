@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -213,28 +212,20 @@ func (b *e2eBoss) register(t *testing.T, centerURL string) *spv2.Client {
 func TestInferChainE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
 	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
-	memBin := buildService(t, "github.com/NouSart/sump/memory")
 
 	fakeLLM := startFakeDeepSeek(t, true)
 	boss := startE2EBoss(t)
 
 	scPort := freePort(t)
 	alPort := freePort(t)
-	memPort := freePort(t)
 	centerURL := spv2URL(scPort)
 	reasonerURL := spv2URL(alPort)
-	memoryURL := spv2URL(memPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
 
 	// memory 先启动（reasoner 需要从名册解析到它）。
-	startProc(t, memBin,
-		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
-		"-center", centerURL,
-		"-db", filepath.Join(t.TempDir(), "memory.db"),
-	)
-	waitWSReady(t, memoryURL, 60*time.Second)
+	memoryURL := startMemoryStack(t, centerURL, nil)
 
 	// boss 先进名册，再启动 reasoner。
 	bossClient := boss.register(t, centerURL)

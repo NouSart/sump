@@ -129,7 +129,6 @@ func qqPrivateFileEvent(uid int64, text, fileURL, fileName string) map[string]an
 // 调 files__read 自取文本（结果注入下一轮）→ 最终答复回发 QQ。
 func TestQQFileE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
-	memBin := buildService(t, "github.com/NouSart/sump/memory")
 	filBin := buildServiceNamed(t, "github.com/NouSart/sump/files", "sump-files")
 	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
 	qqBin := buildService(t, "github.com/NouSart/sump/qq")
@@ -145,25 +144,17 @@ func TestQQFileE2E(t *testing.T) {
 	t.Cleanup(mdSrv.Close)
 
 	scPort := freePort(t)
-	memPort := freePort(t)
 	filPort := freePort(t)
 	alPort := freePort(t)
 	qqPort := freePort(t)
 	centerURL := spv2URL(scPort)
-	memURL := spv2URL(memPort)
 	filURL := spv2URL(filPort)
 	alURL := spv2URL(alPort)
 	qqURL := spv2URL(qqPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
-
-	startProc(t, memBin,
-		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
-		"-center", centerURL,
-		"-db", filepath.Join(t.TempDir(), "memory.db"),
-	)
-	waitWSReady(t, memURL, 60*time.Second)
+	_ = startMemoryStack(t, centerURL, nil)
 
 	startProc(t, filBin,
 		"-addr", fmt.Sprintf("127.0.0.1:%d", filPort),

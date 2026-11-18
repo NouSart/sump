@@ -69,23 +69,17 @@ func startEmbeddingProc(t *testing.T, centerURL string, port int) {
 // TestSemanticRecallCrossLanguageE2E：Go ↔ Python 跨语言语义召回全链（含热注册与懒补齐）。
 func TestSemanticRecallCrossLanguageE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
-	memBin := buildService(t, "github.com/NouSart/sump/memory")
 
 	dir := t.TempDir()
 	scPort := freePort(t)
+	embPort := freePort(t)
 	centerURL := spv2URL(scPort)
-	memPort := freePort(t)
-	memURL := spv2URL(memPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort), "-settings", filepath.Join(dir, "settings.json"))
 	waitWSReady(t, centerURL, 60*time.Second)
 
-	// memory 先起：此刻名册没有 embedding——remember 的向量化会失败（懒补齐交给之后的 recall）。
-	startProc(t, memBin,
-		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
-		"-center", centerURL,
-		"-db", filepath.Join(dir, "memory.db"))
-	waitWSReady(t, memURL, 60*time.Second)
+	// embedding 地址先给 experience：进程后上线，但地址固定；可验懒补齐。
+	memURL := startMemoryStack(t, centerURL, map[string]string{"embedding": spv2URL(embPort)})
 
 	obs, _ := registerObserver(t, centerURL)
 	waitRosterHas(t, obs, "memory", 60*time.Second)
@@ -98,8 +92,7 @@ func TestSemanticRecallCrossLanguageE2E(t *testing.T) {
 		}
 	}
 
-	// Python embedding 后上线：热注册 → 中心广播名册（memory 随之可解析）。
-	embPort := freePort(t)
+	// Python embedding 后上线：热注册 → 中心广播名册。
 	startEmbeddingProc(t, centerURL, embPort)
 	waitWSReady(t, spv2URL(embPort), 60*time.Second)
 	waitRosterHas(t, obs, "embedding", 60*time.Second)
