@@ -694,11 +694,10 @@ func (c *Call) replyError(code, msg string, retryable bool, details map[string]a
 	return c.conn.send(f)
 }
 
-// SendEvent 向调用方发事件。
+// SendEvent 向调用方发事件。event 不隶属于 call 的回执生命周期：服务可以在
+// 回复 register 之后继续用同一条连接推送 roster/settings，因此这里不能按
+// call 的 action timeout 拦截。
 func (c *Call) SendEvent(method string, body any) error {
-	if c.expired() {
-		return ErrCode(CodeDeadlineExceeded, "调用已超过 action timeout，late event 不发送", true, nil)
-	}
 	f, err := NewEvent(c.Frame.Work, c.srv.card.Actor, c.Frame.From, method, body)
 	if err != nil {
 		return err
