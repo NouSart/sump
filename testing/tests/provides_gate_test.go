@@ -30,17 +30,23 @@ var handledButUndeclared = map[string]map[string]string{
 	},
 	"approval": {"report_result": "入站：裁决回执"},
 	"memory": {
-		"work_get":      "入站：work 账本由入口/reasoner 内部读，不进入名册",
-		"lease_charge":  "入站：租约扣减由 reasoner 工具链内部调用，不进入名册",
-		"lease_release": "入站：租约归还由内部调用，不进入名册",
-		"work_update":   "入站：work 状态推进由 reasoner 轮次边界内部调用，不进入名册",
-		"work_sweep":    "运维：手动触发 sweep，不属于能力名册",
-		"work_cancel":   "入站：取消 work 的内部 method",
-		"work_renew":    "入站：续租的内部 method",
-		"message_post":  "入站：A2A 队列写入（内部）",
-		"message_claim": "入站：A2A 队列领取（内部）",
-		"message_ack":   "入站：A2A 队列确认（内部）",
-		"message_nack":  "入站：A2A 队列失败重排（内部）",
+		"work_get":        "入站：work 账本由入口/reasoner 内部读，不进入名册",
+		"lease_charge":    "入站：租约扣减由 reasoner 工具链内部调用，不进入名册",
+		"lease_release":   "入站：租约归还由内部调用，不进入名册",
+		"work_update":     "入站：work 状态推进由 reasoner 轮次边界内部调用，不进入名册",
+		"work_sweep":      "运维：手动触发 sweep，不属于能力名册",
+		"work_cancel":     "入站：取消 work 的内部 method",
+		"work_renew":      "入站：续租的内部 method",
+		"message_post":    "入站：A2A 队列写入（内部）",
+		"message_claim":   "入站：A2A 队列领取（内部）",
+		"message_ack":     "入站：A2A 队列确认（内部）",
+		"message_nack":    "入站：A2A 队列失败重排（内部）",
+		"context_base":    "入站：门面取会话侧上下文原材料（内部）",
+		"inject":          "入站：门面取共享经验四节（内部）",
+		"staged_pending":  "入站：experience 向 session 取整理池候选（内部）",
+		"staged_mark":     "入站：experience 回写整理池状态（内部）",
+		"staged_retry":    "入站：experience 重试整理池条目（内部）",
+		"settings_schema": "入站：门面读取设置声明做聚合与冲突检查（内部）",
 	},
 	"mcp": {"cancel_import": "入站：外部取消导入", "report_result": "入站：导入进度补报"},
 	// 服务自己发给自己的跳转（单步推理的自跳）。
@@ -139,6 +145,10 @@ func goModules(t *testing.T, root string) []string {
 func scanActions(t *testing.T, dir string) (declared, handled, mentioned map[string]bool) {
 	t.Helper()
 	declared, handled, mentioned = map[string]bool{}, map[string]bool{}, map[string]bool{}
+	// 直接传 helper 返回值的注册（如 `s.HandleNative(contextMethod(), ...)`）：
+	// 先记下 helper 名，扫完整个模块后从它的函数体里回填动作名。
+	pendingHelpers := map[string]bool{}
+	helperMethods := map[string][]string{}
 	fset := token.NewFileSet()
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -211,7 +221,12 @@ func scanActions(t *testing.T, dir string) (declared, handled, mentioned map[str
 			case "HandleNative":
 				lit, ok := call.Args[0].(*ast.CompositeLit)
 				if !ok {
-					return true // 动态方法（如 mcp 的导入动作）不在静态扫描范围
+					// 直接把 helper 返回值注册进来（如 facade 的 contextMethod()）：
+					// 名字先记下，等整个模块扫完再从函数体回填。
+					if name, ok := directCallName(call.Args[0]); ok {
+						pendingHelpers[name] = true
+					}
+					return true
 				}
 				for _, field := range lit.Elts {
 					kv, ok := field.(*ast.KeyValueExpr)
@@ -229,6 +244,14 @@ func scanActions(t *testing.T, dir string) (declared, handled, mentioned map[str
 			}
 			return true
 		})
+		// helper 函数体里的 spv2.Method{Name: "x"}：供上面的 pendingHelpers 回填。
+		for _, decl := range file.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			helperMethods[fd.Name.Name] = append(helperMethods[fd.Name.Name], methodNameLits(fd.Body)...)
+		}
 		// 所有字符串字面量：给自己写分发的模块（settings-center）用它做"声明是否还活着"的弱检查。
 		ast.Inspect(file, func(n ast.Node) bool {
 			if bl, ok := n.(*ast.BasicLit); ok && bl.Kind == token.STRING {
@@ -243,7 +266,62 @@ func scanActions(t *testing.T, dir string) (declared, handled, mentioned map[str
 	if err != nil {
 		t.Fatalf("扫描 %s 失败: %v", dir, err)
 	}
+	for name := range pendingHelpers {
+		for _, action := range helperMethods[name] {
+			handled[action] = true
+		}
+	}
 	return declared, handled, mentioned
+}
+
+// directCallName 取 `f(...)` 形式的被调函数名；选择器（如 pkg.F）与变量表达式不解析。
+func directCallName(e ast.Expr) (string, bool) {
+	call, ok := e.(*ast.CallExpr)
+	if !ok {
+		return "", false
+	}
+	id, ok := call.Fun.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	return id.Name, true
+}
+
+// methodNameLits 返回节点里 `spv2.Method{Name: "x", ...}` 字面量的动作名。
+func methodNameLits(n ast.Node) []string {
+	var out []string
+	ast.Inspect(n, func(n ast.Node) bool {
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok || !isMethodType(lit.Type) {
+			return true
+		}
+		for _, field := range lit.Elts {
+			kv, ok := field.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, ok := kv.Key.(*ast.Ident)
+			if !ok || key.Name != "Name" {
+				continue
+			}
+			if v, ok := stringLit(kv.Value); ok {
+				out = append(out, v)
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// isMethodType 判断类型是不是 `Method` / `spv2.Method`。
+func isMethodType(e ast.Expr) bool {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name == "Method"
+	case *ast.SelectorExpr:
+		return t.Sel.Name == "Method"
+	}
+	return false
 }
 
 // isProvideSlice 判断类型是不是 `[]Provide` / `[]protocol.Provide`。

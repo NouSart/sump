@@ -10,77 +10,77 @@ package main
 // 每条的选法都一样：挑那种**改完代码仍能编译、仍能跑、看上去还说得通**的写法。
 // 随机改字符没意义，改出来的编译错误只会证明编译器在工作。
 var guards = []guard{
-	// ---------- 共享库写入边界（src/memory/redact）----------
+	// ---------- 共享库写入边界（src/memory/experience/redact）----------
 	{
 		name: "复检谓词认不出 UNC 路径，存量清理自称干净",
-		file: "src/memory/redact/redact.go",
+		file: "src/memory/experience/redact/redact.go",
 		old:  `	case reWinPath.MatchString(s), reUNCPath.MatchString(s), rePosix.MatchString(s):`,
 		new:  `	case reWinPath.MatchString(s), rePosix.MatchString(s):`,
 	},
 	{
 		name: "密钥形状不再算泄露（sk-… 原样进库）",
-		file: "src/memory/redact/redact.go",
+		file: "src/memory/experience/redact/redact.go",
 		old:  `	case reToken.MatchString(s), reBearer.MatchString(s):`,
 		new:  `	case reBearer.MatchString(s):`,
 	},
 	{
 		name: "会话键判定放宽：任何值都算已收口",
-		file: "src/memory/redact/redact.go",
+		file: "src/memory/experience/redact/redact.go",
 		old:  `	return reOpaqueSession.MatchString(s) || reOpaqueBare.MatchString(s) || s == ""`,
 		new:  `	return true`,
 	},
 	{
 		name: "摘要位数变短，产出的形状不再是自己认的那一种",
-		file: "src/memory/redact/redact.go",
+		file: "src/memory/experience/redact/redact.go",
 		old:  `	return hex.EncodeToString(sum[:])[:12]`,
 		new:  `	return hex.EncodeToString(sum[:])[:8]`,
 	},
 	{
 		name: "标识列不再收口：带冒号 / at 的值照样写进 task_id",
-		file: "src/memory/redact/redact.go",
+		file: "src/memory/experience/redact/redact.go",
 		old:  `	if !reRefID.MatchString(s) {`,
 		new:  `	if false && !reRefID.MatchString(s) {`,
 	},
 
-	// ---------- 会话目录的两个标题列（src/memory/shared）----------
+	// ---------- 会话目录的两个标题列（src/memory/experience/shared）----------
 	// 用例先填实（d3174af：Publish 输入里两个标题原本都是空串，断言对着空格永真），再补守卫。
 	{
 		name: "任务标题绕过写入边界（目录里的标题原样入库）",
-		file: "src/memory/shared/sessions.go",
+		file: "src/memory/experience/shared/sessions.go",
 		old:  `	title := Sanitize(in.TaskTitle, maxTitleChars)`,
 		new:  `	title := in.TaskTitle`,
 	},
 	{
 		name: "会话标题绕过写入边界（门户上那行会话名没人管）",
-		file: "src/memory/shared/sessions.go",
+		file: "src/memory/experience/shared/sessions.go",
 		old:  `	sessionTitle := Sanitize(in.SessionTitle, maxTitleChars)`,
 		new:  `	sessionTitle := in.SessionTitle`,
 	},
 
-	// ---------- 存量清理（src/memory/repair）----------
+	// ---------- 存量清理（src/memory/experience/repair）----------
 	{
 		name: "复检没归零也照样提交（洗了一半写进库）",
-		file: "src/memory/repair/repair.go",
+		file: "src/memory/experience/repair/repair.go",
 		old:  `		if len(rep.Remaining) > 0 {`,
 		new:  `		if false && len(rep.Remaining) > 0 {`,
 	},
 	{
 		name: "跳过复检，报告里的「剩余」永远是空",
-		file: "src/memory/repair/repair.go",
+		file: "src/memory/experience/repair/repair.go",
 		old:  `	rep.Remaining, err = verifyFn(tx)`,
 		new:  `	rep.Remaining, err = nil, nil`,
 	},
 	{
 		name: "清理清单漏掉一列（那张表永远不被检）",
-		file: "src/memory/repair/repair.go",
+		file: "src/memory/experience/repair/repair.go",
 		old:  `		{"anchor", kText},`,
 		new:  `		// anchor 是种子句，写死的，不用洗`,
 	},
 
-	// ---------- 经验网向量与出厂参数（src/memory/memnet）----------
+	// ---------- 经验网向量与出厂参数（src/memory/experience/memnet）----------
 	{
 		name: "unit 回到就地改写（调用方手里的向量被偷偷归一化）",
-		file: "src/memory/memnet/memnet.go",
+		file: "src/memory/experience/memnet/memnet.go",
 		old: `	out := make([]float32, len(v))
 	var n float64
 	for _, f := range v {
@@ -110,7 +110,7 @@ var guards = []guard{
 	},
 	{
 		name: "加挂阈值高过中心化后的带宽（「网」悄悄退化成单父树）",
-		file: "src/memory/memnet/memnet.go",
+		file: "src/memory/experience/memnet/memnet.go",
 		old:  `		LinkL1:      0.15,`,
 		new:  `		LinkL1:      0.25,`,
 	},
@@ -505,14 +505,14 @@ var guards = []guard{
 	// ---------- 设置键改名（src/memory · recall.* → context.*）----------
 	{
 		name: "设置键偷偷退回 recall.*（别名兼容）",
-		file: "src/memory/server/server.go",
+		file: "src/memory/session/session.go",
 		old:  `	s.HandleSetting("context.history_limit"`,
 		new:  `	s.HandleSetting("recall.history_limit"`,
 	},
 	// ---------- work 推进指标（src/memory · spec §12.3）----------
 	{
 		name: "work 推进指标用未白名单 label（被静默丢掉）",
-		file: "src/memory/server/a2a.go",
+		file: "src/memory/session/a2a.go",
 		old:  `map[string]string{"status": to}`,
 		new:  `map[string]string{"to": to}`,
 	},
@@ -586,7 +586,7 @@ var guards = []guard{
 	// ---------- A2A 队列指标（src/memory · spec §12.3）----------
 	{
 		name: "A2A 队列深度不再写进注册表",
-		file: "src/memory/server/a2a.go",
+		file: "src/memory/session/a2a.go",
 		old:  `	for _, state := range []string{store.WorkMsgPending, store.WorkMsgClaimed, store.WorkMsgDelivered, store.WorkMsgFailed} {`,
 		new:  `	for _, state := range []string{store.WorkMsgDelivered} {`,
 	},
@@ -652,19 +652,19 @@ var guards = []guard{
 	// ---------- A2A 队列与 work 生命周期（src/memory · spec §6.8/§7.4/§7.5）----------
 	{
 		name: "claim 不看目标 actor",
-		file: "src/memory/store/a2a.go",
+		file: "src/memory/session/store/a2a.go",
 		old:  `AND (wm.to_id = "" OR wm.to_id = ?)`,
 		new:  `AND (wm.to_id = "" OR ? != "")`,
 	},
 	{
 		name: "nack 不设重试上限（永不 dead-letter）",
-		file: "src/memory/store/a2a.go",
+		file: "src/memory/session/store/a2a.go",
 		old:  `	if m.Attempts >= maxAttempts {`,
 		new:  `	if false && m.Attempts >= maxAttempts {`,
 	},
 	{
 		name: "终态 work 仍可入队",
-		file: "src/memory/store/a2a.go",
+		file: "src/memory/session/store/a2a.go",
 		old: `	if spv2.IsTerminal(w.Status) {
 		return WorkMessage{}, spv2.ErrCode(spv2.CodeConflict, "work "+workID+" 已终态，不能再入队消息", false, nil)
 	}`,
@@ -674,20 +674,20 @@ var guards = []guard{
 	},
 	{
 		name: "renew 允许把 deadline 改到过去",
-		file: "src/memory/store/a2a.go",
+		file: "src/memory/session/store/a2a.go",
 		old:  `		if t.Before(time.Now()) {`,
 		new:  `		if false && t.Before(time.Now()) {`,
 	},
 	// ---------- work sweep（src/memory · spec §6.9）----------
 	{
 		name: "sweep 不看 deadline",
-		file: "src/memory/store/work.go",
+		file: "src/memory/session/store/work.go",
 		old:  `	WHERE status IN (?, ?, ?) AND deadline_at != "" AND deadline_at < ?`,
 		new:  `	WHERE status IN (?, ?, ?) AND deadline_at != "" AND deadline_at < "9999-12-31T23:59:59Z"`,
 	},
 	{
 		name: "sweep 不看终态",
-		file: "src/memory/store/work.go",
+		file: "src/memory/session/store/work.go",
 		old:  `	WHERE status IN (?, ?, ?) AND deadline_at != "" AND deadline_at < ?`,
 		new:  `	WHERE status != "" AND deadline_at != "" AND deadline_at < ?`,
 	},
@@ -718,7 +718,7 @@ var guards = []guard{
 	// ---------- 生产 work 账本（src/memory · spec §6/§6.8）----------
 	{
 		name: "context 不再登记 work 行",
-		file: "src/memory/server/server.go",
+		file: "src/memory/session/context.go",
 		old: `	if err := s.ensureContextWork(ctx, meta, tc, task.Name); err != nil {
 		return protocol.Task{}, nil, err
 	}
@@ -727,13 +727,13 @@ var guards = []guard{
 	},
 	{
 		name: "work 非法状态转移不再拦",
-		file: "src/memory/store/work.go",
+		file: "src/memory/session/store/work.go",
 		old:  `	if !spv2.CanTransition(w.Status, status) {`,
 		new:  `	if false && !spv2.CanTransition(w.Status, status) {`,
 	},
 	{
 		name: "work 控制权不再校验",
-		file: "src/memory/server/work.go",
+		file: "src/memory/session/work.go",
 		old: `	if from.ID != "" && (from.ID == w.Agent.ID || from.ID == w.Owner.ID || from.ID == w.Entry.ID) {
 		return nil
 	}
@@ -743,13 +743,13 @@ var guards = []guard{
 	},
 	{
 		name: "stalled work 仍可扣租约",
-		file: "src/memory/store/work.go",
+		file: "src/memory/session/store/work.go",
 		old:  `	if w.Status == spv2.WorkStalled {`,
 		new:  `	if w.ID == "__never_stalled__" {`,
 	},
 	{
 		name: "Release 不再 clamp 到初始上限",
-		file: "src/memory/store/work.go",
+		file: "src/memory/session/store/work.go",
 		old: `		tools_left = MIN(tools_left + ?, max_tools),
 		tokens_left = MIN(tokens_left + ?, max_tokens),
 		approvals_left = MIN(approvals_left + ?, max_approvals),
@@ -758,10 +758,10 @@ var guards = []guard{
 		new: `		tools_left = tools_left + ?, tokens_left = tokens_left + ?, approvals_left = approvals_left + ?,
 		children_left = children_left + ?, depth_left = depth_left + ? WHERE id = ?`,
 	},
-	// ---------- 会话库两张脸（src/memory/store）----------
+	// ---------- 会话库两张脸（src/memory/session/store）----------
 	{
 		name: "归档的会话又冒回默认列表",
-		file: "src/memory/store/conversations.go",
+		file: "src/memory/session/store/conversations.go",
 		old:  `	if !includeArchived {`,
 		new:  `	if false && !includeArchived {`,
 	},
@@ -798,7 +798,7 @@ var guards = []guard{
 		new:  `	return buf.Bytes(), "image/jpeg", nil`,
 	},
 
-	// ---------- 审计闸门与已裁定白名单（src/memory/audit 与 cmd/sump-repair）----------
+	// ---------- 审计闸门与已裁定白名单（src/memory/experience/audit 与 cmd/sump-repair）----------
 	// 七条各盯一处"改完照样编译、照样跑、看上去还说得通"的走法。
 	// 隔离靠 cmd/sump-repair 与 audit 里那些单类场景：被删的检查必须是当时唯一能给出
 	// 那个退出码的原因，别的类别全为空——所以删掉任何一条，只有它自己的用例翻脸。
@@ -828,20 +828,20 @@ var guards = []guard{
 	},
 	{
 		name: "已裁定的位置不对账（列与探针被改也照样放行）",
-		file: "src/memory/audit/adjudicated.go",
+		file: "src/memory/experience/audit/adjudicated.go",
 		old: `		if entry.Table == f.Table && entry.RowKey == f.RowKey &&
 			entry.Column == f.Column && entry.Probe == f.Probe {`,
 		new: `		if entry.Table == f.Table && entry.RowKey == f.RowKey {`,
 	},
 	{
 		name: "行键列写死 rowid（清单给了别的键列也不认）",
-		file: "src/memory/audit/adjudicated.go",
+		file: "src/memory/experience/audit/adjudicated.go",
 		old:  `		keyColumn, ok := keyColumnOf(cols, a.Table, a.Column)`,
 		new:  `		keyColumn, ok := "rowid", true`,
 	},
 	{
 		name: "已知凭据按出现次数计（同一值在清单里写两遍被数两次）",
-		file: "src/memory/audit/audit.go",
+		file: "src/memory/experience/audit/audit.go",
 		old:  `		if seen[k] || !strings.Contains(text, k) {`,
 		new:  `		if !strings.Contains(text, k) {`,
 	},

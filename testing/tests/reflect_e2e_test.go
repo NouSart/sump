@@ -16,7 +16,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -127,29 +126,21 @@ func (f *reflectFakeLLM) Prompts() []string {
 func TestReflectWritesExperienceE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
 	rsBin := buildService(t, "github.com/NouSart/sump/reasoner")
-	memBin := buildService(t, "github.com/NouSart/sump/memory")
 
 	fakeLLM := startReflectFakeLLM(t)
 	boss := startE2EBoss(t)
 
 	scPort := freePort(t)
 	rsPort := freePort(t)
-	memPort := freePort(t)
 	embPort := freePort(t)
 	centerURL := spv2URL(scPort)
 	reasonerURL := spv2URL(rsPort)
-	memoryURL := spv2URL(memPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
 
 	// 记忆服务带经验网；embedding 后上线，顺带覆盖"种子向量懒补齐"。
-	startProc(t, memBin,
-		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
-		"-center", centerURL,
-		"-db", filepath.Join(t.TempDir(), "memory.db"),
-	)
-	waitWSReady(t, memoryURL, 60*time.Second)
+	memoryURL := startMemoryStack(t, centerURL, map[string]string{"embedding": spv2URL(embPort)})
 
 	bossClient := boss.register(t, centerURL)
 	t.Cleanup(func() { _ = bossClient.Close() })

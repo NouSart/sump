@@ -43,6 +43,9 @@ func (s *Service) buildSPv2() error {
 	methods := make([]spv2.Method, 0, len(nativeNames)+3)
 	seen := map[string]bool{}
 	for _, name := range nativeNames {
+		if s.cfg.NativeFilter != nil && !s.cfg.NativeFilter(name) {
+			continue
+		}
 		m := s.native[name].Method
 		if m.TimeoutMS == 0 {
 			m.TimeoutMS = s.cfg.ActionTimeout.Milliseconds()
@@ -78,16 +81,26 @@ func (s *Service) buildSPv2() error {
 	s.mu.Lock()
 	extraChecks := append([]spv2.HealthChecker(nil), s.healthChecks...)
 	s.mu.Unlock()
-	checks := append([]spv2.HealthChecker{s.centerHealthCheck}, extraChecks...)
-	srv, err := spv2.NewServer(card,
+	checks := extraChecks
+	if !s.cfg.Standalone {
+		checks = append([]spv2.HealthChecker{s.centerHealthCheck}, checks...)
+	}
+	opts := []spv2.ServerOption{
 		spv2.WithMaxMessageBytes(maxBody),
 		spv2.WithLogger(s.logger),
 		spv2.WithHealthChecks(checks...),
-	)
+	}
+	if s.cfg.MetricsExtra != nil {
+		opts = append(opts, spv2.WithMetricsExtra(s.cfg.MetricsExtra))
+	}
+	srv, err := spv2.NewServer(card, opts...)
 	if err != nil {
 		return err
 	}
 	for _, name := range nativeNames {
+		if s.cfg.NativeFilter != nil && !s.cfg.NativeFilter(name) {
+			continue
+		}
 		srv.Handle(name, spv2.Handler(s.native[name].Handler))
 	}
 	s.spv2Srv = srv

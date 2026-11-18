@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NouSart/sump/memory/compose"
+	"github.com/NouSart/sump/memory/facade/compose"
 	"github.com/NouSart/sump/protocol"
 )
 

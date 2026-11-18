@@ -19,8 +19,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/NouSart/sump/memory/audit"
-	"github.com/NouSart/sump/memory/shared"
+	"github.com/NouSart/sump/memory/experience/audit"
+	"github.com/NouSart/sump/memory/experience/shared"
 )
 
 // 造的假值：形状同类，不对应任何真实凭据、账号或路径。

@@ -12,10 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NouSart/sump/memory/longterm"
-	"github.com/NouSart/sump/memory/server"
-	"github.com/NouSart/sump/memory/shared"
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/experience/longterm"
+	"github.com/NouSart/sump/memory/experience/shared"
+	"github.com/NouSart/sump/memory/session/store"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )
@@ -140,10 +139,14 @@ func TestConsolidateArchivesStagedCandidates(t *testing.T) {
 	sc := startStubCenter(t)
 	var st *store.Store
 	var sh *shared.Store
-	srv := startMemory(t, sc.URL(), 12, func(cfg *server.Config, s *store.Store) {
-		st, sh = s, cfg.Shared
+	srv := startMemory(t, sc.URL(), 12, func(c *stackConfig) {
+		st, sh = c.Store, c.Shared
 	})
 	stub := startStubReasoner(t, sc.URL())
+	srv.addPeer("reasoner", stub.URL())
+	if _, addr, err := srv.exp.Resolve("reasoner"); err != nil || addr != stub.URL() {
+		t.Fatalf("reasoner peer 注入失败: addr=%q err=%v want=%q", addr, err, stub.URL())
+	}
 
 	// remember 的 salience 参数要校验；合法值只升不降。
 	var bad protocol.RememberResult

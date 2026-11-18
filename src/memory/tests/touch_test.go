@@ -5,17 +5,15 @@ package tests
 import (
 	"testing"
 
-	"github.com/NouSart/sump/memory/server"
-	"github.com/NouSart/sump/memory/shared"
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/experience/shared"
 	"github.com/NouSart/sump/protocol"
 )
 
 func TestContextTouchesInjectedMemories(t *testing.T) {
 	sc := startStubCenter(t)
 	var sh *shared.Store
-	srv := startMemory(t, sc.URL(), 12, func(cfg *server.Config, _ *store.Store) {
-		sh = cfg.Shared
+	srv := startMemory(t, sc.URL(), 12, func(c *stackConfig) {
+		sh = c.Shared
 	})
 	if err := callMemory(t, srv.WsURL(), "conversation_open", protocol.ConversationOpenPayload{ID: "c-touch", Entry: "stub-entry"}, nil); err != nil {
 		t.Fatal(err)

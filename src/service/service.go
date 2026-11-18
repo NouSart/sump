@@ -22,10 +22,22 @@ import (
 
 // Config 是服务启动配置（引导只靠它：自己的名字/地址 + 设置中心地址）。
 type Config struct {
-	Name              string             // 服务名（注册用）
-	Title             string             // 中文短名（面板导航用，如「审批」）
-	Listen            string             // 监听地址 host:port
-	Center            string             // 设置中心 WS 地址
+	Name   string // 服务名（注册用）
+	Title  string // 中文短名（面板导航用，如「审批」）
+	Listen string // 监听地址 host:port
+	Center string // 设置中心 WS 地址
+	// Standalone 为真时只启动 /spv2 服务端，不连接设置中心、不注册名册。
+	// 供只被同域门面调用的内部服务（如 memory 域的 session/experience）使用。
+	Standalone bool
+	// Peers 是静态对端地址（服务名 → ws://.../spv2），只在 Resolve 查不到名册时兜底。
+	// 独立模式没有名册，内部依赖必须靠它解析。
+	Peers map[string]string
+	// NativeFilter 过滤对外暴露的 native method（nil = 全暴露）。
+	// 用于同一实现按角色拆成多个进程时，只发布本域方法。
+	NativeFilter func(name string) bool
+	// SettingFilter 过滤本进程声明/接受的设置键（nil = 全部）。
+	// 内部服务用它只暴露自己域的键，门面据此做冲突检查。
+	SettingFilter     func(key string) bool
 	HeartbeatInterval time.Duration      // 心跳间隔（默认 15s；随名片声明，中心据此判定离线）
 	ActionTimeout     time.Duration      // 单次动作处理超时（默认 30s）
 	Description       string             // 名片：功能简介
@@ -38,6 +50,8 @@ type Config struct {
 	// SecretFile 是秘密项（HandleSecret）的本地持久化文件路径。
 	// 留空 = <name> 的默认路径（data/<name>-secret.json）；传 "-" 表示只放内存不落盘。
 	SecretFile string
+	// MetricsExtra 在 /metrics 与 metrics method 的本地快照后追加外部指标。
+	MetricsExtra func(context.Context) []spv2.Metric
 }
 
 // Service 是服务实例：一条到设置中心的连接（注册 / 心跳 / 名册）+ 一个 SPv2 服务端。
@@ -61,6 +75,7 @@ type Service struct {
 
 	mu           sync.Mutex
 	roster       map[string]protocol.ServiceCard
+	peerOverride map[string]string // SetPeer 注入的地址（优先于 Config.Peers）
 	selfURL      string
 	centerNative *spv2.Client    // 当前 SPv2 中心连接（nil = 未连接）
 	spv2Srv      *spv2.Server    // /spv2 服务端
@@ -165,6 +180,18 @@ func (s *Service) HandleNative(m spv2.Method, h NativeHandler) {
 	s.native[m.Name] = NativeMethod{Method: m, Handler: h}
 }
 
+// ProxyNative 替换已注册 native method 的处理器，保留其名片声明（schema / Tool）。
+// 门面用它把本域方法原样透传给内部服务。未注册时返回 false。
+func (s *Service) ProxyNative(name string, h NativeHandler) bool {
+	m, ok := s.native[name]
+	if !ok || h == nil {
+		return false
+	}
+	m.Handler = h
+	s.native[name] = m
+	return true
+}
+
 // WsURL 返回自己的对外地址（Start 成功后有效）。
 func (s *Service) WsURL() string { return s.selfURL }
 
@@ -232,6 +259,10 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}
 
+	if s.cfg.Standalone {
+		s.logger.Printf("%s 独立模式：不连接设置中心（%s）", s.cfg.Name, s.selfURL)
+		return nil
+	}
 	if err := s.connectAndRegister(ctx); err != nil {
 		lifeCancel()
 		_ = s.httpSrv.Close() // 注册失败即放弃启动：回收监听，不留“半个服务”
@@ -378,18 +409,39 @@ func (s *Service) Fire(to, action string, payload any, trace string) {
 	}()
 }
 
-// Resolve 解析跳转目标：支持 "self" 与服务名（查名册）。
+// SetPeer 热更新一个静态对端地址（名册不可见时优先于 Config.Peers）。
+// 供独立服务在启动后接入后上线的依赖；名册可见时仍以名册为准。
+func (s *Service) SetPeer(name, addr string) {
+	if name == "" || addr == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.peerOverride == nil {
+		s.peerOverride = map[string]string{}
+	}
+	s.peerOverride[name] = addr
+	s.mu.Unlock()
+}
+
+// Resolve 解析跳转目标：支持 "self" 与服务名（查名册/静态对端）。
 func (s *Service) Resolve(to string) (name, addr string, err error) {
 	if to == "self" {
 		return s.cfg.Name, s.selfURL, nil
 	}
 	s.mu.Lock()
 	card, ok := s.roster[to]
+	override := s.peerOverride[to]
 	s.mu.Unlock()
-	if !ok {
-		return "", "", fmt.Errorf("未知目标服务: %s", to)
+	if ok {
+		return card.Name, card.Addr, nil
 	}
-	return card.Name, card.Addr, nil
+	if override != "" {
+		return to, override, nil
+	}
+	if addr, ok := s.cfg.Peers[to]; ok {
+		return to, addr, nil
+	}
+	return "", "", fmt.Errorf("未知目标服务: %s", to)
 }
 
 // encodeInput 把任意载荷编码为 msgpack；已是 RawMessage 的原样透传。

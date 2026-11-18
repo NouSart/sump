@@ -39,8 +39,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/NouSart/sump/memory/audit"
-	"github.com/NouSart/sump/memory/repair"
+	"github.com/NouSart/sump/memory/experience/audit"
+	"github.com/NouSart/sump/memory/experience/repair"
 )
 
 func main() {

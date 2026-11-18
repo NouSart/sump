@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/session/store"
 )
 
 func openStore(t *testing.T) *store.Store {

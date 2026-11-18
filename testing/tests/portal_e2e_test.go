@@ -116,29 +116,21 @@ func waitSSE(t *testing.T, ch <-chan sseEvent, timeout time.Duration, what strin
 func TestPortalChainE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
 	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
-	memBin := buildService(t, "github.com/NouSart/sump/memory")
 	fakeLLM := startFakeDeepSeek(t, false) // 每轮直接回文本，不开工具轮
 
 	scPort := freePort(t)
 	alPort := freePort(t)
-	memPort := freePort(t)
 	fePort := freePort(t)
 	centerURL := spv2URL(scPort)
 	reasonerURL := spv2URL(alPort)
-	memoryURL := spv2URL(memPort)
 	feURL := spv2URL(fePort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort),
 		"-settings", filepath.Join(t.TempDir(), "settings.json"))
 	waitWSReady(t, centerURL, 60*time.Second)
 
-	// memory 先起：reasoner 的记忆往返（recall → resume）要能从名册解析到它。
-	startProc(t, memBin,
-		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
-		"-center", centerURL,
-		"-db", filepath.Join(t.TempDir(), "memory.db"),
-	)
-	waitWSReady(t, memoryURL, 60*time.Second)
+	// memory 先起：reasoner 的记忆往返要能从名册解析到它。
+	_ = startMemoryStack(t, centerURL, nil)
 
 	startProc(t, alBin,
 		"-addr", fmt.Sprintf("127.0.0.1:%d", alPort),

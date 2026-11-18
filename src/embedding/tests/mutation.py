@@ -45,7 +45,7 @@ MUTANTS = [
     {"id": "PY31", "file": "spv2.py", "old": "if not call.id:", "new": "if call.id:", "tests": SPV2},
     {"id": "PY32", "file": "spv2.py", "old": 'if call.to.kind == "service" and call.to.id and call.to.id != self.name:', "new": 'if call.to.kind == "service" or call.to.id or call.to.id != self.name:', "tests": SPV2},
     {"id": "PY33", "file": "spv2.py", "old": 'if call.content_type not in ("", CONTENT_TYPE_MSGPACK):', "new": 'if call.content_type in ("", CONTENT_TYPE_MSGPACK):', "tests": SPV2},
-    {"id": "PY34", "file": "spv2.py", "old": "if isinstance(protocol, str) and protocol and protocol != PROTOCOL_VERSION:", "new": "if isinstance(protocol, str) or protocol or protocol != PROTOCOL_VERSION:", "tests": SPV2},
+    {"id": "PY34", "file": "spv2.py", "old": '            protocol = request.get("protocol")\n            if isinstance(protocol, str) and protocol and protocol != PROTOCOL_VERSION:', "new": '            protocol = request.get("protocol")\n            if isinstance(protocol, str) or protocol or protocol != PROTOCOL_VERSION:', "tests": SPV2},
     {"id": "PY35", "file": "spv2.py", "old": '"tool": spec.tool,', "new": '"tool": True,', "tests": SPV2},
     {"id": "PY07", "file": "service.py", "old": 'center: str = "ws://127.0.0.1:9000/spv2"', "new": 'center: str = "ws://127.0.0.1:9000/ws"', "tests": SERVICE},
     {"id": "PY08", "file": "service.py", "old": 'self_url=f"ws://{self.addr}/spv2"', "new": 'self_url=f"ws://{self.addr}/ws"', "tests": SERVICE},
@@ -76,10 +76,12 @@ def run_tests(cwd: Path, tests: list[str], timeout: float) -> tuple[str, str]:
         )
         return ("lived" if proc.returncode == 0 else "killed"), (proc.stdout + proc.stderr)[-16000:]
     except subprocess.TimeoutExpired as err:
-        output = (err.stdout or "") + (err.stderr or "")
-        if isinstance(output, bytes):
-            output = output.decode(errors="replace")
-        return "timeout", output[-16000:]
+        def text(part: bytes | str | None) -> str:
+            if part is None:
+                return ""
+            return part.decode(errors="replace") if isinstance(part, bytes) else part
+
+        return "timeout", (text(err.stdout) + text(err.stderr))[-16000:]
 
 
 def main() -> int:

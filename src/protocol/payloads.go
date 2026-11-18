@@ -1020,6 +1020,40 @@ type ConsolidateResult struct {
 	Unresolved   int `msgpack:"unresolved,omitempty"`
 }
 
+// StagedItem 是整理池候选的跨服务视图（内部 method：session → experience）。
+// 原文只在 session 库与 experience 的整理提示词里出现，不落共享库。
+type StagedItem struct {
+	ID             int64  `msgpack:"id"`
+	ConversationID string `msgpack:"conversation_id,omitempty"`
+	Role           string `msgpack:"role,omitempty"`
+	Content        string `msgpack:"content"`
+	Status         string `msgpack:"status,omitempty"`
+	Attempts       int    `msgpack:"attempts,omitempty"`
+	LastError      string `msgpack:"last_error,omitempty"`
+	CreatedAt      string `msgpack:"created_at,omitempty"`
+}
+
+// StagedPendingResult 是 session.staged_pending 的回执。
+type StagedPendingResult struct {
+	Items []StagedItem `msgpack:"items"`
+}
+
+// InjectPayload 是 memory 门面 → experience 的内部请求：只带查询与来源，
+// 不带会话原文；viewer 预留给读取侧可见性过滤。
+type InjectPayload struct {
+	Viewer string `msgpack:"viewer,omitempty"`
+	Origin string `msgpack:"origin,omitempty"`
+	Query  string `msgpack:"query,omitempty"`
+}
+
+// InjectResult 是 experience 负责的四节记忆（不含最近对话）。
+type InjectResult struct {
+	Core       []string `msgpack:"core,omitempty"`
+	Relevant   []string `msgpack:"relevant,omitempty"`
+	Experience []string `msgpack:"experience,omitempty"`
+	Others     []string `msgpack:"others,omitempty"`
+}
+
 // ForgetPayload 是 forget 的 payload：软删一条长期记忆（不在 provides 里——不给 LLM 删记忆的按钮）。
 type ForgetPayload struct {
 	ID int64 `msgpack:"id"`

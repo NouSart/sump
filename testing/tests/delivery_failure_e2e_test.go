@@ -6,34 +6,25 @@ package tests
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestDeliverFailureKeepsTaskRetryableE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
-	memBin := buildService(t, "github.com/NouSart/sump/memory")
 	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
 	fakeLLM := startFakeDeepSeek(t, false)
 	boss := startE2EBoss(t)
 	boss.failNext(1)
 
 	scPort := freePort(t)
-	memPort := freePort(t)
 	alPort := freePort(t)
 	centerURL := spv2URL(scPort)
-	memoryURL := spv2URL(memPort)
 	reasonerURL := spv2URL(alPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
-	startProc(t, memBin,
-		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
-		"-center", centerURL,
-		"-db", filepath.Join(t.TempDir(), "memory.db"),
-	)
-	waitWSReady(t, memoryURL, 60*time.Second)
+	_ = startMemoryStack(t, centerURL, nil)
 	bossClient := boss.register(t, centerURL)
 	t.Cleanup(func() { _ = bossClient.Close() })
 	startProc(t, alBin,

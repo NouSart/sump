@@ -9,19 +9,17 @@ package tests
 import (
 	"testing"
 
-	"github.com/NouSart/sump/memory/memnet"
-	"github.com/NouSart/sump/memory/server"
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/experience/memnet"
 	"github.com/NouSart/sump/protocol"
 )
 
 // startMemoryWithNet 起一个带经验网的记忆服务（关掉中心化，让假向量的余弦直白可算）。
-func startMemoryWithNet(t *testing.T, centerURL string) *server.Server {
+func startMemoryWithNet(t *testing.T, centerURL string) *testStack {
 	t.Helper()
-	return startMemory(t, centerURL, 12, func(cfg *server.Config, _ *store.Store) {
+	return startMemory(t, centerURL, 12, func(c *stackConfig) {
 		tune := memnet.DefaultTuning()
 		tune.Center = false // 假向量是二维直角坐标，中心化只会让断言难算
-		cfg.Shared.Net.SetTuning(tune)
+		c.Shared.Net.SetTuning(tune)
 	})
 }
 
@@ -161,8 +159,8 @@ func TestNetActionsServiceLevel(t *testing.T) {
 // TestNetActionsDisabled 验证没开经验网时四个动作都明确报错，而不是空转或崩。
 func TestNetActionsDisabled(t *testing.T) {
 	sc := startStubCenter(t)
-	srv := startMemory(t, sc.URL(), 12, func(cfg *server.Config, _ *store.Store) {
-		cfg.Shared = nil // 连共享库都不给：四个动作必须明确报错
+	srv := startMemory(t, sc.URL(), 12, func(c *stackConfig) {
+		c.Shared = nil // 连共享库都不给：四个动作必须明确报错
 	})
 	caller := startStubCaller(t, sc.URL())
 

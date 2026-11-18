@@ -165,7 +165,6 @@ func qqPrivateEvent(uid int64, text, imageURL string) map[string]any {
 // TestQQFullChainE2E 主人私聊（图+文）→ 记忆/取图/推理 → deliver → send_msg 回发。
 func TestQQFullChainE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
-	memBin := buildService(t, "github.com/NouSart/sump/memory")
 	imgBin := buildServiceNamed(t, "github.com/NouSart/sump/images", "sump-images")
 	alBin := buildService(t, "github.com/NouSart/sump/reasoner")
 	qqBin := buildService(t, "github.com/NouSart/sump/qq")
@@ -187,25 +186,17 @@ func TestQQFullChainE2E(t *testing.T) {
 	t.Cleanup(pngSrv.Close)
 
 	scPort := freePort(t)
-	memPort := freePort(t)
 	imgPort := freePort(t)
 	alPort := freePort(t)
 	qqPort := freePort(t)
 	centerURL := spv2URL(scPort)
-	memURL := spv2URL(memPort)
 	imgURL := spv2URL(imgPort)
 	alURL := spv2URL(alPort)
 	qqURL := spv2URL(qqPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
-
-	startProc(t, memBin,
-		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
-		"-center", centerURL,
-		"-db", filepath.Join(t.TempDir(), "memory.db"),
-	)
-	waitWSReady(t, memURL, 60*time.Second)
+	_ = startMemoryStack(t, centerURL, nil)
 
 	startProc(t, imgBin,
 		"-addr", fmt.Sprintf("127.0.0.1:%d", imgPort),

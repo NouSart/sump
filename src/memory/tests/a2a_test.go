@@ -9,8 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NouSart/sump/memory/server"
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/session/store"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )
@@ -133,24 +132,24 @@ func TestA2AQueueDepthMetric(t *testing.T) {
 	}); !rp.OK {
 		t.Fatalf("message_post 失败: %s", rp.Error)
 	}
-	if got := queueDepth(srv, store.WorkMsgPending); got != 1 {
+	if got := queueDepth(t, srv, store.WorkMsgPending); got != 1 {
 		t.Fatalf("post 后 pending queue_depth = %v, want 1", got)
 	}
 	claim := caller.call(t, srv.WsURL(), "message_claim", map[string]any{"work": "trace-test"})
 	if !claim.OK {
 		t.Fatalf("message_claim 失败: %s", claim.Error)
 	}
-	if got := queueDepth(srv, store.WorkMsgPending); got != 0 {
+	if got := queueDepth(t, srv, store.WorkMsgPending); got != 0 {
 		t.Fatalf("claim 后 pending queue_depth = %v, want 0", got)
 	}
-	if got := queueDepth(srv, store.WorkMsgClaimed); got != 1 {
+	if got := queueDepth(t, srv, store.WorkMsgClaimed); got != 1 {
 		t.Fatalf("claim 后 claimed queue_depth = %v, want 1", got)
 	}
 }
 
 // queueDepth 读某 state 的 sump_queue_depth 快照。
-func queueDepth(srv *server.Server, state string) float64 {
-	for _, m := range srv.Metrics().Snapshot() {
+func queueDepth(t *testing.T, srv *testStack, state string) float64 {
+	for _, m := range metricsOf(t, srv) {
 		if m.Name == "sump_queue_depth" && m.Labels["state"] == state {
 			return m.Value
 		}

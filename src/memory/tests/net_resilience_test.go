@@ -15,13 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NouSart/sump/memory/server"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )
 
 // callWithin 是 call 的可调超时版（上游挂住时要等超过默认 5s，才看得出服务端的收手）。
-func callWithin(t *testing.T, srv *server.Server, action string, input any, timeout time.Duration) callResult {
+func callWithin(t *testing.T, srv *testStack, action string, input any, timeout time.Duration) callResult {
 	t.Helper()
 	conn, err := spv2.Dial(context.Background(), srv.WsURL())
 	if err != nil {

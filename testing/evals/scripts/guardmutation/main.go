@@ -26,7 +26,7 @@ import (
 // guard 是一次异变：把仓库相对路径 file 里的 old 换成 new，然后跑该文件所在包的测试。
 type guard struct {
 	name string
-	file string // 相对仓库根，如 src/memory/redact/redact.go
+	file string // 相对仓库根，如 src/memory/experience/redact/redact.go
 	old  string
 	new  string
 }

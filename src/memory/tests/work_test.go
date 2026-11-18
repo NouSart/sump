@@ -5,8 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NouSart/sump/memory/server"
-	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/memory/session/store"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )
@@ -126,7 +125,7 @@ func TestWorkLedgerViaRecall(t *testing.T) {
 func TestWorkSweepMarksExpiredStalled(t *testing.T) {
 	sc := startStubCenter(t)
 	var workStore *store.Store
-	srv := startMemory(t, sc.URL(), 12, func(_ *server.Config, st *store.Store) { workStore = st })
+	srv := startMemory(t, sc.URL(), 12, func(c *stackConfig) { workStore = c.Store })
 	caller := startStubCaller(t, sc.URL())
 	past := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	if _, err := workStore.EnsureWork(context.Background(), spv2.Work{
@@ -148,12 +147,13 @@ func TestWorkSweepMarksExpiredStalled(t *testing.T) {
 		t.Fatalf("过期 work 状态 = %q, want stalled", w.Status)
 	}
 	found := false
-	for _, m := range srv.Metrics().Snapshot() {
+	metrics := metricsOf(t, srv)
+	for _, m := range metrics {
 		if m.Name == "sump_work_stalled_total" && m.Labels["reason"] == "deadline" && m.Value == 1 {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("缺少 sump_work_stalled_total{reason=deadline}=1: %+v", srv.Metrics().Snapshot())
+		t.Fatalf("缺少 sump_work_stalled_total{reason=deadline}=1: %+v", metrics)
 	}
 }

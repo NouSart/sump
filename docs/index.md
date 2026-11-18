@@ -15,7 +15,7 @@
 | 理解一次对话怎么流动、状态落在哪 | [concepts/agent-loop.md](concepts/agent-loop.md) |
 | 知道现在做到哪、下一步该证明什么 | [concepts/roadmap.md](concepts/roadmap.md) |
 | 把 MCP 接到远程 / 先做接入检查 | [guides/mcp-connect.md](guides/mcp-connect.md) |
-| 查某个服务的 method 与设置项 | 服务页：[services/](services/)（images / qq / reasoner / settings-center / approval）；其余看服务目录的 README：[batch](../src/batch/README.md) / [embedding](../src/embedding/README.md) / [files](../src/files/README.md) / [frontend](../src/frontend/README.md) / [mcp](../src/mcp/README.md) / [memnet](../src/memory/memnet/README.md) / [shell](../src/shell/README.md) / [timer](../src/timer/README.md) |
+| 查某个服务的 method 与设置项 | 服务页：[services/](services/)（images / qq / reasoner / settings-center / approval）；其余看服务目录的 README：[batch](../src/batch/README.md) / [embedding](../src/embedding/README.md) / [files](../src/files/README.md) / [frontend](../src/frontend/README.md) / [mcp](../src/mcp/README.md) / [memnet](../src/memory/experience/memnet/README.md) / [shell](../src/shell/README.md) / [timer](../src/timer/README.md) |
 | 交 PR、跑测试、看提交规矩 | [../CONTRIBUTING.md](../CONTRIBUTING.md) |
 | 我是 AI 代理，先看红线 | [../AGENTS.md](../AGENTS.md) |
 | 接手团队待办 | [../TODO.md](../TODO.md) |
@@ -33,6 +33,7 @@
 | [concepts/agent-loop.md](concepts/agent-loop.md) | 改 reasoner / memory 的人 | 有效 | 2026-11-06 |
 | [concepts/protocol.md](concepts/protocol.md) | 写服务 / 改协议的人 | 有效（SPv2.1，`v: "spv2.1"`） | 2026-11-06 |
 | [concepts/spv2.md](concepts/spv2.md) | 要评审 / 实现 SPv2.1 的人 | 草案 v0.1 | 2026-11-06 |
+| [concepts/memory-target.md](concepts/memory-target.md) | 要评审 / 实施 memory 拆分的人 | **已实施（三进程 + 三包）** | 2026-11-19 |
 | [concepts/approval.md](concepts/approval.md) | 改审批规则的人 | 有效（解释与富通知未实现） | 2026-11-06 |
 | [concepts/roadmap.md](concepts/roadmap.md) | 想知道边界与顺序的人 | 有效 | 2026-10-30 |
 | [guides/add-a-service.md](guides/add-a-service.md) | 加新服务的人 | 有效 | 2026-11-06 |

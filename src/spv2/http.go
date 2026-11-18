@@ -37,10 +37,14 @@ func (s *Server) handleReadyHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleMetricsHTTP(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleMetricsHTTP(w http.ResponseWriter, r *http.Request) {
 	// spec §12.1 要求 /metrics 是 OpenMetrics；版本号与 EOF 标记都按 OpenMetrics 输出。
 	w.Header().Set("Content-Type", "application/openmetrics-text; version=1.0.0; charset=utf-8")
-	_, _ = w.Write([]byte(renderOpenMetrics(s.metrics.Snapshot())))
+	metrics := s.metrics.Snapshot()
+	if s.opts.MetricsExtra != nil {
+		metrics = append(metrics, s.opts.MetricsExtra(r.Context())...)
+	}
+	_, _ = w.Write([]byte(renderOpenMetrics(metrics)))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

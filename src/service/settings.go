@@ -229,6 +229,9 @@ func (s *Service) declarations() []protocol.Setting {
 	defer s.settingsMu.Unlock()
 	out := make([]protocol.Setting, 0, len(s.settings))
 	for _, it := range s.settings {
+		if s.cfg.SettingFilter != nil && !s.cfg.SettingFilter(it.key) {
+			continue
+		}
 		view := protocol.Setting{
 			Key: it.key, Label: it.label, Hint: it.hint, Kind: it.input, Options: it.options, Unit: it.unit,
 		}
@@ -268,6 +271,9 @@ func (s *Service) configure(body []byte) (any, error) {
 // applySetting 校验并应用一个设置项；键未声明或回调拒绝即返回错误（保持旧值）。
 // 应用串行化：同一服务的多个下发不并发进回调。
 func (s *Service) applySetting(key, value string) error {
+	if s.cfg.SettingFilter != nil && !s.cfg.SettingFilter(key) {
+		return fmt.Errorf("configure: 本服务不负责设置项 %q", key)
+	}
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
 
