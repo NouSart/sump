@@ -39,3 +39,10 @@ experiments/pitch-narrative-playbook.md
 
 # 商业计划书等非项目产物，防止误提交
 SUMP-*.pdf
+
+# 仓库根目录的本地构建/依赖副本（真正的前端源码在 src/frontend）
+# 这是 npm 在错误目录执行后留下的产物，不入库。
+/frontend/
+
+# 本地编辑器配置
+.vscode/
