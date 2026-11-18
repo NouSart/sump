@@ -314,18 +314,61 @@ func startStackOnce(opts StackOptions) (*Stack, error) {
 		// 故意的"依赖缺席"：不起 memory，reasoner 会在入口就停住。
 		s.logf("按配置不启动 memory（依赖缺席故障）")
 	} else {
-		s.MemoryURL = fmt.Sprintf("ws://127.0.0.1:%d/spv2", memPort)
-		if _, err := s.start("memory",
-			"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
-			"-center", s.CenterURL,
-			"-db", filepath.Join(s.dir, "memory.db"),
-		); err != nil {
+		sessPort, err := FreePort()
+		if err != nil {
 			s.Close()
 			return nil, err
 		}
+		expPort, err := FreePort()
+		if err != nil {
+			s.Close()
+			return nil, err
+		}
+		dbFile := filepath.Join(s.dir, "memory.db")
+		sharedFile := filepath.Join(s.dir, "experience.db")
+		sessURL := fmt.Sprintf("ws://127.0.0.1:%d/spv2", sessPort)
+		expURL := fmt.Sprintf("ws://127.0.0.1:%d/spv2", expPort)
+		s.bin["memory-session"] = s.bin["memory"]
+		s.bin["memory-experience"] = s.bin["memory"]
+		s.bin["memory-facade"] = s.bin["memory"]
+		if _, err := s.start("memory-session",
+			"-role", "session",
+			"-addr", fmt.Sprintf("127.0.0.1:%d", sessPort),
+			"-db", dbFile, "-shared-db", sharedFile,
+		); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("memory session 启动失败: %w", err)
+		}
+		if err := waitWS(sessURL, 30*time.Second); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("memory session 未就绪: %w", err)
+		}
+		if _, err := s.start("memory-experience",
+			"-role", "experience",
+			"-addr", fmt.Sprintf("127.0.0.1:%d", expPort),
+			"-db", dbFile, "-shared-db", sharedFile,
+			"-peers", "session="+sessURL,
+		); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("memory experience 启动失败: %w", err)
+		}
+		if err := waitWS(expURL, 30*time.Second); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("memory experience 未就绪: %w", err)
+		}
+		s.MemoryURL = fmt.Sprintf("ws://127.0.0.1:%d/spv2", memPort)
+		if _, err := s.start("memory-facade",
+			"-role", "facade",
+			"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
+			"-center", s.CenterURL,
+			"-peers", "session="+sessURL+",experience="+expURL,
+		); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("memory facade 启动失败: %w", err)
+		}
 		if err := waitWS(s.MemoryURL, 30*time.Second); err != nil {
 			s.Close()
-			return nil, fmt.Errorf("memory 未就绪: %w", err)
+			return nil, fmt.Errorf("memory 门面未就绪: %w", err)
 		}
 	}
 
