@@ -14,8 +14,16 @@ var sweepInterval = 30 * time.Second
 // Start 覆盖骨架启动：先启动服务，再起 work sweep 后台循环。
 // 后台循环监听启动 ctx（进程生命周期）；ctx 结束即退出，不泄漏 goroutine。
 func (s *Server) Start(ctx context.Context) error {
+	if s.role.isFacade() {
+		if err := s.bootstrapPeers(ctx); err != nil {
+			return err
+		}
+	}
 	if err := s.Service.Start(ctx); err != nil {
 		return err
+	}
+	if !s.role.isSession() && !s.role.isAll() {
+		return nil
 	}
 	go func() {
 		t := time.NewTicker(sweepInterval)

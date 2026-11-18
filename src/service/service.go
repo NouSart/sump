@@ -22,10 +22,19 @@ import (
 
 // Config 是服务启动配置（引导只靠它：自己的名字/地址 + 设置中心地址）。
 type Config struct {
-	Name              string             // 服务名（注册用）
-	Title             string             // 中文短名（面板导航用，如「审批」）
-	Listen            string             // 监听地址 host:port
-	Center            string             // 设置中心 WS 地址
+	Name   string // 服务名（注册用）
+	Title  string // 中文短名（面板导航用，如「审批」）
+	Listen string // 监听地址 host:port
+	Center string // 设置中心 WS 地址
+	// Standalone 为真时只启动 /spv2 服务端，不连接设置中心、不注册名册。
+	// 供只被同域门面调用的内部服务（如 memory 域的 session/experience）使用。
+	Standalone bool
+	// Peers 是静态对端地址（服务名 → ws://.../spv2），只在 Resolve 查不到名册时兜底。
+	// 独立模式没有名册，内部依赖必须靠它解析。
+	Peers map[string]string
+	// NativeFilter 过滤对外暴露的 native method（nil = 全暴露）。
+	// 用于同一实现按角色拆成多个进程时，只发布本域方法。
+	NativeFilter      func(name string) bool
 	HeartbeatInterval time.Duration      // 心跳间隔（默认 15s；随名片声明，中心据此判定离线）
 	ActionTimeout     time.Duration      // 单次动作处理超时（默认 30s）
 	Description       string             // 名片：功能简介
@@ -165,6 +174,18 @@ func (s *Service) HandleNative(m spv2.Method, h NativeHandler) {
 	s.native[m.Name] = NativeMethod{Method: m, Handler: h}
 }
 
+// ProxyNative 替换已注册 native method 的处理器，保留其名片声明（schema / Tool）。
+// 门面用它把本域方法原样透传给内部服务。未注册时返回 false。
+func (s *Service) ProxyNative(name string, h NativeHandler) bool {
+	m, ok := s.native[name]
+	if !ok || h == nil {
+		return false
+	}
+	m.Handler = h
+	s.native[name] = m
+	return true
+}
+
 // WsURL 返回自己的对外地址（Start 成功后有效）。
 func (s *Service) WsURL() string { return s.selfURL }
 
@@ -232,6 +253,10 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}
 
+	if s.cfg.Standalone {
+		s.logger.Printf("%s 独立模式：不连接设置中心（%s）", s.cfg.Name, s.selfURL)
+		return nil
+	}
 	if err := s.connectAndRegister(ctx); err != nil {
 		lifeCancel()
 		_ = s.httpSrv.Close() // 注册失败即放弃启动：回收监听，不留“半个服务”
@@ -386,10 +411,13 @@ func (s *Service) Resolve(to string) (name, addr string, err error) {
 	s.mu.Lock()
 	card, ok := s.roster[to]
 	s.mu.Unlock()
-	if !ok {
-		return "", "", fmt.Errorf("未知目标服务: %s", to)
+	if ok {
+		return card.Name, card.Addr, nil
 	}
-	return card.Name, card.Addr, nil
+	if addr, ok := s.cfg.Peers[to]; ok {
+		return to, addr, nil
+	}
+	return "", "", fmt.Errorf("未知目标服务: %s", to)
 }
 
 // encodeInput 把任意载荷编码为 msgpack；已是 RawMessage 的原样透传。

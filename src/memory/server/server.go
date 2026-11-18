@@ -25,17 +25,19 @@ import (
 
 // Config 是 memory 服务的启动配置。
 type Config struct {
-	Name              string        // 服务名（注册用，默认 memory）
-	Listen            string        // 监听地址 host:port
-	Center            string        // 设置中心 WS 地址
-	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
-	Store             *store.Store  // 会话库（私有：messages / tasks / conversations）
-	Shared            *shared.Store // 共享经验库（另一文件：偏好 / 经验网 / 会话目录）
-	HistoryLimit      int           // recall 返回的最近消息条数（默认 12；作为声明预设上报）
-	Embedding         string        // embedding 服务名（默认 embedding；语义召回不可用时静默回落 bigram）
-	Reasoner          string        // reasoner 服务名（默认 reasoner；记忆整理调用 think）
-	DBPath            string        // 会话库路径（只读项展示用：换它要重启）
-	SharedPath        string        // 共享库路径（只读项展示用）
+	Name              string            // 服务名（注册用，默认 memory）
+	Role              Role              // 进程角色（空 = 单进程全量）
+	Peers             map[string]string // 静态内部对端（服务名 → ws://.../spv2）
+	Listen            string            // 监听地址 host:port
+	Center            string            // 设置中心 WS 地址
+	HeartbeatInterval time.Duration     // 心跳间隔（默认 15s）
+	Store             *store.Store      // 会话库（私有：messages / tasks / conversations）
+	Shared            *shared.Store     // 共享经验库（另一文件：偏好 / 经验网 / 会话目录）
+	HistoryLimit      int               // recall 返回的最近消息条数（默认 12；作为声明预设上报）
+	Embedding         string            // embedding 服务名（默认 embedding；语义召回不可用时静默回落 bigram）
+	Reasoner          string            // reasoner 服务名（默认 reasoner；记忆整理调用 think）
+	DBPath            string            // 会话库路径（只读项展示用：换它要重启）
+	SharedPath        string            // 共享库路径（只读项展示用）
 }
 
 // v0 注入预算的默认值（对齐 v1 量级；作为声明预设，可被设置中心覆盖）。
@@ -62,6 +64,7 @@ type Server struct {
 	*service.Service
 
 	cfg    Config
+	role   Role
 	logger *log.Logger
 
 	setMu         sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
@@ -82,6 +85,8 @@ type Server struct {
 	netSeedMu   sync.Mutex
 	netSeeded   bool
 	netSeedNext time.Time // 冷却到期时间（零值 = 可以立刻试）
+
+	staged stagedStore // 整理池访问器（本地会话库或 session 服务）
 }
 
 // embeddingName 返回当前 embedding 服务名（空 = 语义召回关闭，回落 bigram）。
@@ -100,6 +105,7 @@ func (s *Server) setEmbeddingName(v string) {
 
 // New 创建实例并注册动作。
 func New(cfg Config, logger *log.Logger) *Server {
+	cfg.Role = normalizeRole(cfg.Role)
 	if cfg.HistoryLimit <= 0 {
 		cfg.HistoryLimit = defaultHistoryLimit
 	}
@@ -110,7 +116,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		cfg.Reasoner = "reasoner"
 	}
 	s := &Server{
-		cfg: cfg, logger: logger,
+		cfg: cfg, role: cfg.Role, logger: logger,
 		historyLimit:  cfg.HistoryLimit,
 		coreLimit:     defaultCoreLimit,
 		coreMaxChars:  defaultCoreMaxChars,
@@ -120,44 +126,52 @@ func New(cfg Config, logger *log.Logger) *Server {
 		shareSessions: defaultShareSessions,
 		shareChars:    defaultShareChars,
 	}
+	provides := []protocol.Provide{
+		{Action: "context", Input: "{conversation, messages, boss?, task_name?}（spec §7.2 同步上下文）", Output: "{messages, work, task}（组装后的上下文与 work 行）"},
+		{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
+		{Action: "history", Input: "{conversation_id, limit}", Output: "{conversation_id, messages:[{role, content, at}]}（按时间正序；供界面回填，不做记忆组装）"},
+		{Action: "conversation_list", Input: "{limit?, include_archived?}", Output: "{conversations:[{id, title, entry, status, created_at, updated_at}]}（按最近活跃排序；不暴露给模型 — 给界面列会话，不是给模型的工具）"},
+		{Action: "conversation_rename", Input: "{id, title}（空标题 = 清掉名字）", Output: "{conversation}（不暴露给模型）"},
+		{Action: "note", Input: "经验 {content, conversation_id?, task_id?, durability?}（core | durable | transient）", Output: "{id, node_ids, duplicate, skipped}（不暴露给模型：整理由复盘流程调；duplicate = 同一件事又说了一遍）"},
+		{Action: "dig", Tool: true, Input: "{entry_id?, node_id?, limit?}（entry_id = 翻同簇兄弟，node_id = 展开整个大类）", Output: "{notes[], total}（顺着线头往下扒）"},
+		{Action: "lineheads", Input: "{query, limit?}", Output: "{heads:[{node_id, text, count, score, task_id, members}]}（一行一条；recall 里自动带）"},
+		{Action: "prune", Input: "{}", Output: "{entries, links}（软剪枝：只标状态、只断干枯的线，不删行）"},
+		{Action: "remember", Tool: true, Input: "长期记忆条目 {kind, content, priority?, salience?}（kind 如 偏好/身份/知识/事件；priority>0 = 核心记忆，每次对话都会带上；salience 0..1 = 重要性，越大遗忘越慢）", Output: "{id, created}（同 kind+content 已有 active 条目时幂等跳过，salience/priority 只升不降）"},
+		{Action: "consolidate", Input: "{}（整理池里有待处理候选时调用）", Output: "{processed, archived, skipped, failed, memnet_failed, conflicts, superseded, unresolved}（不暴露给模型：分类与冲突判断由 reasoner 完成）"},
+		{Action: "publish_session", Input: "任务摘要 {conversation_id, task_id, title?, goal?, outcome?, capabilities?, private?}（复盘调用；已脱敏，不暴露给模型）", Output: "{published, private}"},
+		{Action: "shared_sessions", Tool: true, Input: "{limit?, exclude?, query?}（别的会话在做什么的摘要；看不到它们的对话）", Output: "{sessions:[{entry, title, tasks:[{title, goal, outcome, capabilities, created_at}]}]}"},
+		{Action: "shared_forget", Input: "{session_id?, task_id?}（删共享物；不暴露给模型）", Output: "{sessions, tasks}"},
+		{Action: "conversation_open", Input: "{id, title?, entry?}（幂等建会话；不暴露给模型）", Output: "{conversation}"},
+		{Action: "conversation_archive", Input: "{id, archived}（归档 = 不进默认列表，不拦写入；不暴露给模型）", Output: "{conversation}"},
+		// 任务面：reasoner 与门户按名字调用这些（`task_finish` / `task_resume` 就在交付与恢复路径上）。
+		// 不声明它们的后果是"协议面看不到"：第三方按名册实现 memory 时，永远不知道要实现它们。
+		{Action: "task_current", Input: "{conversation_id}", Output: "{task?}（最近活跃的 active 任务；没有就是空）"},
+		{Action: "task_open", Input: "{conversation_id, name}", Output: "{task}"},
+		{Action: "task_finish", Input: "{task_id, name?}", Output: "{task}（status=done，之后只读）"},
+		{Action: "task_rename", Input: "{task_id, name}", Output: "{task}"},
+		{Action: "task_resume", Input: "{task_id}", Output: "{task, messages[]}（把未完结任务顶成当前，记录一并带走）"},
+		{Action: "task_list", Input: "{conversation_id, limit?}", Output: "{tasks[]}（最近活跃在前）"},
+		{Action: "forget", Input: "{id}（长期记忆条目 id）", Output: "{id}（删掉一条不再对的记忆）"},
+	}
+	s.staged = s.stagedStore()
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Title:             "记忆",
 		Listen:            cfg.Listen,
 		Center:            cfg.Center,
+		Standalone:        cfg.Role.isSession() || cfg.Role.isExperience(),
+		Peers:             cfg.Peers,
+		NativeFilter:      cfg.Role.methodAllowed,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		Description:       "记忆服务：会话历史 + 长期记忆（remember/forget；语义召回 + bigram 兜底 + 核心注入）与上下文组装（context 同步返回）",
-		Provides: []protocol.Provide{
-			{Action: "context", Input: "{conversation, messages, boss?, task_name?}（spec §7.2 同步上下文）", Output: "{messages, work, task}（组装后的上下文与 work 行）"},
-			{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
-			{Action: "history", Input: "{conversation_id, limit}", Output: "{conversation_id, messages:[{role, content, at}]}（按时间正序；供界面回填，不做记忆组装）"},
-			{Action: "conversation_list", Input: "{limit?, include_archived?}", Output: "{conversations:[{id, title, entry, status, created_at, updated_at}]}（按最近活跃排序；不暴露给模型 — 给界面列会话，不是给模型的工具）"},
-			{Action: "conversation_rename", Input: "{id, title}（空标题 = 清掉名字）", Output: "{conversation}（不暴露给模型）"},
-			{Action: "note", Input: "经验 {content, conversation_id?, task_id?, durability?}（core | durable | transient）", Output: "{id, node_ids, duplicate, skipped}（不暴露给模型：整理由复盘流程调；duplicate = 同一件事又说了一遍）"},
-			{Action: "dig", Tool: true, Input: "{entry_id?, node_id?, limit?}（entry_id = 翻同簇兄弟，node_id = 展开整个大类）", Output: "{notes[], total}（顺着线头往下扒）"},
-			{Action: "lineheads", Input: "{query, limit?}", Output: "{heads:[{node_id, text, count, score, task_id, members}]}（一行一条；recall 里自动带）"},
-			{Action: "prune", Input: "{}", Output: "{entries, links}（软剪枝：只标状态、只断干枯的线，不删行）"},
-			{Action: "remember", Tool: true, Input: "长期记忆条目 {kind, content, priority?, salience?}（kind 如 偏好/身份/知识/事件；priority>0 = 核心记忆，每次对话都会带上；salience 0..1 = 重要性，越大遗忘越慢）", Output: "{id, created}（同 kind+content 已有 active 条目时幂等跳过，salience/priority 只升不降）"},
-			{Action: "consolidate", Input: "{}（整理池里有待处理候选时调用）", Output: "{processed, archived, skipped, failed, memnet_failed, conflicts, superseded, unresolved}（不暴露给模型：分类与冲突判断由 reasoner 完成）"},
-			{Action: "publish_session", Input: "任务摘要 {conversation_id, task_id, title?, goal?, outcome?, capabilities?, private?}（复盘调用；已脱敏，不暴露给模型）", Output: "{published, private}"},
-			{Action: "shared_sessions", Tool: true, Input: "{limit?, exclude?, query?}（别的会话在做什么的摘要；看不到它们的对话）", Output: "{sessions:[{entry, title, tasks:[{title, goal, outcome, capabilities, created_at}]}]}"},
-			{Action: "shared_forget", Input: "{session_id?, task_id?}（删共享物；不暴露给模型）", Output: "{sessions, tasks}"},
-			{Action: "conversation_open", Input: "{id, title?, entry?}（幂等建会话；不暴露给模型）", Output: "{conversation}"},
-			{Action: "conversation_archive", Input: "{id, archived}（归档 = 不进默认列表，不拦写入；不暴露给模型）", Output: "{conversation}"},
-			// 任务面：reasoner 与门户按名字调用这些（`task_finish` / `task_resume` 就在交付与恢复路径上）。
-			// 不声明它们的后果是"协议面看不到"：第三方按名册实现 memory 时，永远不知道要实现它们。
-			{Action: "task_current", Input: "{conversation_id}", Output: "{task?}（最近活跃的 active 任务；没有就是空）"},
-			{Action: "task_open", Input: "{conversation_id, name}", Output: "{task}"},
-			{Action: "task_finish", Input: "{task_id, name?}", Output: "{task}（status=done，之后只读）"},
-			{Action: "task_rename", Input: "{task_id, name}", Output: "{task}"},
-			{Action: "task_resume", Input: "{task_id}", Output: "{task, messages[]}（把未完结任务顶成当前，记录一并带走）"},
-			{Action: "task_list", Input: "{conversation_id, limit?}", Output: "{tasks[]}（最近活跃在前）"},
-			{Action: "forget", Input: "{id}（长期记忆条目 id）", Output: "{id}（删掉一条不再对的记忆）"},
-		},
-		Logger: logger,
+		Provides:          filterProvides(cfg.Role, provides),
+		Logger:            logger,
 	})
 	// 可设置项：预设 = 本服务的启动引导值（来源由服务自己决定）。
 	s.HandleSetting("context.history_limit", strconv.Itoa(cfg.HistoryLimit), func(v string) error {
+		if s.role.isFacade() {
+			return s.forwardSetting("session", "context.history_limit", v)
+		}
 		n, err := parseNonNeg(v)
 		if err != nil {
 			return err
@@ -171,6 +185,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.As("number"),
 		service.Unit("count"))
 	s.HandleSetting("context.core_limit", strconv.Itoa(defaultCoreLimit), func(v string) error {
+		if s.role.isFacade() {
+			return s.forwardSetting("experience", "context.core_limit", v)
+		}
 		n, err := parseNonNeg(v)
 		if err != nil {
 			return err
@@ -184,6 +201,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.As("number"),
 		service.Unit("count"))
 	s.HandleSetting("context.core_max_chars", strconv.Itoa(defaultCoreMaxChars), func(v string) error {
+		if s.role.isFacade() {
+			return s.forwardSetting("experience", "context.core_max_chars", v)
+		}
 		n, err := parseNonNeg(v)
 		if err != nil {
 			return err
@@ -197,6 +217,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.As("number"),
 		service.Unit("chars"))
 	s.HandleSetting("context.rel_limit", strconv.Itoa(defaultRelLimit), func(v string) error {
+		if s.role.isFacade() {
+			return s.forwardSetting("experience", "context.rel_limit", v)
+		}
 		n, err := parseNonNeg(v)
 		if err != nil {
 			return err
@@ -210,6 +233,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.As("number"),
 		service.Unit("count"))
 	s.HandleSetting("context.rel_max_chars", strconv.Itoa(defaultRelMaxChars), func(v string) error {
+		if s.role.isFacade() {
+			return s.forwardSetting("experience", "context.rel_max_chars", v)
+		}
 		n, err := parseNonNeg(v)
 		if err != nil {
 			return err
@@ -226,6 +252,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.registerNative()
 	// embedding 服务名：热改（空 = 关闭语义召回，静默回落 bigram）。
 	s.HandleSetting("context.embedding", cfg.Embedding, func(v string) error {
+		if s.role.isFacade() {
+			return s.forwardSetting("experience", "context.embedding", v)
+		}
 		s.setEmbeddingName(strings.TrimSpace(v))
 		return nil
 	}, service.Label("用哪个服务算语义向量"),
@@ -233,6 +262,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.As("optional-service"))
 	// 共享经验库的注入预算：目录是背景信息，宁可少给，别挤占对话。
 	s.HandleSetting("share.sessions_limit", strconv.Itoa(defaultShareSessions), func(v string) error {
+		if s.role.isFacade() {
+			return s.forwardSetting("experience", "share.sessions_limit", v)
+		}
 		n, err := parseNonNeg(v)
 		if err != nil {
 			return err
@@ -247,6 +279,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.As("number"),
 		service.Unit("count"))
 	s.HandleSetting("share.digest_chars", strconv.Itoa(defaultShareChars), func(v string) error {
+		if s.role.isFacade() {
+			return s.forwardSetting("experience", "share.digest_chars", v)
+		}
 		n, err := parseNonNeg(v)
 		if err != nil {
 			return err

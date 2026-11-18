@@ -183,8 +183,11 @@ func (s *Server) publishSession(body []byte) (any, error) {
 		return map[string]any{"published": false, "reason": "共享经验库未启用"}, nil
 	}
 	sessionTitle := ""
-	if c, err := s.cfg.Store.ConversationByID(p.ConversationID); err == nil {
-		sessionTitle = c.Title
+	// 拆分后 experience 没有会话库句柄；标题由调用方给或留空，不跨域读。
+	if s.cfg.Store != nil {
+		if c, err := s.cfg.Store.ConversationByID(p.ConversationID); err == nil {
+			sessionTitle = c.Title
+		}
 	}
 	published, err := s.cfg.Shared.Publish(time.Now(), shared.PublishInput{
 		SessionID:    p.ConversationID,

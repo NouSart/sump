@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/NouSart/sump/memory/server"
@@ -21,9 +22,19 @@ import (
 )
 
 func main() {
-	name := flag.String("name", "memory", "服务名")
-	addr := flag.String("addr", "127.0.0.1:9201", "监听地址（host:port）")
-	center := flag.String("center", "ws://127.0.0.1:9000/spv2", "设置中心 WS 地址")
+	roleFlag := flag.String("role", "memory", "进程角色：memory（整域）/ facade / session / experience")
+	peers := flag.String("peers", "", "静态内部对端，逗号分隔：embedding=ws://127.0.0.1:9202/spv2,session=...")
+	role := parseRole(*roleFlag)
+	nameDefault, addrDefault := "memory", "127.0.0.1:9201"
+	switch role {
+	case server.RoleSession:
+		nameDefault, addrDefault = "session", "127.0.0.1:9311"
+	case server.RoleExperience:
+		nameDefault, addrDefault = "experience", "127.0.0.1:9312"
+	}
+	name := flag.String("name", nameDefault, "服务名")
+	addr := flag.String("addr", addrDefault, "监听地址（host:port）")
+	center := flag.String("center", "ws://127.0.0.1:9000/spv2", "设置中心 WS 地址（session/experience 独立模式不连接）")
 	dbPath := flag.String("db", "data/memory.db", "会话库（私有）路径")
 	// 共享库默认与会话库同目录（data/experience.db）：换 -db 时不必记得同时换它，
 	// 测试也就不会把共享数据写进仓库的 data/。
@@ -39,37 +50,52 @@ func main() {
 		sharedPath = filepath.Join(filepath.Dir(*dbPath), "experience.db")
 	}
 
-	st, err := store.Open(*dbPath)
-	if err != nil {
-		logger.Fatalf("打开会话库失败: %v", err)
+	var st *store.Store
+	if role == server.RoleAll || role == server.RoleSession {
+		var err error
+		st, err = store.Open(*dbPath)
+		if err != nil {
+			logger.Fatalf("打开会话库失败: %v", err)
+		}
+		defer st.Close()
 	}
-	defer st.Close()
 
 	// 共享经验库是**另一个文件、另一个句柄**：这里没有 messages，只有偏好 / 经验 / 会话摘要。
 	// 首次从旧版 memory.db 迁移前先复制一份备份——迁移只改名不删表，但备份更省心。
-	if _, err := os.Stat(sharedPath); errors.Is(err, os.ErrNotExist) {
-		if _, err := os.Stat(*dbPath); err == nil {
-			bak := fmt.Sprintf("%s.bak-%s", *dbPath, time.Now().Format("20060102-150405"))
-			if err := copyFile(*dbPath, bak); err != nil {
-				logger.Printf("备份会话库失败（继续迁移）: %v", err)
-			} else {
-				logger.Printf("迁移前已备份会话库: %s", bak)
+	if role == server.RoleAll || role == server.RoleSession {
+		if _, err := os.Stat(sharedPath); errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Stat(*dbPath); err == nil && st != nil {
+				bak := fmt.Sprintf("%s.bak-%s", *dbPath, time.Now().Format("20060102-150405"))
+				if err := copyFile(*dbPath, bak); err != nil {
+					logger.Printf("备份会话库失败（继续迁移）: %v", err)
+				} else {
+					logger.Printf("迁移前已备份会话库: %s", bak)
+				}
 			}
 		}
 	}
-	sh, err := shared.Open(sharedPath, time.Now())
-	if err != nil {
-		logger.Fatalf("打开共享经验库失败: %v", err)
+	var sh *shared.Store
+	if role != server.RoleFacade {
+		var err error
+		sh, err = shared.Open(sharedPath, time.Now())
+		if err != nil {
+			logger.Fatalf("打开共享经验库失败: %v", err)
+		}
+		defer sh.Close()
 	}
-	defer sh.Close()
-	if migrated, err := sh.MigrateFrom(st.DB()); err != nil {
-		logger.Printf("共享数据迁移未完成（共享库保持现状）: %v", err)
-	} else if migrated {
-		logger.Printf("共享数据已迁移到 %s（旧表改名为 legacy_*）", sharedPath)
+	// 迁移需要同时读会话库与共享库：只在整域进程里做。拆分后由一次性运维步骤负责。
+	if role == server.RoleAll {
+		if migrated, err := sh.MigrateFrom(st.DB()); err != nil {
+			logger.Printf("共享数据迁移未完成（共享库保持现状）: %v", err)
+		} else if migrated {
+			logger.Printf("共享数据已迁移到 %s（旧表改名为 legacy_*）", sharedPath)
+		}
 	}
 
 	s := server.New(server.Config{
 		Name:         *name,
+		Role:         role,
+		Peers:        parsePeers(*peers),
 		Listen:       *addr,
 		Center:       *center,
 		Store:        st,
@@ -88,6 +114,35 @@ func main() {
 	signal.Notify(sig, os.Interrupt)
 	<-sig
 	logger.Println("退出")
+}
+
+// parseRole 把命令行角色名映射成服务角色；未知值回落到整域。
+func parseRole(v string) server.Role {
+	switch strings.TrimSpace(v) {
+	case "facade", "memory-facade":
+		return server.RoleFacade
+	case "session":
+		return server.RoleSession
+	case "experience":
+		return server.RoleExperience
+	default:
+		return server.RoleAll
+	}
+}
+
+// parsePeers 解析 name=ws://... 的静态对端表。
+func parsePeers(v string) map[string]string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, item := range strings.Split(v, ",") {
+		name, addr, ok := strings.Cut(strings.TrimSpace(item), "=")
+		if ok && name != "" && addr != "" {
+			out[name] = addr
+		}
+	}
+	return out
 }
 
 // copyFile 是迁移前的一次性文件备份（只在共享库不存在时做一次）。

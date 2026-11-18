@@ -8,6 +8,7 @@ package server
 import (
 	"context"
 
+	"github.com/NouSart/sump/service"
 	"github.com/NouSart/sump/spv2"
 )
 
@@ -238,7 +239,7 @@ func (s *Server) registerNative() {
 			"task_name":    stringSchema(),
 		}, "messages"),
 		Output: objectSchema(map[string]any{"messages": map[string]any{"type": "array"}, "work": map[string]any{"type": "object"}}),
-	}, s.nativeContext)
+	}, s.contextHandler())
 	// work 账本（spec §6.8 内部 method）：给入口/reasoner 内部用，不进 provides、不暴露给模型。
 	s.HandleNative(spv2.Method{
 		Name:        "work_get",
@@ -349,6 +350,46 @@ func (s *Server) registerNative() {
 		}, "id"),
 		Output: objectSchema(nil),
 	}, s.nativeMessageNack)
+	// 内部 method：只在对应角色暴露，不进 provides。
+	s.HandleNative(spv2.Method{
+		Name:        "context_base",
+		Description: "会话侧上下文原材料（内部：任务 / work / 最近记录）",
+		Input:       objectSchema(map[string]any{"conversation": stringSchema(), "messages": map[string]any{"type": "array"}}),
+		Output:      objectSchema(nil),
+	}, s.nativeContextBase)
+	s.HandleNative(spv2.Method{
+		Name:        "inject",
+		Description: "共享经验四节注入（内部：核心 / 相关 / 线头 / 其他会话）",
+		Input:       objectSchema(map[string]any{"viewer": stringSchema(), "origin": stringSchema(), "query": stringSchema()}),
+		Output:      objectSchema(nil),
+	}, s.nativeInject)
+	s.HandleNative(spv2.Method{
+		Name:        "staged_pending",
+		Description: "取一批待整理观察（内部）",
+		Input:       objectSchema(map[string]any{"limit": integerSchema()}),
+		Output:      objectSchema(nil),
+	}, s.nativeStagedPending)
+	s.HandleNative(spv2.Method{
+		Name:        "staged_mark",
+		Description: "标记整理池状态（内部）",
+		Input:       objectSchema(map[string]any{"id": integerSchema(), "status": stringSchema(), "last_error": stringSchema()}),
+		Output:      objectSchema(nil),
+	}, s.nativeStagedMark)
+	s.HandleNative(spv2.Method{
+		Name:        "staged_retry",
+		Description: "重试整理池条目（内部）",
+		Input:       objectSchema(map[string]any{"id": integerSchema(), "last_error": stringSchema()}),
+		Output:      objectSchema(nil),
+	}, s.nativeStagedRetry)
+	s.registerFacadeProxies()
+}
+
+// contextHandler 在门面角色走两跳拼装，其余角色保持本地组装。
+func (s *Server) contextHandler() service.NativeHandler {
+	if s.role.isFacade() {
+		return s.nativeContextFacade
+	}
+	return s.nativeContext
 }
 
 // ---------- 原生 handler ----------

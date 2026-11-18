@@ -59,7 +59,7 @@ type consolidationConflict struct {
 
 // consolidate 处理一批整理池候选；不暴露给模型（整理由收尾 / 定时 / 手动触发）。
 func (s *Server) consolidate(ctx context.Context, meta callMeta) (any, error) {
-	if s.cfg.Store == nil {
+	if s.staged == nil {
 		return nil, errors.New("consolidate: 会话库未启用")
 	}
 	if s.longterm() == nil {
@@ -75,7 +75,7 @@ func (s *Server) consolidate(ctx context.Context, meta callMeta) (any, error) {
 	if len(existing) > consolidateExistingMax {
 		existing = existing[len(existing)-consolidateExistingMax:]
 	}
-	items, err := s.cfg.Store.PendingStaged(consolidateBatch)
+	items, err := s.staged.PendingStaged(ctx, consolidateBatch)
 	if err != nil {
 		return nil, fmt.Errorf("consolidate: 读取整理池失败: %w", err)
 	}
@@ -91,12 +91,12 @@ func (s *Server) consolidate(ctx context.Context, meta callMeta) (any, error) {
 		MaxTokens: consolidateMaxTokens,
 	}, meta.trace)
 	if err != nil {
-		s.retryStaged(items, err)
+		s.retryStaged(ctx, items, err)
 		return nil, fmt.Errorf("consolidate: reasoner.think 失败: %w", err)
 	}
 	var tr protocol.ThinkResult
 	if err := protocol.DecodeRaw(data, &tr); err != nil {
-		s.retryStaged(items, err)
+		s.retryStaged(ctx, items, err)
 		return nil, fmt.Errorf("consolidate: think 结果解析失败: %w", err)
 	}
 
@@ -112,7 +112,7 @@ func (s *Server) consolidate(ctx context.Context, meta callMeta) (any, error) {
 	}
 	decisions, err := parseConsolidationDecisions(tr.Text, valid, validExisting)
 	if err != nil {
-		s.retryStaged(items, err)
+		s.retryStaged(ctx, items, err)
 		return nil, fmt.Errorf("consolidate: %w", err)
 	}
 	byID := make(map[int64]consolidationDecision, len(decisions))
@@ -124,14 +124,14 @@ func (s *Server) consolidate(ctx context.Context, meta callMeta) (any, error) {
 	for _, it := range items {
 		d, ok := byID[it.ID]
 		if !ok {
-			if err := s.cfg.Store.MarkStaged(it.ID, "skipped", "模型未给出决定"); err != nil {
+			if err := s.staged.MarkStaged(ctx, it.ID, "skipped", "模型未给出决定"); err != nil {
 				s.logger.Printf("整理池标记失败: %v", err)
 			}
 			res.Skipped++
 			continue
 		}
 		if !d.Keep {
-			if err := s.cfg.Store.MarkStaged(it.ID, "skipped", "模型判定不保留"); err != nil {
+			if err := s.staged.MarkStaged(ctx, it.ID, "skipped", "模型判定不保留"); err != nil {
 				s.logger.Printf("整理池标记失败: %v", err)
 			}
 			res.Skipped++
@@ -139,7 +139,7 @@ func (s *Server) consolidate(ctx context.Context, meta callMeta) (any, error) {
 		}
 		if d.Durability == "transient" {
 			// transient 只属于当前任务：既不进长期记忆，也不进共享经验网。
-			if err := s.cfg.Store.MarkStaged(it.ID, "skipped", "仅当前任务，不归档"); err != nil {
+			if err := s.staged.MarkStaged(ctx, it.ID, "skipped", "仅当前任务，不归档"); err != nil {
 				s.logger.Printf("整理池标记失败: %v", err)
 			}
 			res.Skipped++
@@ -153,7 +153,7 @@ func (s *Server) consolidate(ctx context.Context, meta callMeta) (any, error) {
 			}
 		}
 		if discardNew {
-			if err := s.cfg.Store.MarkStaged(it.ID, "skipped", "与已有记忆冲突：保留旧条目"); err != nil {
+			if err := s.staged.MarkStaged(ctx, it.ID, "skipped", "与已有记忆冲突：保留旧条目"); err != nil {
 				s.logger.Printf("整理池标记失败: %v", err)
 			}
 			res.Skipped++
@@ -161,7 +161,7 @@ func (s *Server) consolidate(ctx context.Context, meta callMeta) (any, error) {
 		}
 		newID, _, err := s.longterm().AddWithSalience(d.Kind, d.Content, d.Priority, d.Salience, it.ConversationID, "consolidate")
 		if err != nil {
-			if retryErr := s.cfg.Store.RetryStaged(it.ID, err.Error()); retryErr != nil {
+			if retryErr := s.staged.RetryStaged(ctx, it.ID, err.Error()); retryErr != nil {
 				s.logger.Printf("整理池重试标记失败（候选 %d）: %v", it.ID, retryErr)
 			}
 			res.Failed++
@@ -206,7 +206,7 @@ func (s *Server) consolidate(ctx context.Context, meta callMeta) (any, error) {
 				s.logger.Printf("候选 %d 归档经验网失败（长期记忆已写入）: %v", it.ID, err)
 			}
 		}
-		if err := s.cfg.Store.MarkStaged(it.ID, "done", ""); err != nil {
+		if err := s.staged.MarkStaged(ctx, it.ID, "done", ""); err != nil {
 			s.logger.Printf("整理池标记失败（候选 %d）: %v", it.ID, err)
 		}
 	}
@@ -368,13 +368,13 @@ func (s *Server) archiveConsolidated(ctx context.Context, meta callMeta, it stor
 }
 
 // retryStaged 让失败的候选留在池里；超过上限由 store 标 failed。
-func (s *Server) retryStaged(items []store.StagedItem, cause error) {
+func (s *Server) retryStaged(ctx context.Context, items []store.StagedItem, cause error) {
 	msg := cause.Error()
 	if r := []rune(msg); len(r) > 300 {
 		msg = string(r[:300]) + "…"
 	}
 	for _, it := range items {
-		if err := s.cfg.Store.RetryStaged(it.ID, msg); err != nil {
+		if err := s.staged.RetryStaged(ctx, it.ID, msg); err != nil {
 			s.logger.Printf("整理池重试标记失败（候选 %d）: %v", it.ID, err)
 		}
 	}

@@ -247,6 +247,8 @@ $emb    = $null
 $img    = $null
 $fil    = $null
 $qq     = $null
+$memSession = $null
+$memExperience = $null
 $shellSvc = $null
 $approvalSvc = $null
 $batchSvc = $null
@@ -261,9 +263,17 @@ try {
 
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
-    Write-Host '[5/9] 启动 memory + embedding ...' -ForegroundColor Cyan
-    $mem = Start-Process -FilePath (Join-Path $binDir 'memory.exe') -ArgumentList '-addr', $MemoryAddr, '-center', "ws://$CenterAddr/spv2", '-db', (Join-Path $dataDir 'memory.db') -PassThru -WindowStyle Hidden
-    if (-not (Wait-Port $MemoryAddr 60 $mem)) { throw 'memory 未在 60 秒内就绪' }
+    Write-Host '[5/9] 启动 memory 域（session + experience + facade）+ embedding ...' -ForegroundColor Cyan
+    $sessionAddr = '127.0.0.1:9311'
+    $experienceAddr = '127.0.0.1:9312'
+    $dbFile = Join-Path $dataDir 'memory.db'
+    $sharedFile = Join-Path $dataDir 'experience.db'
+    $memSession = Start-Process -FilePath (Join-Path $binDir 'memory.exe') -ArgumentList '-role', 'session', '-addr', $sessionAddr, '-db', $dbFile, '-shared-db', $sharedFile -PassThru -WindowStyle Hidden
+    if (-not (Wait-Port $sessionAddr 60 $memSession)) { throw 'memory session 未在 60 秒内就绪' }
+    $memExperience = Start-Process -FilePath (Join-Path $binDir 'memory.exe') -ArgumentList '-role', 'experience', '-addr', $experienceAddr, '-db', $dbFile, '-shared-db', $sharedFile, '-peers', "session=ws://$sessionAddr/spv2,embedding=ws://$EmbeddingAddr/spv2,reasoner=ws://$ReasonerAddr/spv2" -PassThru -WindowStyle Hidden
+    if (-not (Wait-Port $experienceAddr 60 $memExperience)) { throw 'memory experience 未在 60 秒内就绪' }
+    $mem = Start-Process -FilePath (Join-Path $binDir 'memory.exe') -ArgumentList '-role', 'facade', '-addr', $MemoryAddr, '-center', "ws://$CenterAddr/spv2", '-db', $dbFile, '-shared-db', $sharedFile, '-peers', "session=ws://$sessionAddr/spv2,experience=ws://$experienceAddr/spv2" -PassThru -WindowStyle Hidden
+    if (-not (Wait-Port $MemoryAddr 60 $mem)) { throw 'memory 门面未在 60 秒内就绪' }
     $emb = Start-Process -FilePath $embPython -ArgumentList (@('-m', 'sump_embedding') + $embeddingArgs) -WorkingDirectory $root -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $EmbeddingAddr 60 $emb)) { throw 'embedding 未在 60 秒内就绪（首次启动需加载模型，或依赖缺失——见上方日志）' }
 
@@ -307,7 +317,9 @@ try {
 
     Write-Host ''
     Write-Host "settings-center: ws://$CenterAddr/spv2  (PID $($center.Id))"
-    Write-Host "memory:          ws://$MemoryAddr/spv2  (PID $($mem.Id))  db: data/memory.db"
+    Write-Host "memory:          ws://$MemoryAddr/spv2  (PID $($mem.Id))  db: data/memory.db（门面）"
+    Write-Host "  session:       ws://$sessionAddr/spv2  (PID $($memSession.Id))  私有库"
+    Write-Host "  experience:    ws://$experienceAddr/spv2  (PID $($memExperience.Id))  共享库"
     Write-Host "embedding:       ws://$EmbeddingAddr/spv2  (PID $($emb.Id))  后端: $(if ($null -ne $modelFile) { 'onnx（真模型）' } else { 'fake（无模型——语义召回不可用）' })"
     Write-Host "files:           ws://$FilesAddr/spv2  (PID $($fil.Id))  db: data/files.db  dir: data/files"
     Write-Host "images:          ws://$ImageAddr/spv2  (PID $($img.Id))  db: data/images.db  dir: data/images"
@@ -322,9 +334,9 @@ try {
     Write-Host "frontend:       http://$FrontendAddr/  (PID $($frontend.Id))  ← 设置面板" -ForegroundColor Green
     Write-Host '按 Ctrl+C 停止' -ForegroundColor Yellow
 
-    Wait-Process -Id $center.Id, $mem.Id, $emb.Id, $img.Id, $fil.Id, $qq.Id, $shellSvc.Id, $approvalSvc.Id, $batchSvc.Id, $timerSvc.Id, $mcpSvc.Id, $reasoner.Id, $frontend.Id
+    Wait-Process -Id $center.Id, $memSession.Id, $memExperience.Id, $mem.Id, $emb.Id, $img.Id, $fil.Id, $qq.Id, $shellSvc.Id, $approvalSvc.Id, $batchSvc.Id, $timerSvc.Id, $mcpSvc.Id, $reasoner.Id, $frontend.Id
 } finally {
-    foreach ($proc in @($center, $mem, $emb, $img, $fil, $qq, $shellSvc, $approvalSvc, $batchSvc, $timerSvc, $mcpSvc, $reasoner, $frontend)) {
+    foreach ($proc in @($center, $memSession, $memExperience, $mem, $emb, $img, $fil, $qq, $shellSvc, $approvalSvc, $batchSvc, $timerSvc, $mcpSvc, $reasoner, $frontend)) {
         if ($null -ne $proc -and -not $proc.HasExited) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         }
