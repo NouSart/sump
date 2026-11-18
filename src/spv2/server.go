@@ -418,7 +418,7 @@ func (s *Server) runCall(c *conn, f Frame, h Handler) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.opts.ActionTimeout)
 	defer cancel()
-	call := &Call{Frame: f, srv: s, conn: c, idemKey: idemKey}
+	call := &Call{Frame: f, srv: s, conn: c, ctx: ctx, idemKey: idemKey}
 	s.metrics.AddGauge("sump_inflight_requests", "In-flight requests", map[string]string{"method": s.methodLabel(f.Method)}, 1)
 	// panic 也走这条错误路径：invoke 把它转成 internal，调用方拿到回执而不是空等到超时。
 	// handler 在独立 goroutine 里跑，到期先回 deadline_exceeded（spec §9.3「到点必须回
@@ -435,11 +435,17 @@ func (s *Server) runCall(c *conn, f Frame, h Handler) {
 	case res := <-done:
 		err = res.err
 	case <-ctx.Done():
-		_ = call.ReplyError(CodeDeadlineExceeded, "处理方超过 action timeout，未在期限内返回", true, map[string]any{
+		_ = call.replyErrorNow(CodeDeadlineExceeded, "处理方超过 action timeout，未在期限内返回", true, map[string]any{
 			"method": f.Method, "timeout_ms": s.opts.ActionTimeout.Milliseconds(),
 		})
 	}
-	if err != nil && !call.Replied() {
+	if ctx.Err() != nil {
+		// handler 可能恰好和 deadline 同时返回；这时仍以 deadline 为准，
+		// 不能让 late success 覆盖已经发出的超时回执。
+		_ = call.replyErrorNow(CodeDeadlineExceeded, "处理方超过 action timeout，未在期限内返回", true, map[string]any{
+			"method": f.Method, "timeout_ms": s.opts.ActionTimeout.Milliseconds(),
+		})
+	} else if err != nil && !call.Replied() {
 		_ = call.ReplyError(codeOf(err), err.Error(), retryableOf(err), detailsOf(err))
 	}
 	if !call.Replied() {
@@ -608,11 +614,19 @@ type Call struct {
 	Frame Frame
 	srv   *Server
 	conn  *conn
+	ctx   context.Context // 仅 call 场景有值；event 没有回执，不参与 deadline 判定
 
 	mu        sync.Mutex
 	replied   bool
 	lastError *Error
 	idemKey   string
+}
+
+// expired 表示这次调用的 action timeout 已经触发。deadline 之后 handler 的
+// Reply / SendStream 属于 late result，必须丢弃，不能和服务器发出的
+// deadline_exceeded 抢同一个回执。
+func (c *Call) expired() bool {
+	return c.ctx != nil && c.ctx.Err() != nil
 }
 
 // Replied 是否已经回应。
@@ -624,6 +638,9 @@ func (c *Call) Replied() bool {
 
 // Reply 发送成功响应。
 func (c *Call) Reply(body any) error {
+	if c.expired() {
+		return ErrCode(CodeDeadlineExceeded, "调用已超过 action timeout，late result 不发送", true, nil)
+	}
 	f, err := NewReply(c.Frame, c.srv.card.Actor, body)
 	if err != nil {
 		return err
@@ -644,8 +661,21 @@ func (c *Call) Reply(body any) error {
 	return c.conn.send(f)
 }
 
-// ReplyError 发送失败响应。
+// ReplyError 发送失败响应。deadline 后的 handler 错误也属于 late result。
 func (c *Call) ReplyError(code, msg string, retryable bool, details map[string]any) error {
+	return c.replyError(code, msg, retryable, details, false)
+}
+
+// replyErrorNow 是服务器自己的超时回执：上下文已经取消，但它必须绕过
+// expired 检查，否则调用方只会等到连接关闭。
+func (c *Call) replyErrorNow(code, msg string, retryable bool, details map[string]any) error {
+	return c.replyError(code, msg, retryable, details, true)
+}
+
+func (c *Call) replyError(code, msg string, retryable bool, details map[string]any, force bool) error {
+	if !force && c.expired() {
+		return ErrCode(CodeDeadlineExceeded, "调用已超过 action timeout，late result 不发送", true, nil)
+	}
 	f := NewErrorReply(c.Frame, c.srv.card.Actor, code, msg, retryable, details)
 	c.mu.Lock()
 	if c.replied {
@@ -666,6 +696,9 @@ func (c *Call) ReplyError(code, msg string, retryable bool, details map[string]a
 
 // SendEvent 向调用方发事件。
 func (c *Call) SendEvent(method string, body any) error {
+	if c.expired() {
+		return ErrCode(CodeDeadlineExceeded, "调用已超过 action timeout，late event 不发送", true, nil)
+	}
 	f, err := NewEvent(c.Frame.Work, c.srv.card.Actor, c.Frame.From, method, body)
 	if err != nil {
 		return err
@@ -675,6 +708,9 @@ func (c *Call) SendEvent(method string, body any) error {
 
 // SendStream 发送流式块；end=true 表示终态。
 func (c *Call) SendStream(streamID string, seq int64, end bool, body any, status string) error {
+	if c.expired() {
+		return ErrCode(CodeDeadlineExceeded, "调用已超过 action timeout，late stream 不发送", true, nil)
+	}
 	f, err := NewStreamFrame(c.Frame, c.srv.card.Actor, streamID, seq, end, body, status)
 	if err != nil {
 		return err
@@ -703,6 +739,9 @@ func (c *Call) SendStream(streamID string, seq int64, end bool, body any, status
 
 // SendStreamError 发送错误终态的流式块。
 func (c *Call) SendStreamError(streamID string, seq int64, e *Error) error {
+	if c.expired() {
+		return ErrCode(CodeDeadlineExceeded, "调用已超过 action timeout，late stream 不发送", true, nil)
+	}
 	f, err := NewErrorStreamFrame(c.Frame, c.srv.card.Actor, streamID, seq, e)
 	if err != nil {
 		return err
