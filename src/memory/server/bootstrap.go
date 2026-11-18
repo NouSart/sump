@@ -28,13 +28,30 @@ func (s *Server) bootstrapPeers(ctx context.Context) error {
 	seen := map[string]string{}
 	for _, name := range []string{"session", "experience"} {
 		for _, m := range cards[name].Methods {
-			if isControlMethod(m.Name) {
+			if isControlMethod(m.Name) || internalMethods[m.Name] {
 				continue
 			}
 			if owner, ok := seen[m.Name]; ok {
 				return fmt.Errorf("门面自检: method %s 同时由 %s 与 %s 声明", m.Name, owner, name)
 			}
 			seen[m.Name] = name
+		}
+	}
+	settingOwner := map[string]string{}
+	for _, name := range []string{"session", "experience"} {
+		raw, err := s.Call(ctx, name, "settings_schema", nil, "")
+		if err != nil {
+			return fmt.Errorf("门面自检: 读取 %s 设置声明失败: %w", name, err)
+		}
+		var settings []protocol.Setting
+		if err := protocol.DecodeRaw(raw, &settings); err != nil {
+			return fmt.Errorf("门面自检: %s 设置声明无法解码: %w", name, err)
+		}
+		for _, setting := range settings {
+			if owner, ok := settingOwner[setting.Key]; ok {
+				return fmt.Errorf("门面自检: 设置键 %s 同时由 %s 与 %s 声明", setting.Key, owner, name)
+			}
+			settingOwner[setting.Key] = name
 		}
 	}
 	// 每个域内 method 必须能路由；缺一个就说明内部服务裁剪错了。

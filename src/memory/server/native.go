@@ -381,6 +381,14 @@ func (s *Server) registerNative() {
 		Input:       objectSchema(map[string]any{"id": integerSchema(), "last_error": stringSchema()}),
 		Output:      objectSchema(nil),
 	}, s.nativeStagedRetry)
+	s.HandleNative(spv2.Method{
+		Name:        "settings_schema",
+		Description: "本进程负责的设置项声明（内部：门面聚合与冲突检查）",
+		Input:       objectSchema(nil),
+		Output:      objectSchema(nil),
+	}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(s.Settings())
+	})
 	s.registerFacadeProxies()
 }
 

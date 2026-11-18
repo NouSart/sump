@@ -1,6 +1,6 @@
 # memory 域拆分目标：门面 + session / experience 服务 + context 模块
 
-> **读者**：要评审或实施 memory 拆分的人 ｜ **读完能做**：判断拆分边界、协议归属与验收方式 ｜ **状态**：**提议，尚未实现**，不得据此认为已落地 ｜ **最后校验**：2026-11-18
+> **读者**：要评审或实施 memory 拆分的人 ｜ **读完能做**：判断拆分边界、协议归属与验收方式 ｜ **状态**：**已实施第一阶段（三进程角色化）；源码包拆分未做**，见 §13 ｜ **最后校验**：2026-11-19
 
 ## 1. 目标
 
@@ -83,7 +83,8 @@ reply {block}                         // 已按查看者过滤的记忆块
 
 约定：
 
-- 帧头 `from` 是 `memory` 门面；`work` 与外部请求同一个工作号；
+- 帧头 `from` **原样保留外部调用方**（门面透传，不改成自己的名字）；`work` 与外部请求同一个工作号。
+  这样 `session` 的 work 授权仍按真实调用方判断，也符合“结果归属逐跳不可丢失”；
 - 内部 method 名不带服务前缀，服务由 `to` 指定；
 - body 用 `src/protocol` 的 DTO，不建内部私有协议；
 - 内部服务不注册到 settings-center，但仍然暴露 `/spv2`；
@@ -127,9 +128,11 @@ reply {block}                         // 已按查看者过滤的记忆块
 
 ## 10. 源码布局
 
+目标布局（**尚未完成**；当前实现见 §13）：
+
 ```text
 src/memory/
-  README.md                 # 领域地图：数据权威 / method / 设置 / 失败语义
+  README.md                 # 领域地图：数据权威 / method / 设置 / 失败语义（已建）
   facade/                   # main + router + context 模块
     main.go
     router/
@@ -183,3 +186,22 @@ src/memory/
 - **session / experience 注册到全局名册**：会把内部拓扑暴露给所有服务，违背“只暴露 memory”。
 - **门面持有数据或业务规则**：会变成新的“总管”，拆分失去意义。
 - **共享内部库**：会让两个服务重新耦合；共享物只能是协议。
+
+## 13. 实施记录（2026-11-19）
+
+已落地的是**运行时边界**，不是最终源码布局：
+
+- `src/memory` 仍是**单个 Go 模块、单个实现包**；`memory.exe -role session|experience|facade` 启动三个独立进程。
+- `service` 骨架新增 `Standalone`（不连设置中心）、`Peers`（静态内部地址）、`NativeFilter`（名片只发布本域 method）。
+- 角色只决定暴露哪些 method / 设置项：`session` 持有会话库，`experience` 持有共享库，`facade` 不打开数据库、只做路由与 `context` 拼装。
+- 门面启动自检：两个内部服务必须可达、method 不得重叠、每个域内 method 必须有人声明；缺失或冲突直接启动失败。`/healthz` 带 session / experience 探针。
+- `context` 两跳：`session.context_base`（任务 / work / 历史）+ `experience.inject`（核心 / 相关 / 线头 / 其他会话），门面本地 `compose.Inject`。
+- 整理池跨域：`experience.consolidate` 通过 `session.staged_pending|mark|retry` 读写，不直接打开会话库。
+- 设置下发：门面保留 13 个键，按归属转发 `configure`；只读项由门面展示。内部服务用 `settings_schema` 报自己的键，门面启动时检查重复。Session / experience 只声明本域键（不再声明 name / addr / center）。
+- 测试：`tests/facade_roles_test.go` 覆盖跨进程读写与设置转发；`tests/role_cards_test.go` 钉住名片隔离与内部 method 不外泄；`tests/facade_start_test.go` 钉住启动硬门；`service/tests/standalone_test.go` 钉住独立模式与静态对端。
+
+仍未做（已进 TODO）：
+
+- 把实现包拆成 `facade/` / `session/` / `experience/` 三个 Go 包（乃至独立 `go.mod`），并用 import 规则测试钉住。当前靠 `Role` 与 `NativeFilter` 在运行时隔离，编译期仍可互相 import。
+- 门面 metrics 聚合；`conversation_get` 补 `publish_session` 的会话标题；读取侧可见性过滤（`inject.viewer` 目前只是占位）。
+

@@ -162,6 +162,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Standalone:        cfg.Role.isSession() || cfg.Role.isExperience(),
 		Peers:             cfg.Peers,
 		NativeFilter:      cfg.Role.methodAllowed,
+		SettingFilter:     cfg.Role.settingAllowed,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		Description:       "记忆服务：会话历史 + 长期记忆（remember/forget；语义召回 + bigram 兜底 + 核心注入）与上下文组装（context 同步返回）",
 		Provides:          filterProvides(cfg.Role, provides),

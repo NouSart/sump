@@ -33,7 +33,7 @@
 | [concepts/agent-loop.md](concepts/agent-loop.md) | 改 reasoner / memory 的人 | 有效 | 2026-11-06 |
 | [concepts/protocol.md](concepts/protocol.md) | 写服务 / 改协议的人 | 有效（SPv2.1，`v: "spv2.1"`） | 2026-11-06 |
 | [concepts/spv2.md](concepts/spv2.md) | 要评审 / 实现 SPv2.1 的人 | 草案 v0.1 | 2026-11-06 |
-| [concepts/memory-target.md](concepts/memory-target.md) | 要评审 / 实施 memory 拆分的人 | **提议，未实现** | 2026-11-18 |
+| [concepts/memory-target.md](concepts/memory-target.md) | 要评审 / 实施 memory 拆分的人 | **已实施第一阶段（三进程）；源码包拆分未做** | 2026-11-19 |
 | [concepts/approval.md](concepts/approval.md) | 改审批规则的人 | 有效（解释与富通知未实现） | 2026-11-06 |
 | [concepts/roadmap.md](concepts/roadmap.md) | 想知道边界与顺序的人 | 有效 | 2026-10-30 |
 | [guides/add-a-service.md](guides/add-a-service.md) | 加新服务的人 | 有效 | 2026-11-06 |

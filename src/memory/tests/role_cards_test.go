@@ -78,7 +78,7 @@ func TestRoleCardsAreDisjoint(t *testing.T) {
 	if !fm["context"] || !fm["store"] || !fm["remember"] {
 		t.Fatalf("门面应聚合读写方法: %v", fm)
 	}
-	for _, internal := range []string{"context_base", "inject", "staged_pending", "staged_mark", "staged_retry"} {
+	for _, internal := range []string{"context_base", "inject", "settings_schema", "staged_pending", "staged_mark", "staged_retry"} {
 		if fm[internal] {
 			t.Fatalf("内部 method %s 不得出现在门面名片", internal)
 		}

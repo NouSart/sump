@@ -41,11 +41,12 @@ var sessionMethods = map[string]bool{
 	"work_update": true, "work_sweep": true, "work_cancel": true, "work_renew": true,
 	"message_post": true, "message_claim": true, "message_ack": true, "message_nack": true,
 	"context_base": true, "staged_pending": true, "staged_mark": true, "staged_retry": true,
+	"settings_schema": true,
 }
 
 // internalMethods 只在域内可见，不进门面名片、也不给外部调用方。
 var internalMethods = map[string]bool{
-	"context_base": true, "inject": true,
+	"context_base": true, "inject": true, "settings_schema": true,
 	"staged_pending": true, "staged_mark": true, "staged_retry": true,
 }
 
@@ -54,7 +55,7 @@ var experienceMethods = map[string]bool{
 	"remember": true, "forget": true, "consolidate": true,
 	"note": true, "dig": true, "lineheads": true, "prune": true,
 	"publish_session": true, "shared_sessions": true, "shared_forget": true,
-	"inject": true,
+	"inject": true, "settings_schema": true,
 }
 
 // methodAllowed 判断角色是否暴露某 method。门面暴露全部对外 method，
@@ -89,27 +90,16 @@ func filterProvides(r Role, in []protocol.Provide) []protocol.Provide {
 	return out
 }
 
-// peerOf 返回对外 method 的数据归属；门面据此透传。
-func peerOf(name string) string {
-	if sessionMethods[name] {
-		return "session"
-	}
-	if experienceMethods[name] {
-		return "experience"
-	}
-	return ""
-}
-
 // settingAllowed 判断角色是否声明某设置项。
 func (r Role) settingAllowed(key string) bool {
 	switch r {
 	case RoleSession:
-		return key == "context.history_limit" || key == "db" || key == "name" || key == "addr"
+		return key == "context.history_limit" || key == "db"
 	case RoleExperience:
 		return key == "context.core_limit" || key == "context.core_max_chars" ||
 			key == "context.rel_limit" || key == "context.rel_max_chars" ||
 			key == "context.embedding" || key == "share.sessions_limit" ||
-			key == "share.digest_chars" || key == "shared_db" || key == "name" || key == "addr"
+			key == "share.digest_chars" || key == "shared_db"
 	default:
 		return true
 	}

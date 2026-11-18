@@ -34,7 +34,10 @@ type Config struct {
 	Peers map[string]string
 	// NativeFilter 过滤对外暴露的 native method（nil = 全暴露）。
 	// 用于同一实现按角色拆成多个进程时，只发布本域方法。
-	NativeFilter      func(name string) bool
+	NativeFilter func(name string) bool
+	// SettingFilter 过滤本进程声明/接受的设置键（nil = 全部）。
+	// 内部服务用它只暴露自己域的键，门面据此做冲突检查。
+	SettingFilter     func(key string) bool
 	HeartbeatInterval time.Duration      // 心跳间隔（默认 15s；随名片声明，中心据此判定离线）
 	ActionTimeout     time.Duration      // 单次动作处理超时（默认 30s）
 	Description       string             // 名片：功能简介

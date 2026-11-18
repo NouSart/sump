@@ -62,7 +62,7 @@ func main() {
 
 	// 共享经验库是**另一个文件、另一个句柄**：这里没有 messages，只有偏好 / 经验 / 会话摘要。
 	// 首次从旧版 memory.db 迁移前先复制一份备份——迁移只改名不删表，但备份更省心。
-	if role == server.RoleAll || role == server.RoleSession {
+	if role == server.RoleAll {
 		if _, err := os.Stat(sharedPath); errors.Is(err, os.ErrNotExist) {
 			if _, err := os.Stat(*dbPath); err == nil && st != nil {
 				bak := fmt.Sprintf("%s.bak-%s", *dbPath, time.Now().Format("20060102-150405"))
@@ -75,7 +75,7 @@ func main() {
 		}
 	}
 	var sh *shared.Store
-	if role != server.RoleFacade {
+	if role == server.RoleAll || role == server.RoleExperience {
 		var err error
 		sh, err = shared.Open(sharedPath, time.Now())
 		if err != nil {

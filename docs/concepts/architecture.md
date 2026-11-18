@@ -53,7 +53,7 @@ SUMP 是「服务的互联网」：每个服务是独立进程、独立数据库
 
 三个 Go **库**（不是服务）：`src/protocol/`（跨服务业务载荷 DTO 与 codec）、`src/service/`（服务骨架：注册 / 心跳 / 名册 / 重连 / 告别 / 设置接收 / 原生 method 注册）、`src/spv2/`（SPv2.1 帧、卡片、校验与 WS client/server 参考实现）。`testing/tests/` 是跨服务真进程端到端，不属于任何服务。
 
-memory 的拆分目标（`memory` 门面 + `session` / `experience` 服务 + `context` 模块）见 [memory-target.md](memory-target.md)；当前尚未实现。
+memory 的拆分目标（`memory` 门面 + `session` / `experience` 服务 + `context` 模块）见 [memory-target.md](memory-target.md)；三进程角色化已落地，源码包拆分与 metrics 聚合仍待做。
 
 端口一览见 [../quickstart.md](../quickstart.md)。
 

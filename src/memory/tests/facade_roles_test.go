@@ -6,6 +6,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"path/filepath"
@@ -119,6 +120,67 @@ func TestFacadeRoutesAcrossProcesses(t *testing.T) {
 	}))
 	if len(got.Messages) < 2 || strings.Contains(got.Messages[1].Content, "用户喜欢简洁回答") {
 		t.Fatalf("核心记忆预算压到 1 字后不应再注入: %+v", got.Messages)
+	}
+}
+
+func TestConsolidateAcrossProcesses(t *testing.T) {
+	sc := startStubCenter(t)
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	sh, err := shared.Open(filepath.Join(dir, "experience.db"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sh.Close() })
+
+	sess := startRole(t, server.RoleSession, "", st, nil, nil)
+	reasoner := startStubReasoner(t, sc.URL())
+	exp := startRole(t, server.RoleExperience, "", nil, sh, map[string]string{
+		"session": sess.WsURL(), "reasoner": reasoner.URL(),
+	})
+	facade := startRole(t, server.RoleFacade, sc.URL(), nil, nil, map[string]string{
+		"session": sess.WsURL(), "experience": exp.WsURL(),
+	})
+	caller := startStubCaller(t, sc.URL())
+
+	if rp := caller.call(t, facade.WsURL(), "store", protocol.StorePayload{
+		ConversationID: "c1", Role: "user", Content: "我住在杭州",
+	}); !rp.OK {
+		t.Fatalf("store 失败: %s", rp.Error)
+	}
+	items, err := st.PendingStaged(0)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("应有 1 条待整理候选: %+v err=%v", items, err)
+	}
+	reasoner.setText(fmt.Sprintf(`[{"id":%d,"keep":true,"kind":"身份","content":"住在杭州","salience":0.7,"priority":0,"durability":"durable","reason":"稳定事实"}]`, items[0].ID))
+
+	var res protocol.ConsolidateResult
+	rp := caller.call(t, facade.WsURL(), "consolidate", struct{}{})
+	if !rp.OK {
+		t.Fatalf("consolidate 失败: %s", rp.Error)
+	}
+	if err := protocol.DecodeRaw(rp.Data, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Processed != 1 || res.Archived != 1 {
+		t.Fatalf("整理结果不符: %+v", res)
+	}
+	entries, err := sh.Longterm.ListActive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if strings.Contains(e.Content, "住在杭州") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("整理结果应写入 experience 长期记忆: %+v", entries)
 	}
 }
 
