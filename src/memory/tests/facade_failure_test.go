@@ -26,3 +26,17 @@ func TestFacadeFailsWhenSessionDown(t *testing.T) {
 		t.Fatal("session 已挂，context 不得成功")
 	}
 }
+
+func TestFacadeFailsWhenExperienceDown(t *testing.T) {
+	sc := startStubCenter(t)
+	srv := startMemory(t, sc.URL(), 12)
+	caller := startStubCaller(t, sc.URL())
+	srv.exp.Shutdown()
+
+	if rp := caller.call(t, srv.WsURL(), "context", protocol.ContextPayload{
+		Conversation: "t1",
+		Messages:     []protocol.Message{{Role: "user", Content: "还有记忆吗"}},
+	}); rp.OK {
+		t.Fatal("experience 已挂，context 不得成功")
+	}
+}
