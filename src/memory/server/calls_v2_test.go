@@ -142,7 +142,7 @@ func TestCallControlPauseUnavailableKeepsState(t *testing.T) {
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
 	id := openCallsTestCall(t, s, "w1", store.CallModeResident, true)
 
-	_, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-pause", Op: "pause"})
+	_, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-pause", Op: "pause"}, "w1", spv2.AgentRef("reasoner"))
 	if !spv2.IsCode(err, spv2.CodeUnavailable) {
 		t.Fatalf("pause 未接 owner 应 unavailable: %v", err)
 	}
@@ -155,12 +155,12 @@ func TestCallControlPauseUnavailableKeepsState(t *testing.T) {
 	}
 
 	// 失败不应留下 control 记录：同 control_id 重试仍是 unavailable，而不是“已完成”。
-	if _, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-pause", Op: "pause"}); !spv2.IsCode(err, spv2.CodeUnavailable) {
+	if _, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-pause", Op: "pause"}, "w1", spv2.AgentRef("reasoner")); !spv2.IsCode(err, spv2.CodeUnavailable) {
 		t.Fatalf("pause 重试应仍 unavailable: %v", err)
 	}
 
 	// resume 只能从 paused 出发；created 直接 resume 是 conflict。
-	if _, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-resume-1", Op: "resume"}); !spv2.IsCode(err, spv2.CodeConflict) {
+	if _, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-resume-1", Op: "resume"}, "w1", spv2.AgentRef("reasoner")); !spv2.IsCode(err, spv2.CodeConflict) {
 		t.Fatalf("created 上 resume 应 conflict: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestCallControlPauseUnavailableKeepsState(t *testing.T) {
 	if err := st.SetCallState(ctx, id, store.CallObserveWaiting, store.CallExecPaused, "", "pause_confirmed"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-resume-2", Op: "resume"}); !spv2.IsCode(err, spv2.CodeUnavailable) {
+	if _, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-resume-2", Op: "resume"}, "w1", spv2.AgentRef("reasoner")); !spv2.IsCode(err, spv2.CodeUnavailable) {
 		t.Fatalf("resume 未接 owner 应 unavailable: %v", err)
 	}
 	if row, _ := st.GetCall(ctx, id); row.Exec != store.CallExecPaused {
@@ -186,7 +186,7 @@ func TestCallControlCancelAndIdempotency(t *testing.T) {
 
 	// 可暂停调用：本地取消 = 执行侧已取消。
 	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
-	first, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-cancel", Op: "cancel"})
+	first, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-cancel", Op: "cancel"}, "w1", spv2.AgentRef("reasoner"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestCallControlCancelAndIdempotency(t *testing.T) {
 	}
 
 	// 同 control_id 重放：结果一致，且不会因第一次已关闭而变成 conflict。
-	replay, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-cancel", Op: "cancel"})
+	replay, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-cancel", Op: "cancel"}, "w1", spv2.AgentRef("reasoner"))
 	if err != nil {
 		t.Fatalf("同 control_id 重放应成功: %v", err)
 	}
@@ -210,13 +210,13 @@ func TestCallControlCancelAndIdempotency(t *testing.T) {
 		t.Fatalf("重放结果不一致: %+v vs %+v", replay, first)
 	}
 	// 换个 control_id 再取消已关闭的调用：conflict（不能假装还有效）。
-	if _, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-cancel-2", Op: "cancel"}); !spv2.IsCode(err, spv2.CodeConflict) {
+	if _, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-cancel-2", Op: "cancel"}, "w1", spv2.AgentRef("reasoner")); !spv2.IsCode(err, spv2.CodeConflict) {
 		t.Fatalf("已关闭调用再取消应 conflict: %v", err)
 	}
 
 	// 不可暂停调用：取消后 exec=unknown、不写 phase、remote_may_continue=true。
 	id2 := openCallsTestCall(t, s, "w1", store.CallModeOnce, false)
-	res2, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id2, ControlID: "ctl-cancel-np", Op: "cancel"})
+	res2, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id2, ControlID: "ctl-cancel-np", Op: "cancel"}, "w1", spv2.AgentRef("reasoner"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestCallStatusReportsOwnerHandshakeMissing(t *testing.T) {
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
 	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
 
-	res, err := s.callStatus(ctx, protocol.CallStatusPayload{IDs: []string{id, "missing-call"}})
+	res, err := s.callStatus(ctx, protocol.CallStatusPayload{IDs: []string{id, "missing-call"}}, "w1", spv2.AgentRef("reasoner"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestCallStatusReportsOwnerHandshakeMissing(t *testing.T) {
 		t.Fatalf("未知 call 的对账项不应被判定: %+v", res.Items[1])
 	}
 
-	if _, err := s.callStatus(ctx, protocol.CallStatusPayload{}); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
+	if _, err := s.callStatus(ctx, protocol.CallStatusPayload{}, "w1", spv2.AgentRef("reasoner")); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
 		t.Fatalf("空 ids 应 invalid_argument: %v", err)
 	}
 }

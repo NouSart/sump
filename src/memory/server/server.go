@@ -36,6 +36,10 @@ type Config struct {
 	Reasoner          string        // reasoner 服务名（默认 reasoner；记忆整理调用 think）
 	DBPath            string        // 会话库路径（只读项展示用：换它要重启）
 	SharedPath        string        // 共享库路径（只读项展示用）
+	// OwnerClient 是可选的执行服务客户端：控制（pause/resume/cancel）与对账（call_status）
+	// 经它问 owner。nil = 未接入 owner：pause/resume 回 unavailable、对账不判 orphaned、
+	// cancel 仍本地执行（S-001 §3.4 / §3.5；见 owner_client.go）。
+	OwnerClient OwnerClient
 }
 
 // v0 注入预算的默认值（对齐 v1 量级；作为声明预设，可被设置中心覆盖）。
@@ -63,6 +67,10 @@ type Server struct {
 
 	cfg    Config
 	logger *log.Logger
+
+	// ownerClient 是执行服务客户端（New 时由 Config.OwnerClient 注入；nil = 未接入 owner）。
+	// 运行期不热改，读侧无需加锁。
+	ownerClient OwnerClient
 
 	setMu         sync.Mutex // 运行时可设项（设置下发 / 拉取即时生效）
 	consolidateMu sync.Mutex // 同一进程内串行整理：避免两个批次重复读同一批 pending
@@ -111,6 +119,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	}
 	s := &Server{
 		cfg: cfg, logger: logger,
+		ownerClient:   cfg.OwnerClient,
 		historyLimit:  cfg.HistoryLimit,
 		coreLimit:     defaultCoreLimit,
 		coreMaxChars:  defaultCoreMaxChars,
