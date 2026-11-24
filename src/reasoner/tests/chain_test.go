@@ -1,7 +1,7 @@
 package tests
 
-// M5 全链测试（异步工具 + 完全启动）：message → 记忆往返（recall → resume）→ 工具派发
-// （即时受理回执）→ 自跳(step) → LLM 调 wait 阻塞至结果入账 → 收尾轮 → 交付(deliver) 直达 boss。
+// M5 全链测试（异步工具 + 完全启动）：message → memory.context → 工具派发
+// （即时受理回执）→ boardKick 开轮 → LLM 调 wait 阻塞至结果入账 → 收尾轮 → deliver 直达 boss。
 
 import (
 	"context"
@@ -110,7 +110,7 @@ func startStubBoss(t *testing.T, center *stubCenter) *stubBoss {
 
 // TestInferChain 验证 Fake LLM 驱动的全链（异步工具）：
 // message（快速回执）→ LLM 决定调 stub-center__ping（已提供工具、真跳转、后台执行）
-// → 自跳后 LLM 调 wait（阻塞到结果入账）→ LLM 收尾输出文本 → deliver 直达 boss。
+// → 开轮后 LLM 调 wait（阻塞到结果入账）→ LLM 收尾输出文本 → deliver 直达 boss。
 func TestInferChain(t *testing.T) {
 	sc := startStubCenter(t)
 	boss := startStubBoss(t, sc)

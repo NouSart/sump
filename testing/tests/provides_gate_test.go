@@ -21,7 +21,7 @@ import (
 	"testing"
 )
 
-// handledButUndeclared 是允许"注册了但不进 provides"的动作：入站动作与内部自跳。
+// handledButUndeclared 是允许"注册了但不进 provides"的动作：入站动作与内部调用。
 // 它们不是给别的服务按名册调用的，声明出来反而会误导（名册是"我能提供什么"）。
 var handledButUndeclared = map[string]map[string]string{
 	// 别人调它（本服务是接收方），所以不进自己的 provides。
@@ -49,9 +49,8 @@ var handledButUndeclared = map[string]map[string]string{
 		"settings_schema": "入站：门面读取设置声明做聚合与冲突检查（内部）",
 	},
 	"mcp": {"cancel_import": "入站：外部取消导入", "report_result": "入站：导入进度补报"},
-	// 服务自己发给自己的跳转（单步推理的自跳）。
+	// reasoner 自己接收的入站动作（门户停手/继续）。
 	"reasoner_self": {
-		"step":      "自跳：一轮结束推进下一轮",
 		"user_hold": "入站：门户停手/继续",
 	},
 }
@@ -105,7 +104,7 @@ func TestProvidesMatchHandle(t *testing.T) {
 				continue
 			}
 			if reason, ok := undeclaredOK[action]; ok {
-				_ = reason // 例外成立：入站 / 自跳
+				_ = reason // 例外成立：入站 / 内部
 				continue
 			}
 			t.Errorf("%s: 动作 %q 已 Handle 但 provides 里没有声明——协议面看不见它，"+
