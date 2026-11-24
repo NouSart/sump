@@ -900,32 +900,69 @@ var guards = []guard{
 		old:  `	if depth > maxDepth {`,
 		new:  `	if false && depth > maxDepth {`,
 	},
-	// ---------- V2 新增：幂等落库记录（src/memory/store/receipts.go）----------
+	// ---------- V2 新增：原子幂等落库（src/memory/store/record_v2.go）----------
 	{
-		name: "V2 receipts 同键不同 hash 不报 conflict（覆盖写当成重放）",
-		file: "src/memory/store/receipts.go",
-		old: `		if storedHash != payloadHash {
-			return "", false, ErrPayloadConflict
+		name: "V2 record_v2 同 client_item_id 不同 hash 不报 conflict（冲突载荷当成重放）",
+		file: "src/memory/store/record_v2.go",
+		old: `			if storedHash != in.PayloadHash {
+				return V2RecordResult{}, ErrPayloadConflict
+			}
+			if storedItem != "" {`,
+		new: `			if false && storedHash != in.PayloadHash {
+				return V2RecordResult{}, ErrPayloadConflict
+			}
+			if storedItem != "" {`,
+	},
+	{
+		name: "V2 record_v2 同 report_id 不同 hash 不报 conflict（补报覆盖写不被判出）",
+		file: "src/memory/store/record_v2.go",
+		old: `			if storedHash != in.PayloadHash {
+				return V2RecordResult{}, ErrPayloadConflict
+			}
+			seq, err := seqOfItem(ctx, tx, storedItem)`,
+		new: `			if false && storedHash != in.PayloadHash {
+				return V2RecordResult{}, ErrPayloadConflict
+			}
+			seq, err := seqOfItem(ctx, tx, storedItem)`,
+	},
+	{
+		name: "V2 record_v2 换 report_id 重用 report_seq 被当成重放（占用判定失效）",
+		file: "src/memory/store/record_v2.go",
+		old: `		if err == nil {
+			// 查到了却是另一个 report_id：换 ID 重放同一个 (call_id, report_seq)。
+			return V2RecordResult{}, ErrPayloadConflict
 		}`,
-		new: `		if false && storedHash != payloadHash {
-			return "", false, ErrPayloadConflict
+		new: `		if err == nil {
+			// 查到了却是另一个 report_id：换 ID 重放同一个 (call_id, report_seq)。
+			return V2RecordResult{Deduped: true}, nil
 		}`,
 	},
 	{
-		name: "V2 receipts 换 report_id 重用 report_seq 被当成重放（uq_report_seq 判断失效）",
-		file: "src/memory/store/receipts.go",
-		old: `	case errors.Is(err, sql.ErrNoRows):
-		return false, ErrPayloadConflict
-	default:`,
-		new: `	case errors.Is(err, sql.ErrNoRows):
-		return true, nil
-	default:`,
+		name: "V2 record_v2 旧占位回执不回填（同键重放再插一条消息）",
+		file: "src/memory/store/record_v2.go",
+		old:  `			fillPlaceholder = true`,
+		new:  `			fillPlaceholder = false`,
 	},
 	{
-		name: "V2 receipts 重放时返回本次请求的 item_id（不回既有回执）",
-		file: "src/memory/store/receipts.go",
-		old:  `		return storedItem, true, nil`,
-		new:  `		return itemID, true, nil`,
+		name: "V2 record_v2 补报推进账本的错误被吞（非法补报照样入账）",
+		file: "src/memory/store/record_v2.go",
+		old: `		if err := applyReportToCall(ctx, tx, work, in.Report, itemID); err != nil {
+			return V2RecordResult{}, err
+		}`,
+		new: `		_ = applyReportToCall(ctx, tx, work, in.Report, itemID)`,
+	},
+	{
+		name: "V2 record_v2 不核对 call 的归属 work（可替别人的调用记账）",
+		file: "src/memory/store/record_v2.go",
+		old:  `	if strings.TrimSpace(callWork) != work {`,
+		new:  `	if false && strings.TrimSpace(callWork) != work {`,
+	},
+	{
+		name: "V2 record_v2 取号只看计数器不看已落库上界（老路径写过高号后重号）",
+		file: "src/memory/store/record_v2.go",
+		old: `max(last_seq + 1,
+			COALESCE((SELECT MAX(seq) FROM messages WHERE conversation_id = seq_counters.conversation_id), 0) + 1)`,
+		new: `last_seq + 1`,
 	},
 	// ---------- V2 新增：上下文快照与触发状态（src/memory/store · server）----------
 	{
@@ -935,29 +972,24 @@ var guards = []guard{
 		new:  `	if false && time.Now().After(exp) {`,
 	},
 	{
-		name: "V2 snapshots completed 分支改为重新组装（不再只回旧快照）",
+		name: "V2 context_v2 completed 改为读快照（已完成轮被重新打开）",
 		file: "src/memory/server/context_v2.go",
-		old: `	case store.TriggerStateCompleted, store.TriggerStateAssembled:
-		// completed 与 assembled 都只读快照：前者连推理都不该重开，后者是同一轮的续跑。
-		return s.loadContextV2Snapshot(ctx, work, kind, item, state)
-	case "", store.TriggerStatePending:
-		return s.assembleContextV2(ctx, work, kind, item, time.Now())`,
-		new: `	case store.TriggerStateAssembled:
-		// completed 与 assembled 都只读快照：前者连推理都不该重开，后者是同一轮的续跑。
-		return s.loadContextV2Snapshot(ctx, work, kind, item, state)
-	case "", store.TriggerStatePending, store.TriggerStateCompleted:
-		return s.assembleContextV2(ctx, work, kind, item, time.Now())`,
+		old: `	case store.TriggerStateCompleted:
+		// 已完成：只补 ACK。这一步的意义在于「不做事」——不重新组装、不再灌一遍历史，
+		// 否则 agent 会以为拿到了新一轮的上下文，把已经收口的对话再推理一次（§3.1.1）。
+		return completedTriggerAck(snapshotID), nil`,
+		new: `	case store.TriggerStateCompleted:
+		// 异变：改成读旧快照——snapshotID 仍被用到才编译得过，语义已经变成「重新打开已完成的一轮」。
+		_ = snapshotID
+		return s.loadContextV2Snapshot(ctx, work, kind, item, state)`,
 	},
 	{
-		name: "V2 snapshots assembled 分支改为重新组装（同一轮续跑被重开）",
+		name: "V2 context_v2 assembled 改为重新组装（同一轮续跑被重开）",
 		file: "src/memory/server/context_v2.go",
-		old: `	case store.TriggerStateCompleted, store.TriggerStateAssembled:
-		// completed 与 assembled 都只读快照：前者连推理都不该重开，后者是同一轮的续跑。
+		old: `	case store.TriggerStateAssembled:
+		// 同一轮的续跑：沿用那份不可变投影，不重新查库、不重新组装。
 		return s.loadContextV2Snapshot(ctx, work, kind, item, state)`,
-		new: `	case store.TriggerStateCompleted:
-		// completed 与 assembled 都只读快照：前者连推理都不该重开，后者是同一轮的续跑。
-		return s.loadContextV2Snapshot(ctx, work, kind, item, state)
-	case store.TriggerStateAssembled:
+		new: `	case store.TriggerStateAssembled:
 		return s.assembleContextV2(ctx, work, kind, item, time.Now())`,
 	},
 	{
@@ -1007,6 +1039,32 @@ var guards = []guard{
 			Observe: store.CallObserveWaiting, Exec: store.CallExecPaused, Reason: "paused",
 		})
 	}`,
+	},
+	// ---------- V2 新增：v2 入口的归属授权（src/memory/server/work.go）----------
+	{
+		name: "V2 authorize 匿名 from 也能顶替 owner（空 ID 被当匹配）",
+		file: "src/memory/server/work.go",
+		old:  `	if from.ID != "" && from.ID == strings.TrimSpace(w.Owner.ID) {`,
+		new:  `	if from.ID == "" || from.ID == strings.TrimSpace(w.Owner.ID) {`,
+	},
+	{
+		name: "V2 authorize 不再要求调用方就是目标 work（同 agent 跨 work 读写）",
+		file: "src/memory/server/work.go",
+		old:  `	if strings.TrimSpace(callerWork) != w.ID {`,
+		new:  `	if false && strings.TrimSpace(callerWork) != w.ID {`,
+	},
+	// ---------- V2 新增：共享库版本闸门（src/memory/shared · src/memory/main.go）----------
+	{
+		name: "V2 shared 旧库闸门放行（对旧共享库补建表结构）",
+		file: "src/memory/shared/db.go",
+		old:  `	if !allowWrite(state) {`,
+		new:  `	if false && !allowWrite(state) {`,
+	},
+	{
+		name: "V2 main 共享库版本不匹配仍继续启动（旧提炼物库被当新库）",
+		file: "src/memory/main.go",
+		old:  `	if shExists && shVersion != shared.SchemaVersion {`,
+		new:  `	if false && shExists && shVersion != shared.SchemaVersion {`,
 	},
 	// ---------- V2 新增：store 的 v2 入口（src/memory/server/store_v2.go · server.go）----------
 	{

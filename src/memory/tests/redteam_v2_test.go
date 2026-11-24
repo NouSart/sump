@@ -18,7 +18,6 @@ package tests
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -105,10 +104,22 @@ func (e *v2Env) mustCall(t *testing.T, frameWork, from, method string, input any
 	return body
 }
 
+// agentOf 返回某条 work 在账本里登记的 agent id。
+// v2 入口的归属校验以「帧头 work + from」为准，所以辅助函数必须以目标 work 自己的
+// agent 身份调用，否则测的是授权而不是被测语义。
+func (e *v2Env) agentOf(t *testing.T, work string) string {
+	t.Helper()
+	w, err := e.st.GetWork(context.Background(), work)
+	if err != nil {
+		t.Fatalf("读取 work %s 失败: %v", work, err)
+	}
+	return w.Agent.ID
+}
+
 // storeMessage 用 v2 的 store 路径落一条用户消息（幂等键唯一），返回可作为 trigger.item 的消息 id。
 func (e *v2Env) storeMessage(t *testing.T, work, content string) string {
 	t.Helper()
-	body := e.mustCall(t, work, "reasoner", "store", protocol.StorePayload{
+	body := e.mustCall(t, work, e.agentOf(t, work), "store", protocol.StorePayload{
 		Work:           work,
 		ConversationID: "conv-" + work,
 		Role:           "user",
@@ -126,9 +137,16 @@ func (e *v2Env) storeMessage(t *testing.T, work, content string) string {
 }
 
 // contextV2 调用 context_v2 并解回执；业务错误原样返回。
+// 默认以目标 work 自己登记的 agent 身份调用（帧头 work = 载荷 work）。
 func (e *v2Env) contextV2(t *testing.T, work, kind, item string) (protocol.ContextResponse, error) {
 	t.Helper()
-	body, err := e.call(t, work, "reasoner", "context_v2", protocol.ContextRequest{
+	return e.contextV2From(t, work, e.agentOf(t, work), work, kind, item)
+}
+
+// contextV2From 用任意「帧头 work + 身份」调 context_v2，用来构造跨 work 越权。
+func (e *v2Env) contextV2From(t *testing.T, frameWork, from, work, kind, item string) (protocol.ContextResponse, error) {
+	t.Helper()
+	body, err := e.call(t, frameWork, from, "context_v2", protocol.ContextRequest{
 		Work: work, Trigger: protocol.Trigger{Kind: kind, Item: item}, Schema: "context/2",
 	})
 	if err != nil {
@@ -139,6 +157,38 @@ func (e *v2Env) contextV2(t *testing.T, work, kind, item string) (protocol.Conte
 		t.Fatalf("context_v2 回执无法解码: %v", err)
 	}
 	return resp, nil
+}
+
+// triggerComplete 以目标 work 自己的 agent 身份标记本轮完成。
+func (e *v2Env) triggerComplete(t *testing.T, work, kind, item string) (protocol.TriggerCompleteResult, error) {
+	t.Helper()
+	return e.triggerCompleteFrom(t, work, e.agentOf(t, work), work, kind, item)
+}
+
+// triggerCompleteFrom 用任意「帧头 work + 身份」调 trigger_complete，用来构造跨 work 越权。
+func (e *v2Env) triggerCompleteFrom(t *testing.T, frameWork, from, work, kind, item string) (protocol.TriggerCompleteResult, error) {
+	t.Helper()
+	body, err := e.call(t, frameWork, from, "trigger_complete", protocol.TriggerCompletePayload{
+		Work: work, Trigger: protocol.Trigger{Kind: kind, Item: item},
+	})
+	if err != nil {
+		return protocol.TriggerCompleteResult{}, err
+	}
+	var res protocol.TriggerCompleteResult
+	if err := protocol.DecodeRaw(body, &res); err != nil {
+		t.Fatalf("trigger_complete 回执无法解码: %v", err)
+	}
+	return res, nil
+}
+
+// storeFrom 用任意「帧头 work + 身份」调 store，用来构造跨 work 越权写入。
+func (e *v2Env) storeFrom(t *testing.T, frameWork, from, work, content, clientItemID string) error {
+	t.Helper()
+	_, err := e.call(t, frameWork, from, "store", protocol.StorePayload{
+		Work: work, ConversationID: "conv-" + work, Role: "user",
+		Content: content, ClientItemID: clientItemID,
+	})
+	return err
 }
 
 // mustContextV2 要求 context_v2 成功并返回组装结果。
@@ -338,6 +388,63 @@ func TestRedTeamV2Misdirection(t *testing.T) {
 			t.Fatalf("trigger.item 不属于调用方 work 应 invalid_argument，实际: %v", err)
 		}
 	})
+
+	// 以下四条是 v2 入口的跨 work 越权回归（独立验收审计的缺陷 1）：
+	// 「帧头 work 是自己的、载荷 work 是别人的」这种写法必须一律 permission_denied，
+	// 并且拒绝必须等于零副作用——不产出快照、不改别人的状态、不落别人的消息与调用。
+
+	t.Run("context_v2 不能读别的 work 的上下文", func(t *testing.T) {
+		item := env.storeMessage(t, bob, "bob 的秘密触发")
+		own := env.mustContextV2(t, bob, "user", item)
+		if len(own.Messages) == 0 {
+			t.Fatalf("对照：bob 本主应拿到非空上下文: %+v", own)
+		}
+		if _, err := env.contextV2From(t, alice, env.agentOf(t, alice), bob, "user", item); !spv2.IsCode(err, spv2.CodePermissionDenied) {
+			t.Fatalf("跨 work 读上下文应 permission_denied，实际: %v", err)
+		}
+		// 被拒不得产出第二份投影，也不得把 bob 的上下文内容透给 alice。
+		if ids := env.snapshotIDs(t, bob); len(ids) != 1 || ids[0] != own.SnapshotID {
+			t.Fatalf("越权读取不应新增快照，实际: %v", ids)
+		}
+	})
+
+	t.Run("trigger_complete 不能替别的 work 收口", func(t *testing.T) {
+		item := env.storeMessage(t, bob, "bob 还没跑完的触发")
+		env.mustContextV2(t, bob, "user", item)
+		if _, err := env.triggerCompleteFrom(t, alice, env.agentOf(t, alice), bob, "user", item); !spv2.IsCode(err, spv2.CodePermissionDenied) {
+			t.Fatalf("跨 work 标记完成应 permission_denied，实际: %v", err)
+		}
+		if state, _, err := env.st.GetTriggerState(context.Background(), bob, "user", item); err != nil || state != store.TriggerStateAssembled {
+			t.Fatalf("越权标记完成不得改写别人的触发状态: state=%q err=%v", state, err)
+		}
+	})
+
+	t.Run("store 不能往别的 work 写消息", func(t *testing.T) {
+		before := env.queryCount(t, `SELECT COUNT(*) FROM messages WHERE work_id = ?`, bob)
+		key := "ci-" + spv2.NewID()
+		if err := env.storeFrom(t, alice, env.agentOf(t, alice), bob, "冒充 bob 写入", key); !spv2.IsCode(err, spv2.CodePermissionDenied) {
+			t.Fatalf("跨 work 写入应 permission_denied，实际: %v", err)
+		}
+		if n := env.queryCount(t, `SELECT COUNT(*) FROM messages WHERE work_id = ?`, bob); n != before {
+			t.Fatalf("越权写入不应落消息，行数从 %d 变成 %d", before, n)
+		}
+		if n := env.queryCount(t, `SELECT COUNT(*) FROM store_receipts WHERE work = ? AND client_item_id = ?`, bob, key); n != 0 {
+			t.Fatalf("越权写入不应留下幂等回执，实际 %d 条", n)
+		}
+	})
+
+	t.Run("call_open 不能冒别的 work", func(t *testing.T) {
+		before := env.queryCount(t, `SELECT COUNT(*) FROM calls WHERE work = ?`, bob)
+		_, err := env.call(t, alice, env.agentOf(t, alice), "call_open", protocol.CallOpenPayload{
+			Work: bob, Service: "shell", Action: "run", Mode: store.CallModeOnce,
+		})
+		if !spv2.IsCode(err, spv2.CodePermissionDenied) {
+			t.Fatalf("跨 work call_open 应 permission_denied，实际: %v", err)
+		}
+		if n := env.queryCount(t, `SELECT COUNT(*) FROM calls WHERE work = ?`, bob); n != before {
+			t.Fatalf("越权 call_open 不应落调用，行数从 %d 变成 %d", before, n)
+		}
+	})
 }
 
 // ---------- 狐假虎威（借身份 / 借授权） ----------
@@ -438,24 +545,18 @@ func TestRedTeamV2StateForgery(t *testing.T) {
 
 	t.Run("pending 触发不能标记完成", func(t *testing.T) {
 		item := env.storeMessage(t, work, "还没组装就被标记完成的触发")
-		_, err := env.call(t, work, "reasoner", "trigger_complete", protocol.TriggerCompletePayload{
-			Work: work, Trigger: protocol.Trigger{Kind: "user", Item: item},
-		})
-		if !spv2.IsCode(err, spv2.CodeConflict) {
+		if _, err := env.triggerComplete(t, work, "user", item); !spv2.IsCode(err, spv2.CodeConflict) {
 			t.Fatalf("pending 触发调 trigger_complete 应 conflict（不能假装已完成），实际: %v", err)
 		}
 	})
 
-	t.Run("completed 后再取 context_v2 只回旧快照", func(t *testing.T) {
+	t.Run("completed 后再取 context_v2 只补 ACK", func(t *testing.T) {
 		item := env.storeMessage(t, work, "完成后复用快照的触发")
 		first := env.mustContextV2(t, work, "user", item)
 
-		body := env.mustCall(t, work, "reasoner", "trigger_complete", protocol.TriggerCompletePayload{
-			Work: work, Trigger: protocol.Trigger{Kind: "user", Item: item},
-		})
-		var done protocol.TriggerCompleteResult
-		if err := protocol.DecodeRaw(body, &done); err != nil {
-			t.Fatalf("trigger_complete 回执无法解码: %v", err)
+		done, err := env.triggerComplete(t, work, "user", item)
+		if err != nil {
+			t.Fatalf("trigger_complete 应成功: %v", err)
 		}
 		if !done.Completed {
 			t.Fatalf("trigger_complete 应返回 completed=true，实际: %+v", done)
@@ -466,11 +567,15 @@ func TestRedTeamV2StateForgery(t *testing.T) {
 			t.Fatalf("完成后再写一条消息失败: %v", err)
 		}
 		second := env.mustContextV2(t, work, "user", item)
-		if second.SnapshotID != first.SnapshotID {
-			t.Fatalf("completed 后应返回同一快照，实际 %q vs %q", second.SnapshotID, first.SnapshotID)
+		// §3.1.1：completed 分支只补 ACK——completed=true、trigger_state=completed、不带消息链。
+		if !second.Completed || second.TriggerState != store.TriggerStateCompleted {
+			t.Fatalf("completed 后应回 ACK：completed=true / trigger_state=completed，实际 %+v", second)
 		}
-		if !reflect.DeepEqual(second.Messages, first.Messages) {
-			t.Fatalf("completed 后不得重新组装：\nold=%+v\nnew=%+v", first.Messages, second.Messages)
+		if second.SnapshotID != first.SnapshotID {
+			t.Fatalf("completed 的 ACK 应指回原快照，实际 %q vs %q", second.SnapshotID, first.SnapshotID)
+		}
+		if len(second.Messages) != 0 {
+			t.Fatalf("completed 后不得重新组装出消息链：\nold=%+v\nnew=%+v", first.Messages, second.Messages)
 		}
 		for _, m := range second.Messages {
 			if strings.Contains(m.Content, "completed 之后才写进来的消息") {

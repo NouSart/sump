@@ -270,10 +270,11 @@ var v2ImplementationFiles = []string{
 	"src/memory/server/store_v2.go",
 	"src/memory/server/owner_client.go", // owner 握手/对账的可注入契约（与 calls_v2 同批）
 	"src/memory/store/calls.go",
-	"src/memory/store/receipts.go",
+	"src/memory/store/record_v2.go", // v2 唯一的原子落库入口（取代原 receipts.go 两阶段写）
 	"src/memory/store/schema_v2.go",
 	"src/memory/store/seq_counters.go",
 	"src/memory/store/snapshots.go",
+	"src/memory/shared/version.go", // 共享库 user_version 闸门（不是 *_v2 文件，动态兜底扫不到）
 	"src/protocol/jcs/jcs.go",
 	"src/protocol/jcs/parse.go",
 	"src/protocol/payloads_v2.go",

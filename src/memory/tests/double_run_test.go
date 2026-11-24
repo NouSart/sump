@@ -66,7 +66,7 @@ const (
 
 // ---------- 库数据 ----------
 
-// doubleRunRow 是测试要写进库的一条消息（seq 是唯一权威顺序，插入顺序故意打乱）。
+// doubleRunRow 是测试要写进库的一条消息（Seq 是逻辑顺序；v2 路径下 seq 由 memory 分配）。
 // Meta 只填工具记录需要的 call_id / tool / arguments（§10 要求带 meta.call_id）。
 type doubleRunRow struct {
 	Seq     int64
@@ -79,6 +79,11 @@ type doubleRunRow struct {
 // doubleRunRows 是本次双跑共用的消息链：user → assistant → user → tool_call → tool_result。
 // tool 记录放在最后：assemble 的固定顺序是「历史 → 图片 → 工具配对」，这样旧 context 的
 // 逐条透传顺序与新 context_v2 的装配顺序才谈得上一致（否则比的是两种不同的排序规则）。
+//
+// Seq 是这条消息**应有的逻辑顺序**：v2 路径下 seq 由 memory 的 seq_counters 在事务内分配
+// （S-001 §3.0 规则 2），所以本用例按 Seq 升序写入，让分配出来的 seq 与逻辑顺序一致。
+// 「乱序写入也要按 seq 读」这件事由 store/seq_order_test.go 与 server/context_v2_test.go
+// 用直接写库的方式覆盖，不在这里靠调用方传 seq 伪造。
 func doubleRunRows() []doubleRunRow {
 	return []doubleRunRow{
 		{Seq: 1, Role: "user", Kind: "user", Content: "帮我看下当前目录"},
@@ -188,23 +193,29 @@ func newDoubleRunFixture(t *testing.T) *doubleRunFixture {
 	return fx
 }
 
-// insertMessages 按打乱的插入顺序写消息：证明顺序由 seq 决定，而不是自增 id / 落库先后。
+// insertMessages 按逻辑顺序写入，并在载荷里带一个**明显错误的调用方 seq**：
+// v2 路径必须忽略它、用 seq_counters 分配的值回执（S-001 §3.0 规则 2）。
 func (fx *doubleRunFixture) insertMessages() {
 	bySeq := make(map[int64]doubleRunRow, len(fx.rows))
 	for _, row := range fx.rows {
 		bySeq[row.Seq] = row
 	}
-	for _, seq := range []int64{5, 2, 4, 1, 3} {
+	allocated := int64(0)
+	for seq := int64(1); seq <= int64(len(fx.rows)); seq++ {
 		row, ok := bySeq[seq]
 		if !ok {
 			fx.t.Fatalf("插入计划里的 seq=%d 没有对应消息", seq)
 		}
-		fx.appendMessage(row)
+		allocated++
+		if got := fx.appendMessage(row, allocated); got == "" {
+			fx.t.Fatalf("seq=%d 没有拿到 item_id", seq)
+		}
 	}
 }
 
 // appendMessage 走真 WS 的 store（v2 路径：带 client_item_id / work / task），返回 item id。
-func (fx *doubleRunFixture) appendMessage(row doubleRunRow) string {
+// wantSeq 是 memory 应当分配出来的 seq；载荷里刻意带上一个错误的调用方 seq，用来证明它不算数。
+func (fx *doubleRunFixture) appendMessage(row doubleRunRow, wantSeq int64) string {
 	fx.t.Helper()
 	body, err := doubleRunCall(fx.t, fx.srv.WsURL(), doubleRunWorkID, doubleRunAgent, "store",
 		protocol.StorePayload{
@@ -215,7 +226,7 @@ func (fx *doubleRunFixture) appendMessage(row doubleRunRow) string {
 			Kind:           row.Kind,
 			Content:        row.Content,
 			Meta:           row.Meta,
-			Seq:            row.Seq,
+			Seq:            9000 + row.Seq, // 调用方给的 seq：v2 路径必须忽略
 			ClientItemID:   fmt.Sprintf("double-run:%d", row.Seq),
 		})
 	if err != nil {
@@ -225,8 +236,8 @@ func (fx *doubleRunFixture) appendMessage(row doubleRunRow) string {
 	if err := protocol.DecodeRaw(body, &res); err != nil {
 		fx.t.Fatalf("store（seq=%d）回执无法解码: %v", row.Seq, err)
 	}
-	if res.ItemID == "" || res.Seq != row.Seq {
-		fx.t.Fatalf("store（seq=%d）回执不符: %+v", row.Seq, res)
+	if res.ItemID == "" || res.Seq != wantSeq {
+		fx.t.Fatalf("store（seq=%d）回执不符: 期望 memory 分配 seq=%d，实际 %+v", row.Seq, wantSeq, res)
 	}
 	fx.itemIDs[row.Seq] = res.ItemID
 	return res.ItemID
@@ -819,7 +830,7 @@ func TestDoubleRunContextEquivalence(t *testing.T) {
 		}
 
 		// 快照生成后再往库里写一条消息：仍不得重新组装（快照是不可变投影）。
-		fx.appendMessage(doubleRunRow{Seq: 6, Role: "user", Kind: "user", Content: "快照生成后才写入的消息"})
+		fx.appendMessage(doubleRunRow{Seq: 6, Role: "user", Kind: "user", Content: "快照生成后才写入的消息"}, 6)
 		third := fx.mustContextV2(1)
 		if third.SnapshotID != newResp.SnapshotID {
 			t.Fatalf("库内新增消息后 snapshot_id 变了（被重新组装）: %q vs %q", third.SnapshotID, newResp.SnapshotID)
