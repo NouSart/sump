@@ -4,6 +4,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -19,76 +20,76 @@ type Store struct {
 }
 
 // Open 打开（或创建）数据库并建表。
+//
+// 版本闸门在**任何 DDL 之前**（S-001 §11.1）：
+//   - 文件不存在 → 新库，建表并在同一事务里写 user_version=SchemaVersion；
+//   - 存在且 user_version == SchemaVersion → 幂等的增量迁移；
+//   - 存在、user_version == 0 且库里没有任何表 → 空库，按新库处理；
+//   - 其余（0 但已有表 = 旧库；或高于 SchemaVersion）→ ErrSchemaVersionMismatch，
+//     不建表、不写库，提示删库或改名备份后重建。
 func Open(path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("创建会话库目录 %s: %w", dir, err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+
+	// 预检只读：先判断库状态，再决定允不允许写。
+	state, err := inspectSchema(path)
 	if err != nil {
 		return nil, err
+	}
+	if !allowWrite(state) {
+		return nil, &SchemaVersionMismatchError{Path: path, Current: state.version, Expected: SchemaVersion}
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, fmt.Errorf("打开会话库 %s: %w", path, err)
 	}
 	// SQLite 单写者：串行化连接，避免并发写锁冲突（本地小数据，吞吐无虞）。
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec("PRAGMA busy_timeout=5000;"); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("设置会话库 %s 的 busy_timeout: %w", path, err)
 	}
-	if _, err := db.Exec(schema); err != nil {
+	// 建表与 user_version 在同一事务：中途失败不会留下「建了表但没版本号」的库。
+	if err := applySchema(db); err != nil {
 		_ = db.Close()
-		return nil, err
-	}
-	if _, err := db.Exec(workSchema); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if _, err := db.Exec(a2aSchema); err != nil {
-		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("初始化会话库 %s: %w", path, err)
 	}
 
 	if err := migrate(db); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("迁移会话库 %s: %w", path, err)
 	}
 	return &Store{db: db}, nil
 }
 
-// migrate 补上后来加的列（幂等：已有就跳过）。
+// migrate 补上后来加的列 / 索引（幂等：已有就跳过），并回填老数据。
+// 它只对「版本已匹配」的库执行——版本闸门在 Open 里、在任何 DDL 之前（S-001 §11.1）。
 func migrate(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(messages)`)
+	// 先补 messages 的历史列（kind/meta/seq/task_id）。
+	have, err := tableColumns(db, "messages")
 	if err != nil {
-		return err
+		return fmt.Errorf("读取 messages 表结构: %w", err)
 	}
-	have := map[string]bool{}
-	for rows.Next() {
-		var (
-			cid     int
-			name    string
-			ctype   string
-			notNull int
-			dflt    any
-			pk      int
-		)
-		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		have[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	_ = rows.Close()
 	for _, m := range migrations {
 		if have[m.name] {
 			continue
 		}
 		if _, err := db.Exec(m.ddl); err != nil {
+			return fmt.Errorf("为 messages 补列 %s: %w", m.name, err)
+		}
+	}
+	// v2 新列（S-001 §4.1 / §4.2）。放在建索引之前：老库要先有列才能建索引。
+	for _, m := range v2ColumnMigrations {
+		if err := addColumnIfMissing(db, m.table, m.name, m.ddl); err != nil {
 			return err
 		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_work ON messages(work_id, id)`); err != nil {
+		return fmt.Errorf("建 messages(work_id, id) 索引: %w", err)
 	}
 	// 老数据没有序号：用自增主键回填（同库内单调，跨会话比较无意义但排序仍正确）。
 	if _, err := db.Exec(`UPDATE messages SET seq = id WHERE seq = 0`); err != nil {
@@ -187,6 +188,57 @@ var migrations = []struct{ name, ddl string }{
 	{"meta", `ALTER TABLE messages ADD COLUMN meta TEXT NOT NULL DEFAULT ''`},
 	{"seq", `ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0`},
 	{"task_id", `ALTER TABLE messages ADD COLUMN task_id TEXT NOT NULL DEFAULT ''`},
+}
+
+// v2ColumnMigrations 是给既有表补的列（S-001 §4.1 / §4.2），幂等：已有就跳过。
+//   - works.task：call 账本解析 work → task 联表用（calls 表本身没有 task 列）；
+//   - messages.work_id / visibility：v2 落库的归属与可见性标签。
+//
+// report_receipts 的 phase / final / data 在 v2Schema 的建表语句里，不走补列。
+var v2ColumnMigrations = []struct{ table, name, ddl string }{
+	{"works", "task", `ALTER TABLE works ADD COLUMN task TEXT NOT NULL DEFAULT ''`},
+	{"messages", "work_id", `ALTER TABLE messages ADD COLUMN work_id TEXT NOT NULL DEFAULT ''`},
+	{"messages", "visibility", `ALTER TABLE messages ADD COLUMN visibility TEXT NOT NULL DEFAULT ''`},
+}
+
+// tableColumns 返回一张表已有的列名集合（PRAGMA table_info）。
+func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	have := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notNull int
+			dflt    any
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		have[name] = true
+	}
+	return have, rows.Err()
+}
+
+// addColumnIfMissing 用 PRAGMA table_info 判断列是否存在，缺了才 ALTER（幂等）。
+func addColumnIfMissing(db *sql.DB, table, column, ddl string) error {
+	have, err := tableColumns(db, table)
+	if err != nil {
+		return fmt.Errorf("读取表 %s 结构: %w", table, err)
+	}
+	if have[column] {
+		return nil
+	}
+	if _, err := db.Exec(ddl); err != nil {
+		return fmt.Errorf("为表 %s 补列 %s: %w", table, column, err)
+	}
+	return nil
 }
 
 // Close 关闭数据库。注意：句柄交给过别人（DB()）也仍由打开方统一关闭。
