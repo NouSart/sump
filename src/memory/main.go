@@ -45,21 +45,30 @@ func main() {
 		sharedPath = filepath.Join(filepath.Dir(*dbPath), "experience.db")
 	}
 
-	// 显式重置排在预检之前：预检会拒绝旧库，而重置的目的就是把旧库挪开。
+	// 参数先校验（不含任何文件动作）：确认串给错就直接拒绝，不能带着歧义去动库。
 	if err := checkResetFlags(*resetData, *resetConfirm); err != nil {
 		logger.Fatalf("%v", err)
 	}
+
+	// 只读预检排在最前（S-001 §11.1）：先看两个库到底是什么版本，再决定动不动手。
+	// 顺序很重要——重置是「改名」这种破坏性动作，也必须排在只读检查之后，
+	// 否则等于没检查就把数据挪走了。
+	preErr := precheck(*dbPath, sharedPath)
+	if preErr != nil && !*resetData {
+		logger.Fatalf("%v", preErr)
+	}
+
+	// 显式重置（S-001 §11.2）：只有 -reset-data 与确认串同时给出才生效；
+	// 只改名备份、不删除原文，files/ 与 images/ 根本不碰。
 	if *resetData {
+		if preErr != nil {
+			logger.Printf("预检未通过，按显式重置继续：%v", preErr)
+		}
 		if err := resetWithBackup(*dbPath, sharedPath, time.Now()); err != nil {
 			logger.Fatalf("重置失败: %v", err)
 		}
 		logger.Printf("已按 -reset-data 重置：%s 与 %s 已改名为 *.bak-<UTC 时间戳>（仅对原文件存在的库），按新库启动",
 			*dbPath, sharedPath)
-	}
-
-	// 只读预检（S-001 §11.1）：必须在任何 Open/DDL 之前，且预检阶段绝不写库。
-	if err := precheck(*dbPath, sharedPath); err != nil {
-		logger.Fatalf("%v", err)
 	}
 
 	// 迁移备份只针对**启动前**就存在的会话库：重置 / 全新启动没有旧数据可备份，
@@ -120,12 +129,12 @@ func main() {
 	logger.Println("退出")
 }
 
-// precheck 是启动前的只读预检（S-001 §11.1）：只做 os.Stat 与只读读取，绝不写库。
-//   - 会话库：store.CheckPath 读 user_version。不存在 = 新库（允许新建）；
-//     存在且版本 == store.SchemaVersion 才允许；其余（version 0 的旧库、版本号更高、
-//     无法读取）一律拒绝，并给出当前版本、期望版本、两个库路径与两条可选操作。
-//   - 共享库：只做 os.Stat（共享库暂未引入版本号）。不存在 = 新库；存在 = 继续；
-//     其它 stat 错误 = 直接失败。
+// precheck 是启动前的只读预检（S-001 §11.1）：只读 user_version，绝不写库、绝不建文件。
+// 两个库都要检查——共享库存的是跨会话提炼物，版本不对同样不能凑合读。
+//   - 不存在 = 新库（允许由 Open 建表并写版本号）；
+//   - 存在且版本 == SchemaVersion 才允许；
+//   - 其余（version 0 的旧库、版本号更高、无法读取）一律拒绝，
+//     并给出当前版本、期望版本、两个库路径与两条可选操作（删除 / 显式重置）。
 func precheck(memoryPath, sharedPath string) error {
 	exists, version, err := store.CheckPath(memoryPath)
 	if err != nil {
@@ -134,14 +143,24 @@ func precheck(memoryPath, sharedPath string) error {
 	if exists && version != store.SchemaVersion {
 		return fmt.Errorf(
 			"启动预检失败：会话库 %s 的 schema 版本不匹配（当前版本 %d，期望版本 %d）。\n"+
-				"共享库：%s（暂无版本号，只检查文件是否存在）。\n"+
+				"共享库：%s（期望版本 %d）。\n"+
 				"已拒绝启动，预检阶段未写入任何库。可选操作：\n"+
 				"  1) 删除两个库文件后重启：%s 与 %s；\n"+
 				"  2) 显式重置（改名为 *.bak-<UTC 时间戳> 备份，不删除原文）：-reset-data -reset-data-confirm=YES",
-			memoryPath, version, store.SchemaVersion, sharedPath, memoryPath, sharedPath)
+			memoryPath, version, store.SchemaVersion, sharedPath, shared.SchemaVersion, memoryPath, sharedPath)
 	}
-	if _, statErr := os.Stat(sharedPath); statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("启动预检失败：检查共享库 %s: %w", sharedPath, statErr)
+	shExists, shVersion, err := shared.CheckPath(sharedPath)
+	if err != nil {
+		return fmt.Errorf("启动预检失败：%w", err)
+	}
+	if shExists && shVersion != shared.SchemaVersion {
+		return fmt.Errorf(
+			"启动预检失败：共享库 %s 的 schema 版本不匹配（当前版本 %d，期望版本 %d）。\n"+
+				"会话库：%s。\n"+
+				"已拒绝启动，预检阶段未写入任何库。可选操作：\n"+
+				"  1) 删除两个库文件后重启：%s 与 %s；\n"+
+				"  2) 显式重置（改名为 *.bak-<UTC 时间戳> 备份，不删除原文）：-reset-data -reset-data-confirm=YES",
+			sharedPath, shVersion, shared.SchemaVersion, memoryPath, memoryPath, sharedPath)
 	}
 	return nil
 }

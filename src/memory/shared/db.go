@@ -37,12 +37,22 @@ type Store struct {
 }
 
 // Open 打开（或创建）共享库：建表、铺预制网。
+//
+// 版本闸门在**任何 DDL 之前**（S-001 §11.1 / D3）：旧库（user_version=0 但已有表）
+// 或更高版本的库一律 ErrSchemaVersionMismatch，不建表、不写库、不迁移。
 // 与会话库一样串行化连接（SQLite 单写者；本地小数据，吞吐无虞）。
 func Open(path string, now time.Time) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
 		}
+	}
+	state, err := inspectSchema(path)
+	if err != nil {
+		return nil, err
+	}
+	if !allowWrite(state) {
+		return nil, &SchemaVersionMismatchError{Path: path, Current: state.version, Expected: SchemaVersion}
 	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -53,9 +63,9 @@ func Open(path string, now time.Time) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if err := applySchema(db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("建共享库表失败: %w", err)
+		return nil, fmt.Errorf("初始化共享库 %s: %w", path, err)
 	}
 	lt, err := longterm.Open(db)
 	if err != nil {

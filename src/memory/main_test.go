@@ -36,7 +36,7 @@ func newV1MemoryDB(t *testing.T, path string) {
 	}
 }
 
-// newSharedDB 生成一个真实的共享库文件（预检只 os.Stat 它，不读版本）。
+// newSharedDB 生成一个真实的共享库文件（由 shared.Open 建表并写入 user_version）。
 func newSharedDB(t *testing.T, path string) {
 	t.Helper()
 	sh, err := shared.Open(path, time.Now())
@@ -77,6 +77,22 @@ func newFutureDB(t *testing.T, path string) {
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("关闭高版本库 %s 失败: %v", path, err)
+	}
+}
+
+// newLegacySharedDB 造一个旧版共享库：user_version 保持 0，但已经有表。
+func newLegacySharedDB(t *testing.T, path string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("打开旧共享库 %s 失败: %v", path, err)
+	}
+	if _, err := db.Exec(`CREATE TABLE shared_sessions (id TEXT PRIMARY KEY)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("造旧共享库 %s 失败: %v", path, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("关闭旧共享库 %s 失败: %v", path, err)
 	}
 }
 
@@ -149,6 +165,75 @@ func TestPrecheckRejectsFutureVersion(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Error("预检改写了高版本库文件")
+	}
+}
+
+// TestPrecheckRejectsLegacySharedDatabase 共享库同样是版本闸门管到的库：
+// 旧共享库（user_version=0 且已有表）必须拒绝启动，且预检阶段一个字节都不改。
+func TestPrecheckRejectsLegacySharedDatabase(t *testing.T) {
+	dir := t.TempDir()
+	memoryPath := filepath.Join(dir, "memory.db")
+	sharedPath := filepath.Join(dir, "experience.db")
+	newV1MemoryDB(t, memoryPath) // 会话库是新版，只有共享库旧
+	newLegacySharedDB(t, sharedPath)
+
+	before, err := os.ReadFile(sharedPath)
+	if err != nil {
+		t.Fatalf("读取旧共享库字节失败: %v", err)
+	}
+
+	err = precheck(memoryPath, sharedPath)
+	if err == nil {
+		t.Fatal("旧共享库应被预检拒绝")
+	}
+	for _, want := range []string{
+		sharedPath,
+		memoryPath,
+		"当前版本 0",
+		fmt.Sprintf("期望版本 %d", shared.SchemaVersion),
+		"-reset-data",
+		"-reset-data-confirm=YES",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("共享库预检错误缺少 %q:\n%s", want, err)
+		}
+	}
+
+	after, err := os.ReadFile(sharedPath)
+	if err != nil {
+		t.Fatalf("读取旧共享库字节失败: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("共享库预检改写了库文件（DDL 不能发生在版本闸门之前）")
+	}
+}
+
+// TestSharedOpenRefusesLegacyLibrary 共享库自己的闸门：版本不对时 Open 直接失败，
+// 而且必须在任何 DDL 之前失败——旧表结构不得被 CREATE IF NOT EXISTS 悄悄补出新列。
+func TestSharedOpenRefusesLegacyLibrary(t *testing.T) {
+	dir := t.TempDir()
+	sharedPath := filepath.Join(dir, "experience.db")
+	newLegacySharedDB(t, sharedPath)
+
+	before, err := os.ReadFile(sharedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sh, err := shared.Open(sharedPath, time.Now())
+	if err == nil {
+		_ = sh.Close()
+		t.Fatal("旧共享库应被 Open 拒绝")
+	}
+	if !errors.Is(err, shared.ErrSchemaVersionMismatch) {
+		t.Fatalf("应报 ErrSchemaVersionMismatch，实际: %v", err)
+	}
+	after, err := os.ReadFile(sharedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("Open 在版本闸门之前就改写了库文件")
 	}
 }
 
