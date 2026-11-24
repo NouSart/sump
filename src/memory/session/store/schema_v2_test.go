@@ -1,6 +1,7 @@
 package store
 
-// 记忆中心 v2 schema / 版本闸门的包内测试（P1：回执、call 账本、序号计数器）。
+// 记忆中心 v2 schema / 版本闸门的包内测试（P1：回执、call 账本、序号计数器；
+// P2：context 快照与触发态）。
 //
 // 版本闸门是「不迁移、重置」策略的入口（S-001 §11）：最关键的一条不是「旧库被拒绝」，
 // 而是**拒绝发生在任何 DDL 之前**——旧库被打开失败后必须原封不动，否则一次误启动
@@ -17,10 +18,12 @@ import (
 	"testing"
 )
 
-// v2TableNames 是 P1 真正建出来的 v2 表（P2 / D7 的表不在本阶段）。
+// v2TableNames 是 v2 真正建出来的表（D7 的 work_context_grants / image_index 不在）。
 var v2TableNames = []string{
 	"store_receipts",
 	"report_receipts",
+	"context_snapshots",
+	"trigger_states",
 	"calls",
 	"call_controls",
 	"seq_counters",
@@ -111,7 +114,7 @@ func userTableCount(t *testing.T, db *sql.DB) int {
 	return n
 }
 
-// TestSchemaV2NewDatabase 新库：版本 = 1、P1 的 v2 表 / 新列 / 唯一索引都建好。
+// TestSchemaV2NewDatabase 新库：版本 = 1、v2 的表 / 新列 / 唯一索引都建好。
 func TestSchemaV2NewDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory.db")
 	st, err := Open(path)
@@ -125,11 +128,13 @@ func TestSchemaV2NewDatabase(t *testing.T) {
 	}
 	// 表名与列名逐张钉住（字段按 S-001 §4.3 / §4.5 / §4.7）。
 	wantColumns := map[string][]string{
-		"store_receipts":  {"work", "client_item_id", "payload_hash", "item_id", "created_at"},
-		"report_receipts": {"work", "source_service", "report_id", "payload_hash", "item_id", "call_id", "report_seq", "phase", "final", "data", "created_at"},
-		"calls":           {"id", "work", "service", "action", "mode", "pausable", "ttl_ms", "exec_deadline_ms", "remote_item_id", "observe_state", "exec_state", "phase", "reason", "result_ref", "remote_may_continue", "created_at", "updated_at"},
-		"call_controls":   {"control_id", "call_id", "work", "op", "ttl_ms", "observe", "exec", "reason", "created_at", "updated_at"},
-		"seq_counters":    {"conversation_id", "last_seq"},
+		"store_receipts":    {"work", "client_item_id", "payload_hash", "item_id", "created_at"},
+		"report_receipts":   {"work", "source_service", "report_id", "payload_hash", "item_id", "call_id", "report_seq", "phase", "final", "data", "created_at"},
+		"context_snapshots": {"snapshot_id", "work", "trigger_kind", "trigger_item", "payload", "schema", "created_at", "expires_at"},
+		"trigger_states":    {"work", "trigger_kind", "trigger_item", "state", "snapshot_id", "completed_at", "created_at", "updated_at"},
+		"calls":             {"id", "work", "service", "action", "mode", "pausable", "ttl_ms", "exec_deadline_ms", "remote_item_id", "observe_state", "exec_state", "phase", "reason", "result_ref", "remote_may_continue", "created_at", "updated_at"},
+		"call_controls":     {"control_id", "call_id", "work", "op", "ttl_ms", "observe", "exec", "reason", "created_at", "updated_at"},
+		"seq_counters":      {"conversation_id", "last_seq"},
 	}
 	for _, name := range v2TableNames {
 		if !tableExists(t, st.db, name) {
@@ -146,8 +151,8 @@ func TestSchemaV2NewDatabase(t *testing.T) {
 			t.Errorf("表 %s 列数 = %d，期望 %d（%v）", name, len(have), len(wantColumns[name]), have)
 		}
 	}
-	// P2 / D7 的表不在 P1：建了就是没有消费者的第二份真相。
-	for _, name := range []string{"context_snapshots", "trigger_states", "work_context_grants", "image_index"} {
+	// D7 的表不在 P1–P5：建了就是没有消费者的第二份真相。
+	for _, name := range []string{"work_context_grants", "image_index"} {
 		if tableExists(t, st.db, name) {
 			t.Errorf("P1 不应建表 %s", name)
 		}

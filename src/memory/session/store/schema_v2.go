@@ -7,9 +7,9 @@ package store
 // 否则一次失败的启动就会把旧库改成既不是旧格式、也不是新格式的样子（§11.1）。
 // 拒绝只提示删库或改名备份，不自动删、不自动改。
 //
-// P1 只带 v2 的落库事实：store/report 回执、call 账本、会话内序号计数器。
-// context_snapshots / trigger_states（P2）、work_context_grants / image_index（D7）
-// 不在本阶段建表——没有消费者的表只会成为第二份真相。
+// P1 带 v2 的落库事实：store/report 回执、call 账本、会话内序号计数器；
+// P2 加 context 快照与触发态（context_snapshots / trigger_states）。
+// work_context_grants / image_index（D7）不在 P1–P5 内——没有消费者的表只会成为第二份真相。
 
 import (
 	"database/sql"
@@ -188,6 +188,28 @@ CREATE TABLE IF NOT EXISTS report_receipts (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_report_seq
   ON report_receipts(work, source_service, call_id, report_seq);
+CREATE TABLE IF NOT EXISTS context_snapshots (
+  snapshot_id  TEXT PRIMARY KEY,
+  work         TEXT NOT NULL,
+  trigger_kind TEXT NOT NULL,
+  trigger_item TEXT NOT NULL,
+  payload      BLOB NOT NULL,
+  schema       TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  expires_at   TEXT NOT NULL,
+  UNIQUE(work, trigger_kind, trigger_item)
+);
+CREATE TABLE IF NOT EXISTS trigger_states (
+  work         TEXT NOT NULL,
+  trigger_kind TEXT NOT NULL,
+  trigger_item TEXT NOT NULL,
+  state        TEXT NOT NULL,
+  snapshot_id  TEXT,
+  completed_at TEXT,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (work, trigger_kind, trigger_item)
+);
 CREATE TABLE IF NOT EXISTS calls (
   id                  TEXT PRIMARY KEY,
   work                TEXT NOT NULL,
