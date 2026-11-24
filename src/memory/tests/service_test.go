@@ -175,15 +175,22 @@ func (c *stubCaller) URL() string {
 	return "ws" + strings.TrimPrefix(c.http.URL, "http") + "/spv2"
 }
 
-// call 向 memory 发一次原生调用并等回执（短连接）。
+// call 向 memory 发一次原生调用并等回执（短连接）。默认帧头 work 固定为 trace-test；
+// 需要「一个 work 换任务」的用例走 callAsWork（work 是执行单元，换任务会显式冲突）。
 func (c *stubCaller) call(t *testing.T, memoryURL, action string, input any) callResult {
+	t.Helper()
+	return c.callAsWork(t, memoryURL, "trace-test", action, input)
+}
+
+// callAsWork 同 call，但指定帧头 work。
+func (c *stubCaller) callAsWork(t *testing.T, memoryURL, work, action string, input any) callResult {
 	t.Helper()
 	conn, err := spv2.Dial(context.Background(), memoryURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	call, err := spv2.NewCall("trace-test", spv2.ServiceRef("reasoner"), spv2.ServiceRef("memory"), action, input)
+	call, err := spv2.NewCall(work, spv2.ServiceRef("reasoner"), spv2.ServiceRef("memory"), action, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,6 +214,17 @@ type contextMessages struct {
 func (c *stubCaller) contextUntilReady(t *testing.T, memoryURL string, input protocol.ContextPayload) callResult {
 	t.Helper()
 	rp := c.call(t, memoryURL, "context", input)
+	if !rp.OK {
+		t.Fatalf("context 失败: %s", rp.Error)
+	}
+	return rp
+}
+
+// contextAsWork 同 contextUntilReady，但指定帧头 work。
+// work 与任务一一对应（works.task）：同一个 work 换会话会触发归属冲突，用例要换 work。
+func (c *stubCaller) contextAsWork(t *testing.T, memoryURL, work string, input protocol.ContextPayload) callResult {
+	t.Helper()
+	rp := c.callAsWork(t, memoryURL, work, "context", input)
 	if !rp.OK {
 		t.Fatalf("context 失败: %s", rp.Error)
 	}

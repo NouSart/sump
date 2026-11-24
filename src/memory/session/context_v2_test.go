@@ -50,7 +50,7 @@ func newContextV2TestServer(t *testing.T, workID string) (*Server, *store.Store,
 	if err != nil {
 		t.Fatalf("建任务失败: %v", err)
 	}
-	if _, err := st.DB().Exec(`UPDATE works SET task = ? WHERE id = ?`, task.ID, workID); err != nil {
+	if err := st.LinkWorkTask(ctx, workID, task.ID); err != nil {
 		t.Fatalf("给 work 挂任务失败: %v", err)
 	}
 	return s, st, task.ID

@@ -48,8 +48,8 @@ func newAuthorizeEntriesServer(t *testing.T) (*Server, *store.Store, string) {
 	if err != nil {
 		t.Fatalf("建 bob 任务: %v", err)
 	}
-	if _, err := st.DB().Exec(`UPDATE works SET task = ? WHERE id = ?`, task.ID, "w-bob"); err != nil {
-		t.Fatalf("给 bob 的 work 挂任务: %v", err)
+	if err := st.LinkWorkTask(ctx, "w-bob", task.ID); err != nil {
+		t.Fatalf("给 bob 的 work 挂任务失败: %v", err)
 	}
 	return &Server{cfg: Config{Store: st}, logger: log.New(io.Discard, "", 0)}, st, task.ID
 }

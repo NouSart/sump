@@ -286,6 +286,47 @@ func (s *Store) GetCall(ctx context.Context, id string) (CallRow, error) {
 	return out, nil
 }
 
+// ---------- works.task 关联（call 账本解析 work → task 用） ----------
+
+// LinkWorkTask 把 work 关联到一个已存在的 task（幂等；已关联别的 task 返回 ErrCallConflict）。
+// 语义与 af6cfc8:src/memory/store/calls.go:629 一致：work 是归属键，一个 work 只能对上一个 task。
+func (s *Store) LinkWorkTask(ctx context.Context, work, task string) error {
+	work = strings.TrimSpace(work)
+	task = strings.TrimSpace(task)
+	if work == "" {
+		return fmt.Errorf("%w: work id 必填", ErrWorkNotFound)
+	}
+	if task == "" {
+		return fmt.Errorf("%w: task id 必填", ErrTaskNotFound)
+	}
+	// 先确认 work 存在：UPDATE 一行不存在会「成功改 0 行」，不能当成关联成功。
+	var current string
+	err := s.db.QueryRowContext(ctx, `SELECT task FROM works WHERE id = ?`, work).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: %s", ErrWorkNotFound, work)
+	}
+	if err != nil {
+		return fmt.Errorf("读取 work %s 的任务: %w", work, err)
+	}
+	// 先确认 task 存在，再判断是否与既有归属冲突：不存在的 id 应报 ErrTaskNotFound，
+	// 而不是拿「已关联别的 task」掩盖掉「这个 task 根本不存在」。
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE id = ?`, task).Scan(&n); err != nil {
+		return fmt.Errorf("检查 task %s: %w", task, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: %s", ErrTaskNotFound, task)
+	}
+	if current != "" && current != task {
+		return fmt.Errorf("%w: work %s 已关联 task %s，不能再关联 %s", ErrCallConflict, work, current, task)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE works SET task = ?, updated_at = ? WHERE id = ?`,
+		task, time.Now().UTC().Format(time.RFC3339), work); err != nil {
+		return fmt.Errorf("关联 work %s → task %s: %w", work, task, err)
+	}
+	return nil
+}
+
 // SetCallState 按两维状态机更新状态；任何一维非法转移都返回 ErrCallConflict 且不落库。
 // phase 为空串 = 写 NULL（S-001 §3.0.2：不可判定时「不写 phase」）。
 func (s *Store) SetCallState(ctx context.Context, id, observe, exec, phase, reason string) error {

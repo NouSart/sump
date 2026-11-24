@@ -319,8 +319,8 @@ func TestCreateCallResolvesWorkJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// works.task 的写入方是会话生命周期（work 关联任务），这里直接落列来构造联表前提。
-	if _, err := st.db.Exec(`UPDATE works SET task = ? WHERE id = 'w1'`, task.ID); err != nil {
+	// works.task 的写入方是会话生命周期（context_base → ensureContextWork），这里走同一个入口。
+	if err := st.LinkWorkTask(ctx, "w1", task.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -335,5 +335,73 @@ func TestCreateCallResolvesWorkJoin(t *testing.T) {
 	rows, err := st.ListResident(ctx, "alice", 10, "")
 	if err != nil || len(rows) != 1 || rows[0].Task != task.ID {
 		t.Fatalf("ListResident 联表字段不对: %+v, err=%v", rows, err)
+	}
+}
+
+// TestLinkWorkTask 钉住 work → task 归属的四个分支（R-023 P4.5）：
+// 成功 / 幂等 / 已挂别的 task 冲突 / task 不存在；另外守住「work 不存在」与空参数。
+func TestLinkWorkTask(t *testing.T) {
+	st := openCallsTestStore(t)
+	ctx := context.Background()
+	ensureCallsWork(t, st, "w1", "alice")
+	task, err := st.OpenTask("conv-1", "归属任务")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := st.OpenTask("conv-2", "另一个任务")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 成功：works.task 立即指向任务。
+	if err := st.LinkWorkTask(ctx, "w1", task.ID); err != nil {
+		t.Fatalf("首次关联失败: %v", err)
+	}
+	if got, err := st.TaskIDOfWork(ctx, "w1"); err != nil || got != task.ID {
+		t.Fatalf("TaskIDOfWork = (%q, %v)，期望 %q", got, err, task.ID)
+	}
+
+	// 幂等：同一 work + 同一 task 重复关联成功，值不变。
+	if err := st.LinkWorkTask(ctx, "w1", task.ID); err != nil {
+		t.Fatalf("重复关联同一任务应幂等: %v", err)
+	}
+	if got, _ := st.TaskIDOfWork(ctx, "w1"); got != task.ID {
+		t.Fatalf("幂等重放不应改归属: %q", got)
+	}
+
+	// 冲突：已挂别的 task 必须 ErrCallConflict，且原归属不变。
+	err = st.LinkWorkTask(ctx, "w1", other.ID)
+	if !errors.Is(err, ErrCallConflict) {
+		t.Fatalf("改挂别的任务应 ErrCallConflict: %v", err)
+	}
+	if got, _ := st.TaskIDOfWork(ctx, "w1"); got != task.ID {
+		t.Fatalf("冲突失败后归属不应变: %q", got)
+	}
+
+	// task 不存在：ErrTaskNotFound，且原归属不变。
+	if err := st.LinkWorkTask(ctx, "w1", "t-nope"); !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("关联不存在的 task 应 ErrTaskNotFound: %v", err)
+	}
+	if got, _ := st.TaskIDOfWork(ctx, "w1"); got != task.ID {
+		t.Fatalf("失败后归属不应变: %q", got)
+	}
+	// 不存在的 task 优先于「已关联别的 task」：不能拿冲突掩盖 task 不存在。
+	ensureCallsWork(t, st, "w2", "alice")
+	if err := st.LinkWorkTask(ctx, "w2", task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LinkWorkTask(ctx, "w2", "t-nope"); !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("已有归属时不存在的 task 仍应 ErrTaskNotFound: %v", err)
+	}
+
+	// work 不存在 / 空参数：显式哨兵，不写任何行。
+	if err := st.LinkWorkTask(ctx, "w-nope", task.ID); !errors.Is(err, ErrWorkNotFound) {
+		t.Fatalf("work 不存在应 ErrWorkNotFound: %v", err)
+	}
+	if err := st.LinkWorkTask(ctx, " ", task.ID); !errors.Is(err, ErrWorkNotFound) {
+		t.Fatalf("空 work 应 ErrWorkNotFound: %v", err)
+	}
+	if err := st.LinkWorkTask(ctx, "w1", " "); !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("空 task 应 ErrTaskNotFound: %v", err)
 	}
 }

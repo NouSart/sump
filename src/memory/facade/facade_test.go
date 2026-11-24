@@ -158,23 +158,19 @@ func TestFacadeRejectsMissingPeer(t *testing.T) {
 func TestFacadeContextV2AndTriggerComplete(t *testing.T) {
 	f, st, _ := startStack(t)
 	const workID = "w-v2"
-	ctx := context.Background()
 
-	// session 侧的准备（production 里由 context_base 登记 work；这里直接写库）：
-	// work 必须存在并挂着 task，context_v2 才能组装。
-	if _, err := st.EnsureWork(ctx, spv2.Work{
-		ID: workID, Root: workID, Class: spv2.ClassRequest,
-		Owner: spv2.HumanRef("owner"), Agent: spv2.AgentRef("reasoner"),
-		Entry: spv2.ServiceRef("reasoner"), Status: spv2.WorkRunning,
-	}); err != nil {
-		t.Fatal(err)
+	// session 侧的准备走 production 同一条路：facade 的 context → session.context_base
+	// 登记 work 并把 work 关联到解析出的任务（works.task 是 context_v2 找任务的前提）。
+	if err := call(t, f.WsURL(), "reasoner", workID, "context", protocol.ContextPayload{
+		Conversation: "c-v2",
+		TaskName:     "v2 上下文任务",
+		Messages:     []protocol.Message{{Role: "user", Content: "先建 work 与任务"}},
+	}, nil); err != nil {
+		t.Fatalf("context 登记 work 失败: %v", err)
 	}
-	task, err := st.OpenTask("c-v2", "v2 上下文任务")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.DB().Exec(`UPDATE works SET task = ? WHERE id = ?`, task.ID, workID); err != nil {
-		t.Fatal(err)
+	task, ok, err := st.CurrentTask("c-v2")
+	if err != nil || !ok {
+		t.Fatalf("context 后应有进行中任务: %+v, err=%v", task, err)
 	}
 
 	// 经门面走 v2 store（client_item_id 非空 → 原子路径，带 work 归属）。

@@ -144,7 +144,8 @@ func TestSettingsLive(t *testing.T) {
 			{Role: "user", Content: "新一轮"},
 		},
 	}
-	messages := decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), req)).Messages
+	// 这个会话（t9）前面只落过记录、没登记过 work；用会话专属 work 取上下文。
+	messages := decodeContext(t, caller.contextAsWork(t, srv.WsURL(), "trace-t9", req)).Messages
 	block := ""
 	for _, m := range messages {
 		if strings.HasPrefix(m.Content, compose.MemoryPrefix) {
@@ -160,6 +161,7 @@ func TestSettingsLive(t *testing.T) {
 }
 
 // recallBlock 发起一次 context（查询词「苹果」）并返回注入的记忆块内容（无块则空串）。
+// work 按会话派生：一个 work 只对上一个任务（works.task），跨会话复用同一个 work 会显式冲突。
 func recallBlock(t *testing.T, caller *stubCaller, srv *testStack, conv string) string {
 	t.Helper()
 	req := protocol.ContextPayload{
@@ -170,7 +172,7 @@ func recallBlock(t *testing.T, caller *stubCaller, srv *testStack, conv string) 
 			{Role: "user", Content: "苹果"},
 		},
 	}
-	for _, m := range decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), req)).Messages {
+	for _, m := range decodeContext(t, caller.contextAsWork(t, srv.WsURL(), "trace-"+conv, req)).Messages {
 		if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
 			return m.Content
 		}

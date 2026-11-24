@@ -75,7 +75,7 @@ func (s *Server) contextBase(ctx context.Context, tc protocol.TaskContext, meta 
 	if err != nil {
 		return protocol.Task{}, nil, fmt.Errorf("任务解析失败: %w", err)
 	}
-	if err := s.ensureContextWork(ctx, meta, tc, task.Name); err != nil {
+	if err := s.ensureContextWork(ctx, meta, tc, task.ID, task.Name); err != nil {
 		return protocol.Task{}, nil, err
 	}
 	history, err := s.cfg.Store.Recent(cid, s.currentHistoryLimit(), task.ID)
