@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"github.com/NouSart/sump/spv2"
 )
@@ -364,6 +365,10 @@ func metaOfCall(call *spv2.Call) callMeta {
 func (s *Server) nativeStore(_ context.Context, call *spv2.Call) error {
 	out, err := s.store(call.Frame.Body)
 	if err != nil {
+		var e *spv2.Error
+		if errors.As(err, &e) {
+			return call.ReplyError(e.Code, e.Message, e.Retryable, e.Details)
+		}
 		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
 	return call.Reply(out)

@@ -36,6 +36,11 @@ func (s *Server) ensureContextWork(ctx context.Context, meta callMeta, tc protoc
 	if err != nil {
 		return fmt.Errorf("登记 work %s: %w", meta.trace, err)
 	}
+	if tc.Task != nil && tc.Task.ID != "" {
+		if err := s.cfg.Store.LinkWorkTask(ctx, meta.trace, tc.Task.ID); err != nil {
+			return fmt.Errorf("把 work %s 挂到任务 %s: %w", meta.trace, tc.Task.ID, err)
+		}
+	}
 	return nil
 }
 

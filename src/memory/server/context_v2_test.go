@@ -1,0 +1,450 @@
+package server
+
+// context_v2 / trigger_complete 的包内测试（S-001 §3.1、§3.1.1）。
+//
+// 直接构造 Server + 真 SQLite（不启 WS）：这两个入口的全部业务语义都在共享实现里，
+// 原生 handler 只做「解码 body → 调用 → 映射错误码」，所以这里测共享实现与 method 声明。
+
+import (
+	"context"
+	"io"
+	"log"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/NouSart/sump/memory/store"
+	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
+)
+
+// newContextV2TestServer 直接构造 memory Server（只有库依赖）并建一个 work / task。
+func newContextV2TestServer(t *testing.T, workID string) (*Server, *store.Store, string) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	s := &Server{cfg: Config{Store: st}, logger: log.New(io.Discard, "", 0)}
+
+	ctx := context.Background()
+	if _, err := st.EnsureWork(ctx, spv2.Work{
+		ID: workID, Root: workID, Class: spv2.ClassRequest,
+		Owner: spv2.HumanRef("owner"), Agent: spv2.AgentRef("reasoner"),
+		Entry: spv2.ServiceRef("frontend"), Goal: "上下文测试", Status: spv2.WorkRunning,
+	}); err != nil {
+		t.Fatalf("登记 work 失败: %v", err)
+	}
+	task, err := st.OpenTask("conv-"+workID, "上下文任务")
+	if err != nil {
+		t.Fatalf("建任务失败: %v", err)
+	}
+	if _, err := st.DB().Exec(`UPDATE works SET task = ? WHERE id = ?`, task.ID, workID); err != nil {
+		t.Fatalf("给 work 挂任务失败: %v", err)
+	}
+	return s, st, task.ID
+}
+
+// insertContextV2Message 直接写一条消息（work_id / visibility / meta 都是测试要控制的新列）。
+func insertContextV2Message(t *testing.T, st *store.Store, workID, taskID, role, kind, content, meta string, seq int64) string {
+	t.Helper()
+	res, err := st.DB().Exec(
+		`INSERT INTO messages(conversation_id, role, content, kind, meta, seq, task_id, work_id, visibility, created_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'work', ?)`,
+		"conv-"+workID, role, content, kind, meta, seq, taskID, workID, time.Now().Format(time.RFC3339Nano))
+	if err != nil {
+		t.Fatalf("写入消息失败: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strconv.FormatInt(id, 10)
+}
+
+// callContextV2 调用共享实现并解出响应；错误原样返回给用例判断错误码。
+func callContextV2(t *testing.T, s *Server, req protocol.ContextRequest) (protocol.ContextResponse, error) {
+	t.Helper()
+	body, err := protocol.EncodePayload(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.contextV2(context.Background(), body)
+	if err != nil {
+		return protocol.ContextResponse{}, err
+	}
+	resp, ok := out.(protocol.ContextResponse)
+	if !ok {
+		t.Fatalf("context_v2 应返回 protocol.ContextResponse，实际 %T", out)
+	}
+	return resp, nil
+}
+
+// callTriggerComplete 调用 trigger_complete 的共享实现。
+func callTriggerComplete(t *testing.T, s *Server, req protocol.TriggerCompletePayload) (protocol.TriggerCompleteResult, error) {
+	t.Helper()
+	body, err := protocol.EncodePayload(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.triggerComplete(context.Background(), body)
+	if err != nil {
+		return protocol.TriggerCompleteResult{}, err
+	}
+	res, ok := out.(protocol.TriggerCompleteResult)
+	if !ok {
+		t.Fatalf("trigger_complete 应返回 protocol.TriggerCompleteResult，实际 %T", out)
+	}
+	return res, nil
+}
+
+// TestContextV2FirstAssembleSnapshotReuseAndComplete 覆盖四分支中的前三支：
+// 首次 pending → 生成；assembled → 同一 snapshot_id；completed → 只返回旧快照。
+func TestContextV2FirstAssembleSnapshotReuseAndComplete(t *testing.T) {
+	const workID = "w-context"
+	s, st, taskID := newContextV2TestServer(t, workID)
+
+	// 故意乱序写入：组装必须按 seq 排，而不是按落库顺序。
+	trigger := insertContextV2Message(t, st, workID, taskID, "user", "user", "问题一", "", 2)
+	insertContextV2Message(t, st, workID, taskID, "assistant", "assistant", "答复一", "", 3)
+	insertContextV2Message(t, st, workID, taskID, "assistant", "tool_call", "pwd",
+		`{"tool":"shell__run","call_id":"call-1","arguments":"{\"command\":\"pwd\"}"}`, 4)
+	insertContextV2Message(t, st, workID, taskID, "tool", "tool_result", "工作目录",
+		`{"call_id":"call-1"}`, 5)
+	insertContextV2Message(t, st, workID, taskID, "user", "user", "最早的一条", "", 1)
+	// 旧记录：work_id 为空、task 匹配——应作为 task 级历史可见。
+	insertContextV2Message(t, st, "", taskID, "user", "user", "旧任务消息", "", 6)
+	// 图片索引：只带 gist，不内联字节。
+	if _, err := st.DB().Exec(
+		`INSERT INTO image_index(owner, conversation_id, image_id, gist, status, first_seen_at, last_viewed_at)
+		 VALUES('owner', ?, 'img-1', '报错截图', 'stored', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		"conv-"+workID); err != nil {
+		t.Fatal(err)
+	}
+
+	req := protocol.ContextRequest{
+		Work:    workID,
+		Trigger: protocol.Trigger{Kind: "user", Item: trigger},
+		Schema:  contextV2Schema,
+	}
+	resp, err := callContextV2(t, s, req)
+	if err != nil {
+		t.Fatalf("首次组装失败: %v", err)
+	}
+	if resp.Schema != contextV2Schema || resp.SnapshotID == "" || resp.AssembledAt == "" {
+		t.Fatalf("响应元信息不全: %+v", resp)
+	}
+	if resp.Task.Name != "上下文任务" || resp.Task.ID != taskID {
+		t.Fatalf("任务投影不对: %+v", resp.Task)
+	}
+	if resp.Work.ID != workID || resp.Work.Task != taskID || resp.Work.Owner != "owner" || resp.Work.Status != spv2.WorkRunning {
+		t.Fatalf("work 投影不对: %+v", resp.Work)
+	}
+	if expires, err := time.Parse(time.RFC3339Nano, resp.ExpiresAt); err != nil || !expires.After(time.Now()) {
+		t.Fatalf("expires_at 应在将来: %q err=%v", resp.ExpiresAt, err)
+	}
+
+	// 1) system 必须是第一条。
+	if len(resp.Messages) == 0 || resp.Messages[0].Role != "system" {
+		t.Fatalf("第一条消息应是 system: %+v", resp.Messages)
+	}
+	// 2) 历史按 seq：最早的一条 → 问题一 → 答复一 → 旧任务消息。
+	var order []string
+	for _, m := range resp.Messages {
+		switch m.Content {
+		case "最早的一条", "问题一", "答复一", "旧任务消息":
+			order = append(order, m.Content)
+		}
+	}
+	wantOrder := []string{"最早的一条", "问题一", "答复一", "旧任务消息"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("历史顺序不对: %v，期望 %v（messages=%+v）", order, wantOrder, resp.Messages)
+	}
+	// 3) 图片索引渲染成 user 行（只带 gist）。
+	if !hasMessage(resp.Messages, "user", "报错截图") {
+		t.Fatalf("图片索引未进入组装结果: %+v", resp.Messages)
+	}
+	// 4) tool 配对：assistant.tool_calls 后紧跟 role=tool，call_id 一致、参数原样带上。
+	toolCallIdx := -1
+	for i, m := range resp.Messages {
+		if m.Role == "assistant" && len(m.ToolCalls) == 1 && m.ToolCalls[0].ID == "call-1" {
+			toolCallIdx = i
+			if m.ToolCalls[0].Name != "shell__run" || !strings.Contains(m.ToolCalls[0].Arguments, "pwd") {
+				t.Fatalf("工具调用字段不对: %+v", m.ToolCalls[0])
+			}
+		}
+	}
+	if toolCallIdx < 0 || toolCallIdx+1 >= len(resp.Messages) {
+		t.Fatalf("没有找到工具调用配对: %+v", resp.Messages)
+	}
+	pair := resp.Messages[toolCallIdx+1]
+	if pair.Role != "tool" || pair.ToolCallID != "call-1" || pair.Content != "工作目录" {
+		t.Fatalf("工具结果配对不对: %+v", pair)
+	}
+
+	// 快照落库、触发状态 assembled（响应上限之外的可核对事实）。
+	if state, snapshotID, err := st.GetTriggerState(context.Background(), workID, "user", trigger); err != nil ||
+		state != store.TriggerStateAssembled || snapshotID != resp.SnapshotID {
+		t.Fatalf("触发状态不对: state=%q snapshot=%q err=%v", state, snapshotID, err)
+	}
+
+	// assembled 分支：库里新增消息也不重新组装，snapshot_id 不变、消息链逐字段相同。
+	insertContextV2Message(t, st, workID, taskID, "user", "user", "后来才有的消息", "", 50)
+	second, err := callContextV2(t, s, req)
+	if err != nil {
+		t.Fatalf("assembled 重复触发失败: %v", err)
+	}
+	if second.SnapshotID != resp.SnapshotID {
+		t.Fatalf("重复触发不应换快照: %q vs %q", second.SnapshotID, resp.SnapshotID)
+	}
+	if !reflect.DeepEqual(second.Messages, resp.Messages) {
+		t.Fatalf("assembled 分支不应重新组装:\nold=%+v\nnew=%+v", resp.Messages, second.Messages)
+	}
+
+	// completed 分支：trigger_complete 后只返回快照，不再重新推理。
+	if _, err := callTriggerComplete(t, s, protocol.TriggerCompletePayload{
+		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: trigger},
+	}); err != nil {
+		t.Fatalf("trigger_complete 失败: %v", err)
+	}
+	insertContextV2Message(t, st, workID, taskID, "assistant", "assistant", "完成后的新答复", "", 60)
+	third, err := callContextV2(t, s, req)
+	if err != nil {
+		t.Fatalf("completed 后取 context 失败: %v", err)
+	}
+	if third.SnapshotID != resp.SnapshotID || !reflect.DeepEqual(third.Messages, resp.Messages) {
+		t.Fatalf("completed 分支必须只返回旧快照:\nsnapshot=%q vs %q\nmessages=%+v", third.SnapshotID, resp.SnapshotID, third.Messages)
+	}
+}
+
+// hasMessage 判断消息链里有没有某 role 且内容包含 substr 的消息。
+func hasMessage(msgs []protocol.LLMMessage, role, substr string) bool {
+	for _, m := range msgs {
+		if m.Role == role && strings.Contains(m.Content, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestContextV2ExpiredSnapshotNotFound 四分支的第四支：快照过期 → not_found，
+// 而且不得静默重建（assembled 与 completed 两个状态都要守住）。
+func TestContextV2ExpiredSnapshotNotFound(t *testing.T) {
+	const workID = "w-expired"
+	s, st, taskID := newContextV2TestServer(t, workID)
+	item := insertContextV2Message(t, st, workID, taskID, "user", "user", "触发", "", 1)
+	req := protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item}}
+
+	first, err := callContextV2(t, s, req)
+	if err != nil {
+		t.Fatalf("首次组装失败: %v", err)
+	}
+	expireSnapshot(t, st, workID, "user", item)
+
+	if _, err := callContextV2(t, s, req); !spv2.IsCode(err, spv2.CodeNotFound) {
+		t.Fatalf("assembled 且快照过期应 not_found，实际: %v", err)
+	}
+
+	// 不得静默重建：快照行数不变，触发状态也不被改成 pending。
+	if n := countSnapshots(t, st); n != 1 {
+		t.Fatalf("过期后不应重建快照，实际快照数 %d", n)
+	}
+	if state, _, err := st.GetTriggerState(context.Background(), workID, "user", item); err != nil || state != store.TriggerStateAssembled {
+		t.Fatalf("过期后触发状态不应被改写: state=%q err=%v", state, err)
+	}
+
+	// completed 分支同样不能重建（完成记录不随快照清理删除，但快照没了就是 not_found）。
+	if _, err := callTriggerComplete(t, s, protocol.TriggerCompletePayload{
+		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item},
+	}); err != nil {
+		t.Fatalf("trigger_complete 失败: %v", err)
+	}
+	if _, err := callContextV2(t, s, req); !spv2.IsCode(err, spv2.CodeNotFound) {
+		t.Fatalf("completed 且快照过期应 not_found，实际: %v", err)
+	}
+	if n := countSnapshots(t, st); n != 1 {
+		t.Fatalf("completed+过期后不应重建快照，实际快照数 %d（首次 snapshot=%s）", n, first.SnapshotID)
+	}
+}
+
+// expireSnapshot 把某快照的 expires_at 改到过去（模拟 24h 保留期到期）。
+func expireSnapshot(t *testing.T, st *store.Store, work, kind, item string) {
+	t.Helper()
+	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	res, err := st.DB().Exec(
+		`UPDATE context_snapshots SET expires_at = ? WHERE work = ? AND trigger_kind = ? AND trigger_item = ?`,
+		past, work, kind, item)
+	if err != nil {
+		t.Fatalf("改快照过期时间失败: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		t.Fatalf("应改到 1 行快照，实际 %d", n)
+	}
+}
+
+// countSnapshots 统计快照总数（验证「不得静默重建」）。
+func countSnapshots(t *testing.T, st *store.Store) int {
+	t.Helper()
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM context_snapshots`).Scan(&n); err != nil {
+		t.Fatalf("统计快照失败: %v", err)
+	}
+	return n
+}
+
+// TestContextV2RejectsBadTrigger 参数与归属错误：trigger.item 不存在 → invalid_argument；
+// work 不存在 → not_found；work 没有任务 → not_found。
+func TestContextV2RejectsBadTrigger(t *testing.T) {
+	const workID = "w-bad"
+	s, st, taskID := newContextV2TestServer(t, workID)
+	item := insertContextV2Message(t, st, workID, taskID, "user", "user", "触发", "", 1)
+	// 旧记录：work_id 为空 → 对任何 work 都能通过归属检查，用来测后面的 not_found 分支。
+	legacy := insertContextV2Message(t, st, "", taskID, "user", "user", "旧触发", "", 2)
+
+	for _, tc := range []struct {
+		name string
+		req  protocol.ContextRequest
+		code string
+	}{
+		{
+			name: "item 不存在",
+			req:  protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: "999999"}},
+			code: spv2.CodeInvalidArgument,
+		},
+		{
+			name: "item 不是十进制",
+			req:  protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: "abc"}},
+			code: spv2.CodeInvalidArgument,
+		},
+		{
+			name: "work 为空",
+			req:  protocol.ContextRequest{Work: "  ", Trigger: protocol.Trigger{Kind: "user", Item: item}},
+			code: spv2.CodeInvalidArgument,
+		},
+		{
+			name: "trigger.kind 为空",
+			req:  protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "", Item: item}},
+			code: spv2.CodeInvalidArgument,
+		},
+		{
+			name: "不支持的 schema",
+			req:  protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item}, Schema: "context/99"},
+			code: spv2.CodeInvalidArgument,
+		},
+		{
+			name: "work 不存在（旧记录能通过 item 检查）",
+			req:  protocol.ContextRequest{Work: "w-ghost", Trigger: protocol.Trigger{Kind: "user", Item: legacy}},
+			code: spv2.CodeNotFound,
+		},
+		{
+			name: "work 存在但没有任务",
+			req:  protocol.ContextRequest{Work: "w-no-task", Trigger: protocol.Trigger{Kind: "user", Item: legacy}},
+			code: spv2.CodeNotFound,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "work 存在但没有任务" {
+				ctx := context.Background()
+				if _, err := st.EnsureWork(ctx, spv2.Work{
+					ID: "w-no-task", Root: "w-no-task", Class: spv2.ClassRequest,
+					Owner: spv2.HumanRef("owner"), Agent: spv2.AgentRef("reasoner"),
+					Entry: spv2.ServiceRef("frontend"), Status: spv2.WorkRunning,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := callContextV2(t, s, tc.req); !spv2.IsCode(err, tc.code) {
+				t.Fatalf("应返回 %s，实际: %v", tc.code, err)
+			}
+		})
+	}
+}
+
+// TestTriggerCompletePendingConflict pending / 未组装 → conflict；assembled → 成功且幂等。
+func TestTriggerCompletePendingConflict(t *testing.T) {
+	const workID = "w-complete"
+	s, st, taskID := newContextV2TestServer(t, workID)
+	item := insertContextV2Message(t, st, workID, taskID, "user", "user", "触发", "", 1)
+	payload := protocol.TriggerCompletePayload{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item}}
+
+	// 还没调过 context_v2（pending / 没有状态记录）→ conflict。
+	if _, err := callTriggerComplete(t, s, payload); !spv2.IsCode(err, spv2.CodeConflict) {
+		t.Fatalf("pending 触发调 trigger_complete 应 conflict，实际: %v", err)
+	}
+	// 触发条目不存在 → invalid_argument（先于状态判定）。
+	if _, err := callTriggerComplete(t, s, protocol.TriggerCompletePayload{
+		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: "999999"},
+	}); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
+		t.Fatalf("不存在的 trigger.item 应 invalid_argument，实际: %v", err)
+	}
+	// 组装后再完成：成功；重复调用幂等成功。
+	if _, err := callContextV2(t, s, protocol.ContextRequest{
+		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item},
+	}); err != nil {
+		t.Fatalf("组装失败: %v", err)
+	}
+	res, err := callTriggerComplete(t, s, payload)
+	if err != nil || !res.Completed {
+		t.Fatalf("assembled 后 trigger_complete 应成功: %+v err=%v", res, err)
+	}
+	if res, err := callTriggerComplete(t, s, payload); err != nil || !res.Completed {
+		t.Fatalf("重复 trigger_complete 应幂等成功: %+v err=%v", res, err)
+	}
+}
+
+// TestContextV2MethodDeclarations 注册声明：方法名、非工具、schema 是 object 且必填项齐全。
+func TestContextV2MethodDeclarations(t *testing.T) {
+	for _, m := range []spv2.Method{contextV2Method(), triggerCompleteMethod()} {
+		if m.Tool {
+			t.Errorf("%s 不应暴露给模型（Tool 必须为 false）", m.Name)
+		}
+		if m.Input == nil || m.Input["type"] != "object" || m.Output["type"] != "object" {
+			t.Errorf("%s 的 input/output 必须是 object schema: %+v / %+v", m.Name, m.Input, m.Output)
+		}
+		if !schemaRequires(m.Input, "work") || !schemaRequires(m.Input, "trigger") {
+			t.Errorf("%s 的 input 应必填 work 与 trigger: %+v", m.Name, m.Input)
+		}
+	}
+	if contextV2Method().Name != "context_v2" || triggerCompleteMethod().Name != "trigger_complete" {
+		t.Fatal("method 名不符合契约（context_v2 / trigger_complete）")
+	}
+	if !schemaRequires(contextV2Method().Output, "snapshot_id") || !schemaRequires(contextV2Method().Output, "messages") {
+		t.Fatalf("context_v2 的 output 缺少 A 切片核心字段: %+v", contextV2Method().Output)
+	}
+	if !schemaRequires(triggerCompleteMethod().Output, "completed") {
+		t.Fatalf("trigger_complete 的 output 应必填 completed: %+v", triggerCompleteMethod().Output)
+	}
+
+	// 注册本身可调用（重复注册是覆盖，不 panic）。这里用一个未启动的 service 骨架。
+	st, err := store.Open(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	s := &Server{
+		Service: service.New(service.Config{Name: "memory-test", Logger: log.New(io.Discard, "", 0)}),
+		cfg:     Config{Store: st},
+		logger:  log.New(io.Discard, "", 0),
+	}
+	s.registerContextV2()
+	s.registerContextV2()
+}
+
+// schemaRequires 判断 object schema 的 required 里有没有某字段。
+func schemaRequires(schema map[string]any, field string) bool {
+	required, ok := schema["required"].([]any)
+	if !ok {
+		return false
+	}
+	for _, v := range required {
+		if v == field {
+			return true
+		}
+	}
+	return false
+}

@@ -27,10 +27,10 @@ func TestToolExposure(t *testing.T) {
 			tools[p.Action] = p
 		}
 	}
-	if len(tools) != 3 {
-		t.Fatalf("应只暴露 3 个工具，实际 %v", tools)
+	if len(tools) != 4 {
+		t.Fatalf("应只暴露 4 个工具，实际 %v", tools)
 	}
-	for _, want := range []string{"dig", "remember", "shared_sessions"} {
+	for _, want := range []string{"dig", "remember", "shared_sessions", "image_note"} {
 		if _, ok := tools[want]; !ok {
 			t.Fatalf("memory.%s 没暴露给模型（Tool: true 缺失）; 实际暴露=%v", want, tools)
 		}

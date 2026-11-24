@@ -38,8 +38,8 @@ func TestMemoryToolContractAndNegativeInputs(t *testing.T) {
 			t.Fatalf("tool method %s 缺 Input/Output schema: %+v", m.Name, m)
 		}
 	}
-	if tools != 3 {
-		t.Fatalf("memory 应只暴露 3 个工具（dig/remember/shared_sessions），实际 %d", tools)
+	if tools != 4 {
+		t.Fatalf("memory 应只暴露 4 个工具（dig/remember/shared_sessions/image_note），实际 %d", tools)
 	}
 
 	// 必填参数缺失：明确 invalid_argument，不能静默写一条空记忆。

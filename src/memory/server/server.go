@@ -153,6 +153,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "task_resume", Input: "{task_id}", Output: "{task, messages[]}（把未完结任务顶成当前，记录一并带走）"},
 			{Action: "task_list", Input: "{conversation_id, limit?}", Output: "{tasks[]}（最近活跃在前）"},
 			{Action: "forget", Input: "{id}（长期记忆条目 id）", Output: "{id}（删掉一条不再对的记忆）"},
+			{Action: "image_note", Tool: true, Input: "{image_id, gist}（模型看过图后写一句话大意，≤80 字）", Output: "{image_id, status, truncated}（status=stored/lost；原图丢失也保留大意）"},
 		},
 		Logger: logger,
 	})
@@ -224,6 +225,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		service.Unit("chars"))
 	// 全部动作的 SPv2.1 原生入口（/spv2 直接解 body）。
 	s.registerNative()
+	s.registerContextV2()
+	s.registerCallsV2()
 	// embedding 服务名：热改（空 = 关闭语义召回，静默回落 bigram）。
 	s.HandleSetting("context.embedding", cfg.Embedding, func(v string) error {
 		s.setEmbeddingName(strings.TrimSpace(v))
@@ -297,13 +300,24 @@ type callMeta struct {
 // store 记一条会话记录（对话消息幂等：与上一条完全相同时跳过）。
 // Kind 为空按 Role 推断；新类型（reasoning/tool_call/tool_result）不去重也不进 LLM 上下文。
 // 记录必须归属某个任务：调用方没给就归到当前进行中的任务（没有就现建一个）。
+//
+// 带 client_item_id 的调用走 v2 路径（幂等 + 补报 receipt，见 store_v2.go）；
+// 不带的老调用方行为原样保留，回 protocol.StoreResult{}。
 func (s *Server) store(body []byte) (any, error) {
 	var p protocol.StorePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
+	// v2：client_item_id 非空即按幂等键入账（S-001 §3.0），不再走下面的旧路径。
+	if p.ClientItemID != "" {
+		res, err := s.storeV2(&p)
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
+	}
 	if strings.TrimSpace(p.Content) == "" {
-		return map[string]any{}, nil
+		return protocol.StoreResult{}, nil
 	}
 	cid := p.ConversationID
 	if cid == "" {
@@ -347,7 +361,7 @@ func (s *Server) store(body []byte) (any, error) {
 	if err := s.cfg.Store.TouchTask(taskID); err != nil {
 		s.logger.Printf("刷新任务活跃时间失败: %v", err)
 	}
-	return map[string]any{}, nil
+	return protocol.StoreResult{}, nil
 }
 
 // taskNameFrom 从一条用户消息里取任务名：第一行、压掉空白、截到 24 个字。
