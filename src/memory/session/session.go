@@ -31,6 +31,10 @@ type Config struct {
 	DBPath            string            // 会话库路径（只读项展示用：换它要重启）
 	HeartbeatInterval time.Duration     // 心跳间隔（默认 15s）
 	Logger            *log.Logger       // 日志（New 的 logger 为空时用它；再空则 log.Default）
+	// OwnerClient 是执行服务的可注入口（可选，默认 nil）。
+	// nil 时 pause / resume 回 unavailable、call_status 不判 orphaned、cancel 走本地语义；
+	// 生产实现仍然缺（见 owner_client.go 文件头）。
+	OwnerClient OwnerClient
 }
 
 // 本域默认值。
@@ -46,8 +50,9 @@ type Server struct {
 	cfg    Config
 	logger *log.Logger
 
-	setMu        sync.Mutex // 运行时可设项（设置下发即时生效）
-	historyLimit int        // context_base 返回的最近消息条数
+	setMu        sync.Mutex  // 运行时可设项（设置下发即时生效）
+	historyLimit int         // context_base 返回的最近消息条数
+	ownerClient  OwnerClient // 执行服务客户端（可空：nil 有明确语义，见 owner_client.go）
 }
 
 // New 创建实例并注册动作（对外 method 进 provides，内部 method 只注册）。
@@ -64,7 +69,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if logger == nil {
 		logger = log.Default()
 	}
-	s := &Server{cfg: cfg, logger: logger, historyLimit: cfg.HistoryLimit}
+	s := &Server{cfg: cfg, logger: logger, historyLimit: cfg.HistoryLimit, ownerClient: cfg.OwnerClient}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Title:             "会话",

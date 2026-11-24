@@ -8,13 +8,16 @@ package session
 //   - 授权（authorizeTargetWork / authorizeWork / authorizeCallOp）留在 P4：本笔按载荷 work
 //     操作，work 为空即 invalid_argument。这里不是"没考虑归属"，而是显式未接：
 //     P4 接上身份校验后，跨 work 的 id 才会被拒；
-//   - call_status 只读本地账本（单次读、不建周期 reconciler，D7）：owner_recovery_complete
-//     恒 false；本地查不到的 id 只回 id，不判 orphaned（§3.5 规则 1：问不到 ≠ 不存在）；
+//   - call_status 单次读（不建周期 reconciler，D7）：未注入 owner 时 owner_recovery_complete
+//     恒 false；注入后按 owner service 分批问，问不到不算 orphaned（§3.5 规则 1：
+//     问不到 ≠ 不存在）；本地查不到的 id 只回 id；
 //   - origin_session 留空：不透明会话 ID 由 experience/redact 提供，session 不能 import
 //     experience（架构测试钉死），本笔不在这里复制第二套脱敏实现。
 //
-// pause / resume 需要 owner 确认（见 owner_client.go）；未注入客户端时明确回 unavailable
-// 且不改状态——不得静默写成 paused / running 之类的假状态。
+// pause / resume 需要 owner 确认（见 owner_client.go）：未注入客户端时明确回 unavailable
+// 且不改状态；注入后以 owner 的回答为准（空串 = 已确认但未带状态维）。cancel 始终可本地
+// 执行；可暂停调用注入客户端后会先问 owner，未确认时标 remote_may_continue。
+// 任何情况下都不得静默写成 paused / running / cancelled 之类的假状态。
 
 import (
 	"context"
@@ -269,51 +272,144 @@ func (s *Server) controlCall(ctx context.Context, body []byte) (protocol.CallCon
 			return protocol.CallControlResult{}, callsError(spv2.CodeConflict,
 				fmt.Sprintf("call_control: call %s 不可暂停（pausable=false）", id))
 		}
-		return s.pauseCall(ctx, controlID, callRow)
+		return s.pauseCall(ctx, controlID, callRow, req.TTLMS)
 	case "resume":
 		if callRow.Exec != store.CallExecPaused {
 			return protocol.CallControlResult{}, callsError(spv2.CodeConflict,
 				fmt.Sprintf("call_control: resume 只能从 paused → running（当前 exec=%s）", callRow.Exec))
 		}
-		return s.resumeCall(ctx, controlID, callRow)
+		return s.resumeCall(ctx, controlID, callRow, req.TTLMS)
 	case "cancel":
 		if isTerminalExec(callRow.Exec) {
 			return protocol.CallControlResult{}, callsError(spv2.CodeConflict,
 				fmt.Sprintf("call_control: call %s 已结束（exec=%s），不能再取消", id, callRow.Exec))
 		}
-		return s.cancelCall(ctx, controlID, callRow)
+		return s.cancelCall(ctx, controlID, callRow, req.TTLMS)
 	}
 	return protocol.CallControlResult{}, callsError(spv2.CodeInternal, "call_control: 未处理的分支 "+op)
 }
 
-// pauseCall 请求一次暂停（S-001 §3.4 / §5.1）。
+// pauseCall 向 owner 发起暂停握手（S-001 §3.4 / §5.1）。
 //
-// 没有 owner 客户端就没有谁能确认暂停：明确回 unavailable，执行维保持原值。
-func (s *Server) pauseCall(ctx context.Context, controlID string, row store.CallRow) (protocol.CallControlResult, error) {
-	return protocol.CallControlResult{}, callsError(spv2.CodeUnavailable,
-		"call_control: pause 需要 owner 确认；当前未注入执行服务客户端，不能标记 paused")
+// 只有 owner 明确回答 paused（或空串确认）才写 paused。报错 / 超时 / 非预期回答都只把
+// 观察维置为 not_waiting 并记 pause_failed：执行维与 phase 保持原值——ACK 丢失时
+// owner 可能其实已经暂停，但 session 不能据此写 paused，更不能写终态 phase。
+func (s *Server) pauseCall(ctx context.Context, controlID string, row store.CallRow, ttlMS int64) (protocol.CallControlResult, error) {
+	client := s.ownerClient
+	if client == nil {
+		// 没有 owner：没有谁能确认暂停，不能本地假装成功（否则会误导调用方与恢复逻辑）。
+		return protocol.CallControlResult{}, callsError(spv2.CodeUnavailable,
+			"call_control: pause 需要 owner 确认；当前未注入执行服务客户端，不能标记 paused")
+	}
+	// pause 只对「已受理」的调用有意义：created 是本地意图，还没派发（§3.0.2）。
+	if row.Exec != store.CallExecRunning && row.Exec != store.CallExecUnknown {
+		return protocol.CallControlResult{}, callsError(spv2.CodeConflict,
+			fmt.Sprintf("call_control: pause 只能作用于已受理的调用（当前 exec=%s）", row.Exec))
+	}
+	cctx, cancel := ownerControlContext(ctx, ttlMS)
+	defer cancel()
+	confirmedExec, err := client.Pause(cctx, row.Service, row.ID)
+	if err != nil || !ownerConfirmed(confirmedExec, store.CallExecPaused) {
+		if s.logger != nil {
+			s.logger.Printf("call_control: pause %s 未获 owner 确认（err=%v exec=%q），保持 exec=%s",
+				row.ID, err, confirmedExec, row.Exec)
+		}
+		if err := s.cfg.Store.SetCallState(ctx, row.ID, store.CallObserveNotWaiting,
+			row.Exec, row.Phase, "pause_failed"); err != nil {
+			return protocol.CallControlResult{}, mapCallError(err)
+		}
+		return s.finishControl(ctx, controlID, row.ID, "pause", protocol.CallControlResult{
+			ID: row.ID, ControlID: controlID,
+			Observe: store.CallObserveNotWaiting, Exec: row.Exec, Reason: "pause_failed",
+		})
+	}
+	if err := s.cfg.Store.SetCallState(ctx, row.ID, store.CallObserveNotWaiting,
+		store.CallExecPaused, row.Phase, "pause_confirmed"); err != nil {
+		return protocol.CallControlResult{}, mapCallError(err)
+	}
+	return s.finishControl(ctx, controlID, row.ID, "pause", protocol.CallControlResult{
+		ID: row.ID, ControlID: controlID,
+		Observe: store.CallObserveNotWaiting, Exec: store.CallExecPaused, Reason: "pause_confirmed",
+	})
 }
 
-// resumeCall 请求一次恢复（S-001 §3.4）。与 pause 同理：未经 owner 确认不写 running。
-func (s *Server) resumeCall(ctx context.Context, controlID string, row store.CallRow) (protocol.CallControlResult, error) {
-	return protocol.CallControlResult{}, callsError(spv2.CodeUnavailable,
-		"call_control: resume 需要 owner 确认；当前未注入执行服务客户端，不能标记 running")
+// resumeCall 向 owner 发起恢复握手（S-001 §3.4）。
+// 成功（owner 确认在跑）才写 running + waiting；失败保持原状态，只记 resume_failed。
+func (s *Server) resumeCall(ctx context.Context, controlID string, row store.CallRow, ttlMS int64) (protocol.CallControlResult, error) {
+	client := s.ownerClient
+	if client == nil {
+		return protocol.CallControlResult{}, callsError(spv2.CodeUnavailable,
+			"call_control: resume 需要 owner 确认；当前未注入执行服务客户端，不能标记 running")
+	}
+	cctx, cancel := ownerControlContext(ctx, ttlMS)
+	defer cancel()
+	confirmedExec, err := client.Resume(cctx, row.Service, row.ID)
+	if err != nil || !ownerConfirmed(confirmedExec, store.CallExecRunning) {
+		if s.logger != nil {
+			s.logger.Printf("call_control: resume %s 未获 owner 确认（err=%v exec=%q），保持 exec=%s",
+				row.ID, err, confirmedExec, row.Exec)
+		}
+		// 保持原状态（paused），只更新原因：恢复失败不能假装在跑。
+		if err := s.cfg.Store.SetCallState(ctx, row.ID, row.Observe,
+			row.Exec, row.Phase, "resume_failed"); err != nil {
+			return protocol.CallControlResult{}, mapCallError(err)
+		}
+		return s.finishControl(ctx, controlID, row.ID, "resume", protocol.CallControlResult{
+			ID: row.ID, ControlID: controlID,
+			Observe: row.Observe, Exec: row.Exec, Reason: "resume_failed",
+		})
+	}
+	if err := s.cfg.Store.SetCallState(ctx, row.ID, store.CallObserveWaiting,
+		store.CallExecRunning, row.Phase, "resume_confirmed"); err != nil {
+		return protocol.CallControlResult{}, mapCallError(err)
+	}
+	return s.finishControl(ctx, controlID, row.ID, "resume", protocol.CallControlResult{
+		ID: row.ID, ControlID: controlID,
+		Observe: store.CallObserveWaiting, Exec: store.CallExecRunning, Reason: "resume_confirmed",
+	})
 }
 
 // cancelCall 执行取消（S-001 §3.4）。
 //
-// 观察维一律 closed（本地不再等）；执行维分两种（未注入 owner 的本地语义）：
-//   - 可暂停 → cancelled + phase=cancelled；
-//   - 不可暂停 → unknown、不写 phase，并标 remote_may_continue（取消只能保证 memory 不再等，
-//     远端可能还在继续）。
-func (s *Server) cancelCall(ctx context.Context, controlID string, row store.CallRow) (protocol.CallControlResult, error) {
+// 观察维一律 closed（本地不再等）；执行维分三种：
+//   - 未注入 owner（本地语义）：可暂停 → cancelled；不可暂停 → unknown + remote_may_continue；
+//   - 注入 owner 且不可暂停：不发控制（发了也停不下来），closed/unknown + remote_may_continue，
+//     reason=cancelled_local；
+//   - 注入 owner 且可暂停：问 owner；确认 → closed/cancelled；未确认（报错/超时/ACK 丢失/回答还在跑）→
+//     closed/unknown + remote_may_continue，reason=cancel_unconfirmed，不写 phase。
+func (s *Server) cancelCall(ctx context.Context, controlID string, row store.CallRow, ttlMS int64) (protocol.CallControlResult, error) {
 	var exec, phase, reason string
 	remoteMayContinue := false
-	if row.Pausable {
-		exec, phase, reason = store.CallExecCancelled, store.CallPhaseCancelled, "cancelled"
-	} else {
-		exec, phase, reason = store.CallExecUnknown, "", "remote_may_continue"
+
+	switch {
+	case s.ownerClient == nil:
+		// 没有 owner 可问：保留本地取消语义。
+		if row.Pausable {
+			exec, phase, reason = store.CallExecCancelled, store.CallPhaseCancelled, "cancelled"
+		} else {
+			exec, phase, reason = store.CallExecUnknown, "", "remote_may_continue"
+			remoteMayContinue = true
+		}
+	case !row.Pausable:
+		// 不可暂停调用：取消只能保证 session 不再等，远端可能还在继续（S-001 §3.4）。
+		exec, phase, reason = store.CallExecUnknown, "", "cancelled_local"
 		remoteMayContinue = true
+	default:
+		cctx, cancel := ownerControlContext(ctx, ttlMS)
+		defer cancel()
+		confirmedExec, err := s.ownerClient.Cancel(cctx, row.Service, row.ID)
+		if err != nil || !ownerConfirmed(confirmedExec, store.CallExecCancelled) {
+			// 取消未获确认：不能假装执行侧已停，也不写终态 phase。
+			// owner 明确回答「还在跑」（exec=running）同样是未确认——把它记成 cancelled 是造假。
+			if s.logger != nil {
+				s.logger.Printf("call_control: cancel %s 未获 owner 确认（err=%v exec=%q），标 remote_may_continue",
+					row.ID, err, confirmedExec)
+			}
+			exec, phase, reason = store.CallExecUnknown, "", "cancel_unconfirmed"
+			remoteMayContinue = true
+		} else {
+			exec, phase, reason = store.CallExecCancelled, store.CallPhaseCancelled, "cancelled"
+		}
 	}
 
 	if err := s.cfg.Store.SetCallState(ctx, row.ID, store.CallObserveClosed, exec, phase, reason); err != nil {
@@ -350,10 +446,19 @@ func (s *Server) recordControl(ctx context.Context, controlID, callID, op string
 	return s.cfg.Store.SetControlResult(ctx, controlID, res.Observe, res.Exec, res.Reason)
 }
 
-// callStatus 按 ids 读调用状态（对账读取；S-001 §3.5）。
+// callStatus 按 ids 读调用状态（对账读取；S-001 §3.5 / §5.4）。
 //
-// 本笔只读本地账本：owner_recovery_complete 恒 false，items 只回本地观测；
-// 本地完全查不到的 id 只回 id（没有 owner 可问，不写 exec / phase，更不判 orphaned）。
+// 未注入 OwnerClient 时 owner_recovery_complete 恒 false，items 只回本地账本；
+// 注入后按 owner service 分批询问：
+//   - owner 报错 / 超时（离线）：整体 recovery_complete=false，本地观测原样返回，
+//     **不**把「问不到」判 orphaned（§3.5 规则 1）；
+//   - owner 恢复完整（recoveryComplete=true）但明确不认识某个本地已知 call：
+//     执行真相丢失（§5.4 灾难路径），报告 exec=unknown、phase=orphaned；
+//   - 本地账本完全查不到的 id：没有 service 可问，保持 unknown（不回 exec/phase，
+//     更不判 orphaned）——这是「问不到 ≠ 不存在」的硬边界；
+//   - owner 认识的 call 按其返回的 exec 上报（只读对账，本地账本不动）。
+//
+// 单次读、不建周期 reconciler（D7）：这里只回答"现在是什么"，不替 owner 推进状态。
 func (s *Server) callStatus(ctx context.Context, body []byte) (protocol.CallStatusResult, error) {
 	var req protocol.CallStatusPayload
 	if err := protocol.DecodeRaw(body, &req); err != nil {
@@ -367,6 +472,16 @@ func (s *Server) callStatus(ctx context.Context, body []byte) (protocol.CallStat
 		return out, callsError(spv2.CodeInvalidArgument,
 			fmt.Sprintf("call_status: 单批最多 100 个 id（收到 %d）", len(req.IDs)))
 	}
+
+	// 先按本地账本把 id 归到 owner service：calls 表有 service 列，本地没有的 id
+	// 没有可问的对象（owner 归属由 works 解析，不是靠猜）。
+	type statusEntry struct {
+		id  string
+		row store.CallRow
+		ok  bool
+	}
+	entries := make([]statusEntry, 0, len(req.IDs))
+	byService := map[string][]string{}
 	for _, raw := range req.IDs {
 		id := strings.TrimSpace(raw)
 		if id == "" {
@@ -376,13 +491,72 @@ func (s *Server) callStatus(ctx context.Context, body []byte) (protocol.CallStat
 		if err != nil {
 			if errors.Is(err, store.ErrCallNotFound) {
 				// 查不到不等于 orphaned：没有 owner 可问（S-001 §3.5 规则 1）。
-				out.Items = append(out.Items, protocol.CallStatusItem{ID: id})
+				entries = append(entries, statusEntry{id: id})
 				continue
 			}
 			return out, mapCallError(err)
 		}
-		out.Items = append(out.Items, callStatusItemFor(row))
+		entries = append(entries, statusEntry{id: id, row: row, ok: true})
+		if row.Service != "" {
+			byService[row.Service] = append(byService[row.Service], row.ID)
+		}
 	}
+
+	client := s.ownerClient
+	if client == nil || len(byService) == 0 {
+		// 未接 owner，或没有任何「本地已知 call」可提供 owner service：
+		// 只能回本地账本，且 recovery_complete 保持 false（没有依据说恢复完整）。
+		for _, e := range entries {
+			if e.ok {
+				out.Items = append(out.Items, callStatusItemFor(e.row))
+			} else {
+				out.Items = append(out.Items, protocol.CallStatusItem{ID: e.id})
+			}
+		}
+		return out, nil
+	}
+
+	// 按 owner service 分批问；任一 service 未确认就不把「不认识」当 orphaned（保守取 AND）。
+	states := map[string]string{}
+	recoveryComplete := true
+	for service, ids := range byService {
+		cctx, cancel := ownerStatusContext(ctx)
+		got, complete, err := client.Status(cctx, service, ids)
+		cancel()
+		if err != nil {
+			// owner 离线 / 超时：这一批不可判定；本地观测原样返回，不产生 orphaned。
+			recoveryComplete = false
+			if s.logger != nil {
+				s.logger.Printf("call_status: owner %s 对账失败（%v），保持本地观测", service, err)
+			}
+			continue
+		}
+		if !complete {
+			recoveryComplete = false
+		}
+		for id, exec := range got {
+			states[id] = exec
+		}
+	}
+
+	for _, e := range entries {
+		if !e.ok {
+			// 本地未知的 id：没有 owner 可问，保持 unknown（不写 exec / phase）。
+			out.Items = append(out.Items, protocol.CallStatusItem{ID: e.id})
+			continue
+		}
+		item := callStatusItemFor(e.row)
+		if exec, known := states[e.row.ID]; known && strings.TrimSpace(exec) != "" {
+			item.Exec = exec
+		} else if recoveryComplete {
+			// owner 恢复完整且明确不认识这个本地已知 call：执行真相丢失（§5.4 灾难路径）。
+			// 只在报告层标 orphaned；本地账本不动。
+			item.Exec = store.CallExecUnknown
+			item.Phase = store.CallPhaseOrphaned
+		}
+		out.Items = append(out.Items, item)
+	}
+	out.OwnerRecoveryComplete = recoveryComplete
 	return out, nil
 }
 
