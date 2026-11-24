@@ -13,6 +13,8 @@ var sessionMethods = map[string]bool{
 	"conversation_open": true, "conversation_archive": true,
 	"task_current": true, "task_open": true, "task_finish": true,
 	"task_resume": true, "task_rename": true, "task_list": true,
+	// v2 上下文四态（R-023 P2）：由 session 实现，门面只转发。
+	"context_v2": true, "trigger_complete": true,
 }
 
 var experienceMethods = map[string]bool{
@@ -32,7 +34,7 @@ var requiredMethods = func() map[string]bool {
 	return out
 }()
 
-// proxyMethods 是门面需要透传的全部 method：对外 provides 的 22 个，
+// proxyMethods 是门面需要透传的全部 method：对外 provides 的全部动作，
 // 加上 work / A2A 这组“不进入 provides、但调用方仍按 memory 名字调用”的内部面。
 var proxyMethods = func() map[string]bool {
 	out := map[string]bool{}

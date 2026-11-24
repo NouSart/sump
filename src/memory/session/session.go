@@ -3,7 +3,8 @@
 //
 // 边界：只碰会话私有库（memory/store）。共享经验（长期记忆 / 经验网 / 会话目录）
 // 不在这里——那是 experience 域的事，本包不 import 它的任何实现；两个域之间
-// 只有 SPv2 协议。上下文组装（注入记忆）也不在这里：本服务只交原材料。
+// 只有 SPv2 协议。上下文组装只发生在 context_v2：纯函数 assemble 只吃会话库快照，
+// 不注入共享记忆（记忆四节仍由 experience 提供）。
 package session
 
 import (
@@ -115,6 +116,10 @@ func provides() []protocol.Provide {
 		{Action: "task_rename", Input: "{task_id, name}", Output: "{task}"},
 		{Action: "task_resume", Input: "{task_id}", Output: "{task, messages[]}（把未完结任务顶成当前，记录一并带走）"},
 		{Action: "task_list", Input: "{conversation_id, limit?}", Output: "{tasks[]}（最近活跃在前）"},
+		// v2 上下文四态：按 work + 触发源取组装结果；同一触发复用同一快照（S-001 §3.1）。
+		// 都不是工具：模型不该自己决定「要不要重开一轮」或「这轮算不算完」。
+		{Action: "context_v2", Input: "{work, trigger:{kind,item}, schema?}（按 work + 触发源取组装好的上下文；同一触发复用同一快照）", Output: "{schema, snapshot_id, expires_at, messages, task, work, degraded, warnings, assembled_at, trigger_state, completed}（不暴露给模型）"},
+		{Action: "trigger_complete", Input: "{work, trigger:{kind,item}}（幂等；模型输出与后续动作安全落库后调用）", Output: "{completed}（不暴露给模型）"},
 	}
 }
 

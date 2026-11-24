@@ -190,10 +190,11 @@ func TestCardOnlySessionDomain(t *testing.T) {
 	}
 
 	want := []string{
-		// 对外 method（provides 声明的 12 个）
+		// 对外 method（provides 声明的 14 个）
 		"store", "history", "conversation_list", "conversation_rename",
 		"conversation_open", "conversation_archive",
 		"task_current", "task_open", "task_finish", "task_resume", "task_rename", "task_list",
+		"context_v2", "trigger_complete",
 		// 内部 method（注册但不进 provides）
 		"work_get", "lease_charge", "lease_release", "work_update", "work_sweep",
 		"work_cancel", "work_renew", "message_post", "message_claim", "message_ack", "message_nack",
