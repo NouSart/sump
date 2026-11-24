@@ -719,7 +719,7 @@ var guards = []guard{
 	{
 		name: "context 不再登记 work 行",
 		file: "src/memory/session/context.go",
-		old: `	if err := s.ensureContextWork(ctx, meta, tc, task.Name); err != nil {
+		old: `	if err := s.ensureContextWork(ctx, meta, tc, task.ID, task.Name); err != nil {
 		return protocol.Task{}, nil, err
 	}
 `,
@@ -844,5 +844,274 @@ var guards = []guard{
 		file: "src/memory/experience/audit/audit.go",
 		old:  `		if seen[k] || !strings.Contains(text, k) {`,
 		new:  `		if !strings.Contains(text, k) {`,
+	},
+
+	// ---------- V2 新增：JCS 规范化与 payload hash（src/protocol/jcs）----------
+	// 每条都挑“看着还说得通”的写法：换一种排序口径、少一档边界、静默修正输入，
+	// 改完照样编译、照样能跑，但两个语义相同的载荷会被算成不同 hash（或反过来）。
+	{
+		name: "V2 JCS 键序改成码点序（emoji 排到 U+E000 之后）",
+		file: "src/protocol/jcs/jcs.go",
+		old: `		sort.Slice(n.obj, func(i, j int) bool {
+			return compareUTF16(n.obj[i].units, n.obj[j].units) < 0
+		})`,
+		new: `		sort.Slice(n.obj, func(i, j int) bool {
+			return n.obj[i].key < n.obj[j].key
+		})`,
+	},
+	{
+		name: "V2 JCS 数字格式边界少一档（1e-7 变成定点写法）",
+		file: "src/protocol/jcs/jcs.go",
+		old:  `	case -6 < n && n <= 0: // 小数，点在有效数字之前`,
+		new:  `	case -6 <= n && n <= 0: // 小数，点在有效数字之前`,
+	},
+	{
+		name: "V2 JCS 重复键静默接受（取哪一个由实现顺序决定）",
+		file: "src/protocol/jcs/parse.go",
+		old:  `		if _, dup := seen[key]; dup {`,
+		new:  `		if _, dup := seen[key]; false && dup {`,
+	},
+	{
+		name: "V2 JCS 斜杠被多转义（/ 输出成 \\/）",
+		file: "src/protocol/jcs/jcs.go",
+		old: `		case '\\':
+			dst = append(dst, '\\', '\\')
+		case '\b':`,
+		new: `		case '\\':
+			dst = append(dst, '\\', '\\')
+		case '/':
+			dst = append(dst, '\\', '/')
+		case '\b':`,
+	},
+	{
+		name: "V2 JCS hash 截短（不再是 sha256 全长）",
+		file: "src/protocol/jcs/jcs.go",
+		old:  `	return hex.EncodeToString(sum[:]), nil`,
+		new:  `	return hex.EncodeToString(sum[:16]), nil`,
+	},
+	{
+		name: "V2 JCS 孤立代理项静默替换成 U+FFFD（不再报错）",
+		file: "src/protocol/jcs/parse.go",
+		old:  `	if hi >= 0xD800 && hi <= 0xDBFF {`,
+		new:  `	if false && hi >= 0xD800 && hi <= 0xDBFF {`,
+	},
+	{
+		name: "V2 JCS 嵌套深度上限失效（递归不再有界）",
+		file: "src/protocol/jcs/parse.go",
+		old:  `	if depth > maxDepth {`,
+		new:  `	if false && depth > maxDepth {`,
+	},
+
+	// ---------- V2 新增：原子幂等落库（src/memory/session/store/record_v2.go）----------
+	{
+		name: "V2 record_v2 同 client_item_id 不同 hash 不报 conflict（冲突载荷当成重放）",
+		file: "src/memory/session/store/record_v2.go",
+		old: `			if storedHash != in.PayloadHash {
+				return V2RecordResult{}, ErrPayloadConflict
+			}
+			if storedItem != "" {`,
+		new: `			if false && storedHash != in.PayloadHash {
+				return V2RecordResult{}, ErrPayloadConflict
+			}
+			if storedItem != "" {`,
+	},
+	{
+		name: "V2 record_v2 同 report_id 不同 hash 不报 conflict（补报覆盖写不被判出）",
+		file: "src/memory/session/store/record_v2.go",
+		old: `			if storedHash != in.PayloadHash {
+				return V2RecordResult{}, ErrPayloadConflict
+			}
+			seq, err := seqOfItem(ctx, tx, storedItem)`,
+		new: `			if false && storedHash != in.PayloadHash {
+				return V2RecordResult{}, ErrPayloadConflict
+			}
+			seq, err := seqOfItem(ctx, tx, storedItem)`,
+	},
+	{
+		name: "V2 record_v2 换 report_id 重用 report_seq 被当成重放（占用判定失效）",
+		file: "src/memory/session/store/record_v2.go",
+		old: `		if err == nil {
+			// 查到了却是另一个 report_id：换 ID 重放同一个 (call_id, report_seq)。
+			return V2RecordResult{}, ErrPayloadConflict
+		}`,
+		new: `		if err == nil {
+			// 查到了却是另一个 report_id：换 ID 重放同一个 (call_id, report_seq)。
+			return V2RecordResult{Deduped: true}, nil
+		}`,
+	},
+	{
+		name: "V2 record_v2 旧占位回执不回填（同键重放再插一条消息）",
+		file: "src/memory/session/store/record_v2.go",
+		old:  `			fillPlaceholder = true`,
+		new:  `			fillPlaceholder = false`,
+	},
+	{
+		name: "V2 record_v2 补报推进账本的错误被吞（非法补报照样入账）",
+		file: "src/memory/session/store/record_v2.go",
+		old: `		if err := applyReportToCall(ctx, tx, work, in.Report, itemID); err != nil {
+			return V2RecordResult{}, err
+		}`,
+		new: `		_ = applyReportToCall(ctx, tx, work, in.Report, itemID)`,
+	},
+	{
+		name: "V2 record_v2 不核对 call 的归属 work（可替别人的调用记账）",
+		file: "src/memory/session/store/record_v2.go",
+		old:  `	if strings.TrimSpace(callWork) != work {`,
+		new:  `	if false && strings.TrimSpace(callWork) != work {`,
+	},
+	{
+		name: "V2 record_v2 取号只看计数器不看已落库上界（老路径写过高号后重号）",
+		file: "src/memory/session/store/seq_counters.go",
+		old: `max(last_seq + 1,
+			COALESCE((SELECT MAX(seq) FROM messages WHERE conversation_id = seq_counters.conversation_id), 0) + 1)`,
+		new: `last_seq + 1`,
+	},
+
+	// ---------- V2 新增：上下文快照与触发状态（src/memory/session/store · session）----------
+	{
+		name: "V2 snapshots 过期不再判 ErrSnapshotExpired（把过期快照当可用）",
+		file: "src/memory/session/store/snapshots.go",
+		old:  `	if time.Now().After(exp) {`,
+		new:  `	if false && time.Now().After(exp) {`,
+	},
+	{
+		name: "V2 context_v2 completed 改为读快照（已完成轮被重新打开）",
+		file: "src/memory/session/context_v2.go",
+		old: `	case store.TriggerStateCompleted:
+		// 已完成：只补 ACK。这一步的意义在于「不做事」——不重新组装、不再灌一遍历史，
+		// 否则 agent 会以为拿到了新一轮的上下文，把已经收口的对话再推理一次（§3.1.1）。
+		return completedTriggerAck(snapshotID), nil`,
+		new: `	case store.TriggerStateCompleted:
+		// 异变：改成读旧快照——snapshotID 仍被用到才编译得过，语义已经变成「重新打开已完成的一轮」。
+		_ = snapshotID
+		return s.loadContextV2Snapshot(ctx, work, kind, item, state)`,
+	},
+	{
+		name: "V2 context_v2 assembled 改为重新组装（同一轮续跑被重开）",
+		file: "src/memory/session/context_v2.go",
+		old: `	case store.TriggerStateAssembled:
+		// 同一轮的续跑：沿用那份不可变投影，不重新查库、不重新组装。
+		return s.loadContextV2Snapshot(ctx, work, kind, item, state)`,
+		new: `	case store.TriggerStateAssembled:
+		return s.assembleContextV2(ctx, work, kind, item, time.Now())`,
+	},
+	{
+		name: "V2 snapshots gzip 解压错误被忽略（坏载荷当空载荷返回）",
+		file: "src/memory/session/store/snapshots.go",
+		old: `	plain, readErr := io.ReadAll(zr)
+	if readErr != nil {
+		return snapshotID, nil, exp, fmt.Errorf("解压上下文快照 %s: %w", snapshotID, readErr)
+	}`,
+		new: `	plain, _ := io.ReadAll(zr)`,
+	},
+
+	// ---------- V2 新增：调用账本（src/memory/session/store/calls.go · session/calls_v2.go）----------
+	{
+		name: "V2 calls 非法 exec 转移放行（created 直接 done）",
+		file: "src/memory/session/store/calls.go",
+		old:  `	if !canExec(curExec, exec) {`,
+		new:  `	if false && !canExec(curExec, exec) {`,
+	},
+	{
+		name: "V2 calls 不可暂停的 cancel 写成 cancelled（远端可能还在继续）",
+		file: "src/memory/session/calls_v2.go",
+		old: `			exec, phase, reason = store.CallExecUnknown, "", "remote_may_continue"
+			remoteMayContinue = true`,
+		new: `			exec, phase, reason = store.CallExecCancelled, store.CallPhaseCancelled, "cancelled"
+			remoteMayContinue = true`,
+	},
+	{
+		name: "V2 calls pause 未接 owner 却本地标记 paused（假装成功）",
+		file: "src/memory/session/calls_v2.go",
+		old: `	if client == nil {
+		// 没有 owner：没有谁能确认暂停，不能本地假装成功（否则会误导调用方与恢复逻辑）。
+		return protocol.CallControlResult{}, callsError(spv2.CodeUnavailable,
+			"call_control: pause 需要 owner 确认；当前未注入执行服务客户端，不能标记 paused")
+	}`,
+		new: `	if client == nil {
+		// 没有 owner：没有谁能确认暂停，不能本地假装成功（否则会误导调用方与恢复逻辑）。
+		if err := s.cfg.Store.SetCallState(ctx, row.ID, store.CallObserveWaiting,
+			store.CallExecRunning, row.Phase, "pause_requested"); err != nil {
+			return protocol.CallControlResult{}, mapCallError(err)
+		}
+		if err := s.cfg.Store.SetCallState(ctx, row.ID, store.CallObserveWaiting,
+			store.CallExecPaused, row.Phase, "paused"); err != nil {
+			return protocol.CallControlResult{}, mapCallError(err)
+		}
+		return s.finishControl(ctx, controlID, row.ID, "pause", protocol.CallControlResult{
+			ID: row.ID, ControlID: controlID,
+			Observe: store.CallObserveWaiting, Exec: store.CallExecPaused, Reason: "paused",
+		})
+	}`,
+	},
+
+	// ---------- V2 新增：v2 入口的归属授权（src/memory/session/authorize.go）----------
+	{
+		name: "V2 authorize 匿名 from 也能顶替 owner（空 ID 被当匹配）",
+		file: "src/memory/session/authorize.go",
+		old: `	if fromID == "" {
+		return spv2.Work{}, authDenied(op, "调用方身份为空，拒绝操作")
+	}`,
+		new: `	if false && fromID == "" {
+		return spv2.Work{}, authDenied(op, "调用方身份为空，拒绝操作")
+	}`,
+	},
+	{
+		name: "V2 authorize 不再要求调用方就是目标 work（同 agent 跨 work 读写）",
+		file: "src/memory/session/authorize.go",
+		old: `	if strings.TrimSpace(callerWork) != strings.TrimSpace(w.ID) {
+		return spv2.Work{}, authDenied(op, "调用方 work 与目标 work 不一致")
+	}`,
+		new: `	if false && strings.TrimSpace(callerWork) != strings.TrimSpace(w.ID) {
+		return spv2.Work{}, authDenied(op, "调用方 work 与目标 work 不一致")
+	}`,
+	},
+
+	// ---------- V2 新增：版本闸门（会话库 src/memory/session/store · 共享库 src/memory/experience/shared）----------
+	{
+		name: "V2 shared 旧库闸门放行（对旧共享库补建表结构）",
+		file: "src/memory/experience/shared/db.go",
+		old: `	if !allowWrite(state) {
+		return nil, &SchemaVersionMismatchError{Path: path, Current: state.version, Expected: SchemaVersion}
+	}`,
+		new: `	if false && !allowWrite(state) {
+		return nil, &SchemaVersionMismatchError{Path: path, Current: state.version, Expected: SchemaVersion}
+	}`,
+	},
+	{
+		name: "V2 main 共享库版本不匹配仍继续启动（旧提炼物库被当新库）",
+		file: "src/memory/experience/shared/version.go",
+		old: `	if state.version == SchemaVersion {
+		return true
+	}`,
+		new: `	if true {
+		return true
+	}`,
+	},
+	{
+		name: "V2 main 版本不匹配仍继续启动（旧库被当新库）",
+		file: "src/memory/session/store/schema_v2.go",
+		old: `	if state.version == SchemaVersion {
+		return true
+	}`,
+		new: `	if true {
+		return true
+	}`,
+	},
+
+	// ---------- V2 新增：store 的 v2 入口（src/memory/session/actions.go · store_v2.go）----------
+	{
+		name: "V2 store_v2 client_item_id 为空也走幂等路径（老调用方被当新幂等键）",
+		file: "src/memory/session/actions.go",
+		old:  `	if p.ClientItemID != "" {`,
+		new:  `	if true {`,
+	},
+	{
+		name: "V2 store_v2 payload_hash 不覆盖 report 字段（换补报内容不算新载荷）",
+		file: "src/memory/session/store_v2.go",
+		old: `	if p.Report != nil {
+		data, err := storeReportData(p.Report.Data)`,
+		new: `	if false && p.Report != nil {
+		data, err := storeReportData(p.Report.Data)`,
 	},
 }

@@ -126,6 +126,42 @@ func TestContextBase(t *testing.T) {
 	}
 }
 
+// TestContextBaseLinksWorkTask 钉住 work → task 归属（R-023 P4.5）：
+// context_base 登记 work 之后，必须把刚解析出的任务写进 works.task——
+// context_v2 的 TaskIDOfWork 靠这一列找任务；不接线时 works.task 永远是空的。
+func TestContextBaseLinksWorkTask(t *testing.T) {
+	srv, st := startService(t)
+	c := dial(t, srv.WsURL())
+
+	body, err := call(t, c, spv2.ServiceRef("reasoner"), "w-link", "context_base", protocol.ContextPayload{
+		Conversation: "c-link",
+		Messages:     []protocol.Message{{Role: "user", Content: "把归属接上"}},
+	})
+	if err != nil {
+		t.Fatalf("context_base 失败: %v", err)
+	}
+	var res contextBaseResult
+	if err := protocol.DecodeRaw(body, &res); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.TaskIDOfWork(context.Background(), "w-link")
+	if err != nil {
+		t.Fatalf("读取 works.task 失败: %v", err)
+	}
+	if res.Task.ID == "" || got != res.Task.ID {
+		t.Fatalf("context_base 后 works.task = %q，期望 %q", got, res.Task.ID)
+	}
+
+	// 没有任务时跳过关联：work 照样登记，works.task 保持空（不拿空 id 去报错）。
+	if err := srv.ensureContextWork(context.Background(),
+		callMeta{from: "reasoner", trace: "w-no-task"}, protocol.TaskContext{}, "", ""); err != nil {
+		t.Fatalf("无任务登记 work 失败: %v", err)
+	}
+	if got, err := st.TaskIDOfWork(context.Background(), "w-no-task"); err != nil || got != "" {
+		t.Fatalf("无任务时 works.task 应为空，实际 (%q, %v)", got, err)
+	}
+}
+
 // TestStagedReceipt 钉住整理池回执：item 走 protocol.StagedItem，
 // mark / retry 直接落到会话私有库。
 func TestStagedReceipt(t *testing.T) {
@@ -190,10 +226,13 @@ func TestCardOnlySessionDomain(t *testing.T) {
 	}
 
 	want := []string{
-		// 对外 method（provides 声明的 12 个）
+		// 对外 method（provides 声明的 18 个）
 		"store", "history", "conversation_list", "conversation_rename",
 		"conversation_open", "conversation_archive",
 		"task_current", "task_open", "task_finish", "task_resume", "task_rename", "task_list",
+		"context_v2", "trigger_complete",
+		// v2 调用账本与常驻目录（R-023 P3）
+		"call_open", "call_control", "call_status", "resident_list",
 		// 内部 method（注册但不进 provides）
 		"work_get", "lease_charge", "lease_release", "work_update", "work_sweep",
 		"work_cancel", "work_renew", "message_post", "message_claim", "message_ack", "message_nack",

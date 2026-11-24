@@ -3,7 +3,8 @@
 //
 // 边界：只碰会话私有库（memory/store）。共享经验（长期记忆 / 经验网 / 会话目录）
 // 不在这里——那是 experience 域的事，本包不 import 它的任何实现；两个域之间
-// 只有 SPv2 协议。上下文组装（注入记忆）也不在这里：本服务只交原材料。
+// 只有 SPv2 协议。上下文组装只发生在 context_v2：纯函数 assemble 只吃会话库快照，
+// 不注入共享记忆（记忆四节仍由 experience 提供）。
 package session
 
 import (
@@ -30,6 +31,10 @@ type Config struct {
 	DBPath            string            // 会话库路径（只读项展示用：换它要重启）
 	HeartbeatInterval time.Duration     // 心跳间隔（默认 15s）
 	Logger            *log.Logger       // 日志（New 的 logger 为空时用它；再空则 log.Default）
+	// OwnerClient 是执行服务的可注入口（可选，默认 nil）。
+	// nil 时 pause / resume 回 unavailable、call_status 不判 orphaned、cancel 走本地语义；
+	// 生产实现仍然缺（见 owner_client.go 文件头）。
+	OwnerClient OwnerClient
 }
 
 // 本域默认值。
@@ -45,8 +50,9 @@ type Server struct {
 	cfg    Config
 	logger *log.Logger
 
-	setMu        sync.Mutex // 运行时可设项（设置下发即时生效）
-	historyLimit int        // context_base 返回的最近消息条数
+	setMu        sync.Mutex  // 运行时可设项（设置下发即时生效）
+	historyLimit int         // context_base 返回的最近消息条数
+	ownerClient  OwnerClient // 执行服务客户端（可空：nil 有明确语义，见 owner_client.go）
 }
 
 // New 创建实例并注册动作（对外 method 进 provides，内部 method 只注册）。
@@ -63,7 +69,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if logger == nil {
 		logger = log.Default()
 	}
-	s := &Server{cfg: cfg, logger: logger, historyLimit: cfg.HistoryLimit}
+	s := &Server{cfg: cfg, logger: logger, historyLimit: cfg.HistoryLimit, ownerClient: cfg.OwnerClient}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Title:             "会话",
@@ -115,6 +121,15 @@ func provides() []protocol.Provide {
 		{Action: "task_rename", Input: "{task_id, name}", Output: "{task}"},
 		{Action: "task_resume", Input: "{task_id}", Output: "{task, messages[]}（把未完结任务顶成当前，记录一并带走）"},
 		{Action: "task_list", Input: "{conversation_id, limit?}", Output: "{tasks[]}（最近活跃在前）"},
+		// v2 上下文四态：按 work + 触发源取组装结果；同一触发复用同一快照（S-001 §3.1）。
+		// 都不是工具：模型不该自己决定「要不要重开一轮」或「这轮算不算完」。
+		{Action: "context_v2", Input: "{work, trigger:{kind,item}, schema?}（按 work + 触发源取组装好的上下文；同一触发复用同一快照）", Output: "{schema, snapshot_id, expires_at, messages, task, work, degraded, warnings, assembled_at, trigger_state, completed}（不暴露给模型）"},
+		{Action: "trigger_complete", Input: "{work, trigger:{kind,item}}（幂等；模型输出与后续动作安全落库后调用）", Output: "{completed}（不暴露给模型）"},
+		// v2 调用账本与常驻目录（R-023 P3）：都不是工具——模型不自己开调用、不自己判对账。
+		{Action: "call_open", Input: "{work, service, action?, mode?, pausable?, ttl_ms?, exec_deadline_ms?}（派发前分配 call_id；本地意图 observe=waiting / exec=created）", Output: "{call_id}（不暴露给模型）"},
+		{Action: "call_control", Input: "{id, control_id, op, ttl_ms?}（op=pause|resume|cancel；control_id 幂等；pause/resume 需 owner 确认）", Output: "{id, control_id, observe, exec, reason}（不暴露给模型）"},
+		{Action: "call_status", Input: "{ids}(≤100)（对账读取；只读本地账本，owner_recovery_complete 恒 false）", Output: "{owner_recovery_complete, items:[{id, observe, exec, phase, owner_service, updated_at}]}（不暴露给模型）"},
+		{Action: "resident_list", Input: "{work?, limit?, cursor?}（列该 work 所属 owner 的常驻调用）", Output: "{items:[{id, kind, title, observe, exec, phase, owner_service, origin_session, created_at, updated_at}], next?}（不暴露给模型）"},
 	}
 }
 

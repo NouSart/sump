@@ -1,6 +1,6 @@
 package tests
 
-// memory 的 SPv2.1 原生入口：直接打 /spv2，确认 22 个动作只走原生 method。
+// memory 的 SPv2.1 原生入口：直接打 /spv2，确认全部动作只走原生 method。
 // 同时钉住 method 的 Tool 暴露面（与 provides 对齐）与 Input/Output schema。
 
 import (
@@ -15,11 +15,13 @@ import (
 
 // nativeActions 是 server 注册的全部原生动作（顺序无关）。
 var nativeActions = []string{
-	"context", "store", "history", "conversation_list", "conversation_rename",
+	"context", "context_v2", "trigger_complete",
+	"store", "history", "conversation_list", "conversation_rename",
 	"note", "dig", "lineheads", "prune", "remember", "forget", "consolidate",
 	"publish_session", "shared_sessions", "shared_forget",
 	"conversation_open", "conversation_archive",
 	"task_current", "task_open", "task_finish", "task_resume", "task_rename", "task_list",
+	"call_open", "call_control", "call_status", "resident_list",
 }
 
 func TestMemoryNativeSPv2(t *testing.T) {
@@ -52,15 +54,18 @@ func TestMemoryNativeSPv2(t *testing.T) {
 		}
 	}
 
-	call := func(name string, body any) (spv2.Frame, error) {
-		f, err := spv2.NewCall("w-native", spv2.ServiceRef("reasoner"), spv2.ServiceRef("memory"), name, body)
+	callOn := func(work, name string, body any) (spv2.Frame, error) {
+		f, err := spv2.NewCall(work, spv2.ServiceRef("reasoner"), spv2.ServiceRef("memory"), name, body)
 		if err != nil {
 			t.Fatalf("%s: 构造 call 失败: %v", name, err)
 		}
 		return c.Call(ctx, f)
 	}
-	must := func(name string, body any, dst any) spv2.Frame {
-		resp, err := call(name, body)
+	call := func(name string, body any) (spv2.Frame, error) {
+		return callOn("w-native", name, body)
+	}
+	mustOn := func(work, name string, body any, dst any) spv2.Frame {
+		resp, err := callOn(work, name, body)
 		if err != nil {
 			t.Fatalf("%s 原生调用失败: %v", name, err)
 		}
@@ -70,6 +75,9 @@ func TestMemoryNativeSPv2(t *testing.T) {
 			}
 		}
 		return resp
+	}
+	must := func(name string, body any, dst any) spv2.Frame {
+		return mustOn("w-native", name, body, dst)
 	}
 
 	// 会话 / 记录
@@ -181,5 +189,66 @@ func TestMemoryNativeSPv2(t *testing.T) {
 	}
 	if len(got.Messages) == 0 || got.Task.ConversationID != "native3" {
 		t.Fatalf("context 回执不符: %+v", got)
+	}
+
+	// 调用账本 / 常驻目录（R-023 P3）：门面转发到 session；先登记一条 work。
+	if _, err := srv.st.EnsureWork(ctx, spv2.Work{
+		ID: "w-native-call", Root: "w-native-call", Class: spv2.ClassRequest,
+		Owner: spv2.HumanRef("alice"), Agent: spv2.ServiceRef("reasoner"),
+		Entry: spv2.ServiceRef("web"), Status: spv2.WorkRunning,
+	}); err != nil {
+		t.Fatalf("登记 work 失败: %v", err)
+	}
+	var openedCall protocol.CallOpenResult
+	mustOn("w-native-call", "call_open", protocol.CallOpenPayload{
+		Work: "w-native-call", Service: "shell", Action: "run",
+		Mode: "resident", Pausable: true,
+	}, &openedCall)
+	if openedCall.CallID == "" {
+		t.Fatal("call_open 应返回 call_id")
+	}
+	var status protocol.CallStatusResult
+	mustOn("w-native-call", "call_status", protocol.CallStatusPayload{IDs: []string{openedCall.CallID, "ghost-call"}}, &status)
+	if status.OwnerRecoveryComplete || len(status.Items) != 2 {
+		t.Fatalf("call_status = %+v", status)
+	}
+	if status.Items[0].ID != openedCall.CallID || status.Items[0].Exec != "created" || status.Items[0].Observe != "waiting" {
+		t.Fatalf("call_status 已知项 = %+v", status.Items[0])
+	}
+	if status.Items[1].ID != "ghost-call" || status.Items[1].Exec != "" || status.Items[1].Phase != "" {
+		t.Fatalf("本地未知 id 不得被判定: %+v", status.Items[1])
+	}
+	var residents protocol.ResidentListResult
+	mustOn("w-native-call", "resident_list", map[string]string{"work": "w-native-call"}, &residents)
+	if len(residents.Items) != 1 || residents.Items[0].ID != openedCall.CallID ||
+		residents.Items[0].Kind != "call" || residents.Items[0].OwnerService != "shell" {
+		t.Fatalf("resident_list = %+v", residents)
+	}
+	// 未注入 owner 客户端：pause 必须 unavailable（错误路径，且不改状态）。
+	if _, err := callOn("w-native-call", "call_control", protocol.CallControlPayload{
+		ID: openedCall.CallID, ControlID: "ctl-native-pause", Op: "pause",
+	}); err == nil {
+		t.Fatal("未接 owner 的 pause 应报错")
+	} else if e := new(spv2.Error); !errors.As(err, &e) || e.Code != spv2.CodeUnavailable {
+		t.Fatalf("pause 错误码不符: %v", err)
+	}
+	var cancelled protocol.CallControlResult
+	mustOn("w-native-call", "call_control", protocol.CallControlPayload{
+		ID: openedCall.CallID, ControlID: "ctl-native-cancel", Op: "cancel",
+	}, &cancelled)
+	if cancelled.Observe != "closed" || cancelled.Exec != "cancelled" {
+		t.Fatalf("call_control cancel = %+v", cancelled)
+	}
+	// 不带 work 时回退帧头 work（w-native 是 context 阶段登记过的 work → 空目录而不是错误）。
+	var fallback protocol.ResidentListResult
+	must("resident_list", map[string]string{}, &fallback)
+	if len(fallback.Items) != 0 {
+		t.Fatalf("w-native 名下不应有常驻调用: %+v", fallback.Items)
+	}
+	// 显式给一个不存在的 work → not_found（不是空列表）。
+	if _, err := call("resident_list", map[string]string{"work": "w-missing"}); err == nil {
+		t.Fatal("未知 work 的 resident_list 应报错")
+	} else if e := new(spv2.Error); !errors.As(err, &e) || e.Code != spv2.CodeNotFound {
+		t.Fatalf("resident_list 错误码不符: %v", err)
 	}
 }

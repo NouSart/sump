@@ -22,10 +22,17 @@ type callMeta struct {
 // store 记一条会话记录（对话消息幂等：与上一条完全相同时跳过）。
 // Kind 为空按 Role 推断；新类型（reasoning/tool_call/tool_result）不去重也不进 LLM 上下文。
 // 记录必须归属某个任务：调用方没给就归到当前进行中的任务（没有就现建一个）。
-func (s *Server) store(body []byte) (any, error) {
+//
+// 分派只看载荷里的 client_item_id：为空 = 旧调用方，走下面逐行不变的旧路径
+// （不新增身份校验，保持 reasoner 兼容）；非空 = v2 契约，交给 storeV2 的幂等单事务
+// （帧头 work / from 与载荷 work 的三重校验在这里之前完成）。
+func (s *Server) store(body []byte, c caller) (any, error) {
 	var p protocol.StorePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
+	}
+	if p.ClientItemID != "" {
+		return s.storeV2(&p, c)
 	}
 	if strings.TrimSpace(p.Content) == "" {
 		return map[string]any{}, nil

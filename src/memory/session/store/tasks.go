@@ -21,6 +21,9 @@ const (
 	TaskDone   = "done"
 )
 
+// ErrTaskNotFound 表示 task 行不存在（LinkWorkTask 等写 work 归属的入口用，errors.Is 判定）。
+var ErrTaskNotFound = errors.New("task 不存在")
+
 // newTaskID 生成一个任务 id（时间 + 随机，够用且可排序）。
 func newTaskID(now time.Time) string {
 	var b [6]byte

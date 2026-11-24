@@ -36,9 +36,17 @@ type Store struct {
 	Net      *memnet.Store   // 经验网（一句话经验 + 联想）
 }
 
-// Open 打开（或创建）共享库：建表、铺预制网。
-// 与会话库一样串行化连接（SQLite 单写者；本地小数据，吞吐无虞）。
+// Open 打开（或创建）共享库：先做只读版本预检，再建表、铺预制网。
+// 版本不匹配（旧库 / 更高版本）直接拒绝，任何 DDL 都不会发生；处理方式是手动删/改名，
+// 没有自动迁移，也没有 -reset 流程。与会话库一样串行化连接（SQLite 单写者）。
 func Open(path string, now time.Time) (*Store, error) {
+	state, err := inspectSchema(path)
+	if err != nil {
+		return nil, err
+	}
+	if !allowWrite(state) {
+		return nil, &SchemaVersionMismatchError{Path: path, Current: state.version, Expected: SchemaVersion}
+	}
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
@@ -53,9 +61,9 @@ func Open(path string, now time.Time) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if err := applySchema(db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("建共享库表失败: %w", err)
+		return nil, err
 	}
 	lt, err := longterm.Open(db)
 	if err != nil {

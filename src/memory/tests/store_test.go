@@ -1,7 +1,10 @@
 package tests
 
 import (
+	"bytes"
 	"database/sql"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -180,8 +183,9 @@ func TestStoreNoDedupeForEvents(t *testing.T) {
 	}
 }
 
-// TestStoreMigrateOldSchema 老库（没有 kind/meta/seq 列）能平滑升级，老数据按 role 推断。
-func TestStoreMigrateOldSchema(t *testing.T) {
+// TestStoreRejectsLegacySchema 旧库（user_version=0 且已有表）按 D3 拒绝启动：
+// 不迁移、不改库文件，错误里应给出重置指引。
+func TestStoreRejectsLegacySchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -197,16 +201,33 @@ func TestStoreMigrateOldSchema(t *testing.T) {
 	}
 	_ = db.Close()
 
-	st, err := store.Open(path)
-	if err != nil {
-		t.Fatalf("老库升级失败: %v", err)
-	}
-	defer st.Close()
-	hist, err := st.History("c", 0, 0, "")
+	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hist) != 1 || hist[0].Content != "老消息" || hist[0].Kind != "user" {
-		t.Fatalf("老数据读出来不对: %+v", hist)
+
+	if _, err := store.Open(path); !errors.Is(err, store.ErrSchemaVersionMismatch) {
+		t.Fatalf("旧库应被拒绝，实际 err=%v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("拒绝启动的路径不得改写库文件")
+	}
+
+	db2, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db2.Close()
+	var n int
+	if err := db2.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
+		('calls','store_receipts','report_receipts','context_snapshots','trigger_states')`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("拒绝启动前不得建新表，发现 %d 张", n)
 	}
 }

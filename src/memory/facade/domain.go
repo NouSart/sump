@@ -13,6 +13,10 @@ var sessionMethods = map[string]bool{
 	"conversation_open": true, "conversation_archive": true,
 	"task_current": true, "task_open": true, "task_finish": true,
 	"task_resume": true, "task_rename": true, "task_list": true,
+	// v2 上下文四态（R-023 P2）：由 session 实现，门面只转发。
+	"context_v2": true, "trigger_complete": true,
+	// v2 调用账本与常驻目录（R-023 P3）：同样由 session 实现，门面只转发。
+	"call_open": true, "call_control": true, "call_status": true, "resident_list": true,
 }
 
 var experienceMethods = map[string]bool{
@@ -32,7 +36,7 @@ var requiredMethods = func() map[string]bool {
 	return out
 }()
 
-// proxyMethods 是门面需要透传的全部 method：对外 provides 的 22 个，
+// proxyMethods 是门面需要透传的全部 method：对外 provides 的全部动作，
 // 加上 work / A2A 这组“不进入 provides、但调用方仍按 memory 名字调用”的内部面。
 var proxyMethods = func() map[string]bool {
 	out := map[string]bool{}
@@ -89,6 +93,12 @@ var settingOrder = []string{
 func provides() []protocol.Provide {
 	return []protocol.Provide{
 		{Action: "context", Input: "{conversation, messages, boss?, task_name?}（spec §7.2 同步上下文）", Output: "{messages, work, task}（组装后的上下文与 work 行）"},
+		{Action: "context_v2", Input: "{work, trigger:{kind,item}, schema?}（v2：按 work + 触发源取组装好的上下文；同一触发复用同一快照）", Output: "{schema, snapshot_id, expires_at, messages, task, work, degraded, warnings, assembled_at, trigger_state, completed}（不暴露给模型）"},
+		{Action: "trigger_complete", Input: "{work, trigger:{kind,item}}（幂等；本轮模型输出与动作安全落库后调用）", Output: "{completed}（不暴露给模型）"},
+		{Action: "call_open", Input: "{work, service, action?, mode?, pausable?, ttl_ms?, exec_deadline_ms?}（v2：派发前分配 call_id；本地意图 observe=waiting / exec=created）", Output: "{call_id}（不暴露给模型）"},
+		{Action: "call_control", Input: "{id, control_id, op, ttl_ms?}（v2：op=pause|resume|cancel；control_id 幂等；pause/resume 需 owner 确认）", Output: "{id, control_id, observe, exec, reason}（不暴露给模型）"},
+		{Action: "call_status", Input: "{ids}(≤100)（v2：对账读取；只读本地账本，owner_recovery_complete 恒 false）", Output: "{owner_recovery_complete, items}（不暴露给模型）"},
+		{Action: "resident_list", Input: "{work?, limit?, cursor?}（v2：列该 work 所属 owner 的常驻调用）", Output: "{items, next?}（不暴露给模型）"},
 		{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
 		{Action: "history", Input: "{conversation_id, limit}", Output: "{conversation_id, messages:[{role, content, at}]}（按时间正序；供界面回填，不做记忆组装）"},
 		{Action: "conversation_list", Input: "{limit?, include_archived?}", Output: "{conversations:[{id, title, entry, status, created_at, updated_at}]}（按最近活跃排序；不暴露给模型 — 给界面列会话，不是给模型的工具）"},
