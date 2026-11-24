@@ -110,6 +110,10 @@ type ContextRequest struct {
 // ContextResponse 是 context 的响应（S-001 §3.1）。
 // A 切片核心承诺：messages / task / work / snapshot_id / expires_at / degraded / warnings；
 // pending / task_blockers 是可选扩展（C 切片冻结）。Degraded 为 nil 表示无降级。
+//
+// TriggerState / Completed 是 v4 评审补上的加法字段：本轮触发走到哪一步要随响应一起回去。
+// Completed=true 表示这轮已经 trigger_complete 过，响应**只补 ACK**、不再带消息
+// （§3.1.1：完成之后重复取上下文不该重开推理，也不该把历史再灌一遍）。
 type ContextResponse struct {
 	Schema       string        `msgpack:"schema" json:"schema"`
 	SnapshotID   string        `msgpack:"snapshot_id" json:"snapshot_id"`
@@ -122,6 +126,8 @@ type ContextResponse struct {
 	Pending      []PendingRef  `msgpack:"pending,omitempty" json:"pending,omitempty"`
 	TaskBlockers []TaskBlocker `msgpack:"task_blockers,omitempty" json:"task_blockers,omitempty"`
 	AssembledAt  string        `msgpack:"assembled_at" json:"assembled_at"`
+	TriggerState string        `msgpack:"trigger_state,omitempty" json:"trigger_state,omitempty"`
+	Completed    bool          `msgpack:"completed,omitempty" json:"completed,omitempty"`
 }
 
 // TriggerCompletePayload / TriggerCompleteResult：agent 在模型输出与后续动作安全落库后
