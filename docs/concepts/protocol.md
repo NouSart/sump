@@ -68,7 +68,7 @@
 
 | type | 方向 | 语义 |
 | --- | --- | --- |
-| `call` | 任何服务 → 任何服务 | **唯一的「访问」动作**；目标可以是自己（自跳 = 循环的下一步）；等一条 `reply` |
+| `call` | 任何服务 → 任何服务 | **唯一的「访问」动作**；目标可以是自己（同服务自调，如 debug_call）；等一条 `reply` |
 | `reply` | 被调方 → 调用方 | `status=ok` 带 body，`status=error` 带 `error{code,message,retryable?,details?}` |
 | `event` | 任何服务 → 任何服务 | 单向通知（如 `heartbeat`）；不产生 reply |
 | `stream` | 被调方 → 调用方 | 流式响应块；`stream.end=true` 表示终态 |

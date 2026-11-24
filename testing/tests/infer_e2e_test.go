@@ -208,7 +208,7 @@ func (b *e2eBoss) register(t *testing.T, centerURL string) *spv2.Client {
 }
 
 // TestInferChainE2E 真进程版全链（完全启动）：message → 记忆往返（recall → resume）
-// → 工具派发（异步受理回执；echo 被闸门拒绝、memory__remember 成功）→ 自跳 → wait 等到结果 → 收尾轮 → deliver；
+// → 工具派发（异步受理回执；echo 被闸门拒绝、memory__remember 成功）→ 开轮 → wait 等到结果 → 收尾轮 → deliver；
 // 以预置会话历史验证记忆注入，并以第二轮对话验证长期记忆召回（remember 写入的条目被注入）。
 func TestInferChainE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/NouSart/sump/settings-center")
