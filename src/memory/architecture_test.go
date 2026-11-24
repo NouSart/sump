@@ -26,7 +26,11 @@ func TestDomainImportBoundaries(t *testing.T) {
 		pkg     string
 		allowed []string
 	}{
-		{"./session", []string{"github.com/NouSart/sump/memory/session/store"}},
+		{"./session", []string{
+			"github.com/NouSart/sump/memory/session/store",
+			// session 自有纯函数渲染子包，不触库：组装只吃快照、不 import 任何域实现。
+			"github.com/NouSart/sump/memory/session/assemble",
+		}},
 		{"./experience", []string{
 			"github.com/NouSart/sump/memory/experience/compose",
 			"github.com/NouSart/sump/memory/experience/longterm",
