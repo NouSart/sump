@@ -1,9 +1,15 @@
 package protocol
 
 // 记忆中心 v2（S-001）的载荷类型——P1 子集：store 的幂等 / 补报（§3.0 / §3.0.1 / §4.3）；
-// P2 子集：context 组装的四态与 trigger_complete（§3.1 / §3.1.1）。
+// P2 子集：context 组装的四态与 trigger_complete（§3.1 / §3.1.1）；
+// P3 子集：调用生命周期（call_open / call_control / call_status）与常驻目录（resident_list，
+// §3.0.2 / §3.4 / §3.5 / §3.6）。
 // 命名一律按 S-001 §3.9 词汇表；线上键名是 snake_case，且**只增不改**。
-// call_* / resident 等载荷按相位后续追加——没有写入方的字段不预留。
+// 没有写入方的字段不预留：pending / task_blockers / image 相关类型都没有搬。
+//
+// 词汇取值见 Spec：observe = waiting/not_waiting/closed；
+// exec = created/running/paused/done/failed/cancelled/unknown；
+// phase = done/failed/timeout/cancelled/orphaned/unknown。
 
 import "github.com/vmihailenco/msgpack/v5"
 
@@ -122,4 +128,94 @@ type TriggerCompletePayload struct {
 // TriggerCompleteResult 是 trigger_complete 的回执。
 type TriggerCompleteResult struct {
 	Completed bool `msgpack:"completed" json:"completed"`
+}
+
+// ---------- 调用生命周期：call_open / call_control / call_status（S-001 §3.0.2、§3.4、§3.5） ----------
+
+// CallOpenPayload 是 call_open 的入参（S-001 §3.0.2）：memory 在派发前分配全局唯一的 call_id。
+// Mode 取 once / resident；Pausable 是 owner 对可暂停能力的声明；
+// TTLMS 约束等待时长，ExecDeadlineMS 只约束 owner 已受理之后的执行（不能用来判断派发成功）。
+type CallOpenPayload struct {
+	Work           string `msgpack:"work" json:"work"`
+	Service        string `msgpack:"service" json:"service"`
+	Action         string `msgpack:"action" json:"action"`
+	Mode           string `msgpack:"mode" json:"mode"`
+	Pausable       bool   `msgpack:"pausable,omitempty" json:"pausable,omitempty"`
+	TTLMS          int64  `msgpack:"ttl_ms,omitempty" json:"ttl_ms,omitempty"`
+	ExecDeadlineMS int64  `msgpack:"exec_deadline_ms,omitempty" json:"exec_deadline_ms,omitempty"`
+}
+
+// CallOpenResult 是 call_open 的回执：memory 分配并持有的 call_id。
+type CallOpenResult struct {
+	CallID string `msgpack:"call_id" json:"call_id"`
+}
+
+// CallControlPayload 是 call_control 的入参（S-001 §3.4）：Op 取 pause / resume / cancel；
+// ControlID 幂等（call_controls 表），TTLMS 约束本次控制等待 owner 确认的时长。
+type CallControlPayload struct {
+	ID        string `msgpack:"id" json:"id"`
+	ControlID string `msgpack:"control_id" json:"control_id"`
+	Op        string `msgpack:"op" json:"op"`
+	TTLMS     int64  `msgpack:"ttl_ms,omitempty" json:"ttl_ms,omitempty"`
+}
+
+// CallControlResult 是 call_control 的回执（S-001 §3.4）：两维状态 + 原因。
+// ACK 丢失时 exec=unknown、observe=not_waiting，且不写 phase。
+type CallControlResult struct {
+	ID        string `msgpack:"id" json:"id"`
+	ControlID string `msgpack:"control_id" json:"control_id"`
+	Observe   string `msgpack:"observe" json:"observe"`
+	Exec      string `msgpack:"exec" json:"exec"`
+	Reason    string `msgpack:"reason,omitempty" json:"reason,omitempty"`
+}
+
+// CallStatusPayload 是 call_status 对账的入参（S-001 §3.5）：一批待核对的 call id。
+type CallStatusPayload struct {
+	IDs []string `msgpack:"ids" json:"ids"`
+}
+
+// CallStatusItem 是单个 call 的对账结果（S-001 §3.5）。owner 恢复未完成 / 不可判定时
+// 只回能确认的字段：phase 允许为空（不得把"不认识"写成 orphaned）。
+type CallStatusItem struct {
+	ID           string `msgpack:"id" json:"id"`
+	Observe      string `msgpack:"observe,omitempty" json:"observe,omitempty"`
+	Exec         string `msgpack:"exec,omitempty" json:"exec,omitempty"`
+	Phase        string `msgpack:"phase,omitempty" json:"phase,omitempty"`
+	OwnerService string `msgpack:"owner_service,omitempty" json:"owner_service,omitempty"`
+	UpdatedAt    string `msgpack:"updated_at,omitempty" json:"updated_at,omitempty"`
+}
+
+// CallStatusResult 是 call_status 的对账结果（S-001 §3.5）。
+// OwnerRecoveryComplete 必须显式上线（false 也有意义）：为 false 时不得把"不认识该 call"判为 orphaned。
+type CallStatusResult struct {
+	OwnerRecoveryComplete bool             `msgpack:"owner_recovery_complete" json:"owner_recovery_complete"`
+	Items                 []CallStatusItem `msgpack:"items" json:"items"`
+}
+
+// ---------- 常驻目录（S-001 §3.6，同 v4） ----------
+
+// ResidentItem 是常驻调用目录的一行（S-001 §3.6）：origin_session 是不透明会话 ID。
+type ResidentItem struct {
+	ID            string `msgpack:"id" json:"id"`
+	Kind          string `msgpack:"kind" json:"kind"`
+	Title         string `msgpack:"title,omitempty" json:"title,omitempty"`
+	Observe       string `msgpack:"observe" json:"observe"`
+	Exec          string `msgpack:"exec" json:"exec"`
+	Phase         string `msgpack:"phase,omitempty" json:"phase,omitempty"`
+	OwnerService  string `msgpack:"owner_service" json:"owner_service"`
+	OriginSession string `msgpack:"origin_session,omitempty" json:"origin_session,omitempty"`
+	CreatedAt     string `msgpack:"created_at" json:"created_at"`
+	UpdatedAt     string `msgpack:"updated_at" json:"updated_at"`
+}
+
+// ResidentListPayload 是 resident_list 的入参：limit + 不透明游标。
+type ResidentListPayload struct {
+	Limit  int    `msgpack:"limit,omitempty" json:"limit,omitempty"`
+	Cursor string `msgpack:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// ResidentListResult 是 resident_list 的结果：Next 为空表示没有下一页。
+type ResidentListResult struct {
+	Items []ResidentItem `msgpack:"items" json:"items"`
+	Next  string         `msgpack:"next,omitempty" json:"next,omitempty"`
 }

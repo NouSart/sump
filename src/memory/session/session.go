@@ -120,6 +120,11 @@ func provides() []protocol.Provide {
 		// 都不是工具：模型不该自己决定「要不要重开一轮」或「这轮算不算完」。
 		{Action: "context_v2", Input: "{work, trigger:{kind,item}, schema?}（按 work + 触发源取组装好的上下文；同一触发复用同一快照）", Output: "{schema, snapshot_id, expires_at, messages, task, work, degraded, warnings, assembled_at, trigger_state, completed}（不暴露给模型）"},
 		{Action: "trigger_complete", Input: "{work, trigger:{kind,item}}（幂等；模型输出与后续动作安全落库后调用）", Output: "{completed}（不暴露给模型）"},
+		// v2 调用账本与常驻目录（R-023 P3）：都不是工具——模型不自己开调用、不自己判对账。
+		{Action: "call_open", Input: "{work, service, action?, mode?, pausable?, ttl_ms?, exec_deadline_ms?}（派发前分配 call_id；本地意图 observe=waiting / exec=created）", Output: "{call_id}（不暴露给模型）"},
+		{Action: "call_control", Input: "{id, control_id, op, ttl_ms?}（op=pause|resume|cancel；control_id 幂等；pause/resume 需 owner 确认）", Output: "{id, control_id, observe, exec, reason}（不暴露给模型）"},
+		{Action: "call_status", Input: "{ids}(≤100)（对账读取；只读本地账本，owner_recovery_complete 恒 false）", Output: "{owner_recovery_complete, items:[{id, observe, exec, phase, owner_service, updated_at}]}（不暴露给模型）"},
+		{Action: "resident_list", Input: "{work?, limit?, cursor?}（列该 work 所属 owner 的常驻调用）", Output: "{items:[{id, kind, title, observe, exec, phase, owner_service, origin_session, created_at, updated_at}], next?}（不暴露给模型）"},
 	}
 }
 

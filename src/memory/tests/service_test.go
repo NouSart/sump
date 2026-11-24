@@ -236,6 +236,7 @@ type testStack struct {
 	*facade.Server
 	sess *session.Server
 	exp  *experience.Server
+	st   *store.Store // 会话库：端到端用例直接登记 work / 核对落库
 }
 
 // addPeer 把测试里后上线的 embedding/reasoner 地址注入 experience。
@@ -319,7 +320,7 @@ func startMemory(t *testing.T, centerURL string, historyLimit int, opts ...func(
 		t.Fatal(err)
 	}
 	t.Cleanup(f.Shutdown)
-	return &testStack{Server: f, sess: sess, exp: exp}
+	return &testStack{Server: f, sess: sess, exp: exp, st: cfg.Store}
 }
 
 // ---------- 用例 ----------
