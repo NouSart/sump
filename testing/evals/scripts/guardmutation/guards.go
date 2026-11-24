@@ -845,4 +845,195 @@ var guards = []guard{
 		old:  `		if seen[k] || !strings.Contains(text, k) {`,
 		new:  `		if !strings.Contains(text, k) {`,
 	},
+	// ---------- V2 新增：JCS 规范化与 payload hash（src/protocol/jcs）----------
+	// 每条都挑“看着还说得通”的写法：换一种排序口径、少一档边界、静默修正输入，
+	// 改完照样编译、照样能跑，但两个语义相同的载荷会被算成不同 hash（或反过来）。
+	{
+		name: "V2 JCS 键序改成码点序（emoji 排到 U+E000 之后）",
+		file: "src/protocol/jcs/jcs.go",
+		old: `		sort.Slice(n.obj, func(i, j int) bool {
+			return compareUTF16(n.obj[i].units, n.obj[j].units) < 0
+		})`,
+		new: `		sort.Slice(n.obj, func(i, j int) bool {
+			return n.obj[i].key < n.obj[j].key
+		})`,
+	},
+	{
+		name: "V2 JCS 数字格式边界少一档（1e-7 变成定点写法）",
+		file: "src/protocol/jcs/jcs.go",
+		old:  `	case -6 < n && n <= 0: // 小数，点在有效数字之前`,
+		new:  `	case -6 <= n && n <= 0: // 小数，点在有效数字之前`,
+	},
+	{
+		name: "V2 JCS 重复键静默接受（取哪一个由实现顺序决定）",
+		file: "src/protocol/jcs/parse.go",
+		old:  `		if _, dup := seen[key]; dup {`,
+		new:  `		if _, dup := seen[key]; false && dup {`,
+	},
+	{
+		name: "V2 JCS 斜杠被多转义（/ 输出成 \\/）",
+		file: "src/protocol/jcs/jcs.go",
+		old: `		case '\\':
+			dst = append(dst, '\\', '\\')
+		case '\b':`,
+		new: `		case '\\':
+			dst = append(dst, '\\', '\\')
+		case '/':
+			dst = append(dst, '\\', '/')
+		case '\b':`,
+	},
+	{
+		name: "V2 JCS hash 截短（不再是 sha256 全长）",
+		file: "src/protocol/jcs/jcs.go",
+		old:  `	return hex.EncodeToString(sum[:]), nil`,
+		new:  `	return hex.EncodeToString(sum[:16]), nil`,
+	},
+	{
+		name: "V2 JCS 孤立代理项静默替换成 U+FFFD（不再报错）",
+		file: "src/protocol/jcs/parse.go",
+		old:  `	if hi >= 0xD800 && hi <= 0xDBFF {`,
+		new:  `	if false && hi >= 0xD800 && hi <= 0xDBFF {`,
+	},
+	{
+		name: "V2 JCS 嵌套深度上限失效（递归不再有界）",
+		file: "src/protocol/jcs/parse.go",
+		old:  `	if depth > maxDepth {`,
+		new:  `	if false && depth > maxDepth {`,
+	},
+	// ---------- V2 新增：幂等落库记录（src/memory/store/receipts.go）----------
+	{
+		name: "V2 receipts 同键不同 hash 不报 conflict（覆盖写当成重放）",
+		file: "src/memory/store/receipts.go",
+		old: `		if storedHash != payloadHash {
+			return "", false, ErrPayloadConflict
+		}`,
+		new: `		if false && storedHash != payloadHash {
+			return "", false, ErrPayloadConflict
+		}`,
+	},
+	{
+		name: "V2 receipts 换 report_id 重用 report_seq 被当成重放（uq_report_seq 判断失效）",
+		file: "src/memory/store/receipts.go",
+		old: `	case errors.Is(err, sql.ErrNoRows):
+		return false, ErrPayloadConflict
+	default:`,
+		new: `	case errors.Is(err, sql.ErrNoRows):
+		return true, nil
+	default:`,
+	},
+	{
+		name: "V2 receipts 重放时返回本次请求的 item_id（不回既有回执）",
+		file: "src/memory/store/receipts.go",
+		old:  `		return storedItem, true, nil`,
+		new:  `		return itemID, true, nil`,
+	},
+	// ---------- V2 新增：上下文快照与触发状态（src/memory/store · server）----------
+	{
+		name: "V2 snapshots 过期不再判 ErrSnapshotExpired（把过期快照当可用）",
+		file: "src/memory/store/snapshots.go",
+		old:  `	if time.Now().After(exp) {`,
+		new:  `	if false && time.Now().After(exp) {`,
+	},
+	{
+		name: "V2 snapshots completed 分支改为重新组装（不再只回旧快照）",
+		file: "src/memory/server/context_v2.go",
+		old: `	case store.TriggerStateCompleted, store.TriggerStateAssembled:
+		// completed 与 assembled 都只读快照：前者连推理都不该重开，后者是同一轮的续跑。
+		return s.loadContextV2Snapshot(ctx, work, kind, item, state)
+	case "", store.TriggerStatePending:
+		return s.assembleContextV2(ctx, work, kind, item, time.Now())`,
+		new: `	case store.TriggerStateAssembled:
+		// completed 与 assembled 都只读快照：前者连推理都不该重开，后者是同一轮的续跑。
+		return s.loadContextV2Snapshot(ctx, work, kind, item, state)
+	case "", store.TriggerStatePending, store.TriggerStateCompleted:
+		return s.assembleContextV2(ctx, work, kind, item, time.Now())`,
+	},
+	{
+		name: "V2 snapshots assembled 分支改为重新组装（同一轮续跑被重开）",
+		file: "src/memory/server/context_v2.go",
+		old: `	case store.TriggerStateCompleted, store.TriggerStateAssembled:
+		// completed 与 assembled 都只读快照：前者连推理都不该重开，后者是同一轮的续跑。
+		return s.loadContextV2Snapshot(ctx, work, kind, item, state)`,
+		new: `	case store.TriggerStateCompleted:
+		// completed 与 assembled 都只读快照：前者连推理都不该重开，后者是同一轮的续跑。
+		return s.loadContextV2Snapshot(ctx, work, kind, item, state)
+	case store.TriggerStateAssembled:
+		return s.assembleContextV2(ctx, work, kind, item, time.Now())`,
+	},
+	{
+		name: "V2 snapshots gzip 解压错误被忽略（坏载荷当空载荷返回）",
+		file: "src/memory/store/snapshots.go",
+		old: `	plain, readErr := io.ReadAll(zr)
+	if readErr != nil {
+		return snapshotID, nil, exp, fmt.Errorf("解压上下文快照 %s: %w", snapshotID, readErr)
+	}`,
+		new: `	plain, _ := io.ReadAll(zr)`,
+	},
+	// ---------- V2 新增：调用账本（src/memory/store/calls.go · server/calls_v2.go）----------
+	{
+		name: "V2 calls 非法 exec 转移放行（created 直接 done）",
+		file: "src/memory/store/calls.go",
+		old:  `	if !canExec(curExec, exec) {`,
+		new:  `	if false && !canExec(curExec, exec) {`,
+	},
+	{
+		name: "V2 calls 不可暂停的 cancel 写成 cancelled（远端可能还在继续）",
+		file: "src/memory/server/calls_v2.go",
+		old: `			exec, phase, reason = store.CallExecUnknown, "", "remote_may_continue"
+			remoteMayContinue = true`,
+		new: `			exec, phase, reason = store.CallExecCancelled, store.CallPhaseCancelled, "cancelled"
+			remoteMayContinue = true`,
+	},
+	{
+		name: "V2 calls pause 未接 owner 却本地标记 paused（假装成功）",
+		file: "src/memory/server/calls_v2.go",
+		old: `	if client == nil {
+		// 未注入 owner：没有谁能确认暂停，不能本地假装成功（否则会误导门禁与 owner 恢复）。
+		return protocol.CallControlResult{}, callsError(spv2.CodeUnavailable,
+			"call_control: pause 需要 owner 确认；当前未注入执行服务客户端，不能标记 paused")
+	}`,
+		new: `	if client == nil {
+		// 未注入 owner：没有谁能确认暂停，不能本地假装成功（否则会误导门禁与 owner 恢复）。
+		if err := s.cfg.Store.SetCallState(ctx, row.ID, store.CallObserveWaiting,
+			store.CallExecRunning, row.Phase, "pause_requested"); err != nil {
+			return protocol.CallControlResult{}, mapCallError(err)
+		}
+		if err := s.cfg.Store.SetCallState(ctx, row.ID, store.CallObserveWaiting,
+			store.CallExecPaused, row.Phase, "paused"); err != nil {
+			return protocol.CallControlResult{}, mapCallError(err)
+		}
+		return s.finishControl(ctx, controlID, row.ID, "pause", protocol.CallControlResult{
+			ID: row.ID, ControlID: controlID,
+			Observe: store.CallObserveWaiting, Exec: store.CallExecPaused, Reason: "paused",
+		})
+	}`,
+	},
+	// ---------- V2 新增：store 的 v2 入口（src/memory/server/store_v2.go · server.go）----------
+	{
+		name: "V2 store_v2 client_item_id 为空也走幂等路径（老调用方被当新幂等键）",
+		file: "src/memory/server/server.go",
+		old:  `	if p.ClientItemID != "" {`,
+		new:  `	if true {`,
+	},
+	{
+		name: "V2 store_v2 payload_hash 不覆盖 report 字段（换补报内容不算新载荷）",
+		file: "src/memory/server/store_v2.go",
+		old: `	if p.Report != nil {
+		data, err := storeReportData(p.Report.Data)`,
+		new: `	if false && p.Report != nil {
+		data, err := storeReportData(p.Report.Data)`,
+	},
+	// ---------- V2 新增：启动版本闸门与重置确认（src/memory/main.go）----------
+	{
+		name: "V2 main 版本不匹配仍继续启动（旧库被当新库）",
+		file: "src/memory/main.go",
+		old:  `	if exists && version != store.SchemaVersion {`,
+		new:  `	if false && exists && version != store.SchemaVersion {`,
+	},
+	{
+		name: "V2 main reset 不检查确认串（-reset-data 单独生效）",
+		file: "src/memory/main.go",
+		old:  `	if confirm != "YES" {`,
+		new:  `	if false && confirm != "YES" {`,
+	},
 }
