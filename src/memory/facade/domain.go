@@ -91,6 +91,8 @@ var settingOrder = []string{
 func provides() []protocol.Provide {
 	return []protocol.Provide{
 		{Action: "context", Input: "{conversation, messages, boss?, task_name?}（spec §7.2 同步上下文）", Output: "{messages, work, task}（组装后的上下文与 work 行）"},
+		{Action: "context_v2", Input: "{work, trigger:{kind,item}, schema?}（v2：按 work + 触发源取组装好的上下文；同一触发复用同一快照）", Output: "{schema, snapshot_id, expires_at, messages, task, work, degraded, warnings, assembled_at, trigger_state, completed}（不暴露给模型）"},
+		{Action: "trigger_complete", Input: "{work, trigger:{kind,item}}（幂等；本轮模型输出与动作安全落库后调用）", Output: "{completed}（不暴露给模型）"},
 		{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
 		{Action: "history", Input: "{conversation_id, limit}", Output: "{conversation_id, messages:[{role, content, at}]}（按时间正序；供界面回填，不做记忆组装）"},
 		{Action: "conversation_list", Input: "{limit?, include_archived?}", Output: "{conversations:[{id, title, entry, status, created_at, updated_at}]}（按最近活跃排序；不暴露给模型 — 给界面列会话，不是给模型的工具）"},

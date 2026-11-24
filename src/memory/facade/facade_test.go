@@ -152,3 +152,89 @@ func TestFacadeRejectsMissingPeer(t *testing.T) {
 		t.Fatalf("缺 session 应启动失败: %v", err)
 	}
 }
+
+// TestFacadeContextV2AndTriggerComplete 门面只做转发：context_v2 的四态与
+// trigger_complete 必须经门面原样到达 session（含 completed 只补 ACK）。
+func TestFacadeContextV2AndTriggerComplete(t *testing.T) {
+	f, st, _ := startStack(t)
+	const workID = "w-v2"
+	ctx := context.Background()
+
+	// session 侧的准备（production 里由 context_base 登记 work；这里直接写库）：
+	// work 必须存在并挂着 task，context_v2 才能组装。
+	if _, err := st.EnsureWork(ctx, spv2.Work{
+		ID: workID, Root: workID, Class: spv2.ClassRequest,
+		Owner: spv2.HumanRef("owner"), Agent: spv2.AgentRef("reasoner"),
+		Entry: spv2.ServiceRef("reasoner"), Status: spv2.WorkRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	task, err := st.OpenTask("c-v2", "v2 上下文任务")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`UPDATE works SET task = ? WHERE id = ?`, task.ID, workID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 经门面走 v2 store（client_item_id 非空 → 原子路径，带 work 归属）。
+	if err := call(t, f.WsURL(), "reasoner", workID, "store", protocol.StorePayload{
+		ConversationID: "c-v2", Work: workID, ClientItemID: "reasoner:trigger-1",
+		Role: "user", Content: "第一轮问题",
+	}, nil); err != nil {
+		t.Fatalf("v2 store 失败: %v", err)
+	}
+	var itemID string
+	if err := st.DB().QueryRow(
+		`SELECT id FROM messages WHERE work_id = ? ORDER BY id DESC LIMIT 1`, workID).Scan(&itemID); err != nil {
+		t.Fatal(err)
+	}
+	req := protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: itemID}}
+
+	var first protocol.ContextResponse
+	if err := call(t, f.WsURL(), "reasoner", workID, "context_v2", req, &first); err != nil {
+		t.Fatalf("门面转发 context_v2 失败: %v", err)
+	}
+	if first.SnapshotID == "" || first.TriggerState != "assembled" || len(first.Messages) == 0 {
+		t.Fatalf("首次组装回执不符: %+v", first)
+	}
+	if first.Messages[0].Role != "system" || first.Task.ID != task.ID || first.Work.ID != workID {
+		t.Fatalf("首次组装投影不符: task=%+v work=%+v messages=%+v", first.Task, first.Work, first.Messages)
+	}
+
+	// assembled：同一触发复用同一快照。
+	var second protocol.ContextResponse
+	if err := call(t, f.WsURL(), "reasoner", workID, "context_v2", req, &second); err != nil {
+		t.Fatalf("assembled 重取失败: %v", err)
+	}
+	if second.SnapshotID != first.SnapshotID {
+		t.Fatalf("assembled 应复用快照: %q vs %q", second.SnapshotID, first.SnapshotID)
+	}
+
+	// trigger_complete：经门面转发且幂等。
+	for i := 0; i < 2; i++ {
+		var done protocol.TriggerCompleteResult
+		if err := call(t, f.WsURL(), "reasoner", workID, "trigger_complete",
+			protocol.TriggerCompletePayload{Work: workID, Trigger: req.Trigger}, &done); err != nil {
+			t.Fatalf("第 %d 次 trigger_complete 失败: %v", i+1, err)
+		}
+		if !done.Completed {
+			t.Fatalf("trigger_complete 应回 completed=true: %+v", done)
+		}
+	}
+
+	// completed：快照删掉也只补 ACK（完成事实不随快照消失）。
+	if _, err := st.DB().Exec(`DELETE FROM context_snapshots`); err != nil {
+		t.Fatal(err)
+	}
+	var ack protocol.ContextResponse
+	if err := call(t, f.WsURL(), "reasoner", workID, "context_v2", req, &ack); err != nil {
+		t.Fatalf("completed 后经门面取 context 失败: %v", err)
+	}
+	if !ack.Completed || ack.TriggerState != "completed" || len(ack.Messages) != 0 {
+		t.Fatalf("completed 只应补 ACK: %+v", ack)
+	}
+	if ack.SnapshotID != first.SnapshotID {
+		t.Fatalf("ACK 应指回原快照: %q vs %q", ack.SnapshotID, first.SnapshotID)
+	}
+}

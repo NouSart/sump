@@ -15,7 +15,8 @@ import (
 
 // nativeActions 是 server 注册的全部原生动作（顺序无关）。
 var nativeActions = []string{
-	"context", "store", "history", "conversation_list", "conversation_rename",
+	"context", "context_v2", "trigger_complete",
+	"store", "history", "conversation_list", "conversation_rename",
 	"note", "dig", "lineheads", "prune", "remember", "forget", "consolidate",
 	"publish_session", "shared_sessions", "shared_forget",
 	"conversation_open", "conversation_archive",
