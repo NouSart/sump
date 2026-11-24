@@ -54,16 +54,18 @@ func contextV2Method() spv2.Method {
 			"schema": stringSchema(),
 		}, "work", "trigger"),
 		Output: objectSchema(map[string]any{
-			"schema":       stringSchema(),
-			"snapshot_id":  stringSchema(),
-			"expires_at":   stringSchema(),
-			"messages":     map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
-			"task":         map[string]any{"type": "object"},
-			"work":         map[string]any{"type": "object"},
-			"degraded":     map[string]any{"type": "object"},
-			"warnings":     stringArraySchema(),
-			"assembled_at": stringSchema(),
-		}, "schema", "snapshot_id", "expires_at", "messages", "task", "work", "assembled_at"),
+			"schema":        stringSchema(),
+			"snapshot_id":   stringSchema(),
+			"expires_at":    stringSchema(),
+			"messages":      map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+			"task":          map[string]any{"type": "object"},
+			"work":          map[string]any{"type": "object"},
+			"degraded":      map[string]any{"type": "object"},
+			"warnings":      stringArraySchema(),
+			"assembled_at":  stringSchema(),
+			"trigger_state": stringSchema(),
+			"completed":     booleanSchema(),
+		}, "schema", "trigger_state", "snapshot_id"),
 		Tool: false,
 	}
 }
@@ -90,7 +92,7 @@ func triggerCompleteMethod() spv2.Method {
 // ---------- 原生入口 ----------
 
 func (s *Server) nativeContextV2(ctx context.Context, call *spv2.Call) error {
-	out, err := s.contextV2(ctx, call.Frame.Body)
+	out, err := s.contextV2(ctx, call.Frame.Body, call.WorkID(), call.Frame.From)
 	if err != nil {
 		return replyContextV2Error(call, err)
 	}
@@ -98,7 +100,7 @@ func (s *Server) nativeContextV2(ctx context.Context, call *spv2.Call) error {
 }
 
 func (s *Server) nativeTriggerComplete(ctx context.Context, call *spv2.Call) error {
-	out, err := s.triggerComplete(ctx, call.Frame.Body)
+	out, err := s.triggerComplete(ctx, call.Frame.Body, call.WorkID(), call.Frame.From)
 	if err != nil {
 		return replyContextV2Error(call, err)
 	}
@@ -127,9 +129,10 @@ func v2Error(code, format string, args ...any) error {
 // 分支（S-001 §3.1 规则 2）：
 //   - pending / 没有记录：首次组装，落快照 + 置 assembled；
 //   - assembled：沿用快照，不重新查库、不重新组装；
-//   - completed：只返回已有快照（只补 ACK 的语义），也不重新推理；
+//   - completed：只补 ACK——completed=true 且**不带消息**，快照清理后依然成立，
+//     重复取上下文不会把已经收口的那一轮重新推理一遍（§3.1.1）；
 //   - expired：not_found，只能显式 resume 新触发，不得静默重建。
-func (s *Server) contextV2(ctx context.Context, body []byte) (any, error) {
+func (s *Server) contextV2(ctx context.Context, body []byte, callerWork string, from spv2.Ref) (any, error) {
 	var req protocol.ContextRequest
 	if err := protocol.DecodeRaw(body, &req); err != nil {
 		return nil, v2Error(spv2.CodeInvalidArgument, "context_v2 body 无效: %v", err)
@@ -147,6 +150,9 @@ func (s *Server) contextV2(ctx context.Context, body []byte) (any, error) {
 		return nil, v2Error(spv2.CodeInvalidArgument,
 			"context_v2: 不支持的 schema %q（只支持 %s）", req.Schema, contextV2Schema)
 	}
+	if _, err := s.authorizeTargetWork(ctx, work, callerWork, "context_v2", from); err != nil {
+		return nil, err
+	}
 
 	// 触发条目必须已落库：没落库的 item 会让快照绑定到一个不存在的事实上。
 	exists, err := s.cfg.Store.TriggerItemExists(ctx, work, item)
@@ -158,13 +164,17 @@ func (s *Server) contextV2(ctx context.Context, body []byte) (any, error) {
 			"context_v2: trigger.item %s 未落库或不属于 work %s", item, work)
 	}
 
-	state, _, err := s.cfg.Store.GetTriggerState(ctx, work, kind, item)
+	state, snapshotID, err := s.cfg.Store.GetTriggerState(ctx, work, kind, item)
 	if err != nil {
 		return nil, v2Error(spv2.CodeInternal, "context_v2: %v", err)
 	}
 	switch state {
-	case store.TriggerStateCompleted, store.TriggerStateAssembled:
-		// completed 与 assembled 都只读快照：前者连推理都不该重开，后者是同一轮的续跑。
+	case store.TriggerStateCompleted:
+		// 已完成：只补 ACK。这一步的意义在于「不做事」——不重新组装、不再灌一遍历史，
+		// 否则 agent 会以为拿到了新一轮的上下文，把已经收口的对话再推理一次（§3.1.1）。
+		return completedTriggerAck(snapshotID), nil
+	case store.TriggerStateAssembled:
+		// 同一轮的续跑：沿用那份不可变投影，不重新查库、不重新组装。
 		return s.loadContextV2Snapshot(ctx, work, kind, item, state)
 	case "", store.TriggerStatePending:
 		return s.assembleContextV2(ctx, work, kind, item, time.Now())
@@ -173,6 +183,20 @@ func (s *Server) contextV2(ctx context.Context, body []byte) (any, error) {
 			"context_v2: 触发（%s/%s）的快照已过期，只能显式 resume 新触发，不能静默重建", kind, item)
 	default:
 		return nil, v2Error(spv2.CodeInternal, "context_v2: 未知触发状态 %q", state)
+	}
+}
+
+// completedTriggerAck 是「本轮已完成」的应答：只表明状态，不带消息。
+//
+// 快照可能已经被清理（保留期 24h），但**已完成这件事不会因为快照没了而退化成没做**，
+// 所以这里不读快照、也不因快照缺失报 not_found。
+func completedTriggerAck(snapshotID string) protocol.ContextResponse {
+	return protocol.ContextResponse{
+		Schema:       contextV2Schema,
+		SnapshotID:   snapshotID,
+		TriggerState: store.TriggerStateCompleted,
+		Completed:    true,
+		Warnings:     []string{"本轮触发已完成，只补 ACK；要开始新一轮请换 trigger.item"},
 	}
 }
 
@@ -194,6 +218,8 @@ func (s *Server) loadContextV2Snapshot(ctx context.Context, work, kind, item, st
 	if err := protocol.DecodeRaw(payload, &resp); err != nil {
 		return protocol.ContextResponse{}, v2Error(spv2.CodeInternal, "context_v2: 快照载荷无法解析: %v", err)
 	}
+	// 状态以 trigger_states 为准（快照是那份不可变投影，不随身边的状态改）。
+	resp.TriggerState = state
 	return resp, nil
 }
 
@@ -254,15 +280,16 @@ func (s *Server) assembleContextV2(ctx context.Context, work, kind, item string,
 
 	expiresAt := now.Add(contextV2SnapshotTTL)
 	resp := protocol.ContextResponse{
-		Schema:      contextV2Schema,
-		SnapshotID:  spv2.NewID(),
-		ExpiresAt:   expiresAt.UTC().Format(time.RFC3339Nano),
-		Messages:    toProtocolMessages(out.Messages),
-		Task:        task,
-		Work:        workViewOf(work, task.ID, w),
-		Degraded:    toProtocolDegraded(out.Degraded),
-		Warnings:    out.Warnings,
-		AssembledAt: now.UTC().Format(time.RFC3339Nano),
+		Schema:       contextV2Schema,
+		SnapshotID:   spv2.NewID(),
+		ExpiresAt:    expiresAt.UTC().Format(time.RFC3339Nano),
+		Messages:     toProtocolMessages(out.Messages),
+		Task:         task,
+		Work:         workViewOf(work, task.ID, w),
+		Degraded:     toProtocolDegraded(out.Degraded),
+		Warnings:     out.Warnings,
+		AssembledAt:  now.UTC().Format(time.RFC3339Nano),
+		TriggerState: store.TriggerStateAssembled,
 	}
 	payload, err := protocol.EncodePayload(resp)
 	if err != nil {
@@ -297,7 +324,7 @@ func (s *Server) assembleContextV2(ctx context.Context, work, kind, item string,
 // ---------- trigger_complete ----------
 
 // triggerComplete 标记本轮触发完成（S-001 §3.1.1）：幂等；对 pending 调用必须 conflict。
-func (s *Server) triggerComplete(ctx context.Context, body []byte) (any, error) {
+func (s *Server) triggerComplete(ctx context.Context, body []byte, callerWork string, from spv2.Ref) (any, error) {
 	var req protocol.TriggerCompletePayload
 	if err := protocol.DecodeRaw(body, &req); err != nil {
 		return nil, v2Error(spv2.CodeInvalidArgument, "trigger_complete body 无效: %v", err)
@@ -307,6 +334,9 @@ func (s *Server) triggerComplete(ctx context.Context, body []byte) (any, error) 
 	item := strings.TrimSpace(req.Trigger.Item)
 	if work == "" || kind == "" || item == "" {
 		return nil, v2Error(spv2.CodeInvalidArgument, "trigger_complete: work / trigger.kind / trigger.item 必填")
+	}
+	if _, err := s.authorizeTargetWork(ctx, work, callerWork, "trigger_complete", from); err != nil {
+		return nil, err
 	}
 	exists, err := s.cfg.Store.TriggerItemExists(ctx, work, item)
 	if err != nil {

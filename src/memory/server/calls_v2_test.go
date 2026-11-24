@@ -61,12 +61,22 @@ func linkCallsTestTask(t *testing.T, st *store.Store, work, conversation string)
 	return task
 }
 
-func openCallsTestCall(t *testing.T, s *Server, work, mode string, pausable bool) string {
+// workAgentRef 取已登记 work 的 agent 引用，让测试用「这条 work 自己的 agent」身份调用。
+func workAgentRef(t *testing.T, st *store.Store, work string) spv2.Ref {
+	t.Helper()
+	w, err := st.GetWork(context.Background(), work)
+	if err != nil {
+		t.Fatalf("读取 work %s: %v", work, err)
+	}
+	return w.Agent
+}
+
+func openCallsTestCall(t *testing.T, s *Server, st *store.Store, work, mode string, pausable bool) string {
 	t.Helper()
 	res, err := s.openCall(context.Background(), protocol.CallOpenPayload{
 		Work: work, Service: "shell", Action: "run", Mode: mode,
 		Pausable: pausable, TTLMS: 60000, ExecDeadlineMS: 300000,
-	})
+	}, work, workAgentRef(t, st, work))
 	if err != nil {
 		t.Fatalf("openCall(%s): %v", work, err)
 	}
@@ -106,7 +116,7 @@ func TestOpenCallValidatesWorkAndTask(t *testing.T) {
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
 	task := linkCallsTestTask(t, st, "w1", "conv-1")
 
-	id := openCallsTestCall(t, s, "w1", store.CallModeResident, true)
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeResident, true)
 	row, err := st.GetCall(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -119,26 +129,67 @@ func TestOpenCallValidatesWorkAndTask(t *testing.T) {
 	}
 
 	// work 不存在 → not_found。
-	if _, err := s.openCall(ctx, protocol.CallOpenPayload{Work: "nope", Service: "shell"}); !spv2.IsCode(err, spv2.CodeNotFound) {
+	if _, err := s.openCall(ctx, protocol.CallOpenPayload{Work: "nope", Service: "shell"}, "nope", spv2.AgentRef("reasoner")); !spv2.IsCode(err, spv2.CodeNotFound) {
 		t.Fatalf("缺 work 应 not_found: %v", err)
 	}
 	// service 必填、ttl 不能为负、mode 只允许 once/resident。
-	if _, err := s.openCall(ctx, protocol.CallOpenPayload{Work: "w1"}); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
+	if _, err := s.openCall(ctx, protocol.CallOpenPayload{Work: "w1"}, "w1", spv2.AgentRef("reasoner")); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
 		t.Fatalf("缺 service 应 invalid_argument: %v", err)
 	}
-	if _, err := s.openCall(ctx, protocol.CallOpenPayload{Work: "w1", Service: "shell", TTLMS: -1}); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
+	if _, err := s.openCall(ctx, protocol.CallOpenPayload{Work: "w1", Service: "shell", TTLMS: -1}, "w1", spv2.AgentRef("reasoner")); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
 		t.Fatalf("负 ttl 应 invalid_argument: %v", err)
 	}
-	if _, err := s.openCall(ctx, protocol.CallOpenPayload{Work: "w1", Service: "shell", Mode: "forever"}); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
+	if _, err := s.openCall(ctx, protocol.CallOpenPayload{Work: "w1", Service: "shell", Mode: "forever"}, "w1", spv2.AgentRef("reasoner")); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
 		t.Fatalf("非法 mode 应 invalid_argument: %v", err)
 	}
+}
+
+// TestOpenCallRejectsCrossWork 固化 v2 入口的跨 work 越权回归（审计缺陷 1）：
+// 同一个 agent 服务同时服务两条 work 时，站在 w-alice 的调用方不得替 w-bob 开调用。
+func TestOpenCallRejectsCrossWork(t *testing.T) {
+	s, st := newCallsTestServer(t)
+	ctx := context.Background()
+	seedCallsWork(t, st, "w-alice", "alice", "reasoner")
+	seedCallsWork(t, st, "w-bob", "bob", "reasoner")
+	linkCallsTestTask(t, st, "w-bob", "conv-bob")
+
+	// 身份是 reasoner（两条 work 的 agent 相同），但调用方 work 是 w-alice。
+	caller := spv2.AgentRef("reasoner")
+	if _, err := s.openCall(ctx, protocol.CallOpenPayload{Work: "w-bob", Service: "shell"}, "w-alice", caller); !spv2.IsCode(err, spv2.CodePermissionDenied) {
+		t.Fatalf("跨 work call_open 应 permission_denied: %v", err)
+	}
+	// 拒绝后目标 work 名下不得留下任何 call。
+	if n := countRowsIn(t, st, `SELECT COUNT(*) FROM calls WHERE work = 'w-bob'`); n != 0 {
+		t.Fatalf("跨 work 拒绝不应落 call，实际 %d 条", n)
+	}
+	// frame.work 为空同样拒绝（不能退化成「没有调用方就放行」）。
+	if _, err := s.openCall(ctx, protocol.CallOpenPayload{Work: "w-bob", Service: "shell"}, "", caller); !spv2.IsCode(err, spv2.CodePermissionDenied) {
+		t.Fatalf("缺调用方 work 应 permission_denied: %v", err)
+	}
+	// owner 身份但 owner 不匹配：拒绝；匹配才放行。
+	if _, err := s.openCall(ctx, protocol.CallOpenPayload{Work: "w-bob", Service: "shell"}, "w-alice", spv2.HumanRef("mallory")); !spv2.IsCode(err, spv2.CodePermissionDenied) {
+		t.Fatalf("伪 owner 应 permission_denied: %v", err)
+	}
+	if _, err := s.openCall(ctx, protocol.CallOpenPayload{Work: "w-bob", Service: "shell"}, "w-bob", spv2.HumanRef("bob")); err != nil {
+		t.Fatalf("bob 自己的 owner 入口应放行: %v", err)
+	}
+}
+
+// countRowsIn 执行一条 COUNT 查询（跨 work 回归里核对“拒绝后零写入”）。
+func countRowsIn(t *testing.T, st *store.Store, query string) int {
+	t.Helper()
+	var n int
+	if err := st.DB().QueryRow(query).Scan(&n); err != nil {
+		t.Fatalf("查询 %s: %v", query, err)
+	}
+	return n
 }
 
 func TestCallControlPauseUnavailableKeepsState(t *testing.T) {
 	s, st := newCallsTestServer(t)
 	ctx := context.Background()
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
-	id := openCallsTestCall(t, s, "w1", store.CallModeResident, true)
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeResident, true)
 
 	_, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-pause", Op: "pause"}, "w1", spv2.AgentRef("reasoner"))
 	if !spv2.IsCode(err, spv2.CodeUnavailable) {
@@ -183,7 +234,7 @@ func TestCallControlCancelAndIdempotency(t *testing.T) {
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
 
 	// 可暂停调用：本地取消 = 执行侧已取消。
-	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 	first, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id, ControlID: "ctl-cancel", Op: "cancel"}, "w1", spv2.AgentRef("reasoner"))
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +264,7 @@ func TestCallControlCancelAndIdempotency(t *testing.T) {
 	}
 
 	// 不可暂停调用：取消后 exec=unknown、不写 phase、remote_may_continue=true。
-	id2 := openCallsTestCall(t, s, "w1", store.CallModeOnce, false)
+	id2 := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, false)
 	res2, err := s.controlCall(ctx, protocol.CallControlPayload{ID: id2, ControlID: "ctl-cancel-np", Op: "cancel"}, "w1", spv2.AgentRef("reasoner"))
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +285,7 @@ func TestCallStatusReportsOwnerHandshakeMissing(t *testing.T) {
 	s, st := newCallsTestServer(t)
 	ctx := context.Background()
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
-	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 
 	res, err := s.callStatus(ctx, protocol.CallStatusPayload{IDs: []string{id, "missing-call"}}, "w1", spv2.AgentRef("reasoner"))
 	if err != nil {
@@ -268,11 +319,11 @@ func TestResidentListFiltersByOwner(t *testing.T) {
 	linkCallsTestTask(t, st, "w-alice", "conv-alice")
 	linkCallsTestTask(t, st, "w-bob", "conv-bob")
 
-	a1 := openCallsTestCall(t, s, "w-alice", store.CallModeResident, true)
+	a1 := openCallsTestCall(t, s, st, "w-alice", store.CallModeResident, true)
 	time.Sleep(time.Millisecond)
-	a2 := openCallsTestCall(t, s, "w-alice", store.CallModeResident, true)
-	_ = openCallsTestCall(t, s, "w-alice", store.CallModeOnce, true) // 非常驻不出现
-	_ = openCallsTestCall(t, s, "w-bob", store.CallModeResident, true)
+	a2 := openCallsTestCall(t, s, st, "w-alice", store.CallModeResident, true)
+	_ = openCallsTestCall(t, s, st, "w-alice", store.CallModeOnce, true) // 非常驻不出现
+	_ = openCallsTestCall(t, s, st, "w-bob", store.CallModeResident, true)
 
 	res, err := s.residentList(ctx, residentListRequest{Work: "w-alice", Limit: 10}, spv2.ServiceRef("reasoner"))
 	if err != nil {

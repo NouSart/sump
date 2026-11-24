@@ -194,7 +194,7 @@ func isTerminalExec(exec string) bool {
 // ---------- 逻辑层（单测直接调；handler 只做解码 / 回包） ----------
 
 // openCall 校验 work / task 后落一条本地意图（S-001 §3.0.2）。
-func (s *Server) openCall(ctx context.Context, req protocol.CallOpenPayload) (protocol.CallOpenResult, error) {
+func (s *Server) openCall(ctx context.Context, req protocol.CallOpenPayload, callerWork string, from spv2.Ref) (protocol.CallOpenResult, error) {
 	var zero protocol.CallOpenResult
 	work := strings.TrimSpace(req.Work)
 	service := strings.TrimSpace(req.Service)
@@ -216,11 +216,15 @@ func (s *Server) openCall(ctx context.Context, req protocol.CallOpenPayload) (pr
 		return zero, callsError(spv2.CodeInvalidArgument, fmt.Sprintf("call_open: mode %q 非法（once|resident）", mode))
 	}
 
-	// 校验 work 存在，并取 works 里的 owner / task（calls 表不存这两列）。
+	// 校验调用方与目标 work 的归属；owner / task 从 works 行解析（calls 表不存这两列）。
+	if _, err := s.authorizeTargetWork(ctx, work, callerWork, "call_open", from); err != nil {
+		return zero, err
+	}
 	owner, task, err := s.cfg.Store.WorkOwnerTask(ctx, work)
 	if err != nil {
 		return zero, mapCallError(err)
 	}
+	owner, task = strings.TrimSpace(owner), strings.TrimSpace(task)
 	if task != "" {
 		if _, err := s.cfg.Store.TaskByID(task); err != nil {
 			return zero, callsError(spv2.CodeNotFound,
@@ -465,11 +469,13 @@ func (s *Server) cancelCall(ctx context.Context, controlID string, row store.Cal
 	default:
 		cctx, cancel := ownerControlContext(ctx, ttlMS)
 		defer cancel()
-		_, err := s.ownerClient.Cancel(cctx, row.Service, row.ID)
-		if err != nil {
+		confirmedExec, err := s.ownerClient.Cancel(cctx, row.Service, row.ID)
+		if err != nil || !ownerConfirmed(confirmedExec, store.CallExecCancelled) {
 			// 取消未获确认：不能假装执行侧已停，也不写终态 phase。
+			// owner 明确回答「还在跑」（exec=running）同样是未确认——把它记成 cancelled 是造假。
 			if s.logger != nil {
-				s.logger.Printf("call_control: cancel %s 未获 owner 确认（%v），标 remote_may_continue", row.ID, err)
+				s.logger.Printf("call_control: cancel %s 未获 owner 确认（err=%v exec=%q），标 remote_may_continue",
+					row.ID, err, confirmedExec)
 			}
 			exec, phase, reason = store.CallExecUnknown, "", "cancel_unconfirmed"
 			remoteMayContinue = true
@@ -750,9 +756,9 @@ func (s *Server) imageNote(ctx context.Context, req imageNoteRequest, from spv2.
 		}
 		return zero, mapCallError(err)
 	}
-	if strings.TrimSpace(callerOwner) != "" && strings.TrimSpace(callerOwner) != owner {
+	if strings.TrimSpace(callerOwner) == "" || strings.TrimSpace(callerOwner) != owner {
 		return zero, callsError(spv2.CodePermissionDenied,
-			fmt.Sprintf("image_note: 调用方 owner %q 与 work owner %q 不同，拒绝跨 owner 写入", callerOwner, owner))
+			fmt.Sprintf("image_note: 调用方 owner %q 与 work owner %q 不一致，拒绝跨 owner 写入", callerOwner, owner))
 	}
 
 	if task == "" {
@@ -780,7 +786,7 @@ func (s *Server) nativeCallOpen(ctx context.Context, call *spv2.Call) error {
 	if err := call.Frame.DecodeBody(&req); err != nil {
 		return call.ReplyError(spv2.CodeInvalidArgument, "call_open body 无效: "+err.Error(), false, nil)
 	}
-	out, err := s.openCall(ctx, req)
+	out, err := s.openCall(ctx, req, call.WorkID(), call.Frame.From)
 	if err != nil {
 		return replyCallsError(call, err)
 	}

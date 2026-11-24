@@ -4,7 +4,7 @@ package server
 // §10 fake owner 矩阵里属于 C 切片的部分）。
 //
 // 用可配置的 fake owner 覆盖故障矩阵：pause 成功 / 失败 / ACK 丢失 / 超时，
-// resume 成功 / 失败，cancel 可暂停成功 / 未确认 / 不可暂停，
+// resume 成功 / 失败，cancel 可暂停成功 / 未确认 / owner 回答还在跑 / 不可暂停，
 // call_status 的 recovery_complete=false/true、未知 id、owner 离线，以及 nil 客户端的诚实行为。
 //
 // handler 的线上收发需要真启动服务（*spv2.Call 不能从包外构造），属于端到端范围；
@@ -210,7 +210,7 @@ func TestOwnerContractPauseConfirmed(t *testing.T) {
 	s, st := newOwnerContractServer(t, fake)
 	ctx := context.Background()
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
-	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 	dispatchCallsTestCall(t, st, id)
 
 	res, err := controlW1(ctx, s, protocol.CallControlPayload{
@@ -245,7 +245,7 @@ func TestOwnerContractPauseConfirmed(t *testing.T) {
 	}
 
 	// created（未受理）的调用不做 pause 握手：那是本地意图，还没有 owner 可确认。
-	id2 := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	id2 := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 	if _, err := controlW1(ctx, s, protocol.CallControlPayload{ID: id2, ControlID: "ctl-pause-created", Op: "pause"}); !spv2.IsCode(err, spv2.CodeConflict) {
 		t.Fatalf("created 上 pause 应 conflict: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestOwnerContractPauseFailureKeepsExec(t *testing.T) {
 	s, st := newOwnerContractServer(t, fake)
 	ctx := context.Background()
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
-	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 	dispatchCallsTestCall(t, st, id)
 
 	res, err := controlW1(ctx, s, protocol.CallControlPayload{
@@ -298,7 +298,7 @@ func TestOwnerContractPauseAckLostKeepsState(t *testing.T) {
 	s, st := newOwnerContractServer(t, fake)
 	ctx := context.Background()
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
-	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 	dispatchCallsTestCall(t, st, id)
 
 	res, err := controlW1(ctx, s, protocol.CallControlPayload{
@@ -328,7 +328,7 @@ func TestOwnerContractPauseTimeout(t *testing.T) {
 	s, st := newOwnerContractServer(t, fake)
 	ctx := context.Background()
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
-	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 	dispatchCallsTestCall(t, st, id)
 
 	start := time.Now()
@@ -359,7 +359,7 @@ func TestOwnerContractResume(t *testing.T) {
 		fake := &fakeOwner{}
 		s, st := newOwnerContractServer(t, fake)
 		seedCallsWork(t, st, "w1", "alice", "reasoner")
-		id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+		id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 		markCallsTestPaused(t, st, id)
 
 		res, err := controlW1(ctx, s, protocol.CallControlPayload{
@@ -384,7 +384,7 @@ func TestOwnerContractResume(t *testing.T) {
 		fake := &fakeOwner{resumeErr: errors.New("owner 离线")}
 		s, st := newOwnerContractServer(t, fake)
 		seedCallsWork(t, st, "w1", "alice", "reasoner")
-		id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+		id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 		markCallsTestPaused(t, st, id)
 
 		res, err := controlW1(ctx, s, protocol.CallControlPayload{
@@ -412,7 +412,7 @@ func TestOwnerContractCancel(t *testing.T) {
 		fake := &fakeOwner{}
 		s, st := newOwnerContractServer(t, fake)
 		seedCallsWork(t, st, "w1", "alice", "reasoner")
-		id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+		id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 		dispatchCallsTestCall(t, st, id)
 
 		res, err := controlW1(ctx, s, protocol.CallControlPayload{
@@ -439,7 +439,7 @@ func TestOwnerContractCancel(t *testing.T) {
 		fake := &fakeOwner{cancelErr: errors.New("cancel ACK 丢失")}
 		s, st := newOwnerContractServer(t, fake)
 		seedCallsWork(t, st, "w1", "alice", "reasoner")
-		id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+		id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 		dispatchCallsTestCall(t, st, id)
 
 		res, err := controlW1(ctx, s, protocol.CallControlPayload{
@@ -462,7 +462,7 @@ func TestOwnerContractCancel(t *testing.T) {
 		fake := &fakeOwner{}
 		s, st := newOwnerContractServer(t, fake)
 		seedCallsWork(t, st, "w1", "alice", "reasoner")
-		id := openCallsTestCall(t, s, "w1", store.CallModeOnce, false)
+		id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, false)
 		dispatchCallsTestCall(t, st, id)
 
 		res, err := controlW1(ctx, s, protocol.CallControlPayload{
@@ -487,13 +487,52 @@ func TestOwnerContractCancel(t *testing.T) {
 
 // ---------- call_status ----------
 
+func TestOwnerContractCancelOwnerAnswersRunning(t *testing.T) {
+	// 审计缺陷 3：owner 返回 exec=running 且没有报错，旧实现只看 err 就记成 cancelled。
+	// 「我还在跑」不是取消确认，必须落到 unknown + remote_may_continue，且不写终态 phase。
+	fake := &fakeOwner{cancelExec: store.CallExecRunning}
+	s, st := newOwnerContractServer(t, fake)
+	ctx := context.Background()
+	seedCallsWork(t, st, "w1", "alice", "reasoner")
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
+	dispatchCallsTestCall(t, st, id)
+
+	res, err := controlW1(ctx, s, protocol.CallControlPayload{
+		ID: id, ControlID: "ctl-cancel-running", Op: "cancel", TTLMS: 1000,
+	})
+	if err != nil {
+		t.Fatalf("owner 的回答是可观测结果，不应变成协议错误: %v", err)
+	}
+	if res.Exec != store.CallExecUnknown || res.Reason != "cancel_unconfirmed" {
+		t.Fatalf("owner 回答 running 必须按未确认处理: %+v", res)
+	}
+	row := mustCallRow(t, st, id)
+	if row.Observe != store.CallObserveClosed || row.Exec != store.CallExecUnknown ||
+		row.Phase != "" || !row.RemoteMayContinue {
+		t.Fatalf("未确认的 cancel 落库不对: %+v", row)
+	}
+	if got := fake.state(id); got != store.CallExecRunning {
+		t.Fatalf("前提：fake 侧应保持在跑（实际 %q）", got)
+	}
+	// 控制记录不能把未确认写成 cancelled：同 control_id 重放回同一结论。
+	replay, err := controlW1(ctx, s, protocol.CallControlPayload{
+		ID: id, ControlID: "ctl-cancel-running", Op: "cancel", TTLMS: 1000,
+	})
+	if err != nil || replay.Exec != store.CallExecUnknown || replay.Reason != "cancel_unconfirmed" {
+		t.Fatalf("重放应保持未确认结论: %+v err=%v", replay, err)
+	}
+	if _, _, c, _ := fake.counts(); c != 1 {
+		t.Fatalf("重放不应再次下发 owner Cancel（调用 %d 次）", c)
+	}
+}
+
 func TestOwnerContractStatusIncompleteDoesNotOrphan(t *testing.T) {
 	// recovery_complete=false（owner 启动早期）：owner 不认识该 call 也不能判 orphaned。
 	fake := &fakeOwner{statusRecovery: false}
 	s, st := newOwnerContractServer(t, fake)
 	ctx := context.Background()
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
-	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 	dispatchCallsTestCall(t, st, id)
 
 	res, err := statusW1(ctx, s, protocol.CallStatusPayload{IDs: []string{id, "missing-call"}})
@@ -522,7 +561,7 @@ func TestOwnerContractStatusCompleteMarksOrphaned(t *testing.T) {
 	s, st := newOwnerContractServer(t, fake)
 	ctx := context.Background()
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
-	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 	dispatchCallsTestCall(t, st, id)
 
 	res, err := statusW1(ctx, s, protocol.CallStatusPayload{IDs: []string{id, "missing-call"}})
@@ -550,7 +589,7 @@ func TestOwnerContractStatusOwnerOfflineKeepsState(t *testing.T) {
 	s, st := newOwnerContractServer(t, fake)
 	ctx := context.Background()
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
-	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 	dispatchCallsTestCall(t, st, id)
 
 	res, err := statusW1(ctx, s, protocol.CallStatusPayload{IDs: []string{id, "ghost-call"}})
@@ -577,10 +616,10 @@ func TestOwnerContractStatusReportsOwnerExecByService(t *testing.T) {
 	ctx := context.Background()
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
 
-	shellID := openCallsTestCall(t, s, "w1", store.CallModeOnce, true) // service=shell
+	shellID := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true) // service=shell
 	pyRes, err := s.openCall(ctx, protocol.CallOpenPayload{
 		Work: "w1", Service: "python", Action: "run", Mode: store.CallModeOnce,
-	})
+	}, "w1", spv2.AgentRef("reasoner"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +665,7 @@ func TestOwnerContractNilClientKeepsHonestBehavior(t *testing.T) {
 	s, st := newOwnerContractServer(t, nil)
 	ctx := context.Background()
 	seedCallsWork(t, st, "w1", "alice", "reasoner")
-	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	id := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, true)
 	dispatchCallsTestCall(t, st, id)
 
 	// pause / resume：没有 owner 可确认 → unavailable，且不改状态。
@@ -657,7 +696,7 @@ func TestOwnerContractNilClientKeepsHonestBehavior(t *testing.T) {
 	}
 
 	// cancel：仍本地执行（不可暂停 → unknown + remote_may_continue）。
-	id2 := openCallsTestCall(t, s, "w1", store.CallModeOnce, false)
+	id2 := openCallsTestCall(t, s, st, "w1", store.CallModeOnce, false)
 	dispatchCallsTestCall(t, st, id2)
 	cancelRes, err := controlW1(ctx, s, protocol.CallControlPayload{ID: id2, ControlID: "ctl-nil-cancel", Op: "cancel"})
 	if err != nil {
@@ -695,9 +734,9 @@ func TestOwnerContractCallAuthorization(t *testing.T) {
 	seedCallsWork(t, st, "w-bob", "bob", "reasoner")
 
 	// w-bob 的可暂停调用：用于跨 work cancel / pause 拒绝与同 work 放行。
-	bobCancel := openCallsTestCall(t, s, "w-bob", store.CallModeOnce, true)
+	bobCancel := openCallsTestCall(t, s, st, "w-bob", store.CallModeOnce, true)
 	dispatchCallsTestCall(t, st, bobCancel)
-	bobPause := openCallsTestCall(t, s, "w-bob", store.CallModeOnce, true)
+	bobPause := openCallsTestCall(t, s, st, "w-bob", store.CallModeOnce, true)
 	dispatchCallsTestCall(t, st, bobPause)
 
 	// 跨 work cancel：w-alice 的 agent 用 w-bob 的 call_id → permission_denied。
@@ -742,7 +781,7 @@ func TestOwnerContractCallAuthorization(t *testing.T) {
 	}
 
 	// 同 work 的入口（works.entry=frontend）也可以控制。
-	entryCall := openCallsTestCall(t, s, "w-bob", store.CallModeOnce, true)
+	entryCall := openCallsTestCall(t, s, st, "w-bob", store.CallModeOnce, true)
 	dispatchCallsTestCall(t, st, entryCall)
 	if _, err := s.controlCall(ctx, protocol.CallControlPayload{ID: entryCall, ControlID: "ctl-entry", Op: "pause", TTLMS: 1000},
 		"w-bob", spv2.ServiceRef("frontend")); err != nil {
@@ -750,7 +789,7 @@ func TestOwnerContractCallAuthorization(t *testing.T) {
 	}
 
 	// work 的 owner 入口（works.owner 与 from 匹配）可跨 work 处置自己的调用。
-	ownerCall := openCallsTestCall(t, s, "w-bob", store.CallModeOnce, true)
+	ownerCall := openCallsTestCall(t, s, st, "w-bob", store.CallModeOnce, true)
 	dispatchCallsTestCall(t, st, ownerCall)
 	ownerRes, err := s.controlCall(ctx, protocol.CallControlPayload{ID: ownerCall, ControlID: "ctl-owner", Op: "cancel"},
 		"w-alice", spv2.HumanRef("bob"))

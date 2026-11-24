@@ -22,9 +22,10 @@ import (
 //
 // 实现约定（生产实现与 fake 都必须遵守）：
 //   - ctx 取消 / 超时后必须尽快返回，不得把 ctx 错误吞成 nil；
-//   - Pause 成功时应返回 owner 确认的执行维 "paused"；Resume 成功时应返回 "running"。
-//     返回空串表示“已确认但未带状态维”，memory 按约定值处理（paused / running）；
-//     返回其它值视为未确认（不能凭一个含糊回答写 paused / running）。
+//   - Pause 成功时应返回 owner 确认的执行维 "paused"；Resume 成功时应返回 "running"；
+//     Cancel 成功时应返回 "cancelled"。返回空串表示“已确认但未带状态维”，memory 按约定值处理；
+//     返回其它值视为未确认（不能凭一个含糊回答写 paused / running / cancelled——
+//     owner 回答 running 就是「我还在跑」，此时把它记成 cancelled 是造假）。
 //   - Status 的 states 只包含 owner 认识的 call（call_id → 执行维取值）；
 //     recoveryComplete=false 表示 owner 还未恢复完持久受理记录（启动早期），
 //     此时“不认识该 call”不能判成 orphaned（S-001 §3.5 规则 1）。
@@ -36,7 +37,7 @@ type OwnerClient interface {
 	Pause(ctx context.Context, service, callID string) (exec string, err error)
 	// Resume 请求 owner 恢复一次调用；返回 owner 确认后的执行维（成功 = "running"）。
 	Resume(ctx context.Context, service, callID string) (exec string, err error)
-	// Cancel 请求 owner 取消一次调用（只对可暂停调用有意义）。
+	// Cancel 请求 owner 取消一次调用（只对可暂停调用有意义）；返回 owner 确认后的执行维（成功 = "cancelled"）。
 	Cancel(ctx context.Context, service, callID string) (exec string, err error)
 }
 

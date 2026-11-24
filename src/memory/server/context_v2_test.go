@@ -67,14 +67,20 @@ func insertContextV2Message(t *testing.T, st *store.Store, workID, taskID, role,
 	return strconv.FormatInt(id, 10)
 }
 
-// callContextV2 调用共享实现并解出响应；错误原样返回给用例判断错误码。
+// callContextV2 以「目标 work 自己的 agent」身份调用共享实现。
 func callContextV2(t *testing.T, s *Server, req protocol.ContextRequest) (protocol.ContextResponse, error) {
+	t.Helper()
+	return callContextV2As(t, s, req, req.Work, spv2.AgentRef("reasoner"))
+}
+
+// callContextV2As 显式给出调用方 work 与身份，用来固化跨 work 越权回归。
+func callContextV2As(t *testing.T, s *Server, req protocol.ContextRequest, callerWork string, from spv2.Ref) (protocol.ContextResponse, error) {
 	t.Helper()
 	body, err := protocol.EncodePayload(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.contextV2(context.Background(), body)
+	out, err := s.contextV2(context.Background(), body, callerWork, from)
 	if err != nil {
 		return protocol.ContextResponse{}, err
 	}
@@ -85,14 +91,20 @@ func callContextV2(t *testing.T, s *Server, req protocol.ContextRequest) (protoc
 	return resp, nil
 }
 
-// callTriggerComplete 调用 trigger_complete 的共享实现。
+// callTriggerComplete 以「目标 work 自己的 agent」身份调用。
 func callTriggerComplete(t *testing.T, s *Server, req protocol.TriggerCompletePayload) (protocol.TriggerCompleteResult, error) {
+	t.Helper()
+	return callTriggerCompleteAs(t, s, req, req.Work, spv2.AgentRef("reasoner"))
+}
+
+// callTriggerCompleteAs 显式给出调用方 work 与身份。
+func callTriggerCompleteAs(t *testing.T, s *Server, req protocol.TriggerCompletePayload, callerWork string, from spv2.Ref) (protocol.TriggerCompleteResult, error) {
 	t.Helper()
 	body, err := protocol.EncodePayload(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.triggerComplete(context.Background(), body)
+	out, err := s.triggerComplete(context.Background(), body, callerWork, from)
 	if err != nil {
 		return protocol.TriggerCompleteResult{}, err
 	}
@@ -104,7 +116,7 @@ func callTriggerComplete(t *testing.T, s *Server, req protocol.TriggerCompletePa
 }
 
 // TestContextV2FirstAssembleSnapshotReuseAndComplete 覆盖四分支中的前三支：
-// 首次 pending → 生成；assembled → 同一 snapshot_id；completed → 只返回旧快照。
+// 首次 pending → 生成；assembled → 同一 snapshot_id；completed → 只补 ACK（不带消息链）。
 func TestContextV2FirstAssembleSnapshotReuseAndComplete(t *testing.T) {
 	const workID = "w-context"
 	s, st, taskID := newContextV2TestServer(t, workID)
@@ -206,7 +218,7 @@ func TestContextV2FirstAssembleSnapshotReuseAndComplete(t *testing.T) {
 		t.Fatalf("assembled 分支不应重新组装:\nold=%+v\nnew=%+v", resp.Messages, second.Messages)
 	}
 
-	// completed 分支：trigger_complete 后只返回快照，不再重新推理。
+	// completed 分支：trigger_complete 之后只补 ACK——不再返回消息链，避免把已收口的一轮重推理。
 	if _, err := callTriggerComplete(t, s, protocol.TriggerCompletePayload{
 		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: trigger},
 	}); err != nil {
@@ -217,8 +229,17 @@ func TestContextV2FirstAssembleSnapshotReuseAndComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("completed 后取 context 失败: %v", err)
 	}
-	if third.SnapshotID != resp.SnapshotID || !reflect.DeepEqual(third.Messages, resp.Messages) {
-		t.Fatalf("completed 分支必须只返回旧快照:\nsnapshot=%q vs %q\nmessages=%+v", third.SnapshotID, resp.SnapshotID, third.Messages)
+	if !third.Completed || third.TriggerState != store.TriggerStateCompleted {
+		t.Fatalf("completed 分支必须回 completed=true / trigger_state=completed: %+v", third)
+	}
+	if third.SnapshotID != resp.SnapshotID {
+		t.Fatalf("completed 的 ACK 应指向那份已完成快照: %q vs %q", third.SnapshotID, resp.SnapshotID)
+	}
+	if len(third.Messages) != 0 {
+		t.Fatalf("completed 分支不得再返回消息链: %+v", third.Messages)
+	}
+	if len(third.Warnings) == 0 {
+		t.Fatalf("completed 分支要显式说明只补 ACK: %+v", third)
 	}
 }
 
@@ -232,8 +253,8 @@ func hasMessage(msgs []protocol.LLMMessage, role, substr string) bool {
 	return false
 }
 
-// TestContextV2ExpiredSnapshotNotFound 四分支的第四支：快照过期 → not_found，
-// 而且不得静默重建（assembled 与 completed 两个状态都要守住）。
+// TestContextV2ExpiredSnapshotNotFound 四分支的第四支：assembled 且快照过期 → not_found，
+// 而且不得静默重建；completed 是例外——完成事实不随快照消失，只补 ACK。
 func TestContextV2ExpiredSnapshotNotFound(t *testing.T) {
 	const workID = "w-expired"
 	s, st, taskID := newContextV2TestServer(t, workID)
@@ -258,17 +279,61 @@ func TestContextV2ExpiredSnapshotNotFound(t *testing.T) {
 		t.Fatalf("过期后触发状态不应被改写: state=%q err=%v", state, err)
 	}
 
-	// completed 分支同样不能重建（完成记录不随快照清理删除，但快照没了就是 not_found）。
+	// completed 之后即使快照过期，ACK 依然成立：「已完成」这个事实不会因为快照被清理而退化，
+	// 但也不能因此重新组装（快照数保持 1）。
 	if _, err := callTriggerComplete(t, s, protocol.TriggerCompletePayload{
 		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item},
 	}); err != nil {
 		t.Fatalf("trigger_complete 失败: %v", err)
 	}
-	if _, err := callContextV2(t, s, req); !spv2.IsCode(err, spv2.CodeNotFound) {
-		t.Fatalf("completed 且快照过期应 not_found，实际: %v", err)
+	ack, err := callContextV2(t, s, req)
+	if err != nil {
+		t.Fatalf("completed 且快照过期时 ACK 应仍成立，实际: %v", err)
+	}
+	if !ack.Completed || len(ack.Messages) != 0 {
+		t.Fatalf("过期后的 completed 应答应只有 ACK: %+v", ack)
 	}
 	if n := countSnapshots(t, st); n != 1 {
 		t.Fatalf("completed+过期后不应重建快照，实际快照数 %d（首次 snapshot=%s）", n, first.SnapshotID)
+	}
+}
+
+// TestContextV2CompletedAckSurvivesSnapshotDelete 完成记录与快照解耦：
+// 快照行被清理后，同一触发仍只补 ACK，且不得借此重新组装出第二份投影。
+func TestContextV2CompletedAckSurvivesSnapshotDelete(t *testing.T) {
+	const workID = "w-completed-ack"
+	s, st, taskID := newContextV2TestServer(t, workID)
+	item := insertContextV2Message(t, st, workID, taskID, "user", "user", "触发", "", 1)
+	req := protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item}}
+
+	first, err := callContextV2(t, s, req)
+	if err != nil {
+		t.Fatalf("首次组装失败: %v", err)
+	}
+	if _, err := callTriggerComplete(t, s, protocol.TriggerCompletePayload{
+		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item},
+	}); err != nil {
+		t.Fatalf("trigger_complete 失败: %v", err)
+	}
+	// 模拟保留期后的清理：整表快照删掉。
+	if _, err := st.DB().Exec(`DELETE FROM context_snapshots`); err != nil {
+		t.Fatal(err)
+	}
+	// task 行也删掉：任何「重新组装」的尝试都会在这里失败，只补 ACK 不该碰 tasks。
+	deleteTaskRow(t, st, taskID, workID)
+
+	ack, err := callContextV2(t, s, req)
+	if err != nil {
+		t.Fatalf("快照与 task 都被清掉后，completed 仍应只补 ACK: %v", err)
+	}
+	if !ack.Completed || ack.TriggerState != store.TriggerStateCompleted || len(ack.Messages) != 0 {
+		t.Fatalf("ACK 形状不对: %+v", ack)
+	}
+	if ack.SnapshotID != first.SnapshotID {
+		t.Fatalf("ACK 应指回原快照 id: %q vs %q", ack.SnapshotID, first.SnapshotID)
+	}
+	if n := countSnapshots(t, st); n != 0 {
+		t.Fatalf("completed 分支不得重建快照，实际 %d", n)
 	}
 }
 
@@ -327,38 +392,81 @@ func TestContextV2AssembledSnapshotDoesNotReassemble(t *testing.T) {
 	}
 }
 
-// TestContextV2CompletedSnapshotDoesNotReassemble completed 分支只回旧快照、不重新组装。
-//
-// 与 assembled 用例同样删 task 行：完成记录（trigger_states.state=completed）不依赖 tasks，
-// 只读快照也不依赖；只有「重新组装」会在 TaskByID 处失败。所以删 task 后仍成功，
-// 说明 completed 分支走的是只读快照——变异把它改去重新组装时这条会失败。
-func TestContextV2CompletedSnapshotDoesNotReassemble(t *testing.T) {
-	const workID = "w-completed-snapshot"
+// TestContextV2CompletedIsPerTrigger 已完成只针对这一份触发：
+// 换一个 trigger.item 就是新一轮，照常组装，不会被上一轮的 ACK 卡住。
+func TestContextV2CompletedIsPerTrigger(t *testing.T) {
+	const workID = "w-completed-next"
 	s, st, taskID := newContextV2TestServer(t, workID)
-	item := insertContextV2Message(t, st, workID, taskID, "user", "user", "触发", "", 1)
-	req := protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item}}
+	first := insertContextV2Message(t, st, workID, taskID, "user", "user", "上一轮", "", 1)
+	next := insertContextV2Message(t, st, workID, taskID, "user", "user", "新一轮", "", 2)
 
-	first, err := callContextV2(t, s, req)
-	if err != nil {
-		t.Fatalf("首次组装失败: %v", err)
+	if _, err := callContextV2(t, s, protocol.ContextRequest{
+		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: first}}); err != nil {
+		t.Fatalf("首轮组装失败: %v", err)
 	}
 	if _, err := callTriggerComplete(t, s, protocol.TriggerCompletePayload{
-		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item},
-	}); err != nil {
-		t.Fatalf("trigger_complete 失败: %v", err)
+		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: first}}); err != nil {
+		t.Fatalf("首轮完成失败: %v", err)
 	}
-	deleteTaskRow(t, st, taskID, workID)
-
-	got, err := callContextV2(t, s, req)
+	// 同一触发：ACK；换 trigger.item：新一轮正常组装。
+	ack, err := callContextV2(t, s, protocol.ContextRequest{
+		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: first}})
+	if err != nil || !ack.Completed || len(ack.Messages) != 0 {
+		t.Fatalf("同一触发应只补 ACK: %+v err=%v", ack, err)
+	}
+	fresh, err := callContextV2(t, s, protocol.ContextRequest{
+		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: next}})
 	if err != nil {
-		t.Fatalf("completed 分支不应重新组装（重新组装会因 task 行已删而失败）: %v", err)
+		t.Fatalf("换 trigger.item 应正常组装: %v", err)
 	}
-	if got.SnapshotID != first.SnapshotID || !reflect.DeepEqual(got.Messages, first.Messages) {
-		t.Fatalf("completed 分支应原样返回旧快照:\nsnapshot=%q vs %q\nmessages=%+v",
-			got.SnapshotID, first.SnapshotID, got.Messages)
+	if fresh.Completed || len(fresh.Messages) == 0 || fresh.SnapshotID == ack.SnapshotID {
+		t.Fatalf("新一轮应是新快照与完整消息链: %+v", fresh)
 	}
-	if n := countSnapshots(t, st); n != 1 {
-		t.Fatalf("只读快照不应产生第二份快照，实际 %d", n)
+	if n := countSnapshots(t, st); n != 2 {
+		t.Fatalf("两轮各一份快照，实际 %d", n)
+	}
+}
+
+// TestContextV2RejectsCrossWorkAccess 固化 v2 入口的跨 work 越权回归（审计缺陷 1）：
+// 站在别人 work 上的 agent 既读不到这条 work 的秘密，也不能替它把这一轮标记为完成。
+func TestContextV2RejectsCrossWorkAccess(t *testing.T) {
+	s, st, taskID := newContextV2TestServer(t, "w-victim")
+	item := insertContextV2Message(t, st, "w-victim", taskID, "user", "user", "只有受害者可见的触发", "", 1)
+
+	// 攻击者自己的 work（同 agent 身份 reasoner，不同 work）。
+	ctx := context.Background()
+	if _, err := st.EnsureWork(ctx, spv2.Work{
+		ID: "w-attacker", Root: "w-attacker", Class: spv2.ClassRequest,
+		Owner: spv2.HumanRef("owner"), Agent: spv2.AgentRef("reasoner"),
+		Entry: spv2.ServiceRef("frontend"), Status: spv2.WorkRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	caller := spv2.AgentRef("reasoner")
+
+	req := protocol.ContextRequest{Work: "w-victim", Trigger: protocol.Trigger{Kind: "user", Item: item}}
+	if _, err := callContextV2As(t, s, req, "w-attacker", caller); !spv2.IsCode(err, spv2.CodePermissionDenied) {
+		t.Fatalf("跨 work 读上下文应 permission_denied: %v", err)
+	}
+	if _, err := callTriggerCompleteAs(t, s, protocol.TriggerCompletePayload{
+		Work: "w-victim", Trigger: protocol.Trigger{Kind: "user", Item: item},
+	}, "w-attacker", caller); !spv2.IsCode(err, spv2.CodePermissionDenied) {
+		t.Fatalf("跨 work 标记完成应 permission_denied: %v", err)
+	}
+	// frame.work 为空同样拒绝。
+	if _, err := callContextV2As(t, s, req, "", caller); !spv2.IsCode(err, spv2.CodePermissionDenied) {
+		t.Fatalf("缺调用方 work 应 permission_denied: %v", err)
+	}
+	// 拒绝不得留下副作用：受害者这一轮仍是 assembled/pending，快照数仍是 0。
+	if n := countSnapshots(t, st); n != 0 {
+		t.Fatalf("越权请求不应产生快照，实际 %d", n)
+	}
+	if state, _, err := st.GetTriggerState(ctx, "w-victim", "user", item); err != nil || state != "" {
+		t.Fatalf("越权请求不得改写触发状态: state=%q err=%v", state, err)
+	}
+	// 受害者自己在同一个 trigger 上仍能正常组装（授权不是永久拒绝）。
+	if got, err := callContextV2(t, s, req); err != nil || len(got.Messages) == 0 {
+		t.Fatalf("本主应正常组装: %+v err=%v", got, err)
 	}
 }
 
@@ -495,7 +603,19 @@ func TestContextV2MethodDeclarations(t *testing.T) {
 	if contextV2Method().Name != "context_v2" || triggerCompleteMethod().Name != "trigger_complete" {
 		t.Fatal("method 名不符合契约（context_v2 / trigger_complete）")
 	}
-	if !schemaRequires(contextV2Method().Output, "snapshot_id") || !schemaRequires(contextV2Method().Output, "messages") {
+	// 输出契约：schema 与 trigger_state 必填（调用方据此判断这是新一轮投影还是只补 ACK）；
+	// messages 在有消息的分支里存在，但 completed 分支按 §3.1.1 只补 ACK、不带消息，
+	// 所以 messages 出现在 properties 里而不在 required 里。
+	if !schemaRequires(contextV2Method().Output, "snapshot_id") {
+		t.Fatalf("context_v2 的 output 应必填 snapshot_id: %+v", contextV2Method().Output)
+	}
+	if !schemaHasProperty(contextV2Method().Output, "messages") ||
+		!schemaHasProperty(contextV2Method().Output, "task") ||
+		!schemaHasProperty(contextV2Method().Output, "work") ||
+		!schemaHasProperty(contextV2Method().Output, "degraded") ||
+		!schemaHasProperty(contextV2Method().Output, "warnings") ||
+		!schemaHasProperty(contextV2Method().Output, "completed") ||
+		!schemaHasProperty(contextV2Method().Output, "trigger_state") {
 		t.Fatalf("context_v2 的 output 缺少 A 切片核心字段: %+v", contextV2Method().Output)
 	}
 	if !schemaRequires(triggerCompleteMethod().Output, "completed") {
@@ -529,4 +649,14 @@ func schemaRequires(schema map[string]any, field string) bool {
 		}
 	}
 	return false
+}
+
+// schemaHasProperty 判断 object schema 的 properties 里声明了某字段。
+func schemaHasProperty(schema map[string]any, field string) bool {
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = props[field]
+	return ok
 }
