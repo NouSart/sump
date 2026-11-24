@@ -145,6 +145,15 @@ type NativeMethod struct {
 }
 
 // HandleNative 注册原生 SPv2.1 method。
+// NativeMethods 返回已注册的原生 method（Start 之前也可读）；测试与自检用它核对注册面，避免再维护一份 method 清单。
+func (s *Service) NativeMethods() []spv2.Method {
+	out := make([]spv2.Method, 0, len(s.native))
+	for _, nm := range s.native {
+		out = append(out, nm.Method)
+	}
+	return out
+}
+
 func (s *Service) HandleNative(m spv2.Method, h NativeHandler) {
 	if m.Name == "" || h == nil {
 		s.logger.Printf("忽略非法原生 method 注册: name=%q", m.Name)

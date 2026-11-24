@@ -163,6 +163,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "task_list", Input: "{conversation_id, limit?}", Output: "{tasks[]}（最近活跃在前）"},
 			{Action: "forget", Input: "{id}（长期记忆条目 id）", Output: "{id}（删掉一条不再对的记忆）"},
 			{Action: "image_note", Tool: true, Input: "{image_id, gist}（模型看过图后写一句话大意，≤80 字）", Output: "{image_id, status, truncated}（status=stored/lost；原图丢失也保留大意）"},
+			{Action: "call_open", Input: "{work, service, action, mode, pausable?, ttl_ms?, exec_deadline_ms?}", Output: "{call_id}（派发前分配；本地意图，等对账）"},
+			{Action: "call_control", Input: "{id, control_id, op, ttl_ms?}", Output: "{id, control_id, observe, exec, reason}（pause/resume 需执行服务确认）"},
+			{Action: "call_status", Input: "{ids[]}", Output: "{owner_recovery_complete, items[]}（对账；不完整时不判 orphaned）"},
+			{Action: "resident_list", Input: "{work?, limit?, cursor?}", Output: "{items[], next}（只列本 owner 的常驻调用）"},
 		},
 		Logger: logger,
 	})

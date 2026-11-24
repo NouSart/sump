@@ -81,25 +81,23 @@ func TestCallsV2MethodRegistry(t *testing.T) {
 		"resident_list": false,
 		"image_note":    true, // S-001 §3.3：只有 image_note 是工具
 	}
-	methods := callsV2Methods()
-	if len(methods) != len(want) {
-		t.Fatalf("calls_v2 method 数 = %d, want %d", len(methods), len(want))
+	s, _ := newCallsTestServer(t)
+	got := map[string]spv2.Method{}
+	for _, m := range s.NativeMethods() {
+		got[m.Name] = m
 	}
-	for _, m := range methods {
-		tool, ok := want[m.Name]
+	for name, tool := range want {
+		m, ok := got[name]
 		if !ok {
-			t.Fatalf("未预期的 method %q", m.Name)
+			t.Fatalf("未注册的 method %q", name)
 		}
 		if m.Tool != tool {
-			t.Fatalf("method %s 的 Tool=%v, want %v", m.Name, m.Tool, tool)
+			t.Fatalf("method %s 的 Tool=%v, want %v", name, m.Tool, tool)
 		}
 		if len(m.Input) == 0 || len(m.Output) == 0 {
-			t.Fatalf("method %s 缺 Input/Output schema", m.Name)
+			t.Fatalf("method %s 缺 Input/Output schema", name)
 		}
 	}
-	// 注册本身不应 panic；New 之后重复注册也幂等（map 覆盖）。
-	_, st := newCallsTestServer(t)
-	_ = st
 }
 
 func TestOpenCallValidatesWorkAndTask(t *testing.T) {

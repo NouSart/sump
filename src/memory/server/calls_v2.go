@@ -27,9 +27,10 @@ import (
 	"github.com/NouSart/sump/spv2"
 )
 
-// callsV2Methods 是 calls_v2.go 注册的全部原生 method（登记与服务卡 schema 的唯一来源）。
-// Tool 标记按 S-001：只有 image_note 是工具（§3.3），其余是内部 / 调试 method。
-func callsV2Methods() []spv2.Method {
+// registerCallsV2 注册调用账本 / 常驻目录 / 图片索引的原生 method。
+// Name 必须写成字面量：provides 门禁按字面量比对“名片承诺的动作”与“真的注册了”，
+// 用循环变量注册会被它当成没注册（并抓出 provides 里多出来的承诺）。
+func (s *Server) registerCallsV2() {
 	callID := map[string]any{"type": "object", "properties": map[string]any{"call_id": stringSchema()}}
 	controlOut := map[string]any{"type": "object", "properties": map[string]any{
 		"id":         stringSchema(),
@@ -51,86 +52,67 @@ func callsV2Methods() []spv2.Method {
 		"gist":     stringSchema(),
 		"status":   stringSchema(),
 	}}
-	return []spv2.Method{
-		{
-			Name:        "call_open",
-			Description: "派发前分配 call_id（本地意图：observe=waiting、exec=created）",
-			Input: objectSchema(map[string]any{
-				"work":             stringSchema(),
-				"service":          stringSchema(),
-				"action":           stringSchema(),
-				"mode":             stringSchema(),
-				"pausable":         booleanSchema(),
-				"ttl_ms":           integerSchema(),
-				"exec_deadline_ms": integerSchema(),
-			}, "work", "service"),
-			Output: callID,
-		},
-		{
-			Name:        "call_control",
-			Description: "控制一次调用（cancel 可本地执行；pause/resume 需 owner 确认，未接入 owner 客户端时回 unavailable）",
-			Input: objectSchema(map[string]any{
-				"id":         stringSchema(),
-				"control_id": stringSchema(),
-				"op":         stringSchema(),
-				"ttl_ms":     integerSchema(),
-			}, "id", "control_id", "op"),
-			Output: controlOut,
-		},
-		{
-			Name:        "call_status",
-			Description: "按 ids 读调用状态（对账；未接入 owner 客户端时 owner_recovery_complete 恒 false，不判 orphaned）",
-			Input: objectSchema(map[string]any{
-				"ids": stringArraySchema(),
-			}, "ids"),
-			Output: statusOut,
-		},
-		{
-			Name:        "resident_list",
-			Description: "列当前 owner 的常驻调用（按 work 解析 owner；owner 不同不可见）",
-			Input: objectSchema(map[string]any{
-				"work":   stringSchema(),
-				"limit":  integerSchema(),
-				"cursor": stringSchema(),
-			}),
-			Output: residentOut,
-		},
-		{
-			Name:        "image_note",
-			Tool:        true,
-			Description: "记一张图的要点（gist ≤80 字、写入前脱敏；图片索引按 owner + 会话隔离）",
-			Input: objectSchema(map[string]any{
-				"work":     stringSchema(),
-				"image_id": stringSchema(),
-				"gist":     stringSchema(),
-				"status":   stringSchema(),
-			}, "work", "image_id"),
-			Output: imageOut,
-		},
-	}
-}
 
-// registerCallsV2 注册调用账本 / 常驻目录 / 图片索引的原生 method。
-// 调用点由 server.New 负责（本文件不修改 server.go）。
-func (s *Server) registerCallsV2() {
-	for _, m := range callsV2Methods() {
-		switch m.Name {
-		case "call_open":
-			s.HandleNative(m, s.nativeCallOpen)
-		case "call_control":
-			s.HandleNative(m, s.nativeCallControl)
-		case "call_status":
-			s.HandleNative(m, s.nativeCallStatus)
-		case "resident_list":
-			s.HandleNative(m, s.nativeResidentList)
-		case "image_note":
-			s.HandleNative(m, s.nativeImageNote)
-		default:
-			if s.logger != nil {
-				s.logger.Printf("忽略未知的 calls_v2 method: %s", m.Name)
-			}
-		}
-	}
+	s.HandleNative(spv2.Method{
+		Name:        "call_open",
+		Description: "派发前分配 call_id（本地意图：observe=waiting、exec=created）",
+		Input: objectSchema(map[string]any{
+			"work":             stringSchema(),
+			"service":          stringSchema(),
+			"action":           stringSchema(),
+			"mode":             stringSchema(),
+			"pausable":         booleanSchema(),
+			"ttl_ms":           integerSchema(),
+			"exec_deadline_ms": integerSchema(),
+		}, "work", "service"),
+		Output: callID,
+	}, s.nativeCallOpen)
+
+	s.HandleNative(spv2.Method{
+		Name:        "call_control",
+		Description: "控制一次调用（cancel 可本地执行；pause/resume 需 owner 确认，未接入 owner 客户端时回 unavailable）",
+		Input: objectSchema(map[string]any{
+			"id":         stringSchema(),
+			"control_id": stringSchema(),
+			"op":         stringSchema(),
+			"ttl_ms":     integerSchema(),
+		}, "id", "control_id", "op"),
+		Output: controlOut,
+	}, s.nativeCallControl)
+
+	s.HandleNative(spv2.Method{
+		Name:        "call_status",
+		Description: "按 ids 读调用状态（对账；未接入 owner 客户端时 owner_recovery_complete 恒 false，不判 orphaned）",
+		Input: objectSchema(map[string]any{
+			"ids": stringArraySchema(),
+		}, "ids"),
+		Output: statusOut,
+	}, s.nativeCallStatus)
+
+	s.HandleNative(spv2.Method{
+		Name:        "resident_list",
+		Description: "列当前 owner 的常驻调用（按 work 解析 owner；owner 不同不可见）",
+		Input: objectSchema(map[string]any{
+			"work":   stringSchema(),
+			"limit":  integerSchema(),
+			"cursor": stringSchema(),
+		}),
+		Output: residentOut,
+	}, s.nativeResidentList)
+
+	// image_note 是唯一对外工具（S-001 §3.3），必须是 provides 里声明过的那一个。
+	s.HandleNative(spv2.Method{
+		Name:        "image_note",
+		Tool:        true,
+		Description: "记一张图的要点（gist ≤80 字、写入前脱敏；图片索引按 owner + 会话隔离）",
+		Input: objectSchema(map[string]any{
+			"work":     stringSchema(),
+			"image_id": stringSchema(),
+			"gist":     stringSchema(),
+			"status":   stringSchema(),
+		}, "work", "image_id"),
+		Output: imageOut,
+	}, s.nativeImageNote)
 }
 
 // ---------- 请求 / 响应（线路键名即契约） ----------
