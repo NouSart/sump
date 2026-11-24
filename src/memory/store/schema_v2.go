@@ -145,6 +145,16 @@ func applySchema(db *sql.DB) error {
 // v2Schema 是记忆中心 v2 新增的表（S-001 §4.3–§4.7）。
 // 只做加法：既有表的新列在 migrate 里用 PRAGMA table_info 判断后补，不在这里 ALTER。
 const v2Schema = `
+CREATE TABLE IF NOT EXISTS image_index (
+  owner           TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  image_id        TEXT NOT NULL,
+  gist            TEXT NOT NULL DEFAULT '',
+  status          TEXT NOT NULL,
+  first_seen_at   TEXT NOT NULL,
+  last_viewed_at  TEXT NOT NULL,
+  PRIMARY KEY (owner, conversation_id, image_id)
+);
 CREATE TABLE IF NOT EXISTS store_receipts (
   work           TEXT NOT NULL,
   client_item_id TEXT NOT NULL,

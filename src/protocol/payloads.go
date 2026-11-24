@@ -138,21 +138,27 @@ type ConversationResult struct {
 type Task struct {
 	ID             string `msgpack:"id"`
 	ConversationID string `msgpack:"conversation_id"`
-	Name           string `msgpack:"name"`
-	Status         string `msgpack:"status"`
-	CreatedAt      string `msgpack:"created_at"`
-	UpdatedAt      string `msgpack:"updated_at"`
+	// Work 是 v2 契约里的执行单元 id（S-001 §4.2）；旧调用方为空时由 memory 按任务回填。
+	Work      string `msgpack:"work,omitempty"`
+	Name      string `msgpack:"name"`
+	Status    string `msgpack:"status"`
+	CreatedAt string `msgpack:"created_at"`
+	UpdatedAt string `msgpack:"updated_at"`
 }
 
 // TaskCurrentPayload 取当前任务（最近活跃的 active 任务；没有就是空）。
 type TaskCurrentPayload struct {
 	ConversationID string `msgpack:"conversation_id"`
+	// Work 是 v2 契约里的执行单元 id（S-001 §4.2）；旧调用方为空时由 memory 按任务回填。
+	Work string `msgpack:"work,omitempty"`
 }
 
 // TaskOpenPayload 新开一个任务（调用方保证此刻没有进行中的任务）。
 type TaskOpenPayload struct {
 	ConversationID string `msgpack:"conversation_id"`
-	Name           string `msgpack:"name"`
+	// Work 是 v2 契约里的执行单元 id（S-001 §4.2）；旧调用方为空时由 memory 按任务回填。
+	Work string `msgpack:"work,omitempty"`
+	Name string `msgpack:"name"`
 }
 
 // TaskFinishPayload 完结一个任务（可顺带把名字改准）。
@@ -175,7 +181,9 @@ type TaskResumePayload struct {
 // TaskListPayload 列出某会话的任务（按最近活跃排序）。
 type TaskListPayload struct {
 	ConversationID string `msgpack:"conversation_id"`
-	Limit          int    `msgpack:"limit,omitempty"`
+	// Work 是 v2 契约里的执行单元 id（S-001 §4.2）；旧调用方为空时由 memory 按任务回填。
+	Work  string `msgpack:"work,omitempty"`
+	Limit int    `msgpack:"limit,omitempty"`
 }
 
 // TaskResult 是单个任务查询/变更的结果（Task 为 nil = 没有当前任务）。
@@ -266,13 +274,15 @@ type ContextPayload struct {
 // 用来在历史记录里分清"这段对话是从哪扇门进来的"。空值不改已有入口。
 type StorePayload struct {
 	ConversationID string `msgpack:"conversation_id"`
-	Boss           string `msgpack:"boss,omitempty"`
-	Role           string `msgpack:"role"`
-	Content        string `msgpack:"content"`
-	Kind           string `msgpack:"kind,omitempty"`
-	Meta           string `msgpack:"meta,omitempty"`
-	Seq            int64  `msgpack:"seq,omitempty"`
-	TaskID         string `msgpack:"task_id,omitempty"`
+	// Work 是 v2 契约里的执行单元 id（S-001 §4.2）；旧调用方为空时由 memory 按任务回填。
+	Work    string `msgpack:"work,omitempty"`
+	Boss    string `msgpack:"boss,omitempty"`
+	Role    string `msgpack:"role"`
+	Content string `msgpack:"content"`
+	Kind    string `msgpack:"kind,omitempty"`
+	Meta    string `msgpack:"meta,omitempty"`
+	Seq     int64  `msgpack:"seq,omitempty"`
+	TaskID  string `msgpack:"task_id,omitempty"`
 	// TaskName 是入口服务给这条用户消息想的任务名（可选）。
 	// 为什么需要它：正文可能带来源标注前缀（见 Sender.Label），从正文第一行推任务名会推出一串标签，
 	// 而任务名会显示在界面的会话树里。入口服务知道人话标题是什么，就顺手给出；
@@ -294,10 +304,12 @@ type StorePayload struct {
 // AllTasks 为真时取整个会话（门户按任务分段展示时要的就是这一段）。
 type HistoryPayload struct {
 	ConversationID string `msgpack:"conversation_id"`
-	Limit          int    `msgpack:"limit,omitempty"`
-	AfterSeq       int64  `msgpack:"after_seq,omitempty"`
-	TaskID         string `msgpack:"task_id,omitempty"`
-	AllTasks       bool   `msgpack:"all_tasks,omitempty"`
+	// Work 是 v2 契约里的执行单元 id（S-001 §4.2）；旧调用方为空时由 memory 按任务回填。
+	Work     string `msgpack:"work,omitempty"`
+	Limit    int    `msgpack:"limit,omitempty"`
+	AfterSeq int64  `msgpack:"after_seq,omitempty"`
+	TaskID   string `msgpack:"task_id,omitempty"`
+	AllTasks bool   `msgpack:"all_tasks,omitempty"`
 }
 
 // HistoryEntry 是一条落库的会话记录（带落库时间，供界面按时间排序）。
@@ -323,12 +335,14 @@ type HistoryResult struct {
 // 与 store 同源同 seq：落库是真相，progress 只是让界面不必等到最后。
 type ProgressPayload struct {
 	ConversationID string `msgpack:"conversation_id"`
-	TaskID         string `msgpack:"task_id,omitempty"`
-	Seq            int64  `msgpack:"seq"`
-	Kind           string `msgpack:"kind"` // reasoning / tool_call / tool_result
-	Content        string `msgpack:"content"`
-	Meta           string `msgpack:"meta,omitempty"`
-	At             string `msgpack:"at,omitempty"`
+	// Work 是 v2 契约里的执行单元 id（S-001 §4.2）；旧调用方为空时由 memory 按任务回填。
+	Work    string `msgpack:"work,omitempty"`
+	TaskID  string `msgpack:"task_id,omitempty"`
+	Seq     int64  `msgpack:"seq"`
+	Kind    string `msgpack:"kind"` // reasoning / tool_call / tool_result
+	Content string `msgpack:"content"`
+	Meta    string `msgpack:"meta,omitempty"`
+	At      string `msgpack:"at,omitempty"`
 }
 
 // ---------- 任务链入口 ----------
@@ -1284,10 +1298,14 @@ type ConversationArchivePayload struct {
 // RetryPayload 是 reasoner.retry 的 payload：只带会话号，任务由黑板里那个进行中的实例决定。
 type RetryPayload struct {
 	ConversationID string `msgpack:"conversation_id"`
+	// Work 是 v2 契约里的执行单元 id（S-001 §4.2）；旧调用方为空时由 memory 按任务回填。
+	Work string `msgpack:"work,omitempty"`
 }
 
 // RetryResult 是重试被受理的回执。真正是否跑起来由后续 progress/deliver 体现。
 type RetryResult struct {
 	Retried        bool   `msgpack:"retried"`
 	ConversationID string `msgpack:"conversation_id"`
+	// Work 是 v2 契约里的执行单元 id（S-001 §4.2）；旧调用方为空时由 memory 按任务回填。
+	Work string `msgpack:"work,omitempty"`
 }
