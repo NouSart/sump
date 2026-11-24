@@ -9,9 +9,9 @@ package session
 // 本文件与旧 context（facade 按会话现组装，spec §7.2）并存：方法名用 context_v2
 // 以免与既有 method 冲突（method 只增不改）。
 //
-// 授权（authorizeTargetWork / 帧头 from 与身份三重）留到 P4：本阶段只按载荷 work 读，
-// 不读帧头 from，也不校验 work 归属；但 work 为空必须 invalid_argument——没有归属的
-// 读不能靠 guessing 补全。
+// 授权（R-023 P4）：两个入口都先过 authorizeTargetWork——载荷 work 必填，帧头 work 必须
+// 与它一致，身份必须属于该 work（owner / runtime 另有跨 work 通道）；匿名一律拒绝。
+// 授权发生在读触发 / 落快照之前，越权请求不产生快照、不改触发状态。
 
 import (
 	"context"
@@ -96,7 +96,7 @@ func triggerCompleteMethod() spv2.Method {
 // ---------- 原生入口 ----------
 
 func (s *Server) nativeContextV2(ctx context.Context, call *spv2.Call) error {
-	out, err := s.contextV2(ctx, call.Frame.Body)
+	out, err := s.contextV2(ctx, call.Frame.Body, callerOf(call))
 	if err != nil {
 		return replyContextV2Error(call, err)
 	}
@@ -104,7 +104,7 @@ func (s *Server) nativeContextV2(ctx context.Context, call *spv2.Call) error {
 }
 
 func (s *Server) nativeTriggerComplete(ctx context.Context, call *spv2.Call) error {
-	out, err := s.triggerComplete(ctx, call.Frame.Body)
+	out, err := s.triggerComplete(ctx, call.Frame.Body, callerOf(call))
 	if err != nil {
 		return replyContextV2Error(call, err)
 	}
@@ -136,7 +136,7 @@ func v2Error(code, format string, args ...any) error {
 //   - completed：只补 ACK——completed=true 且**不带消息**，快照清理后依然成立，
 //     重复取上下文不会把已经收口的那一轮重新推理一遍（§3.1.1）；
 //   - expired：not_found，只能显式 resume 新触发，不得静默重建。
-func (s *Server) contextV2(ctx context.Context, body []byte) (any, error) {
+func (s *Server) contextV2(ctx context.Context, body []byte, c caller) (any, error) {
 	var req protocol.ContextRequest
 	if err := protocol.DecodeRaw(body, &req); err != nil {
 		return nil, v2Error(spv2.CodeInvalidArgument, "context_v2 body 无效: %v", err)
@@ -153,6 +153,10 @@ func (s *Server) contextV2(ctx context.Context, body []byte) (any, error) {
 	if req.Schema != "" && req.Schema != contextV2Schema {
 		return nil, v2Error(spv2.CodeInvalidArgument,
 			"context_v2: 不支持的 schema %q（只支持 %s）", req.Schema, contextV2Schema)
+	}
+	// 授权在触发存在性 / 快照读取之前：越权请求不能借状态差异探测别人的 work。
+	if _, err := s.authorizeTargetWork(ctx, work, c.work, "context_v2", c.from); err != nil {
+		return nil, err
 	}
 
 	// 触发条目必须已落库：没落库的 item 会让快照绑定到一个不存在的事实上。
@@ -321,7 +325,7 @@ func (s *Server) assembleContextV2(ctx context.Context, work, kind, item string,
 // ---------- trigger_complete ----------
 
 // triggerComplete 标记本轮触发完成（S-001 §3.1.1）：幂等；对 pending 调用必须 conflict。
-func (s *Server) triggerComplete(ctx context.Context, body []byte) (any, error) {
+func (s *Server) triggerComplete(ctx context.Context, body []byte, c caller) (any, error) {
 	var req protocol.TriggerCompletePayload
 	if err := protocol.DecodeRaw(body, &req); err != nil {
 		return nil, v2Error(spv2.CodeInvalidArgument, "trigger_complete body 无效: %v", err)
@@ -331,6 +335,9 @@ func (s *Server) triggerComplete(ctx context.Context, body []byte) (any, error) 
 	item := strings.TrimSpace(req.Trigger.Item)
 	if work == "" || kind == "" || item == "" {
 		return nil, v2Error(spv2.CodeInvalidArgument, "trigger_complete: work / trigger.kind / trigger.item 必填")
+	}
+	if _, err := s.authorizeTargetWork(ctx, work, c.work, "trigger_complete", c.from); err != nil {
+		return nil, err
 	}
 	exists, err := s.cfg.Store.TriggerItemExists(ctx, work, item)
 	if err != nil {

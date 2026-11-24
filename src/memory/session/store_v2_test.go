@@ -11,10 +11,12 @@ package session
 // 只数回执等于什么都没验。
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/NouSart/sump/memory/session/store"
@@ -22,7 +24,8 @@ import (
 	"github.com/NouSart/sump/spv2"
 )
 
-// newStoreV2TestServer 只注入会话库：v2 分派不依赖帧头，也不要求 work 预先登记（授权在 P4）。
+// newStoreV2TestServer 只注入会话库：v2 分派的授权要求 work 已登记，
+// storeV2 辅助会按载荷 work 自动补一条测试 work（agent=reasoner）。
 func newStoreV2TestServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "memory.db"))
@@ -73,9 +76,18 @@ func storeV2Body(t *testing.T, p protocol.StorePayload) []byte {
 }
 
 // storeV2 打一次 store 并断言 v2 回执类型。
+// 先按载荷 work 登记一条测试 work，并以该 work 的 agent 身份调用（授权与身份校验在 P4 已接）。
 func storeV2(t *testing.T, s *Server, body []byte) (protocol.StoreResult, error) {
 	t.Helper()
-	out, err := s.store(body)
+	var p protocol.StorePayload
+	if err := protocol.DecodeRaw(body, &p); err != nil {
+		t.Fatalf("解码 store 载荷: %v", err)
+	}
+	work := strings.TrimSpace(p.Work)
+	if work != "" {
+		ensureStoreV2Work(t, s.cfg.Store, work, "reasoner")
+	}
+	out, err := s.store(body, caller{work: work, from: spv2.AgentRef("reasoner")})
 	if err != nil {
 		return protocol.StoreResult{}, err
 	}
@@ -84,6 +96,24 @@ func storeV2(t *testing.T, s *Server, body []byte) (protocol.StoreResult, error)
 		t.Fatalf("v2 回执类型应为 protocol.StoreResult，实际 %T", out)
 	}
 	return res, nil
+}
+
+// ensureStoreV2Work 幂等登记测试 work（不存在才建），供授权用。
+func ensureStoreV2Work(t *testing.T, st *store.Store, work, agent string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := st.GetWork(ctx, work); err == nil {
+		return
+	} else if !spv2.IsCode(err, spv2.CodeNotFound) {
+		t.Fatalf("读取 work %s: %v", work, err)
+	}
+	if _, err := st.EnsureWork(ctx, spv2.Work{
+		ID: work, Root: work, Class: spv2.ClassRequest,
+		Owner: spv2.HumanRef("owner"), Agent: spv2.AgentRef(agent),
+		Entry: spv2.ServiceRef("frontend"), Status: spv2.WorkRunning,
+	}); err != nil {
+		t.Fatalf("登记 work %s: %v", work, err)
+	}
 }
 
 // mustStoreResult 调 s.store 并断言成功。
@@ -544,14 +574,14 @@ func TestStoreLegacyWithoutClientItemIDUnchanged(t *testing.T) {
 	p := protocol.StorePayload{ConversationID: "c1", Role: "user", Content: "老调用方"}
 	body := storeV2Body(t, p)
 
-	out, err := s.store(body)
+	out, err := s.store(body, caller{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res, ok := out.(map[string]any); !ok || len(res) != 0 {
 		t.Fatalf("旧路径应回空 map，实际 %T %+v", out, out)
 	}
-	if _, err := s.store(body); err != nil { // 旧规则：连续完全相同 → 跳过，不报错
+	if _, err := s.store(body, caller{}); err != nil { // 旧规则：连续完全相同 → 跳过，不报错
 		t.Fatal(err)
 	}
 
@@ -563,7 +593,7 @@ func TestStoreLegacyWithoutClientItemIDUnchanged(t *testing.T) {
 	}
 
 	// 空正文：旧行为是直接回空回执、不落库。
-	out, err = s.store(storeV2Body(t, protocol.StorePayload{ConversationID: "c1", Role: "user"}))
+	out, err = s.store(storeV2Body(t, protocol.StorePayload{ConversationID: "c1", Role: "user"}), caller{})
 	if err != nil {
 		t.Fatal(err)
 	}

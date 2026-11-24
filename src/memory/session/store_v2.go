@@ -12,8 +12,9 @@ package session
 //  4. 同键同 hash / 同 report_id 同 hash = 重放；同键不同 hash / 换 ID 占同一
 //     (call_id, report_seq) = conflict；任何冲突都不得留下部分写入。
 //
-// 授权（帧头 from / callerWork 与目标 work 的三重校验）推迟到 P4：本笔只按载荷 work
-// 落库，不读帧头，也不查 work 登记表。
+// 授权（R-023 P4）：走 v2 路径的每个请求都先在 authorizeTargetWork 里校验
+// 「帧头 work == 载荷 work + 身份属于该 work」（owner / runtime 另有跨 work 通道），
+// 匿名 from.id 一律拒绝。旧路径（ClientItemID 为空）不经过这里，行为不变。
 
 import (
 	"context"
@@ -30,11 +31,15 @@ import (
 
 // storeV2 是 store 的新路径：按 client_item_id 幂等入账，并把补报元数据落 report_receipts。
 // 返回值是 protocol.StoreResult（item_id / seq / deduped），错误一律是 spv2.ErrCode 的错误。
-func (s *Server) storeV2(p *protocol.StorePayload) (protocol.StoreResult, error) {
+func (s *Server) storeV2(p *protocol.StorePayload, c caller) (protocol.StoreResult, error) {
 	// work 是消息的归属（S-001 §2.1）：task 与 work 是两个标识空间，不能用 task_id 冒充 work。
 	work := strings.TrimSpace(p.Work)
 	if work == "" {
 		return protocol.StoreResult{}, spv2.ErrCode(spv2.CodeInvalidArgument, "store: work 必填", false, nil)
+	}
+	// 先授权再算 hash / 落库：越权请求不产生任何写入或幂等回执。
+	if _, err := s.authorizeTargetWork(context.Background(), work, c.work, "store", c.from); err != nil {
+		return protocol.StoreResult{}, err
 	}
 	visibility := strings.TrimSpace(p.Visibility)
 	if visibility == "" {

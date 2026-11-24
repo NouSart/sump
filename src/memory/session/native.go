@@ -292,7 +292,7 @@ func (s *Server) registerNative() {
 // ---------- 原生 handler ----------
 
 func (s *Server) nativeStore(_ context.Context, call *spv2.Call) error {
-	out, err := s.store(call.Frame.Body)
+	out, err := s.store(call.Frame.Body, callerOf(call))
 	if err != nil {
 		// v2 路径用 spv2.ErrCode 区分 conflict / not_found / invalid_argument；
 		// 旧路径的错误保持原样（一律 invalid_argument），线上行为不变。

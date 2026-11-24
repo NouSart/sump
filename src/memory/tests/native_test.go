@@ -54,15 +54,18 @@ func TestMemoryNativeSPv2(t *testing.T) {
 		}
 	}
 
-	call := func(name string, body any) (spv2.Frame, error) {
-		f, err := spv2.NewCall("w-native", spv2.ServiceRef("reasoner"), spv2.ServiceRef("memory"), name, body)
+	callOn := func(work, name string, body any) (spv2.Frame, error) {
+		f, err := spv2.NewCall(work, spv2.ServiceRef("reasoner"), spv2.ServiceRef("memory"), name, body)
 		if err != nil {
 			t.Fatalf("%s: 构造 call 失败: %v", name, err)
 		}
 		return c.Call(ctx, f)
 	}
-	must := func(name string, body any, dst any) spv2.Frame {
-		resp, err := call(name, body)
+	call := func(name string, body any) (spv2.Frame, error) {
+		return callOn("w-native", name, body)
+	}
+	mustOn := func(work, name string, body any, dst any) spv2.Frame {
+		resp, err := callOn(work, name, body)
 		if err != nil {
 			t.Fatalf("%s 原生调用失败: %v", name, err)
 		}
@@ -72,6 +75,9 @@ func TestMemoryNativeSPv2(t *testing.T) {
 			}
 		}
 		return resp
+	}
+	must := func(name string, body any, dst any) spv2.Frame {
+		return mustOn("w-native", name, body, dst)
 	}
 
 	// 会话 / 记录
@@ -194,7 +200,7 @@ func TestMemoryNativeSPv2(t *testing.T) {
 		t.Fatalf("登记 work 失败: %v", err)
 	}
 	var openedCall protocol.CallOpenResult
-	must("call_open", protocol.CallOpenPayload{
+	mustOn("w-native-call", "call_open", protocol.CallOpenPayload{
 		Work: "w-native-call", Service: "shell", Action: "run",
 		Mode: "resident", Pausable: true,
 	}, &openedCall)
@@ -202,7 +208,7 @@ func TestMemoryNativeSPv2(t *testing.T) {
 		t.Fatal("call_open 应返回 call_id")
 	}
 	var status protocol.CallStatusResult
-	must("call_status", protocol.CallStatusPayload{IDs: []string{openedCall.CallID, "ghost-call"}}, &status)
+	mustOn("w-native-call", "call_status", protocol.CallStatusPayload{IDs: []string{openedCall.CallID, "ghost-call"}}, &status)
 	if status.OwnerRecoveryComplete || len(status.Items) != 2 {
 		t.Fatalf("call_status = %+v", status)
 	}
@@ -213,13 +219,13 @@ func TestMemoryNativeSPv2(t *testing.T) {
 		t.Fatalf("本地未知 id 不得被判定: %+v", status.Items[1])
 	}
 	var residents protocol.ResidentListResult
-	must("resident_list", map[string]string{"work": "w-native-call"}, &residents)
+	mustOn("w-native-call", "resident_list", map[string]string{"work": "w-native-call"}, &residents)
 	if len(residents.Items) != 1 || residents.Items[0].ID != openedCall.CallID ||
 		residents.Items[0].Kind != "call" || residents.Items[0].OwnerService != "shell" {
 		t.Fatalf("resident_list = %+v", residents)
 	}
 	// 未注入 owner 客户端：pause 必须 unavailable（错误路径，且不改状态）。
-	if _, err := call("call_control", protocol.CallControlPayload{
+	if _, err := callOn("w-native-call", "call_control", protocol.CallControlPayload{
 		ID: openedCall.CallID, ControlID: "ctl-native-pause", Op: "pause",
 	}); err == nil {
 		t.Fatal("未接 owner 的 pause 应报错")
@@ -227,7 +233,7 @@ func TestMemoryNativeSPv2(t *testing.T) {
 		t.Fatalf("pause 错误码不符: %v", err)
 	}
 	var cancelled protocol.CallControlResult
-	must("call_control", protocol.CallControlPayload{
+	mustOn("w-native-call", "call_control", protocol.CallControlPayload{
 		ID: openedCall.CallID, ControlID: "ctl-native-cancel", Op: "cancel",
 	}, &cancelled)
 	if cancelled.Observe != "closed" || cancelled.Exec != "cancelled" {

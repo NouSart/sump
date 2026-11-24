@@ -6,8 +6,8 @@ package session
 // 原生 handler 只做「解码 body → 调用 → 映射错误码」，所以这里测共享实现与 method 声明。
 //
 // 与源 af6cfc8:src/memory/server/context_v2_test.go 的差异：
-//   - 授权用例（跨 work 越权）留到 P4，本阶段没有 authorizeTargetWork；
-//     原「越权」用例拆成「trigger.item 不属于本 work」的归属检查用例（P2 真实的读边界）；
+//   - 授权（R-023 P4）在共享实现里已接；本文件的辅助统一以「载荷 work 的 agent」调用，
+//     跨 work 拒绝用例在 authorize_entries_test.go 与 testing/tests 红队；
 //   - work_id 为空字符串的旧记录不再兜底（R-014 T4），相关断言改为「不得出现」；
 //   - image_index 未搬（D7），不再断言图片行。
 
@@ -73,14 +73,16 @@ func insertContextV2Message(t *testing.T, st *store.Store, workID, taskID, role,
 	return strconv.FormatInt(id, 10)
 }
 
-// callContextV2 调用共享实现（P2 不接授权，只按载荷 work 读）。
+// callContextV2 调用共享实现；帧头 work 与身份按「本 work 的 agent」构造
+// （与生产链路一致：入口把原帧 from 透传给 session）。
 func callContextV2(t *testing.T, s *Server, req protocol.ContextRequest) (protocol.ContextResponse, error) {
 	t.Helper()
 	body, err := protocol.EncodePayload(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.contextV2(context.Background(), body)
+	out, err := s.contextV2(context.Background(), body,
+		caller{work: req.Work, from: spv2.AgentRef("reasoner")})
 	if err != nil {
 		return protocol.ContextResponse{}, err
 	}
@@ -98,7 +100,8 @@ func callTriggerComplete(t *testing.T, s *Server, req protocol.TriggerCompletePa
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.triggerComplete(context.Background(), body)
+	out, err := s.triggerComplete(context.Background(), body,
+		caller{work: req.Work, from: spv2.AgentRef("reasoner")})
 	if err != nil {
 		return protocol.TriggerCompleteResult{}, err
 	}

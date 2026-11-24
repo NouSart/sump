@@ -638,7 +638,7 @@ func TestOwnerContractStatusReportsOwnerExecByService(t *testing.T) {
 	shellID := openCallsTestCall(t, s, "w1", store.CallModeOnce, true) // service=shell
 	pyRes, err := s.openCall(context.Background(), callOpenBody(t, protocol.CallOpenPayload{
 		Work: "w1", Service: "python", Action: "run", Mode: store.CallModeOnce,
-	}))
+	}), caller{work: "w1", from: spv2.AgentRef("reasoner")})
 	if err != nil {
 		t.Fatal(err)
 	}

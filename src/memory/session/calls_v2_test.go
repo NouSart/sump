@@ -6,7 +6,8 @@ package session
 //
 // 与源 af6cfc8:src/memory/server/calls_v2_test.go 的差异（R-023 P3）：
 //   - image_note 两个用例不搬（D7：image_index 不在本架构）；
-//   - 跨 work 越权用例不搬（授权在 P4），本阶段按载荷 work 操作；
+//   - 跨 work 越权用例（R-023 P4）放在 authorize_entries_test.go：这里只覆盖本 work 内的
+//     call_open / call_control / call_status / resident_list 语义；
 //   - 保留 7 个等价用例，并补 2 条本阶段的真实错误路径（未知 call / 非法 op /
 //     空参数；同 control_id 换 call 的冲突且不泄漏 id），共 9 个；
 //   - origin_session 断言改为「必须为空」：不透明会话 ID 在 experience/redact，
@@ -84,20 +85,49 @@ func callStatusBody(t *testing.T, req protocol.CallStatusPayload) []byte {
 
 func controlCalls(t *testing.T, s *Server, req protocol.CallControlPayload) (protocol.CallControlResult, error) {
 	t.Helper()
-	return s.controlCall(context.Background(), callControlBody(t, req))
+	return s.controlCall(context.Background(), callControlBody(t, req), callerForCall(t, s, req.ID))
 }
 
 func statusCalls(t *testing.T, s *Server, req protocol.CallStatusPayload) (protocol.CallStatusResult, error) {
 	t.Helper()
-	return s.callStatus(context.Background(), callStatusBody(t, req))
+	return s.callStatus(context.Background(), callStatusBody(t, req), callerForIDs(t, s, req.IDs))
+}
+
+// callerForCall 按目标 call 的 work 构造调用方元信息（帧头 work = 目标 work，
+// 身份 = 该 work 的 agent）；未知 call 返回零值 caller（授权在 GetCall 之后才执行）。
+func callerForCall(t *testing.T, s *Server, id string) caller {
+	t.Helper()
+	return callerForIDs(t, s, []string{id})
+}
+
+// callerForIDs 取第一个本地已知 call 的 work 作为调用方（call_status 的一批 id 同属一个 work）。
+func callerForIDs(t *testing.T, s *Server, ids []string) caller {
+	t.Helper()
+	ctx := context.Background()
+	for _, raw := range ids {
+		row, err := s.cfg.Store.GetCall(ctx, strings.TrimSpace(raw))
+		if err != nil {
+			continue
+		}
+		w, err := s.cfg.Store.GetWork(ctx, row.Work)
+		if err != nil {
+			continue
+		}
+		return caller{work: row.Work, from: spv2.AgentRef(w.Agent.ID)}
+	}
+	return caller{}
 }
 
 func openCallsTestCall(t *testing.T, s *Server, work, mode string, pausable bool) string {
 	t.Helper()
+	w, err := s.cfg.Store.GetWork(context.Background(), work)
+	if err != nil {
+		t.Fatalf("读取 work %s: %v", work, err)
+	}
 	res, err := s.openCall(context.Background(), callOpenBody(t, protocol.CallOpenPayload{
 		Work: work, Service: "shell", Action: "run", Mode: mode,
 		Pausable: pausable, TTLMS: 60000, ExecDeadlineMS: 300000,
-	}))
+	}), caller{work: work, from: spv2.AgentRef(w.Agent.ID)})
 	if err != nil {
 		t.Fatalf("openCall(%s): %v", work, err)
 	}
@@ -207,7 +237,7 @@ func TestOpenCallArgValidation(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := s.openCall(ctx, callOpenBody(t, c.req))
+			_, err := s.openCall(ctx, callOpenBody(t, c.req), caller{work: c.req.Work, from: spv2.AgentRef("reasoner")})
 			if !spv2.IsCode(err, c.code) {
 				t.Fatalf("期望 %s，实际 %v", c.code, err)
 			}
@@ -338,7 +368,10 @@ func TestCallControlErrorPaths(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := controlCalls(t, s, c.req); !spv2.IsCode(err, c.code) {
+			// 未知 call 也要先过身份门；这里用已登记的 w1 身份，让失败点落在「call 不存在」。
+			_, err := s.controlCall(context.Background(), callControlBody(t, c.req),
+				caller{work: "w1", from: spv2.AgentRef("reasoner")})
+			if !spv2.IsCode(err, c.code) {
 				t.Fatalf("期望 %s，实际 %v", c.code, err)
 			}
 		})
@@ -424,7 +457,8 @@ func TestResidentListFiltersByOwner(t *testing.T) {
 	_ = openCallsTestCall(t, s, "w-alice", store.CallModeOnce, true) // 非常驻不出现
 	_ = openCallsTestCall(t, s, "w-bob", store.CallModeResident, true)
 
-	res, err := s.residentListFor(ctx, residentListRequest{Work: "w-alice", Limit: 10})
+	res, err := s.residentListFor(ctx, residentListRequest{Work: "w-alice", Limit: 10},
+		caller{work: "w-alice", from: spv2.AgentRef("reasoner")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,20 +479,24 @@ func TestResidentListFiltersByOwner(t *testing.T) {
 	}
 
 	// 分页：limit=1 时 next 指向下一页游标。
-	page1, err := s.residentListFor(ctx, residentListRequest{Work: "w-alice", Limit: 1})
+	page1, err := s.residentListFor(ctx, residentListRequest{Work: "w-alice", Limit: 1},
+		caller{work: "w-alice", from: spv2.AgentRef("reasoner")})
 	if err != nil || len(page1.Items) != 1 || page1.Items[0].ID != a2 || page1.Next != a2 {
 		t.Fatalf("第一页 = %+v, err=%v", page1, err)
 	}
-	page2, err := s.residentListFor(ctx, residentListRequest{Work: "w-alice", Limit: 1, Cursor: page1.Next})
+	page2, err := s.residentListFor(ctx, residentListRequest{Work: "w-alice", Limit: 1, Cursor: page1.Next},
+		caller{work: "w-alice", from: spv2.AgentRef("reasoner")})
 	if err != nil || len(page2.Items) != 1 || page2.Items[0].ID != a1 {
 		t.Fatalf("第二页 = %+v, err=%v", page2, err)
 	}
 
 	// 解析不到调用方 work：invalid_argument（不是空列表）。
-	if _, err := s.residentListFor(ctx, residentListRequest{}); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
+	if _, err := s.residentListFor(ctx, residentListRequest{},
+		caller{work: "w-alice", from: spv2.AgentRef("reasoner")}); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
 		t.Fatalf("缺 work 应 invalid_argument: %v", err)
 	}
-	if _, err := s.residentListFor(ctx, residentListRequest{Work: "nope"}); !spv2.IsCode(err, spv2.CodeNotFound) {
+	if _, err := s.residentListFor(ctx, residentListRequest{Work: "nope"},
+		caller{work: "w-alice", from: spv2.AgentRef("reasoner")}); !spv2.IsCode(err, spv2.CodeNotFound) {
 		t.Fatalf("work 不存在应 not_found: %v", err)
 	}
 }

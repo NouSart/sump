@@ -35,6 +35,11 @@ func callerOf(call *spv2.Call) caller {
 	return caller{work: call.WorkID(), from: call.Frame.From}
 }
 
+// anonymous 表示帧头身份为空；所有 v2 入口都必须拒绝，不能按 authority 放行。
+func (c caller) anonymous() bool {
+	return strings.TrimSpace(c.from.ID) == ""
+}
+
 // authDenied 构造统一的 permission_denied；reason 不得包含目标 work 的归属字段。
 func authDenied(op, reason string) error {
 	return spv2.ErrCode(spv2.CodePermissionDenied, op+": "+reason, false, nil)
@@ -44,8 +49,8 @@ func authDenied(op, reason string) error {
 //
 // 分支顺序是契约的一部分：
 //  1. 载荷 work 为空 → invalid_argument（没有归属的读写不能靠猜）；
-//  2. 目标 work 不存在 → not_found（不含归属信息）；
-//  3. 匿名 from.id 为空 → permission_denied（一律拒绝，含 runtime）；
+//  2. 匿名 from.id 为空 → permission_denied（先于查库与 authority：匿名不能探测 work 是否存在）；
+//  3. 目标 work 不存在 → not_found（不含归属信息）；
 //  4. runtime → 放行（运行期管控需要跨 work）；
 //  5. owner → from.id 必须与 works.owner.id 精确相等；
 //  6. 普通服务 → 帧头 work 必须等于目标 work，且身份属于该 work
@@ -55,16 +60,16 @@ func (s *Server) authorizeTargetWork(ctx context.Context, targetWork, callerWork
 	if targetWork == "" {
 		return spv2.Work{}, spv2.ErrCode(spv2.CodeInvalidArgument, op+": work 必填", false, nil)
 	}
+	fromID := strings.TrimSpace(from.ID)
+	if fromID == "" {
+		return spv2.Work{}, authDenied(op, "调用方身份为空，拒绝操作")
+	}
 	w, err := s.cfg.Store.GetWork(ctx, targetWork)
 	if err != nil {
 		// 目标 work 查不到翻成 not_found；其它存储错误按协议错误码透出。
 		return spv2.Work{}, mapCallError(err)
 	}
 
-	fromID := strings.TrimSpace(from.ID)
-	if fromID == "" {
-		return spv2.Work{}, authDenied(op, "调用方身份为空，拒绝操作")
-	}
 	switch from.Authority {
 	case spv2.AuthorityRuntime:
 		return w, nil

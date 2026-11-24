@@ -3,11 +3,11 @@ package session
 // 调用账本的原生入口（S-001 §3.0.2 / §3.4 / §3.5 / §3.6）：call_open / call_control /
 // call_status / resident_list 的服务卡声明与共享实现。
 //
-// 与源 af6cfc8:src/memory/server/calls_v2.go 的差异（R-023 P3）：
+// 与源 af6cfc8:src/memory/server/calls_v2.go 的差异（R-023 P3/P4）：
 //   - image_note 不搬（D7：image_index 不在本架构），image 相关行一并剥离；
-//   - 授权（authorizeTargetWork / authorizeWork / authorizeCallOp）留在 P4：本笔按载荷 work
-//     操作，work 为空即 invalid_argument。这里不是"没考虑归属"，而是显式未接：
-//     P4 接上身份校验后，跨 work 的 id 才会被拒；
+//   - 授权（R-023 P4）：call_open 走 authorizeTargetWork（帧头 work + 载荷 work + 身份），
+//     call_control / call_status 走 authorizeCallOp（按目标 call 的 work 归属，含更严的
+//     owner/runtime 档）；resident_list 走 authorizeWork，匿名 from.id 一律拒绝；
 //   - call_status 单次读（不建周期 reconciler，D7）：未注入 owner 时 owner_recovery_complete
 //     恒 false；注入后按 owner service 分批问，问不到不算 orphaned（§3.5 规则 1：
 //     问不到 ≠ 不存在）；本地查不到的 id 只回 id；
@@ -175,7 +175,7 @@ func isTerminalExec(exec string) bool {
 // task / owner 不需要调用方声明：它们由 works 行联表解析（store.CreateCall 只查 work 存在）。
 // 旧实现的「work 关联 task 是否存在」检查是给 image_note 解析会话用的，本架构没有这条链路，
 // 也就没有可验证的入口，不搬。
-func (s *Server) openCall(ctx context.Context, body []byte) (protocol.CallOpenResult, error) {
+func (s *Server) openCall(ctx context.Context, body []byte, c caller) (protocol.CallOpenResult, error) {
 	var req protocol.CallOpenPayload
 	if err := protocol.DecodeRaw(body, &req); err != nil {
 		return protocol.CallOpenResult{}, callsError(spv2.CodeInvalidArgument, "call_open body 无效: "+err.Error())
@@ -201,6 +201,11 @@ func (s *Server) openCall(ctx context.Context, body []byte) (protocol.CallOpenRe
 			fmt.Sprintf("call_open: mode %q 非法（once|resident）", mode))
 	}
 
+	// 授权先于落库：跨 work / 匿名请求不产生 call 行。
+	if _, err := s.authorizeTargetWork(ctx, work, c.work, "call_open", c.from); err != nil {
+		return protocol.CallOpenResult{}, err
+	}
+
 	callID, err := s.cfg.Store.CreateCall(ctx, work, service, strings.TrimSpace(req.Action),
 		mode, req.Pausable, req.TTLMS, req.ExecDeadlineMS)
 	if err != nil {
@@ -215,9 +220,11 @@ func (s *Server) openCall(ctx context.Context, body []byte) (protocol.CallOpenRe
 // controlCall 执行 call_control（S-001 §3.4）。
 //
 // 幂等：同 control_id 重放直接返回首次结果（call_controls 表）；结果还没落库时回 conflict。
+// 归属：先按目标 call 的 work + 帧头 from 授权（authorizeCallOp），且授权在读控制记录之前，
+// 避免通过 control_id 探知别的 work 的调用细节。
 // 控制语义：未注入 owner 客户端时 pause / resume 回 unavailable 且不改状态；cancel 可本地执行
 // （可暂停 → cancelled；不可暂停 → unknown + remote_may_continue）。
-func (s *Server) controlCall(ctx context.Context, body []byte) (protocol.CallControlResult, error) {
+func (s *Server) controlCall(ctx context.Context, body []byte, c caller) (protocol.CallControlResult, error) {
 	var req protocol.CallControlPayload
 	if err := protocol.DecodeRaw(body, &req); err != nil {
 		return protocol.CallControlResult{}, callsError(spv2.CodeInvalidArgument, "call_control body 无效: "+err.Error())
@@ -234,10 +241,17 @@ func (s *Server) controlCall(ctx context.Context, body []byte) (protocol.CallCon
 		return protocol.CallControlResult{}, callsError(spv2.CodeInvalidArgument,
 			fmt.Sprintf("call_control: op %q 非法（pause|resume|cancel）", op))
 	}
+	if c.anonymous() {
+		return protocol.CallControlResult{}, authDenied("call_control", "调用方身份为空，拒绝操作")
+	}
 
 	callRow, err := s.cfg.Store.GetCall(ctx, id)
 	if err != nil {
 		return protocol.CallControlResult{}, mapCallError(err)
+	}
+	// 跨 work 的 id（含 control_id 重放路径）一律拒绝，且拒绝发生在读控制记录之前。
+	if err := s.authorizeCallOp(ctx, callRow, c.work, c.from, "call_control"); err != nil {
+		return protocol.CallControlResult{}, err
 	}
 
 	// 幂等重放：control_id 已存在时只看首次结果，不再执行。
@@ -459,7 +473,9 @@ func (s *Server) recordControl(ctx context.Context, controlID, callID, op string
 //   - owner 认识的 call 按其返回的 exec 上报（只读对账，本地账本不动）。
 //
 // 单次读、不建周期 reconciler（D7）：这里只回答"现在是什么"，不替 owner 推进状态。
-func (s *Server) callStatus(ctx context.Context, body []byte) (protocol.CallStatusResult, error) {
+// 归属：与 call_control 同口径（authorizeCallOp）逐 id 校验；任一本地已知 id
+// 跨 work / 身份不符即整体 permission_denied，不通过 items 泄漏别的 work 的调用。
+func (s *Server) callStatus(ctx context.Context, body []byte, c caller) (protocol.CallStatusResult, error) {
 	var req protocol.CallStatusPayload
 	if err := protocol.DecodeRaw(body, &req); err != nil {
 		return protocol.CallStatusResult{}, callsError(spv2.CodeInvalidArgument, "call_status body 无效: "+err.Error())
@@ -471,6 +487,9 @@ func (s *Server) callStatus(ctx context.Context, body []byte) (protocol.CallStat
 	if len(req.IDs) > 100 {
 		return out, callsError(spv2.CodeInvalidArgument,
 			fmt.Sprintf("call_status: 单批最多 100 个 id（收到 %d）", len(req.IDs)))
+	}
+	if c.anonymous() {
+		return out, authDenied("call_status", "调用方身份为空，拒绝操作")
 	}
 
 	// 先按本地账本把 id 归到 owner service：calls 表有 service 列，本地没有的 id
@@ -495,6 +514,10 @@ func (s *Server) callStatus(ctx context.Context, body []byte) (protocol.CallStat
 				continue
 			}
 			return out, mapCallError(err)
+		}
+		// 归属校验：跨 work 的已知 id 直接拒绝（S-001 §9；R-023 P4）。
+		if err := s.authorizeCallOp(ctx, row, c.work, c.from, "call_status"); err != nil {
+			return out, err
 		}
 		entries = append(entries, statusEntry{id: id, row: row, ok: true})
 		if row.Service != "" {
@@ -574,16 +597,24 @@ func callStatusItemFor(row store.CallRow) protocol.CallStatusItem {
 
 // residentListFor 是 resident_list 的实现（handler 解码后直接调；单测也可直接调）。
 // owner 来自载荷 work（缺省 frame.work）对应的 works 行；解析不到 work 即 not_found。
-func (s *Server) residentListFor(ctx context.Context, req residentListRequest) (protocol.ResidentListResult, error) {
+// 授权与源实现同口径（authorizeWork）：owner/runtime 可跨 work 查看，普通调用方必须是
+// 该 work 的 agent/owner/entry；匿名 from.id 一律拒绝（不因为 authority=owner 放行）。
+func (s *Server) residentListFor(ctx context.Context, req residentListRequest, c caller) (protocol.ResidentListResult, error) {
 	out := protocol.ResidentListResult{Items: []protocol.ResidentItem{}}
 	work := strings.TrimSpace(req.Work)
 	if work == "" {
 		return out, callsError(spv2.CodeInvalidArgument,
 			"resident_list: work 必填（payload.work 与 frame.work 都为空，无法解析常驻目录归属）")
 	}
+	if c.anonymous() {
+		return out, authDenied("resident_list", "调用方身份为空，拒绝操作")
+	}
 	w, err := s.cfg.Store.GetWork(ctx, work)
 	if err != nil {
 		return out, mapCallError(err)
+	}
+	if err := authorizeWork(w, c.from); err != nil {
+		return out, authDenied("resident_list", "无权查看该 work 的常驻目录")
 	}
 	owner := strings.TrimSpace(w.Owner.ID)
 	if owner == "" {
@@ -629,7 +660,7 @@ func (s *Server) residentListFor(ctx context.Context, req residentListRequest) (
 // ---------- 原生 handler（解码 / 回包） ----------
 
 func (s *Server) nativeCallOpen(ctx context.Context, call *spv2.Call) error {
-	out, err := s.openCall(ctx, call.Frame.Body)
+	out, err := s.openCall(ctx, call.Frame.Body, callerOf(call))
 	if err != nil {
 		return replyCallsError(call, err)
 	}
@@ -637,7 +668,7 @@ func (s *Server) nativeCallOpen(ctx context.Context, call *spv2.Call) error {
 }
 
 func (s *Server) nativeCallControl(ctx context.Context, call *spv2.Call) error {
-	out, err := s.controlCall(ctx, call.Frame.Body)
+	out, err := s.controlCall(ctx, call.Frame.Body, callerOf(call))
 	if err != nil {
 		return replyCallsError(call, err)
 	}
@@ -645,7 +676,7 @@ func (s *Server) nativeCallControl(ctx context.Context, call *spv2.Call) error {
 }
 
 func (s *Server) nativeCallStatus(ctx context.Context, call *spv2.Call) error {
-	out, err := s.callStatus(ctx, call.Frame.Body)
+	out, err := s.callStatus(ctx, call.Frame.Body, callerOf(call))
 	if err != nil {
 		return replyCallsError(call, err)
 	}
@@ -661,7 +692,7 @@ func (s *Server) nativeResidentList(ctx context.Context, call *spv2.Call) error 
 	if strings.TrimSpace(req.Work) == "" {
 		req.Work = call.WorkID()
 	}
-	out, err := s.residentListFor(ctx, req)
+	out, err := s.residentListFor(ctx, req, callerOf(call))
 	if err != nil {
 		return replyCallsError(call, err)
 	}
