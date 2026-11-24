@@ -1,7 +1,7 @@
 package tests
 
-// M5 全链测试（异步工具 + 完全启动）：message → 记忆往返（recall → resume）→ 工具派发
-// （即时受理回执）→ 自跳(step) → LLM 调 wait 阻塞至结果入账 → 收尾轮 → 交付(deliver) 直达 boss。
+// M5 全链测试（异步工具 + 完全启动）：message → memory.context → 工具派发
+// （即时受理回执）→ boardKick 开轮 → LLM 调 wait 阻塞至结果入账 → 收尾轮 → deliver 直达 boss。
 
 import (
 	"context"

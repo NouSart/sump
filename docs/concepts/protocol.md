@@ -94,7 +94,7 @@
 ### 5.1 保留 method（链机制，语义不可改）
 
 `message`（唯一入口：human / 入口 service / agent）/ `context`（reasoner 同步取上下文与任务）/
-`step`（自跳继续）/ `deliver`（终点直达结果归属方）/
+`deliver`（终点直达结果归属方）/
 `store`（记忆写）/ `save` `fetch`（图片 / 文件链）/ `report_result`（异步受理的补报）。
 
 这些是**协议级词汇**：即便某个服务提供了同名 method，也**不作为 LLM 工具**暴露。
@@ -190,6 +190,7 @@ LLM 工具名 = **`<service>__<method>`**（由 reasoner 依据名册 `provides`
 | 帧类型（`type`） | 裸名词，四选一 | `call` `reply` `event` `stream` |
 | 控制面 method | 小写下划线 | `register` `heartbeat` `roster` `settings` `ping` `report` `list_settings` `set_setting` `reset_setting` `report_setting` `configure` `hello` `health` `metrics` |
 | 业务 method（`call.method`） | 小写下划线、动词_名词；保留 method 见 §5.1 | `embed` `run` `report_result` `approval_request` `approval_pending` `approval_decide` `approval_list` `capabilities`；timer：`sleep` `cancel` `list`；memory：`remember` `forget` `consolidate` `note` `dig` `lineheads` `prune` `publish_session` `shared_sessions` `shared_forget` `conversation_open` `conversation_archive`；files：`save` `fetch` `read` `write` `edit_word` `edit_ppt` `edit_pdf` `outline` `read_range` `find` `patch` `verify` |
+| 退役 method（词汇保留） | 名字保留；不得用同一名字表示其他语义；历史语义与替代机制在此登记 | `step`（原自跳继续；实现已于 8c403ad 删除；无替代 method，轮次由 reasoner `boardKick` 推进） |
 | 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms`；设置项三类标记：`secret` `readonly` `set`；服务自报：`actual` `reported`；用户消息：`images` `files` `notes`（附注不是用户说的话）；上下文消息：`image_ids` `file_ids`；batch：`on_error`（`continue` 默认 / `stop`）`kind`（`once` / `resident`）`wake`；文件链：`filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated` `operations` `op` `old` `new` `replaced` `pages` `degrees` `properties` `applied`（`patch` 也用它）；文档链：`doc_kind` `digest` `depth` `node` `nodes` `node_count` `chars` `tables` `parts` `warnings` `offset` `limit` `total` `next` `regex` `matches` `run` `start` `end` `context` `range` `anchor` `exact_anchor` `exact_digest` `diff` `before` `after` `contains` `not_contains` `failures`；节点字段：`type` `level` `children`；embedding：`texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms`；timer：`ms` `note` `fire_at` `seq` `timers` `caller` `status`；共享经验库（跨会话只放提炼物）：`session_id` `task_id` `title` `goal` `outcome` `capabilities` `private` `sessions` `archived` `exclude` |
 | 审批载荷字段 | snake_case；结构由 `src/protocol/approval.go` 定义 | `schema_version` `plan` `decision` `decision_id` `plan_digest` `policy_version` `reason_code` `valid_for_ms` `llm_feedback` `summary` `unknowns` `rule_ids`；补报新增 `approval`；第二层：`requested_by` `created_ms` `expires_ms` `note` |
 | exec 域执行描述字段 | 当前 `plan` 是命令域专用结构；每个字段只保留一个语义 | `version` `command` `work_dir` `shell_path` `args` `dialect` `platform` `profile` `timeout_ms` `max_output_bytes`；`dialect` 只表示 shell 方言，`profile` 只表示执行环境约定 |
