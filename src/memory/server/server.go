@@ -21,6 +21,7 @@ import (
 	"github.com/NouSart/sump/memory/store"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/service"
+	"github.com/NouSart/sump/spv2"
 )
 
 // Config 是 memory 服务的启动配置。
@@ -316,14 +317,15 @@ type callMeta struct {
 //
 // 带 client_item_id 的调用走 v2 路径（幂等 + 补报 receipt，见 store_v2.go）；
 // 不带的老调用方行为原样保留，回 protocol.StoreResult{}。
-func (s *Server) store(body []byte) (any, error) {
+func (s *Server) store(body []byte, callerWork string, from spv2.Ref) (any, error) {
 	var p protocol.StorePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
 	// v2：client_item_id 非空即按幂等键入账（S-001 §3.0），不再走下面的旧路径。
+	// v2 同时校验帧 work/from：消息归属执行单元，跨 work 写入必须显式拒绝（INV-14）。
 	if p.ClientItemID != "" {
-		res, err := s.storeV2(&p)
+		res, err := s.storeV2(&p, callerWork, from)
 		if err != nil {
 			return nil, err
 		}

@@ -2,6 +2,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -143,6 +144,11 @@ var v2ColumnMigrations = []struct{ table, name, ddl string }{
 	{"works", "task", `ALTER TABLE works ADD COLUMN task TEXT NOT NULL DEFAULT ''`},
 	{"messages", "work_id", `ALTER TABLE messages ADD COLUMN work_id TEXT NOT NULL DEFAULT ''`},
 	{"messages", "visibility", `ALTER TABLE messages ADD COLUMN visibility TEXT NOT NULL DEFAULT 'work'`},
+	// 补报回执要记住 phase / final / data：只有 hash 的话，call 账本无法被补报驱动，
+	// 对账也读不回 owner 说过什么（S-001 §4.3）。
+	{"report_receipts", "phase", `ALTER TABLE report_receipts ADD COLUMN phase TEXT NOT NULL DEFAULT ''`},
+	{"report_receipts", "final", `ALTER TABLE report_receipts ADD COLUMN final INTEGER NOT NULL DEFAULT 0`},
+	{"report_receipts", "data", `ALTER TABLE report_receipts ADD COLUMN data BLOB`},
 }
 
 // tableColumns 返回一张表已有的列名集合（PRAGMA table_info）。
@@ -259,28 +265,26 @@ func (s *Store) DB() *sql.DB { return s.db }
 // 是两件事，吞掉才是错的。
 //
 // Seq 由写入方给（会话内单调）：并发写（Fire 是 goroutine）也能按真实先后排序；
-// 为 0 时退化为按落库顺序（老数据 / 不关心顺序的调用方）。
+// 为 0 时由 seq_counters 取号（S-001 §4.7，与 v2 路径同一个取号实现）。
 //
 // **归档不设门槛**：这里不查 conversations.status——归档 = 移出默认列表，不是只读。
 // 改成拒写不是加个 if 那么简单：调用方（reasoner / 各入口）不看会话状态、多数还用 Fire
 // （发出即完，失败只进日志），门户又没有「取消归档」入口，拦下来就是悄悄丢历史。
 // 依据与逐条证据钉在 tests/conversations_test.go 的 TestConversationTable。
 //
-// 落库实现见 record / recordDetailed：Record 只要成功/失败，不关心回执里的 item_id 与 seq
+// 落库实现见 recordVia：Record 只要成功/失败，不关心回执里的 item_id 与 seq
 // （老路径的 work_id / visibility 保持空串 / "work"，与既有行的默认值一致）。
 func (s *Store) Record(conversationID, role, content, kind, meta string, seq int64, taskID string) error {
 	_, _, err := s.record(conversationID, role, content, kind, meta, seq, taskID, "", "work")
 	return err
 }
 
-// RecordV2 追加一条会话记录，并把落库回执（item_id / 会话内 seq）回给调用方（S-001 §3.0）。
+// RecordV2 追加一条会话记录，并把落库回执（item_id / 会话内 seq）回给调用方。
 //
-// 与 Record 的差别只有两点：显式写 work_id / visibility（§4.2），以及返回回执供
-// store_receipts 幂等与补报去重使用。消息顺序、seq 分配、去重规则与 Record 共用同一份实现。
-//
-// 幂等去重仍按既有规则（连续完全相同的 user/assistant 消息跳过）保留旧语义；新路径
-// **不依赖**它做业务幂等——业务幂等由 store_receipts 的 client_item_id 负责。
-// dedupedMsg=true 表示这次没有新行，itemID / seqOut 指向被保留的那一条。
+// 与 Record 的差别只有两点：显式写 work_id / visibility（§4.2），以及返回回执。
+// **它不带业务幂等**：同一条补报重放两次，这里就会落两行。要幂等请用 RecordV2Atomic
+// （消息 / 回执 / call 账本同一事务，S-001 §3.0 / INV-13）；本函数只留给不需要幂等的
+// 追加场景与包内测试。
 func (s *Store) RecordV2(conversationID, role, content, kind, meta string, seq int64, taskID, workID, visibility string) (itemID string, seqOut int64, dedupedMsg bool, err error) {
 	return s.recordDetailed(conversationID, role, content, kind, meta, seq, taskID, workID, visibility)
 }
@@ -292,14 +296,34 @@ func (s *Store) record(conversationID, role, content, kind, meta string, seq int
 	return id, seqOut, err
 }
 
-// recordDetailed 是 Record / RecordV2 的共同落库实现。
+// recordDetailed 是 Record / RecordV2 的入口，落到与 v2 原子路径共用的 recordVia。
+func (s *Store) recordDetailed(conversationID, role, content, kind, meta string, seq int64, taskID, workID, visibility string) (itemID string, seqOut int64, deduped bool, err error) {
+	itemID, seqOut, deduped, err = recordVia(context.Background(), s.db, conversationID, role, content, kind, meta, seq, taskID, workID, visibility)
+	if err != nil || deduped {
+		return itemID, seqOut, deduped, err
+	}
+	// 会话的活跃时间跟着真正的写入走：写失败不推（否则列表里会有个"刚活跃过"的空会话）。
+	if err := s.touchConversation(conversationID); err != nil {
+		return "", 0, false, err
+	}
+	return itemID, seqOut, false, nil
+}
+
+// recordVia 是全部会话记录写入的**唯一**落库实现（库句柄与事务句柄共用）。
 //
 // item_id 取 messages.id 的十进制字符串：messages 的主键是自增整数（schema 既有事实），
-// 回执与 store_receipts 都按这个字符串引用消息；MessageByItemID 负责反查。
+// 回执与 store_receipts 都按这个字符串引用消息。
 //
-// seq 为 0 时按会话内最大值 +1 补齐（老调用方不关心顺序也不会踩到 seq=0）；
-// 回执里的 seq 一律取数据库实际写入值（RETURNING），不靠调用方传入值回显。
-func (s *Store) recordDetailed(conversationID, role, content, kind, meta string, seq int64, taskID, workID, visibility string) (itemID string, seqOut int64, deduped bool, err error) {
+// seq 语义：
+//   - 非 0 = 调用方显式给的序号，原样落库（老 reasoner 用它保证并发写的真实先后）；
+//   - 0 = 由 seq_counters 取号（v2 路径恒为 0：序号只能由库分配，不接受调用方约定）。
+//
+// 「连续完全相同的 user/assistant 跳过」是既有的防重复交付语义，去重命中时不取号，
+// 返回被保留那一条的 id / seq。
+//
+// 会话活跃时间不在这里刷：由调用方在写成功之后负责（Record 走库句柄、RecordV2Atomic
+// 在事务里刷），否则事务回滚后列表里会留下一个"刚活跃过"的空会话。
+func recordVia(ctx context.Context, ex execer, conversationID, role, content, kind, meta string, seq int64, taskID, workID, visibility string) (itemID string, seqOut int64, deduped bool, err error) {
 	if kind == "" {
 		kind = kindOfRole(role)
 	}
@@ -312,7 +336,7 @@ func (s *Store) recordDetailed(conversationID, role, content, kind, meta string,
 			lastSeq int64
 			r, c, k string
 		)
-		err := s.db.QueryRow(
+		err := ex.QueryRowContext(ctx,
 			`SELECT id, seq, role, content, kind FROM messages
 			 WHERE conversation_id=? AND kind IN ('', 'user', 'assistant')
 			 ORDER BY seq DESC, id DESC LIMIT 1`,
@@ -325,26 +349,23 @@ func (s *Store) recordDetailed(conversationID, role, content, kind, meta string,
 			return "", 0, false, err
 		}
 	}
-	// seq 为 0 时按会话内最大值 +1 补齐；RETURNING 读回实际落库的 id 与 seq。
-	var (
-		id      int64
-		written int64
-	)
-	err = s.db.QueryRow(
+	if seq == 0 {
+		seq, err = allocSeqVia(ctx, ex, conversationID)
+		if err != nil {
+			return "", 0, false, err
+		}
+	}
+	var id int64
+	err = ex.QueryRowContext(ctx,
 		`INSERT INTO messages(conversation_id, role, content, kind, meta, seq, created_at, task_id, work_id, visibility)
-		 VALUES(?,?,?,?,?, COALESCE(NULLIF(?, 0), (SELECT COALESCE(MAX(seq),0)+1 FROM messages WHERE conversation_id=?)), ?, ?, ?, ?)
-		 RETURNING id, seq`,
-		conversationID, role, content, kind, meta, seq, conversationID,
+		 VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+		conversationID, role, content, kind, meta, seq,
 		time.Now().Format(time.RFC3339Nano), taskID, workID, visibility,
-	).Scan(&id, &written)
+	).Scan(&id)
 	if err != nil {
 		return "", 0, false, err
 	}
-	// 会话的活跃时间跟着真正的写入走：写失败不推（否则列表里会有个"刚活跃过"的空会话）。
-	if err := s.touchConversation(conversationID); err != nil {
-		return "", 0, false, err
-	}
-	return strconv.FormatInt(id, 10), written, false, nil
+	return strconv.FormatInt(id, 10), seq, false, nil
 }
 
 // Append 是 Record 的简写（对话消息，不关心顺序与任务）：保留给老调用方与测试。

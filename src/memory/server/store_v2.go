@@ -4,18 +4,13 @@ package server
 //
 // 旧路径（不带 client_item_id）完全不变，见 server.go 的 store；这里只处理新契约：
 //
-//  1. work 必填（只给 task_id 时用它兜底）——消息归属执行单元，不归属会话；
+//  1. work 必填——消息归属执行单元，task_id 不能冒充 work；
 //  2. payload_hash = sha256(JCS(规范化载荷))，覆盖 kind / role / content / meta /
 //     visibility 与 report 全字段（§3.0 规则 4）；
-//  3. 先查 store_receipts：同键同 hash = 重放（回既有 item_id + seq、deduped=true），
-//     同键不同 hash = conflict；
-//  4. 未重放 → RecordV2 落库（写 work_id / visibility）→ 回填 receipt 的 item_id；
-//  5. 补报路径额外写 report_receipts；同 report_id 同 hash 重放去重，换内容 / 换 ID
-//     占同一 (call_id, report_seq) 都回 conflict（§6.2 交人工介入）。
-//
-// 注意：SPv2 原生入口（native.go 的 nativeStore）目前把所有 store 错误统一回
-// invalid_argument；本文件返回的 conflict 要想在线上可见，需要那个包装保留 *spv2.Error
-// 的错误码。本切片不改 native.go，仅在此标注衔接点。
+//  3. store receipt、消息、report receipt 与 call 状态在同一个 SQLite 事务里落库；
+//     响应 ACK 只在事务提交后返回（INV-13）；
+//  4. 同键同 hash / 同 report_id 同 hash = 重放；同键不同 hash / 换 ID 占同一
+//     (call_id, report_seq) = conflict；任何冲突都不得留下部分写入。
 
 import (
 	"context"
@@ -23,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/NouSart/sump/memory/store"
 	"github.com/NouSart/sump/protocol"
@@ -31,21 +25,17 @@ import (
 	"github.com/NouSart/sump/spv2"
 )
 
-// storeV2Mu 串行化新路径的两阶段落库（占位 receipt → 落消息 → 回填 item_id）。
-// 同一进程内并发的同键重放必须等前一阶段收尾，否则两个请求会各写一条消息。
-var storeV2Mu sync.Mutex
-
 // storeV2 是 store 的新路径：按 client_item_id 幂等入账，并把补报元数据落 report_receipts。
 // 返回值是 protocol.StoreResult（item_id / seq / deduped），错误一律是 spv2.ErrCode 的错误。
-func (s *Server) storeV2(p *protocol.StorePayload) (protocol.StoreResult, error) {
-	// work 是消息的归属（S-001 §2.1）；TaskID 是老字段，只作兜底。
+func (s *Server) storeV2(p *protocol.StorePayload, callerWork string, from spv2.Ref) (protocol.StoreResult, error) {
+	// work 是消息的归属（S-001 §2.1）：task 与 work 是两个标识空间，不能用 task_id 冒充 work。
 	work := strings.TrimSpace(p.Work)
 	if work == "" {
-		work = strings.TrimSpace(p.TaskID)
+		return protocol.StoreResult{}, spv2.ErrCode(spv2.CodeInvalidArgument, "store: work 必填", false, nil)
 	}
-	if work == "" {
-		return protocol.StoreResult{}, spv2.ErrCode(spv2.CodeInvalidArgument,
-			"store: work 必填（work 为空时用 task_id 兜底，两者都空）", false, nil)
+	ctx := context.Background()
+	if _, err := s.authorizeTargetWork(ctx, work, callerWork, "store", from); err != nil {
+		return protocol.StoreResult{}, err
 	}
 	visibility := strings.TrimSpace(p.Visibility)
 	if visibility == "" {
@@ -62,67 +52,69 @@ func (s *Server) storeV2(p *protocol.StorePayload) (protocol.StoreResult, error)
 		return protocol.StoreResult{}, spv2.ErrCode(spv2.CodeInvalidArgument, "store: "+err.Error(), false, nil)
 	}
 
-	ctx := context.Background()
-	// 同键请求在进程内串行：两阶段 receipt 之间不能让别的同键请求插进来。
-	storeV2Mu.Lock()
-	defer storeV2Mu.Unlock()
-
-	// 第一阶段：查幂等键。不存在时插入占位行（item_id 为空，落库后回填）。
-	existing, deduped, err := s.cfg.Store.PutStoreReceipt(ctx, work, p.ClientItemID, payloadHash, "")
-	if err != nil {
-		return protocol.StoreResult{}, storeReceiptError(work, p.ClientItemID, err)
-	}
-	if deduped {
-		seq, err := s.cfg.Store.MessageByItemID(ctx, existing)
-		if err != nil {
-			return protocol.StoreResult{}, spv2.ErrCode(spv2.CodeInternal,
-				"store: 幂等回执指向的消息读不到: "+err.Error(), false, nil)
-		}
-		// 补报的崩溃窗口（§5.4）：消息与 store receipt 已提交、report receipt 还没写就崩了。
-		// 重放按同一 hash 补齐（已写过则命中 dedupe），冲突仍按 conflict 上报，不静默吞掉。
-		if p.Report != nil {
-			if _, err := s.cfg.Store.PutReportReceipt(ctx, work, p.Report.SourceService, p.Report.ReportID,
-				payloadHash, existing, p.Report.CallID, p.Report.ReportSeq); err != nil {
-				return protocol.StoreResult{}, storeReceiptError(work, p.Report.ReportID, err)
-			}
-		}
-		return protocol.StoreResult{ItemID: existing, Seq: seq, Deduped: true}, nil
+	if err := validateStoreReport(p.Report); err != nil {
+		return protocol.StoreResult{}, spv2.ErrCode(spv2.CodeInvalidArgument, "store: "+err.Error(), false, nil)
 	}
 
 	cid := p.ConversationID
 	if cid == "" {
 		cid = "default"
 	}
-	itemID, seq, _, err := s.cfg.Store.RecordV2(cid, p.Role, p.Content, p.Kind, p.Meta, p.Seq, p.TaskID, work, visibility)
-	if err != nil {
-		return protocol.StoreResult{}, spv2.ErrCode(spv2.CodeInternal, "store: 落库失败: "+err.Error(), false, nil)
+	in := store.V2RecordInput{
+		ConversationID: cid,
+		Role:           p.Role,
+		Kind:           p.Kind,
+		Content:        p.Content,
+		Meta:           p.Meta,
+		TaskID:         p.TaskID,
+		WorkID:         work,
+		Visibility:     visibility,
+		ClientItemID:   p.ClientItemID,
+		PayloadHash:    payloadHash,
 	}
-	// 第二阶段：把刚落的记录 id 回填进占位 receipt。
-	existing, deduped, err = s.cfg.Store.PutStoreReceipt(ctx, work, p.ClientItemID, payloadHash, itemID)
+	if p.Report != nil {
+		in.Report = &store.V2ReportInput{
+			SourceService: p.Report.SourceService,
+			ReportID:      p.Report.ReportID,
+			ReportSeq:     p.Report.ReportSeq,
+			CallID:        p.Report.CallID,
+			Phase:         p.Report.Phase,
+			Final:         p.Report.Final,
+			Data:          p.Report.Data,
+		}
+	}
+	res, err := s.cfg.Store.RecordV2Atomic(ctx, in)
 	if err != nil {
 		return protocol.StoreResult{}, storeReceiptError(work, p.ClientItemID, err)
 	}
-	if deduped && existing != "" && existing != itemID {
-		// 极端情况下被重放抢先（如崩溃恢复路径上的并发）：以先落库的那条为准，
-		// 本次多写的一行不影响幂等语义——重放必须回同一个 item_id 与 seq。
-		seq, err := s.cfg.Store.MessageByItemID(ctx, existing)
-		if err != nil {
-			return protocol.StoreResult{}, spv2.ErrCode(spv2.CodeInternal,
-				"store: 幂等回执指向的消息读不到: "+err.Error(), false, nil)
-		}
-		return protocol.StoreResult{ItemID: existing, Seq: seq, Deduped: true}, nil
-	}
+	return protocol.StoreResult{ItemID: res.ItemID, Seq: res.Seq, Deduped: res.Deduped}, nil
+}
 
-	// 补报路径：额外写 report_receipts（同 hash 重放 → deduped；冲突 → conflict）。
-	reportDeduped := false
-	if p.Report != nil {
-		reportDeduped, err = s.cfg.Store.PutReportReceipt(ctx, work,
-			p.Report.SourceService, p.Report.ReportID, payloadHash, itemID, p.Report.CallID, p.Report.ReportSeq)
-		if err != nil {
-			return protocol.StoreResult{}, storeReceiptError(work, p.Report.ReportID, err)
-		}
+// validateStoreReport 校验补报载荷的最小语义：幂等键、执行 call 与 phase 词汇必须明确。
+// 终态报告必须 final=true；非终态 accepted/approved 只表示 owner 已受理或审批通过。
+func validateStoreReport(r *protocol.StoreReport) error {
+	if r == nil {
+		return nil
 	}
-	return protocol.StoreResult{ItemID: itemID, Seq: seq, Deduped: reportDeduped}, nil
+	if strings.TrimSpace(r.SourceService) == "" || strings.TrimSpace(r.ReportID) == "" || strings.TrimSpace(r.CallID) == "" {
+		return errors.New("补报 report.source_service / report_id / call_id 必填")
+	}
+	if r.ReportSeq <= 0 {
+		return fmt.Errorf("补报 report.report_seq 必须从 1 开始，收到 %d", r.ReportSeq)
+	}
+	switch r.Phase {
+	case "accepted", "approved":
+		if r.Final {
+			return fmt.Errorf("补报 phase=%s 不能同时 final=true（终态只能是 done/failed/timeout/cancelled）", r.Phase)
+		}
+	case "done", "failed", "timeout", "cancelled":
+		if !r.Final {
+			return fmt.Errorf("补报 phase=%s 必须 final=true", r.Phase)
+		}
+	default:
+		return fmt.Errorf("补报 phase %q 非法（accepted|approved|done|failed|timeout|cancelled）", r.Phase)
+	}
+	return nil
 }
 
 // storePayloadHash 计算 store 幂等用的 payload_hash（S-001 §3.0 规则 4）。
@@ -207,12 +199,21 @@ func storeReportData(raw []byte) (any, error) {
 	return v, nil
 }
 
-// storeReceiptError 把 store 包的幂等错误翻成 SPv2 错误码。
-// ErrPayloadConflict 是唯一的业务冲突（同键不同载荷），其余按内部错误回。
+// storeReceiptError 把 store 的幂等 / 账本错误翻成 SPv2 错误码。
+//
+// 三类都是业务结论，不是服务端故障：
+//   - ErrPayloadConflict：同一个幂等键两次说了不一样的话（conflict，交人工处置）；
+//   - ErrCallNotFound：补报引用的 call 本地没有（not_found，owner 该重发 call_open 侧的事实）；
+//   - ErrCallConflict：补报与 call 账本对不上（work / service 不符或非法转移，conflict）。
 func storeReceiptError(work, key string, err error) error {
-	if errors.Is(err, store.ErrPayloadConflict) {
+	switch {
+	case errors.Is(err, store.ErrPayloadConflict):
 		return spv2.ErrCode(spv2.CodeConflict,
 			fmt.Sprintf("store: 幂等键 %s/%s 已存在但载荷不同", work, key), false, nil)
+	case errors.Is(err, store.ErrCallNotFound):
+		return spv2.ErrCode(spv2.CodeNotFound, "store: 补报引用的调用不存在: "+err.Error(), false, nil)
+	case errors.Is(err, store.ErrCallConflict):
+		return spv2.ErrCode(spv2.CodeConflict, "store: 补报与调用账本冲突: "+err.Error(), false, nil)
 	}
 	return spv2.ErrCode(spv2.CodeInternal, "store: 幂等记录写入失败: "+err.Error(), false, nil)
 }

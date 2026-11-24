@@ -363,7 +363,7 @@ func metaOfCall(call *spv2.Call) callMeta {
 }
 
 func (s *Server) nativeStore(_ context.Context, call *spv2.Call) error {
-	out, err := s.store(call.Frame.Body)
+	out, err := s.store(call.Frame.Body, call.WorkID(), call.Frame.From)
 	if err != nil {
 		var e *spv2.Error
 		if errors.As(err, &e) {

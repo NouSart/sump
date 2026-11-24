@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/NouSart/sump/protocol"
@@ -83,6 +84,37 @@ func authorizeWork(w spv2.Work, from spv2.Ref) error {
 		return nil
 	}
 	return spv2.ErrCode(spv2.CodePermissionDenied, "无权控制 work "+w.ID, false, nil)
+}
+
+// authorizeTargetWork 校验调用方能否操作载荷里指定的目标 work。
+// owner/runtime 保留跨 work 的管理通道，但 owner 必须精确匹配目标 work 的 owner；
+// 普通服务调用方则要求 frame.work 与载荷 work 一致，且身份属于该 work。
+func (s *Server) authorizeTargetWork(ctx context.Context, targetWork, callerWork, op string, from spv2.Ref) (spv2.Work, error) {
+	targetWork = strings.TrimSpace(targetWork)
+	if targetWork == "" {
+		return spv2.Work{}, spv2.ErrCode(spv2.CodeInvalidArgument, op+": work 必填", false, nil)
+	}
+	w, err := s.cfg.Store.GetWork(ctx, targetWork)
+	if err != nil {
+		// 目标 work 查不到（ErrWorkNotFound）翻成 not_found，不让调用方拿到裸哨兵错误。
+		return spv2.Work{}, mapCallError(err)
+	}
+	if from.Authority == spv2.AuthorityRuntime {
+		return w, nil
+	}
+	if from.Authority == spv2.AuthorityOwner {
+		if from.ID != "" && from.ID == strings.TrimSpace(w.Owner.ID) {
+			return w, nil
+		}
+		return spv2.Work{}, spv2.ErrCode(spv2.CodePermissionDenied, op+": owner 与目标 work 不匹配", false, nil)
+	}
+	if strings.TrimSpace(callerWork) != w.ID {
+		return spv2.Work{}, spv2.ErrCode(spv2.CodePermissionDenied, op+": 调用方 work 与目标 work 不一致", false, nil)
+	}
+	if err := authorizeWork(w, from); err != nil {
+		return spv2.Work{}, spv2.ErrCode(spv2.CodePermissionDenied, op+": 无权操作目标 work", false, nil)
+	}
+	return w, nil
 }
 
 func replyWorkError(call *spv2.Call, err error) error {

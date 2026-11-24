@@ -7,6 +7,7 @@ package store
 // 消息数、任务数、最后一条说什么，全部现算（冗余字段迟早和真相打架）。
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -47,21 +48,34 @@ func (s *Store) EnsureConversation(id, title, entry string) error {
 	return err
 }
 
+// execer 抽象 *sql.DB 与 *sql.Tx 的共同执行面，让会话刷新既能走单连接、也能走事务。
+type execer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // touchConversation 把会话的 updated_at 推到此刻（不存在就先建）。
 // 由 Record 在**真正写入一条记录之后**调用：只有落库成功才算"活跃"。
 func (s *Store) touchConversation(id string) error {
-	now := time.Now()
+	return touchConversationVia(context.Background(), s.db, id, time.Now())
+}
+
+// touchConversationVia 是 touchConversation 的实现，ex 可以是库句柄或事务句柄。
+// v2 的原子落库（RecordV2Atomic）必须传事务句柄：会话活跃时间与消息同进同退，
+// 不允许出现「消息回滚了、会话却标记成刚活跃过」。
+func touchConversationVia(ctx context.Context, ex execer, id string, now time.Time) error {
+	stamp := now.Format(time.RFC3339Nano)
 	// 先看它是不是刚活跃过（省一次写）；查不到才 insert，查到且够旧才 update。
 	var last string
-	err := s.db.QueryRow(`SELECT updated_at FROM conversations WHERE id=?`, id).Scan(&last)
+	err := ex.QueryRowContext(ctx, `SELECT updated_at FROM conversations WHERE id=?`, id).Scan(&last)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		// 查询与插入之间可能被另一个写入方抢先建会话：用幂等插入收尾，
 		// 不能把「并发首次写同一会话」变成唯一约束错误（Record 的消息此时已经落库了）。
-		_, err = s.db.Exec(
+		_, err = ex.ExecContext(ctx,
 			`INSERT INTO conversations(id, title, entry, status, created_at, updated_at) VALUES(?,?,?,?,?,?)
 			 ON CONFLICT(id) DO NOTHING`,
-			id, "", "", ConversationActive, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
+			id, "", "", ConversationActive, stamp, stamp,
 		)
 		return err
 	case err != nil:
@@ -70,7 +84,7 @@ func (s *Store) touchConversation(id string) error {
 	if t, perr := time.Parse(time.RFC3339Nano, last); perr == nil && now.Sub(t) < conversationTouchInterval {
 		return nil
 	}
-	_, err = s.db.Exec(`UPDATE conversations SET updated_at=? WHERE id=?`, now.Format(time.RFC3339Nano), id)
+	_, err = ex.ExecContext(ctx, `UPDATE conversations SET updated_at=? WHERE id=?`, stamp, id)
 	return err
 }
 

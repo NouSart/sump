@@ -132,7 +132,7 @@ func TestSchemaV2NewDatabase(t *testing.T) {
 	// 表名与列名逐张钉住（字段按 S-001 §4.3–§4.7）。
 	wantColumns := map[string][]string{
 		"store_receipts":      {"work", "client_item_id", "payload_hash", "item_id", "created_at"},
-		"report_receipts":     {"work", "source_service", "report_id", "payload_hash", "item_id", "call_id", "report_seq", "created_at"},
+		"report_receipts":     {"work", "source_service", "report_id", "payload_hash", "item_id", "call_id", "report_seq", "phase", "final", "data", "created_at"},
 		"context_snapshots":   {"snapshot_id", "work", "trigger_kind", "trigger_item", "payload", "schema", "created_at", "expires_at"},
 		"trigger_states":      {"work", "trigger_kind", "trigger_item", "state", "snapshot_id", "completed_at", "created_at", "updated_at"},
 		"calls":               {"id", "work", "service", "action", "mode", "pausable", "ttl_ms", "exec_deadline_ms", "remote_item_id", "observe_state", "exec_state", "phase", "reason", "result_ref", "remote_may_continue", "created_at", "updated_at"},

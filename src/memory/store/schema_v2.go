@@ -171,6 +171,9 @@ CREATE TABLE IF NOT EXISTS report_receipts (
   item_id        TEXT NOT NULL,
   call_id        TEXT NOT NULL,
   report_seq     INTEGER NOT NULL,
+  phase          TEXT NOT NULL DEFAULT '',
+  final          INTEGER NOT NULL DEFAULT 0,
+  data           BLOB,
   created_at     TEXT NOT NULL,
   PRIMARY KEY (work, source_service, report_id)
 );
