@@ -297,6 +297,88 @@ func countSnapshots(t *testing.T, st *store.Store) int {
 	return n
 }
 
+// TestContextV2AssembledSnapshotDoesNotReassemble assembled 分支只读快照、不重新组装。
+//
+// 构造办法：首次组装后删掉 work 所属的 tasks 行。重新组装必须先过 TaskIDOfWork + TaskByID，
+// task 行没了必然失败；而只读快照根本不碰 tasks 表。于是「删掉 task 仍拿回原快照与消息链」
+// 就把「assembled 分支没有重新组装」变成可观测事实——把 assembled 改成重新组装的变异会翻脸。
+func TestContextV2AssembledSnapshotDoesNotReassemble(t *testing.T) {
+	const workID = "w-assembled-snapshot"
+	s, st, taskID := newContextV2TestServer(t, workID)
+	item := insertContextV2Message(t, st, workID, taskID, "user", "user", "触发", "", 1)
+	req := protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item}}
+
+	first, err := callContextV2(t, s, req)
+	if err != nil {
+		t.Fatalf("首次组装失败: %v", err)
+	}
+	deleteTaskRow(t, st, taskID, workID)
+
+	got, err := callContextV2(t, s, req)
+	if err != nil {
+		t.Fatalf("assembled 分支不应重新组装（重新组装会因 task 行已删而失败）: %v", err)
+	}
+	if got.SnapshotID != first.SnapshotID || !reflect.DeepEqual(got.Messages, first.Messages) {
+		t.Fatalf("assembled 分支应原样返回首次快照:\nsnapshot=%q vs %q\nmessages=%+v",
+			got.SnapshotID, first.SnapshotID, got.Messages)
+	}
+	if n := countSnapshots(t, st); n != 1 {
+		t.Fatalf("只读快照不应产生第二份快照，实际 %d", n)
+	}
+}
+
+// TestContextV2CompletedSnapshotDoesNotReassemble completed 分支只回旧快照、不重新组装。
+//
+// 与 assembled 用例同样删 task 行：完成记录（trigger_states.state=completed）不依赖 tasks，
+// 只读快照也不依赖；只有「重新组装」会在 TaskByID 处失败。所以删 task 后仍成功，
+// 说明 completed 分支走的是只读快照——变异把它改去重新组装时这条会失败。
+func TestContextV2CompletedSnapshotDoesNotReassemble(t *testing.T) {
+	const workID = "w-completed-snapshot"
+	s, st, taskID := newContextV2TestServer(t, workID)
+	item := insertContextV2Message(t, st, workID, taskID, "user", "user", "触发", "", 1)
+	req := protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item}}
+
+	first, err := callContextV2(t, s, req)
+	if err != nil {
+		t.Fatalf("首次组装失败: %v", err)
+	}
+	if _, err := callTriggerComplete(t, s, protocol.TriggerCompletePayload{
+		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: item},
+	}); err != nil {
+		t.Fatalf("trigger_complete 失败: %v", err)
+	}
+	deleteTaskRow(t, st, taskID, workID)
+
+	got, err := callContextV2(t, s, req)
+	if err != nil {
+		t.Fatalf("completed 分支不应重新组装（重新组装会因 task 行已删而失败）: %v", err)
+	}
+	if got.SnapshotID != first.SnapshotID || !reflect.DeepEqual(got.Messages, first.Messages) {
+		t.Fatalf("completed 分支应原样返回旧快照:\nsnapshot=%q vs %q\nmessages=%+v",
+			got.SnapshotID, first.SnapshotID, got.Messages)
+	}
+	if n := countSnapshots(t, st); n != 1 {
+		t.Fatalf("只读快照不应产生第二份快照，实际 %d", n)
+	}
+}
+
+// deleteTaskRow 删掉任务行，并确认「重新组装」这条路确实走不通（TaskByID 必失败）。
+// 只读快照的路径不碰 tasks 表，所以这一步不影响它；若哪天重新组装不再需要 tasks，
+// 这里会先报「测试构造失效」，避免用例悄悄变成永真。
+func deleteTaskRow(t *testing.T, st *store.Store, taskID, workID string) {
+	t.Helper()
+	res, err := st.DB().Exec(`DELETE FROM tasks WHERE id = ?`, taskID)
+	if err != nil {
+		t.Fatalf("删除任务行失败: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		t.Fatalf("应删除 1 行任务（id=%s work=%s），实际 %d", taskID, workID, n)
+	}
+	if _, err := st.TaskByID(taskID); err == nil {
+		t.Fatalf("测试构造失效：tasks 行已删除（id=%s），TaskByID 仍成功", taskID)
+	}
+}
+
 // TestContextV2RejectsBadTrigger 参数与归属错误：trigger.item 不存在 → invalid_argument；
 // work 不存在 → not_found；work 没有任务 → not_found。
 func TestContextV2RejectsBadTrigger(t *testing.T) {

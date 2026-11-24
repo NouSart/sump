@@ -177,6 +177,83 @@ func TestSnapshotSaveLoadExpire(t *testing.T) {
 	}
 }
 
+// TestLoadSnapshotRejectsCorruptGzip 已压缩载荷正文 / CRC / 长度损坏时必须报错，
+// 不能把「解压失败」当成「空载荷」返回——gzip 头合法不等于正文可解。
+//
+// 变异对照：LoadSnapshot 里把 io.ReadAll 的 err 丢掉后，坏载荷会以「有数据或无数据 + nil error」
+// 返回；两条用例分别覆盖「正文读出来了但校验尾对不上」与「只有头、正文没写全」。
+func TestLoadSnapshotRejectsCorruptGzip(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	payload := []byte(`{"schema":"context/2","messages":[{"role":"user","content":"损坏后不能悄悄变空"}]}`)
+
+	cases := []struct {
+		name    string
+		corrupt func(raw []byte) []byte
+	}{
+		{
+			name: "翻转末尾字节（CRC32 / ISIZE 对不上）",
+			corrupt: func(raw []byte) []byte {
+				bad := append([]byte(nil), raw...)
+				bad[len(bad)-1] ^= 0xff
+				return bad
+			},
+		},
+		{
+			name: "截断到只剩 gzip 头（deflate 正文与校验尾都丢了）",
+			corrupt: func(raw []byte) []byte {
+				return append([]byte(nil), raw[:10]...)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openV2Store(t)
+			if err := st.SaveSnapshot(ctx, "snap-bad", "w-bad", "user", "item-bad", payload,
+				"context/2", now, now.Add(time.Hour)); err != nil {
+				t.Fatalf("保存快照失败: %v", err)
+			}
+			raw := readSnapshotPayload(t, st, "snap-bad")
+			if !bytes.HasPrefix(raw, []byte{0x1f, 0x8b}) || len(raw) <= 10 {
+				t.Fatalf("测试构造失效：落盘载荷不是可用的 gzip（len=%d 头=% x）",
+					len(raw), raw[:min(8, len(raw))])
+			}
+			writeSnapshotPayload(t, st, "snap-bad", tc.corrupt(raw))
+
+			snapshotID, got, _, err := st.LoadSnapshot(ctx, "w-bad", "user", "item-bad")
+			if err == nil {
+				t.Fatalf("损坏的 gzip 快照应返回错误（snapshot=%q payload=%q）", snapshotID, got)
+			}
+			if len(got) != 0 {
+				t.Fatalf("解压失败时不应返回载荷，实际 %d 字节: %q", len(got), got)
+			}
+		})
+	}
+}
+
+// readSnapshotPayload 读 context_snapshots 里的原始（gzip 压缩后）BLOB。
+func readSnapshotPayload(t *testing.T, st *Store, snapshotID string) []byte {
+	t.Helper()
+	var raw []byte
+	if err := st.db.QueryRow(
+		`SELECT payload FROM context_snapshots WHERE snapshot_id = ?`, snapshotID).Scan(&raw); err != nil {
+		t.Fatalf("读取快照 %s 的原始载荷失败: %v", snapshotID, err)
+	}
+	return raw
+}
+
+// writeSnapshotPayload 把（人为损坏的）原始载荷写回同一行，模拟磁盘上的坏数据。
+func writeSnapshotPayload(t *testing.T, st *Store, snapshotID string, raw []byte) {
+	t.Helper()
+	res, err := st.db.Exec(`UPDATE context_snapshots SET payload = ? WHERE snapshot_id = ?`, raw, snapshotID)
+	if err != nil {
+		t.Fatalf("写回损坏载荷失败: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		t.Fatalf("应更新 1 行快照 payload，实际 %d", n)
+	}
+}
+
 // TestRecentMessagesByWork 归属过滤（本 work + 旧记录同 task）、seq 升序、默认条数。
 func TestRecentMessagesByWork(t *testing.T) {
 	st := openV2Store(t)
