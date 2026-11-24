@@ -298,12 +298,17 @@ func insertMessageV2(ctx context.Context, tx *sql.Tx, in V2RecordInput) (string,
 	if err != nil {
 		return "", 0, false, err
 	}
+	// 未标注的 visibility 归一为 "work"：与老路径 recordVia 的默认一致（INV-14）。
+	visibility := in.Visibility
+	if visibility == "" {
+		visibility = "work"
+	}
 	var id int64
 	err = tx.QueryRowContext(ctx,
 		`INSERT INTO messages(conversation_id, role, content, kind, meta, seq, created_at, task_id, work_id, visibility)
 		 VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id`,
 		in.ConversationID, in.Role, in.Content, kind, in.Meta, seq,
-		time.Now().Format(time.RFC3339Nano), in.TaskID, in.WorkID, in.Visibility,
+		time.Now().Format(time.RFC3339Nano), in.TaskID, in.WorkID, visibility,
 	).Scan(&id)
 	if err != nil {
 		return "", 0, false, err

@@ -198,7 +198,7 @@ var migrations = []struct{ name, ddl string }{
 var v2ColumnMigrations = []struct{ table, name, ddl string }{
 	{"works", "task", `ALTER TABLE works ADD COLUMN task TEXT NOT NULL DEFAULT ''`},
 	{"messages", "work_id", `ALTER TABLE messages ADD COLUMN work_id TEXT NOT NULL DEFAULT ''`},
-	{"messages", "visibility", `ALTER TABLE messages ADD COLUMN visibility TEXT NOT NULL DEFAULT ''`},
+	{"messages", "visibility", `ALTER TABLE messages ADD COLUMN visibility TEXT NOT NULL DEFAULT 'work'`},
 }
 
 // tableColumns 返回一张表已有的列名集合（PRAGMA table_info）。

@@ -466,6 +466,25 @@ func TestRecordV2AtomicSeqBeatsStaleCounter(t *testing.T) {
 	}
 }
 
+// TestRecordV2AtomicDefaultsVisibility 未带 visibility 的 v2 消息按 "work" 落库，
+// 与老路径 recordVia 的归一一致（INV-14：跨 work 默认不可见）。
+func TestRecordV2AtomicDefaultsVisibility(t *testing.T) {
+	s := openTemp(t)
+	in := recInput("k1", recHashA)
+	in.Visibility = ""
+	res, err := s.RecordV2Atomic(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := s.db.QueryRow(`SELECT visibility FROM messages WHERE id = ?`, res.ItemID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "work" {
+		t.Fatalf("未标注 visibility 应落为 \"work\"，实际 %q", got)
+	}
+}
+
 // TestRecordV2AtomicKeepsLegacyDialogueDedup 旧的「连续相同对话只留一行」语义保留，
 // 但两个不同的前端键各自都有回执，且都指向被保留的那一行。
 func TestRecordV2AtomicKeepsLegacyDialogueDedup(t *testing.T) {

@@ -181,7 +181,8 @@ func TestSchemaV2NewDatabase(t *testing.T) {
 		t.Errorf("uq_calls_remote 应是部分唯一索引，实际: %s", idxSQL)
 	}
 
-	// 新列的默认值：works.task = ''，messages.work_id = ''、visibility = ''（未标注）。
+	// 新列的默认值：works.task = ''，messages.work_id = ''；
+	// visibility 默认 'work'——与老路径 recordVia 对空值的归一一致（未标注 = 按 work 可见）。
 	if _, err := st.db.Exec(`INSERT INTO messages(conversation_id, role, content, created_at)
 		VALUES('c', 'user', '只有老列', '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
@@ -190,8 +191,8 @@ func TestSchemaV2NewDatabase(t *testing.T) {
 	if err := st.db.QueryRow(`SELECT work_id, visibility FROM messages WHERE conversation_id = 'c'`).Scan(&workID, &visibility); err != nil {
 		t.Fatal(err)
 	}
-	if workID != "" || visibility != "" {
-		t.Errorf("messages 新列默认值 = (%q,%q)，期望 (\"\",\"\")", workID, visibility)
+	if workID != "" || visibility != "work" {
+		t.Errorf("messages 新列默认值 = (%q,%q)，期望 (\"\",\"work\")", workID, visibility)
 	}
 }
 
