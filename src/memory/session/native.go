@@ -10,6 +10,7 @@ package session
 
 import (
 	"context"
+	"errors"
 
 	"github.com/NouSart/sump/spv2"
 )
@@ -287,6 +288,12 @@ func (s *Server) registerNative() {
 func (s *Server) nativeStore(_ context.Context, call *spv2.Call) error {
 	out, err := s.store(call.Frame.Body)
 	if err != nil {
+		// v2 路径用 spv2.ErrCode 区分 conflict / not_found / invalid_argument；
+		// 旧路径的错误保持原样（一律 invalid_argument），线上行为不变。
+		var e *spv2.Error
+		if errors.As(err, &e) {
+			return call.ReplyError(e.Code, e.Message, e.Retryable, e.Details)
+		}
 		return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 	}
 	return call.Reply(out)
