@@ -278,6 +278,14 @@ type StorePayload struct {
 	// 而任务名会显示在界面的会话树里。入口服务知道人话标题是什么，就顺手给出；
 	// 为空则沿用记忆侧"取正文第一行"的旧规则（保持老调用方行为不变）。
 	TaskName string `msgpack:"task_name,omitempty"`
+	// 以下是记忆中心 v2（S-001 §3.0）的可选字段（只增不改；老调用方不填即保持旧行为）：
+	// ClientItemID 是调用方生成的幂等键，形成规则见 S-001 §3.0 规则 5
+	// （用户/助手 = <entry_service>:<entry_item_id>；补报 = report:<source_service>:<report_id>；其它 = 复用的 ULID）。
+	ClientItemID string `msgpack:"client_item_id,omitempty" json:"client_item_id,omitempty"`
+	// Visibility 是消息可见性：work（默认）/ thread / task；跨 work 读取默认不可见（INV-14）。
+	Visibility string `msgpack:"visibility,omitempty" json:"visibility,omitempty"`
+	// Report 只在补报路径携带：report_receipts 的幂等元数据与 phase/final/data（S-001 §4.3）。
+	Report *StoreReport `msgpack:"report,omitempty" json:"report,omitempty"`
 }
 
 // HistoryPayload 是 history 的 payload：向记忆服务要某会话最近的消息（供门户回填对话视图）。
@@ -954,6 +962,12 @@ type AsyncResultPayload struct {
 	Text   string             `msgpack:"text,omitempty"`
 	Data   msgpack.RawMessage `msgpack:"data,omitempty"`
 	Final  bool               `msgpack:"final,omitempty"`
+	// 以下是记忆中心 v2 的补报元数据（S-001 §3.0.1 / §3.0.2，只增不改）：
+	// ReportID / ReportSeq 由 owner 持久化（重启不复位）；CallID 是 call_open 分配、派发时传给执行服务、
+	// 补报时原样带回的 id——对账凭它回答，不必猜 remote_item_id。
+	ReportID  string `msgpack:"report_id,omitempty" json:"report_id,omitempty"`
+	ReportSeq int64  `msgpack:"report_seq,omitempty" json:"report_seq,omitempty"`
+	CallID    string `msgpack:"call_id,omitempty" json:"call_id,omitempty"`
 }
 
 // ---------- shell（命令执行服务） ----------
