@@ -271,6 +271,10 @@ type StorePayload struct {
 	// 为什么需要它：正文可能带来源标注前缀（见 Sender.Label），从正文第一行推任务名会推出一串标签，
 	// 而任务名会显示在界面的会话树里。入口服务知道人话标题是什么，就顺手给出；
 	// 为空则沿用记忆侧"取正文第一行"的旧规则（保持老调用方行为不变）。
+	//
+	// 【现状：无读者，去留待定】P2 切换后任务名只走 work_open（protocol.WorkOpenPayload.TaskName），
+	// memory 侧没有任何代码读 store 的这个字段；reasoner / qq 仍在发。字段删除属协议破坏性变更，
+	// 未批前保留原样（线上仍可解析），去留见 TODO.md「文档残差」。
 	TaskName string `msgpack:"task_name,omitempty"`
 	// 以下是记忆中心 v2（S-001 §3.0）的可选字段（只增不改；老调用方不填即保持旧行为）：
 	// ClientItemID 是调用方生成的幂等键，形成规则见 S-001 §3.0 规则 5
