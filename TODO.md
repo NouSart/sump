@@ -71,7 +71,6 @@
 - [ ] **owner 恢复与生产 owner 客户端** — `owner_recovery_complete` 恒 `false` 的保守口径；生产 owner 客户端仍缺（只有接口 + fake），`pause/resume` 在未注入时 `unavailable`。
 - [ ] **快照容量** — `context_snapshots` 只有 24h 过期，无 1 MiB 单条上限 / 2 GiB 总量 / 逐出。
 - [ ] **图片索引** — 新架构无 `image_index` / `image_note`；图片「首次建行」与 `fetch` 失败转 `lost` 未接。
-- [ ] **transcript（memory 侧）** — 未实现（S-001 §3.2）。
 - [ ] **`origin_session` 留空** — 不透明会话 ID 的脱敏在 `experience/redact`；`session` 不得 import `experience`，复制第二套会造第二份真相。
 - [ ] **两个版本闸门是 fail-closed** — 会话库 / 共享库 `user_version=0` 且已有表会拒绝启动（错误文案提示手动删 / 改名）；未提供自动迁移，也未提供 `-reset`。
 

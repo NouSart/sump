@@ -998,11 +998,19 @@ var guards = []guard{
 	{
 		name: "V2 snapshots gzip 解压错误被忽略（坏载荷当空载荷返回）",
 		file: "src/memory/session/store/snapshots.go",
-		old: `	plain, readErr := io.ReadAll(zr)
-	if readErr != nil {
-		return snapshotID, nil, exp, fmt.Errorf("解压上下文快照 %s: %w", snapshotID, readErr)
+		old: `	plain, err := io.ReadAll(zr)
+	if err != nil {
+		return nil, fmt.Errorf("解压上下文快照 %s: %w", snapshotID, err)
 	}`,
 		new: `	plain, _ := io.ReadAll(zr)`,
+	},
+	{
+		// transcript 的读路径（LoadSnapshotByID）：忽略 snapshot_id 就等于「总是重放最新那份」，
+		// 调用方点名要看旧快照时看到的是新历史——错得很安静，只有「两份快照」的用例能拦住。
+		name: "V2 transcript 忽略 snapshot_id 取该 work 最新快照（旧快照被最新重放）",
+		file: "src/memory/session/store/snapshots.go",
+		old:  " WHERE snapshot_id = ? AND work = ?`, snapshotID, work)",
+		new:  " WHERE work = ? ORDER BY created_at DESC LIMIT 1`, work)",
 	},
 
 	// ---------- V2 新增：调用账本（src/memory/session/store/calls.go · session/calls_v2.go）----------

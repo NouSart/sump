@@ -125,6 +125,9 @@ func provides() []protocol.Provide {
 		// 都不是工具：模型不该自己决定「要不要重开一轮」或「这轮算不算完」。
 		{Action: "context_v2", Input: "{work, trigger:{kind,item}, schema?}（按 work + 触发源取组装好的上下文；同一触发复用同一快照）", Output: "{schema, snapshot_id, expires_at, messages, task, work, degraded, warnings, assembled_at, trigger_state, completed}（不暴露给模型）"},
 		{Action: "trigger_complete", Input: "{work, trigger:{kind,item}}（幂等；模型输出与后续动作安全落库后调用）", Output: "{completed}（不暴露给模型）"},
+		// transcript（S-001 §3.2）：只读地把指定快照重放成文本；snapshot_id 必填，
+		// 与 context_v2 共用快照读取代码。不是工具：模型不自己决定历史要怎么重放。
+		{Action: "transcript", Input: "{work, snapshot_id, budget:{max_chars?}}（只读；按快照渲染文本，snapshot_id 必填）", Output: "{text, truncated, omitted}（不暴露给模型）"},
 		// v2 调用账本与常驻目录（R-023 P3）：都不是工具——模型不自己开调用、不自己判对账。
 		{Action: "call_open", Input: "{work, service, action?, mode?, pausable?, ttl_ms?, exec_deadline_ms?}（派发前分配 call_id；本地意图 observe=waiting / exec=created）", Output: "{call_id}（不暴露给模型）"},
 		{Action: "call_control", Input: "{id, control_id, op, ttl_ms?}（op=pause|resume|cancel；control_id 幂等；pause/resume 需 owner 确认）", Output: "{id, control_id, observe, exec, reason}（不暴露给模型）"},

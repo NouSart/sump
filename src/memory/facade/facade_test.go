@@ -140,6 +140,59 @@ func TestFacadeContextRoutesAndSettings(t *testing.T) {
 	}
 }
 
+// TestFacadeTranscriptForwards 门面只做转发：transcript 的 work/snapshot_id 原样到达 session，
+// 文本来自那份快照（S-001 §3.2）。
+func TestFacadeTranscriptForwards(t *testing.T) {
+	f, st, _ := startStack(t)
+	const workID = "w-transcript"
+
+	// 与 context_v2 用例同一套准备：先 context 登记 work / 任务，再走 v2 store 落消息。
+	if err := call(t, f.WsURL(), "reasoner", workID, "context", protocol.ContextPayload{
+		Conversation: "c-transcript",
+		TaskName:     "transcript 转发任务",
+		Messages:     []protocol.Message{{Role: "user", Content: "先建 work"}},
+	}, nil); err != nil {
+		t.Fatalf("context 登记 work 失败: %v", err)
+	}
+	if err := call(t, f.WsURL(), "reasoner", workID, "store", protocol.StorePayload{
+		ConversationID: "c-transcript", Work: workID, ClientItemID: "reasoner:transcript-1",
+		Role: "user", Content: "门面转发的问题",
+	}, nil); err != nil {
+		t.Fatalf("v2 store 失败: %v", err)
+	}
+	var itemID string
+	if err := st.DB().QueryRow(
+		`SELECT id FROM messages WHERE work_id = ? ORDER BY id DESC LIMIT 1`, workID).Scan(&itemID); err != nil {
+		t.Fatal(err)
+	}
+
+	var assembled protocol.ContextResponse
+	if err := call(t, f.WsURL(), "reasoner", workID, "context_v2",
+		protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: itemID}},
+		&assembled); err != nil {
+		t.Fatalf("门面转发 context_v2 失败: %v", err)
+	}
+
+	var got protocol.TranscriptResult
+	if err := call(t, f.WsURL(), "reasoner", workID, "transcript",
+		protocol.TranscriptPayload{Work: workID, SnapshotID: assembled.SnapshotID}, &got); err != nil {
+		t.Fatalf("门面转发 transcript 失败: %v", err)
+	}
+	if !strings.Contains(got.Text, "门面转发的问题") {
+		t.Fatalf("transcript 文本应来自那份快照: %+v", got)
+	}
+	if got.Truncated || got.Omitted != 0 {
+		t.Fatalf("无预算时不应截断: %+v", got)
+	}
+
+	// 错误的 snapshot_id 不能被门面吞掉：原样回 session 的 not_found。
+	err := call(t, f.WsURL(), "reasoner", workID, "transcript",
+		protocol.TranscriptPayload{Work: workID, SnapshotID: "no-such-snapshot"}, nil)
+	if !spv2.IsCode(err, spv2.CodeNotFound) {
+		t.Fatalf("缺失快照应 not_found，实际: %v", err)
+	}
+}
+
 func TestFacadeRejectsMissingPeer(t *testing.T) {
 	f := facade.New(facade.Config{
 		Name: "memory", Listen: "127.0.0.1:0", Standalone: true,

@@ -15,6 +15,8 @@ var sessionMethods = map[string]bool{
 	"task_resume": true, "task_rename": true, "task_list": true,
 	// v2 上下文四态（R-023 P2）：由 session 实现，门面只转发。
 	"context_v2": true, "trigger_complete": true,
+	// transcript（S-001 §3.2）：同样由 session 实现，门面只转发。
+	"transcript": true,
 	// v2 调用账本与常驻目录（R-023 P3）：同样由 session 实现，门面只转发。
 	"call_open": true, "call_control": true, "call_status": true, "resident_list": true,
 }
@@ -95,6 +97,7 @@ func provides() []protocol.Provide {
 		{Action: "context", Input: "{conversation, messages, boss?, task_name?}（spec §7.2 同步上下文）", Output: "{messages, work, task}（组装后的上下文与 work 行）"},
 		{Action: "context_v2", Input: "{work, trigger:{kind,item}, schema?}（v2：按 work + 触发源取组装好的上下文；同一触发复用同一快照）", Output: "{schema, snapshot_id, expires_at, messages, task, work, degraded, warnings, assembled_at, trigger_state, completed}（不暴露给模型）"},
 		{Action: "trigger_complete", Input: "{work, trigger:{kind,item}}（幂等；本轮模型输出与动作安全落库后调用）", Output: "{completed}（不暴露给模型）"},
+		{Action: "transcript", Input: "{work, snapshot_id, budget:{max_chars?}}（v2：只读地把指定快照渲染成文本；snapshot_id 必填）", Output: "{text, truncated, omitted}（不暴露给模型）"},
 		{Action: "call_open", Input: "{work, service, action?, mode?, pausable?, ttl_ms?, exec_deadline_ms?}（v2：派发前分配 call_id；本地意图 observe=waiting / exec=created）", Output: "{call_id}（不暴露给模型）"},
 		{Action: "call_control", Input: "{id, control_id, op, ttl_ms?}（v2：op=pause|resume|cancel；control_id 幂等；pause/resume 需 owner 确认）", Output: "{id, control_id, observe, exec, reason}（不暴露给模型）"},
 		{Action: "call_status", Input: "{ids}(≤100)（v2：对账读取；只读本地账本，owner_recovery_complete 恒 false）", Output: "{owner_recovery_complete, items}（不暴露给模型）"},

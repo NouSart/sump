@@ -200,18 +200,36 @@ func (s *Store) SaveSnapshot(ctx context.Context, snapshotID, work, kind, item s
 // LoadSnapshot 读一份快照并解压。过期返回 ErrSnapshotExpired（不返回载荷）；
 // 没有快照返回 ErrSnapshotNotFound。过期判定只比较 DB 里的 expires_at，不猜 trigger 状态。
 func (s *Store) LoadSnapshot(ctx context.Context, work, kind, item string) (snapshotID string, payload []byte, expiresAt time.Time, err error) {
-	var raw []byte
-	var expires string
-	queryErr := s.db.QueryRowContext(ctx,
+	row := s.db.QueryRowContext(ctx,
 		`SELECT snapshot_id, payload, expires_at FROM context_snapshots
 		 WHERE work = ? AND trigger_kind = ? AND trigger_item = ?`,
-		work, kind, item).Scan(&snapshotID, &raw, &expires)
+		work, kind, item)
+	return scanSnapshotRow(row, fmt.Sprintf("work=%s kind=%s item=%s", work, kind, item))
+}
+
+// LoadSnapshotByID 按主键（snapshot_id）读一份快照，且要求它属于 work。
+//
+// transcript 用它：文本必须对应调用方点名的那份投影，不能退化成「这个 work 的最新快照」。
+// 归属条件写进同一条 SELECT（不是读出来再比）：别人的 snapshot_id 在这里与「不存在」同形，
+// 不泄漏它是否存在。过期 / 缺失沿用 ErrSnapshotExpired / ErrSnapshotNotFound。
+func (s *Store) LoadSnapshotByID(ctx context.Context, work, snapshotID string) (snapshotIDOut string, payload []byte, expiresAt time.Time, err error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT snapshot_id, payload, expires_at FROM context_snapshots
+		 WHERE snapshot_id = ? AND work = ?`, snapshotID, work)
+	return scanSnapshotRow(row, fmt.Sprintf("work=%s snapshot_id=%s", work, snapshotID))
+}
+
+// scanSnapshotRow 把一行快照收成 (id, 明文载荷, 过期时间)：缺失 / 过期用既有哨兵错误，
+// 解压失败原样返回错误（不得当成空载荷）。rowScanner 与 calls.go 共用（同包）。
+func scanSnapshotRow(row rowScanner, by string) (snapshotID string, payload []byte, expiresAt time.Time, err error) {
+	var raw []byte
+	var expires string
+	queryErr := row.Scan(&snapshotID, &raw, &expires)
 	if errors.Is(queryErr, sql.ErrNoRows) {
-		return "", nil, time.Time{}, fmt.Errorf("读取上下文快照（work=%s kind=%s item=%s）: %w",
-			work, kind, item, ErrSnapshotNotFound)
+		return "", nil, time.Time{}, fmt.Errorf("读取上下文快照（%s）: %w", by, ErrSnapshotNotFound)
 	}
 	if queryErr != nil {
-		return "", nil, time.Time{}, fmt.Errorf("读取上下文快照（work=%s kind=%s item=%s）: %w", work, kind, item, queryErr)
+		return "", nil, time.Time{}, fmt.Errorf("读取上下文快照（%s）: %w", by, queryErr)
 	}
 	exp, parseErr := parseSnapshotTime(expires)
 	if parseErr != nil {
@@ -221,16 +239,26 @@ func (s *Store) LoadSnapshot(ctx context.Context, work, kind, item string) (snap
 		return snapshotID, nil, exp, fmt.Errorf("上下文快照 %s 已过期（expires_at=%s）: %w",
 			snapshotID, expires, ErrSnapshotExpired)
 	}
-	zr, readErr := gzip.NewReader(bytes.NewReader(raw))
-	if readErr != nil {
-		return snapshotID, nil, exp, fmt.Errorf("解压上下文快照 %s: %w", snapshotID, readErr)
-	}
-	defer func() { _ = zr.Close() }()
-	plain, readErr := io.ReadAll(zr)
-	if readErr != nil {
-		return snapshotID, nil, exp, fmt.Errorf("解压上下文快照 %s: %w", snapshotID, readErr)
+	plain, decErr := decodeSnapshotPayload(snapshotID, raw)
+	if decErr != nil {
+		return snapshotID, nil, exp, decErr
 	}
 	return snapshotID, plain, exp, nil
+}
+
+// decodeSnapshotPayload 是快照 gzip 解压的唯一实现（SaveSnapshot 的逆操作）。
+// 所有读快照的入口都必须经它：坏载荷一律报错，不得静默返回空文本。
+func decodeSnapshotPayload(snapshotID string, raw []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("解压上下文快照 %s: %w", snapshotID, err)
+	}
+	defer func() { _ = zr.Close() }()
+	plain, err := io.ReadAll(zr)
+	if err != nil {
+		return nil, fmt.Errorf("解压上下文快照 %s: %w", snapshotID, err)
+	}
+	return plain, nil
 }
 
 // parseSnapshotTime 解析快照时间：写入侧统一 RFC3339Nano，兼容只有秒精度的老值。

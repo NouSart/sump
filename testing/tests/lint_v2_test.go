@@ -279,6 +279,7 @@ var v2ImplementationFiles = []string{
 	"src/memory/session/authorize.go",
 	"src/memory/session/calls_v2.go",
 	"src/memory/session/context_v2.go",
+	"src/memory/session/transcript.go", // S-001 §3.2：按快照重放文本（只读）
 	"src/memory/session/store_v2.go",
 	"src/memory/session/owner_client.go", // owner 握手/对账的可注入契约（与 calls_v2 同批）
 	"src/memory/session/store/calls.go",
