@@ -25,12 +25,11 @@ func TestWorkTransitionMetricsOnRealCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	ctxCall, _ := spv2.NewCall(workID, spv2.ServiceRef("reasoner"), spv2.ServiceRef("memory"), "context", protocol.ContextPayload{
-		Conversation: "conv-metric", Boss: "frontend",
-		Messages: []protocol.Message{{Role: "user", Content: "hi"}},
+	openCall, _ := spv2.NewCall(workID, spv2.ServiceRef("reasoner"), spv2.ServiceRef("memory"), "work_open", protocol.WorkOpenPayload{
+		Work: workID, ConversationID: "conv-metric", TaskName: "hi", Boss: "frontend",
 	})
-	if _, err := c.Call(ctx, ctxCall); err != nil {
-		t.Fatalf("context 建 work 失败: %v", err)
+	if _, err := c.Call(ctx, openCall); err != nil {
+		t.Fatalf("work_open 建 work 失败: %v", err)
 	}
 	runtimeRef := spv2.AgentRef("runtime").WithAuthority(spv2.AuthorityRuntime)
 	update, _ := spv2.NewCall(workID, runtimeRef, spv2.ServiceRef("memory"), "work_update", map[string]any{"work": workID, "status": spv2.WorkDone})

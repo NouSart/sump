@@ -37,15 +37,13 @@ func TestSharedExperienceE2E(t *testing.T) {
 		otherCid = "web:private:owner"
 		secret   = "机密原文：数据库口令是 hunter2"
 	)
-	// 1) A 会话留一条原文（只该待在自己的会话库里）。
-	rp := memoryCall(t, memURL, "store", protocol.StorePayload{
-		ConversationID: ownerCid, Role: "user", Content: secret,
-	})
-	if !rp.OK {
-		t.Fatalf("store 失败: %s", rp.Error)
+	// 1) A 会话留一条原文（只该待在自己的会话库里）。走完整 context 链路落库，
+	// 这样原文属于 A 的 work，后续 A 自己 recall 时基座里还能看到。
+	if _, err := recallOnce(t, memURL, secret, ownerCid); err != nil {
+		t.Fatalf("预置 A 会话原文失败: %v", err)
 	}
 	// 2) A 发布摘要（复盘在真实链路里做的同一件事）。
-	rp = memoryCall(t, memURL, "publish_session", protocol.PublishSessionPayload{
+	rp := memoryCall(t, memURL, "publish_session", protocol.PublishSessionPayload{
 		ConversationID: ownerCid,
 		TaskID:         "task-e2e-shared",
 		Title:          "排查 embedding",
@@ -107,13 +105,22 @@ func TestSharedExperienceE2E(t *testing.T) {
 		t.Fatalf("删完目录应为空: %+v", after.Sessions)
 	}
 
-	// 6) 原文并没有丢：A 自己 recall 时还在（只是别的会话读不到）。
+	// 6) 原文并没有丢：A 自己 recall 时基座历史里还在（只是别的会话读不到）。
 	// 这条与上面一起构成"私有 / 共享"的完整对照——不然"看不到原文"可能只是因为它根本没存下来。
-	own := recallEventually(t, memURL, "继续", ownerCid, func(b string) bool {
-		return strings.Contains(b, secret)
-	})
-	if strings.Contains(own, "（其他会话）") {
-		t.Fatalf("自己的会话不该在「其他会话」一节里出现自己:\n%s", own)
+	own, err := contextOnce(t, memURL, "继续", ownerCid)
+	if err != nil {
+		t.Fatalf("A 自己的 context 失败: %v", err)
+	}
+	var ownText strings.Builder
+	for _, m := range own.Messages {
+		ownText.WriteString(m.Content)
+		ownText.WriteString("\n")
+	}
+	if !strings.Contains(ownText.String(), secret) {
+		t.Fatalf("A 自己的基座历史应还含原文: %s", ownText.String())
+	}
+	if strings.Contains(ownText.String(), "（其他会话）") {
+		t.Fatalf("自己的会话不该在「其他会话」一节里出现自己:\n%s", ownText.String())
 	}
 }
 

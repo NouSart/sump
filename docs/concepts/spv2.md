@@ -454,8 +454,8 @@ work_messages(
 
 - `messages` 表加 `work_id`；A2A 正文只存 `messages` 一份，`work_messages.body_ref` 只存指针。
 - reasoner 只缓存 work 行；工具不建 work 表；entry 只认 `deliver` 的 `conversation`。
-- `memory.context` 首次调用时创建 work 行；重复调用幂等。
-- `work_get` / `work_open` / `work_update` / `work_close` / `lease_charge` / `lease_release` 是 memory 内部 method，**不进协议 method 表**。
+- `memory.work_open` 在建链前登记 work 行（幂等）；`memory.context` 只读已登记的 work / task。
+- `work_open` 是 memory 对外的公开 method（门面转发，进 provides，不作 LLM 工具）；`work_get` / `work_update` / `work_close` / `lease_charge` / `lease_release` 是内部 method，**不进协议 method 表**。
 
 ---
 

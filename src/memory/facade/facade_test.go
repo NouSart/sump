@@ -95,37 +95,66 @@ func call(t *testing.T, url, from, work, method string, in, out any) error {
 	return nil
 }
 
+// openWork 经门面登记 work / 任务（与 reasoner 建链同一条路）。
+func openWork(t *testing.T, f *facade.Server, from, work, cid, taskName string) protocol.WorkOpenResult {
+	t.Helper()
+	var out protocol.WorkOpenResult
+	if err := call(t, f.WsURL(), from, work, "work_open", protocol.WorkOpenPayload{
+		Work: work, ConversationID: cid, TaskName: taskName, Boss: from,
+	}, &out); err != nil {
+		t.Fatalf("work_open(%s) 失败: %v", work, err)
+	}
+	return out
+}
+
+// storeEntry 经门面走一次 v2 store，返回 item_id（context 的 trigger.item）。
+func storeEntry(t *testing.T, f *facade.Server, from, work, cid, taskID, role, content, key string) protocol.StoreResult {
+	t.Helper()
+	var out protocol.StoreResult
+	if err := call(t, f.WsURL(), from, work, "store", protocol.StorePayload{
+		ConversationID: cid, Work: work, TaskID: taskID, ClientItemID: key,
+		Role: role, Content: content,
+	}, &out); err != nil {
+		t.Fatalf("store(%s) 失败: %v", work, err)
+	}
+	return out
+}
+
+// getContext 经门面取一次 context/2（session 基座 + experience 现注入）。
+func getContext(t *testing.T, f *facade.Server, from, work string, trigger protocol.Trigger) protocol.ContextResponse {
+	t.Helper()
+	var out protocol.ContextResponse
+	if err := call(t, f.WsURL(), from, work, "context", protocol.ContextRequest{
+		Work: work, Trigger: trigger,
+	}, &out); err != nil {
+		t.Fatalf("context(%s) 失败: %v", work, err)
+	}
+	return out
+}
+
 func TestFacadeContextRoutesAndSettings(t *testing.T) {
 	f, _, _ := startStack(t)
 
-	if err := call(t, f.WsURL(), "reasoner", "w1", "store", protocol.StorePayload{
-		ConversationID: "c1", Role: "user", Content: "上一轮",
-	}, nil); err != nil {
-		t.Fatal(err)
-	}
+	opened := openWork(t, f, "reasoner", "w1", "c1", "上下文任务")
+	prev := storeEntry(t, f, "reasoner", "w1", "c1", opened.TaskID, "user", "上一轮", "reasoner:prev")
 	if err := call(t, f.WsURL(), "reasoner", "w1", "remember", protocol.RememberPayload{
 		Kind: "偏好", Content: "用户喜欢简洁", Priority: 1,
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	var got struct {
-		Messages []protocol.Message `msgpack:"messages"`
-		Work     spv2.Work          `msgpack:"work"`
-		Task     protocol.Task      `msgpack:"task"`
-	}
-	if err := call(t, f.WsURL(), "reasoner", "w1", "context", protocol.ContextPayload{
-		Conversation: "c1", Boss: "e2e", Messages: []protocol.Message{
-			{Role: "system", Content: "sys"}, {Role: "user", Content: "新一轮"},
-		},
-	}, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Task.ID == "" || got.Work.ID == "" {
+	got := getContext(t, f, "reasoner", "w1", protocol.Trigger{Kind: "user", Item: prev.ItemID})
+	if got.Task.ID == "" || got.Work.ID != "w1" {
 		t.Fatalf("context 应带 task/work: %+v", got)
 	}
-	if len(got.Messages) < 2 || !strings.Contains(got.Messages[1].Content, "上一轮") ||
-		!strings.Contains(got.Messages[1].Content, "用户喜欢简洁") {
-		t.Fatalf("记忆块不符: %+v", got.Messages)
+	joined := ""
+	for _, m := range got.Messages {
+		joined += m.Content + "\n"
+	}
+	if !strings.Contains(joined, "上一轮") || !strings.Contains(joined, "用户喜欢简洁") {
+		t.Fatalf("基座历史与记忆块都应出现在消息链里: %+v", got.Messages)
+	}
+	if !hasMemoryPrefix(got.Messages) {
+		t.Fatalf("experience 注入缺失【记忆】块: %+v", got.Messages)
 	}
 
 	keys := []string{}
@@ -137,6 +166,38 @@ func TestFacadeContextRoutesAndSettings(t *testing.T) {
 		"share.sessions_limit", "share.digest_chars", "db", "shared_db", "name", "addr", "center"}
 	if strings.Join(keys, ",") != strings.Join(want, ",") {
 		t.Fatalf("门面设置顺序不符:\n got %v\nwant %v", keys, want)
+	}
+}
+
+// TestFacadeTranscriptForwards 门面只做转发：transcript 的 work/snapshot_id 原样到达 session，
+// 文本来自那份快照（S-001 §3.2）。
+func TestFacadeTranscriptForwards(t *testing.T) {
+	f, _, _ := startStack(t)
+	const workID = "w-transcript"
+
+	// 与 context 用例同一套准备：先 work_open 登记 work / 任务，再走 v2 store 落消息。
+	opened := openWork(t, f, "reasoner", workID, "c-transcript", "transcript 转发任务")
+	stored := storeEntry(t, f, "reasoner", workID, "c-transcript", opened.TaskID, "user", "门面转发的问题", "reasoner:transcript-1")
+	assembled := getContext(t, f, "reasoner", workID,
+		protocol.Trigger{Kind: "user", Item: stored.ItemID})
+
+	var got protocol.TranscriptResult
+	if err := call(t, f.WsURL(), "reasoner", workID, "transcript",
+		protocol.TranscriptPayload{Work: workID, SnapshotID: assembled.SnapshotID}, &got); err != nil {
+		t.Fatalf("门面转发 transcript 失败: %v", err)
+	}
+	if !strings.Contains(got.Text, "门面转发的问题") {
+		t.Fatalf("transcript 文本应来自那份快照: %+v", got)
+	}
+	if got.Truncated || got.Omitted != 0 {
+		t.Fatalf("无预算时不应截断: %+v", got)
+	}
+
+	// 错误的 snapshot_id 不能被门面吞掉：原样回 session 的 not_found。
+	err := call(t, f.WsURL(), "reasoner", workID, "transcript",
+		protocol.TranscriptPayload{Work: workID, SnapshotID: "no-such-snapshot"}, nil)
+	if !spv2.IsCode(err, spv2.CodeNotFound) {
+		t.Fatalf("缺失快照应 not_found，实际: %v", err)
 	}
 }
 
@@ -153,56 +214,35 @@ func TestFacadeRejectsMissingPeer(t *testing.T) {
 	}
 }
 
-// TestFacadeContextV2AndTriggerComplete 门面只做转发：context_v2 的四态与
-// trigger_complete 必须经门面原样到达 session（含 completed 只补 ACK）。
-func TestFacadeContextV2AndTriggerComplete(t *testing.T) {
+// TestFacadeContextFourStatesAndTriggerComplete 门面组合 context 的四态：
+// work_open 登记、context 取基座并注入 experience、trigger_complete 经门面原样到达
+// session（含 completed 只补 ACK、不再注入 experience）。
+func TestFacadeContextFourStatesAndTriggerComplete(t *testing.T) {
 	f, st, _ := startStack(t)
 	const workID = "w-v2"
 
-	// session 侧的准备走 production 同一条路：facade 的 context → session.context_base
-	// 登记 work 并把 work 关联到解析出的任务（works.task 是 context_v2 找任务的前提）。
-	if err := call(t, f.WsURL(), "reasoner", workID, "context", protocol.ContextPayload{
-		Conversation: "c-v2",
-		TaskName:     "v2 上下文任务",
-		Messages:     []protocol.Message{{Role: "user", Content: "先建 work 与任务"}},
-	}, nil); err != nil {
-		t.Fatalf("context 登记 work 失败: %v", err)
-	}
+	opened := openWork(t, f, "reasoner", workID, "c-v2", "v2 上下文任务")
 	task, ok, err := st.CurrentTask("c-v2")
 	if err != nil || !ok {
-		t.Fatalf("context 后应有进行中任务: %+v, err=%v", task, err)
+		t.Fatalf("work_open 后应有进行中任务: %+v, err=%v", task, err)
+	}
+	if opened.TaskID != task.ID {
+		t.Fatalf("work_open 回的 task_id 与当前任务不一致: %q vs %q", opened.TaskID, task.ID)
 	}
 
-	// 经门面走 v2 store（client_item_id 非空 → 原子路径，带 work 归属）。
-	if err := call(t, f.WsURL(), "reasoner", workID, "store", protocol.StorePayload{
-		ConversationID: "c-v2", Work: workID, ClientItemID: "reasoner:trigger-1",
-		Role: "user", Content: "第一轮问题",
-	}, nil); err != nil {
-		t.Fatalf("v2 store 失败: %v", err)
-	}
-	var itemID string
-	if err := st.DB().QueryRow(
-		`SELECT id FROM messages WHERE work_id = ? ORDER BY id DESC LIMIT 1`, workID).Scan(&itemID); err != nil {
-		t.Fatal(err)
-	}
-	req := protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: itemID}}
+	// 经门面走 v2 store（走同一条原子路径，带 work 归属与 client_item_id）。
+	stored := storeEntry(t, f, "reasoner", workID, "c-v2", task.ID, "user", "第一轮问题", "reasoner:trigger-1")
+	req := protocol.ContextRequest{Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: stored.ItemID}}
 
-	var first protocol.ContextResponse
-	if err := call(t, f.WsURL(), "reasoner", workID, "context_v2", req, &first); err != nil {
-		t.Fatalf("门面转发 context_v2 失败: %v", err)
-	}
+	first := getContext(t, f, "reasoner", workID, req.Trigger)
 	if first.SnapshotID == "" || first.TriggerState != "assembled" || len(first.Messages) == 0 {
 		t.Fatalf("首次组装回执不符: %+v", first)
 	}
 	if first.Messages[0].Role != "system" || first.Task.ID != task.ID || first.Work.ID != workID {
 		t.Fatalf("首次组装投影不符: task=%+v work=%+v messages=%+v", first.Task, first.Work, first.Messages)
 	}
-
-	// assembled：同一触发复用同一快照。
-	var second protocol.ContextResponse
-	if err := call(t, f.WsURL(), "reasoner", workID, "context_v2", req, &second); err != nil {
-		t.Fatalf("assembled 重取失败: %v", err)
-	}
+	// assembled：同一触发复用同一基座快照（experience 段每次现算，不参与快照）。
+	second := getContext(t, f, "reasoner", workID, req.Trigger)
 	if second.SnapshotID != first.SnapshotID {
 		t.Fatalf("assembled 应复用快照: %q vs %q", second.SnapshotID, first.SnapshotID)
 	}
@@ -224,7 +264,7 @@ func TestFacadeContextV2AndTriggerComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ack protocol.ContextResponse
-	if err := call(t, f.WsURL(), "reasoner", workID, "context_v2", req, &ack); err != nil {
+	if err := call(t, f.WsURL(), "reasoner", workID, "context", req, &ack); err != nil {
 		t.Fatalf("completed 后经门面取 context 失败: %v", err)
 	}
 	if !ack.Completed || ack.TriggerState != "completed" || len(ack.Messages) != 0 {
@@ -233,4 +273,14 @@ func TestFacadeContextV2AndTriggerComplete(t *testing.T) {
 	if ack.SnapshotID != first.SnapshotID {
 		t.Fatalf("ACK 应指回原快照: %q vs %q", ack.SnapshotID, first.SnapshotID)
 	}
+}
+
+// hasMemoryPrefix 判断消息链里有没有门面注入的【记忆】块。
+func hasMemoryPrefix(msgs []protocol.LLMMessage) bool {
+	for _, m := range msgs {
+		if m.Role == "system" && strings.HasPrefix(m.Content, "【记忆】") {
+			return true
+		}
+	}
+	return false
 }

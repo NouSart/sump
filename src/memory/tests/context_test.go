@@ -1,85 +1,88 @@
 package tests
 
-// spec §7.2 context：reasoner 同步向 memory 要上下文；返回组装后的 messages + work 行。
-// 这条路径替代 recall+resume 两跳（recall 保留兼容期，迁移完成后再删）。
+// context/2 的公开入口（R-026 P2c）：work_open 登记 → store 产生触发条目 → facade 的
+// context/2 的公开入口：返回 session 基座并注入 experience；请求只按 work + trigger 组装。
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/NouSart/sump/memory/facade/compose"
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )
 
-func TestContextReturnsMessagesAndWork(t *testing.T) {
+func TestContextReturnsBaseAndExperience(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
 
-	req := protocol.ContextPayload{
-		Conversation: "conv-context",
-		Boss:         "stub-boss",
-		TaskName:     "上下文任务",
-		Messages: []protocol.Message{
-			{Role: "system", Content: "sys"},
-			{Role: "user", Content: "给我上下文"},
-		},
+	opened := caller.openWork(t, srv.WsURL(), "w-ctx", "conv-context", "上下文任务")
+	caller.storeV2(t, srv.WsURL(), "w-ctx", "conv-context", opened.TaskID, "user", "上一轮", "reasoner:prev")
+	current := caller.storeV2(t, srv.WsURL(), "w-ctx", "conv-context", opened.TaskID, "user", "给我上下文", "reasoner:cur")
+	if rp := caller.call(t, srv.WsURL(), "remember", protocol.RememberPayload{
+		Kind: "偏好", Content: "用户喜欢简洁", Priority: 1,
+	}); !rp.OK {
+		t.Fatalf("remember 失败: %s", rp.Error)
 	}
-	rp := caller.call(t, srv.WsURL(), "context", req)
-	if !rp.OK {
-		t.Fatalf("context 失败: %s", rp.Error)
-	}
-	var got struct {
-		Messages []protocol.Message `msgpack:"messages"`
-		Work     spv2.Work          `msgpack:"work"`
-		Task     protocol.Task      `msgpack:"task"`
-	}
-	if err := protocol.DecodeRaw(rp.Data, &got); err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Messages) == 0 {
-		t.Fatal("context 返回空消息")
-	}
-	if got.Work.ID != "trace-test" || got.Work.Status != spv2.WorkRunning {
-		t.Fatalf("context 返回的 work 不对: %+v", got.Work)
-	}
-	if got.Task.Name != "上下文任务" {
+
+	got := caller.contextFor(t, srv.WsURL(), "w-ctx", protocol.Trigger{Kind: "user", Item: current.ItemID})
+	if got.Task.ID != opened.TaskID || got.Task.Name != "上下文任务" {
 		t.Fatalf("context 返回的 task 不对: %+v", got.Task)
 	}
+	if got.Work.ID != "w-ctx" || got.Work.Status != spv2.WorkRunning || got.Work.Agent != "reasoner" {
+		t.Fatalf("context 返回的 work 不对: %+v", got.Work)
+	}
+	if got.TriggerState != "assembled" || got.SnapshotID == "" {
+		t.Fatalf("首次组装状态不对: %+v", got)
+	}
+	var joined string
+	for _, m := range got.Messages {
+		joined += m.Content + "\n"
+	}
+	if !strings.Contains(joined, "上一轮") || !strings.Contains(joined, "给我上下文") {
+		t.Fatalf("基座应包含全部库内历史: %+v", got.Messages)
+	}
+	block := memoryBlockText(got.Messages)
+	if !strings.HasPrefix(block, compose.MemoryPrefix) || !strings.Contains(block, "用户喜欢简洁") {
+		t.Fatalf("experience 注入不符: %q", block)
+	}
 
-	// 重复调用幂等：同一 work 行，不新建、不换 id。
-	rp2 := caller.call(t, srv.WsURL(), "context", req)
-	if !rp2.OK {
-		t.Fatalf("第二次 context 失败: %s", rp2.Error)
-	}
-	var got2 struct {
-		Work spv2.Work `msgpack:"work"`
-	}
-	if err := protocol.DecodeRaw(rp2.Data, &got2); err != nil {
-		t.Fatal(err)
-	}
-	if got2.Work.ID != got.Work.ID || got2.Work.CreatedAt != got.Work.CreatedAt {
-		t.Fatalf("重复 context 不应重建 work: %+v vs %+v", got2.Work, got.Work)
+	// assembled：同一触发复用同一基座快照；experience 每次现注入。
+	second := caller.contextFor(t, srv.WsURL(), "w-ctx", protocol.Trigger{Kind: "user", Item: current.ItemID})
+	if second.SnapshotID != got.SnapshotID {
+		t.Fatalf("assembled 应复用快照: %q vs %q", second.SnapshotID, got.SnapshotID)
 	}
 
-	// 空消息必须 invalid_argument，不能静默返回空上下文。
-	rp3 := caller.call(t, srv.WsURL(), "context", protocol.ContextPayload{Conversation: "c"})
-	if rp3.OK {
-		t.Fatal("空 messages 的 context 应失败")
+	// 空 work / 缺触发必须 invalid_argument，不能静默返回空上下文。
+	if rp := caller.call(t, srv.WsURL(), "context", protocol.ContextRequest{}); rp.OK {
+		t.Fatal("空 context 请求应失败")
+	} else if !strings.Contains(rp.Error, "work 必填") {
+		t.Fatalf("错误应说明 work 必填: %s", rp.Error)
+	}
+	if rp := caller.call(t, srv.WsURL(), "context", protocol.ContextRequest{Work: "w-ctx"}); rp.OK {
+		t.Fatal("缺 trigger 的 context 应失败")
 	}
 }
 
-// spec §6.5：context 必须校验来源——work 已存在时只有它的 agent/owner/entry 能取；
+// TestContextAuthorityAndTerminal：work 已存在时只有它的 agent/owner/entry 能取；
 // 终态 work 不能再要 context。
 func TestContextAuthorityAndTerminal(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
-	req := protocol.ContextPayload{Conversation: "conv-auth", Boss: "stub-boss", Messages: []protocol.Message{{Role: "user", Content: "跑"}}}
+
+	opened := caller.openWork(t, srv.WsURL(), "trace-test", "conv-auth", "权限任务")
+	msg := caller.storeV2(t, srv.WsURL(), "trace-test", "conv-auth", opened.TaskID, "user", "跑", "reasoner:a1")
+	req := protocol.ContextRequest{
+		Work: "trace-test", Trigger: protocol.Trigger{Kind: "user", Item: msg.ItemID},
+	}
 	if rp := caller.call(t, srv.WsURL(), "context", req); !rp.OK {
 		t.Fatalf("首次 context 失败: %s", rp.Error)
 	}
+
 	// 另一个服务来取同一条 work：permission_denied。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -95,7 +98,8 @@ func TestContextAuthorityAndTerminal(t *testing.T) {
 	if _, err := c.Call(ctx, other); !spv2.IsCode(err, spv2.CodePermissionDenied) {
 		t.Fatalf("越权 context 应 permission_denied: %v", err)
 	}
-	// 终态 work 再取 context：conflict。
+
+	// 普通服务 cancel 被拒；runtime 可把 work 置终态。
 	if rp := caller.call(t, srv.WsURL(), "work_cancel", map[string]any{"work": "trace-test"}); rp.OK {
 		t.Fatal("普通服务 cancel 应被拒")
 	}

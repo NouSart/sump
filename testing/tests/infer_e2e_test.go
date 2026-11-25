@@ -246,15 +246,29 @@ func TestInferChainE2E(t *testing.T) {
 	waitRosterHas(t, obs, "reasoner", 60*time.Second)
 	waitRosterHas(t, obs, "memory", 10*time.Second)
 
-	// 预置会话历史（上一轮的对话）——验证 recall 会把它注入 LLM 请求。
+	// 预置会话历史（上一轮的对话）——验证 context 基座会把它带进 LLM 请求。
+	// 历史属于链路的 work（e2e-work-lease）：先 work_open 登记，再按 work 落库。
 	mc := dialSPV2(t, memoryURL)
 	ctx0, cancel0 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel0()
-	for _, sp := range []protocol.StorePayload{
+	openRP := callWorkFrom(t, mc, "e2e-work-lease", "reasoner", "memory", "work_open", protocol.WorkOpenPayload{
+		Work: "e2e-work-lease", ConversationID: "e2e-conv", TaskName: "历史注入", Boss: "e2e-boss",
+	}, ctx0)
+	if !openRP.OK {
+		t.Fatalf("预置 work_open 失败: %s", openRP.Error)
+	}
+	var seedTask protocol.WorkOpenResult
+	if err := protocol.DecodeRaw(openRP.Data, &seedTask); err != nil {
+		t.Fatalf("预置 work_open 回执无法解码: %v", err)
+	}
+	for i, sp := range []protocol.StorePayload{
 		{ConversationID: "e2e-conv", Role: "user", Content: "上次谈话内容A"},
 		{ConversationID: "e2e-conv", Role: "assistant", Content: "上次答复B"},
 	} {
-		rp := callJumpFrom(t, mc, "e2e", "memory", "store", sp, ctx0)
+		sp.Work = "e2e-work-lease"
+		sp.TaskID = seedTask.TaskID
+		sp.ClientItemID = "e2e-boss:seed-" + fmt.Sprint(i)
+		rp := callWorkFrom(t, mc, "e2e-work-lease", "reasoner", "memory", "store", sp, ctx0)
 		if !rp.OK {
 			t.Fatalf("预置 store 失败: %s", rp.Error)
 		}
@@ -346,16 +360,16 @@ func TestInferChainE2E(t *testing.T) {
 		}
 	}
 
-	// 第一轮请求：记忆块（预置会话历史）已被注入。
+	// 第一轮请求：预置会话历史已由 context 基座带进模型链（不再折叠进【记忆】块）。
 	msgs1, _ := reqs[0]["messages"].([]any)
-	foundMemory := false
+	foundHistory := false
 	for _, m := range msgs1 {
 		mm, _ := m.(map[string]any)
-		if s, _ := mm["content"].(string); strings.Contains(s, "【记忆】") && strings.Contains(s, "上次谈话内容A") {
-			foundMemory = true
+		if s, _ := mm["content"].(string); strings.Contains(s, "上次谈话内容A") {
+			foundHistory = true
 		}
 	}
-	if !foundMemory {
+	if !foundHistory {
 		t.Fatalf("第一轮 LLM 请求应含注入的会话历史: %+v", msgs1)
 	}
 

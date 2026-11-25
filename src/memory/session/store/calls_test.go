@@ -319,7 +319,7 @@ func TestCreateCallResolvesWorkJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// works.task 的写入方是会话生命周期（context_base → ensureContextWork），这里走同一个入口。
+	// works.task 的写入方是会话生命周期（work_open → LinkWorkTask），这里走同一个入口。
 	if err := st.LinkWorkTask(ctx, "w1", task.ID); err != nil {
 		t.Fatal(err)
 	}

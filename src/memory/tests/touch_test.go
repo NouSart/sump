@@ -27,14 +27,10 @@ func TestContextTouchesInjectedMemories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	in := protocol.ContextPayload{
-		Conversation: "c-touch",
-		Boss:         "stub-entry",
-		Messages:     []protocol.Message{{Role: "user", Content: "我养了一只猫"}},
-	}
-	if err := callMemoryFrom(t, srv.WsURL(), "reasoner", "context", in, nil); err != nil {
-		t.Fatalf("context 失败: %v", err)
-	}
+	caller := startStubCaller(t, sc.URL())
+	opened := caller.openWork(t, srv.WsURL(), "w-touch", "c-touch", "触达测试")
+	msg := caller.storeV2(t, srv.WsURL(), "w-touch", "c-touch", opened.TaskID, "user", "我养了一只猫", "reasoner:touch")
+	caller.contextFor(t, srv.WsURL(), "w-touch", protocol.Trigger{Kind: "user", Item: msg.ItemID})
 
 	entries, err := sh.Longterm.ListActive()
 	if err != nil {

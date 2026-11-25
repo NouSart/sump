@@ -1,7 +1,7 @@
 package protocol
 
 // 记忆中心 v2（S-001）的载荷类型——P1 子集：store 的幂等 / 补报（§3.0 / §3.0.1 / §4.3）；
-// P2 子集：context 组装的四态与 trigger_complete（§3.1 / §3.1.1）；
+// P2 子集：context 组装的四态与 trigger_complete（§3.1 / §3.1.1）、transcript（§3.2）；
 // P3 子集：调用生命周期（call_open / call_control / call_status）与常驻目录（resident_list，
 // §3.0.2 / §3.4 / §3.5 / §3.6）。
 // 命名一律按 S-001 §3.9 词汇表；线上键名是 snake_case，且**只增不改**。
@@ -35,6 +35,24 @@ type StoreResult struct {
 	ItemID  string `msgpack:"item_id" json:"item_id"`
 	Seq     int64  `msgpack:"seq" json:"seq"`
 	Deduped bool   `msgpack:"deduped,omitempty" json:"deduped,omitempty"`
+}
+
+// ---------- work_open（R-026 P2c） ----------
+
+// WorkOpenPayload 是 work_open 的入参：登记执行单元，并按会话解析 / 创建它所属的任务。
+// Work 必填；ConversationID / TaskName 是首次建任务所需（省略时只登记 work，回既有 task id 或空）。
+// Boss 是结果归属方（入口服务），落进 works.entry；省略时用帧头 from。
+// 幂等：同一 work 重复调用不重建（已关联别的 task 时由会话库回 conflict）。
+type WorkOpenPayload struct {
+	Work           string `msgpack:"work" json:"work"`
+	ConversationID string `msgpack:"conversation_id,omitempty" json:"conversation_id,omitempty"`
+	TaskName       string `msgpack:"task_name,omitempty" json:"task_name,omitempty"`
+	Boss           string `msgpack:"boss,omitempty" json:"boss,omitempty"`
+}
+
+// WorkOpenResult 是 work_open 的回执：这次 work 归属的任务 id（没有任务时为空）。
+type WorkOpenResult struct {
+	TaskID string `msgpack:"task_id" json:"task_id"`
 }
 
 // ---------- context 组装（S-001 §3.1 / §3.1.1） ----------
@@ -128,6 +146,33 @@ type TriggerCompletePayload struct {
 // TriggerCompleteResult 是 trigger_complete 的回执。
 type TriggerCompleteResult struct {
 	Completed bool `msgpack:"completed" json:"completed"`
+}
+
+// ---------- transcript（S-001 §3.2，A 切片） ----------
+
+// TranscriptPayload 是 transcript 的入参（S-001 §3.2）：把一份已组装好的上下文快照
+// 渲染成文本。SnapshotID 必填——文本必须对应一份确定的历史投影，服务端不猜「最新那份」；
+// Budget 是可选的裁剪预算，省略 / MaxChars=0 表示不额外限制（仍有 1 MiB 硬顶）。
+// S-001 §3.2 没有定义 budget 形状，这里的默认口径写在 docs 与 session/transcript.go 文件头。
+type TranscriptPayload struct {
+	Work       string           `msgpack:"work" json:"work"`
+	SnapshotID string           `msgpack:"snapshot_id" json:"snapshot_id"`
+	Budget     TranscriptBudget `msgpack:"budget" json:"budget"`
+}
+
+// TranscriptBudget 是 transcript 的裁剪预算：MaxChars 按字符（rune）计，负数非法。
+// 不叫 limit / max_length：单位是「字」不是字节，字段名要把这件事说清楚。
+type TranscriptBudget struct {
+	MaxChars int `msgpack:"max_chars,omitempty" json:"max_chars,omitempty"`
+}
+
+// TranscriptResult 是 transcript 的回执（S-001 §3.2）：Text 是按消息顺序渲染的文本；
+// Truncated=true 表示末尾被预算截断；Omitted 是因预算整条丢弃的消息条数。
+// 后两个字段没有 omitempty：false / 0 是「完整给出」的显式回答，不是缺省。
+type TranscriptResult struct {
+	Text      string `msgpack:"text" json:"text"`
+	Truncated bool   `msgpack:"truncated" json:"truncated"`
+	Omitted   int    `msgpack:"omitted" json:"omitted"`
 }
 
 // ---------- 调用生命周期：call_open / call_control / call_status（S-001 §3.0.2、§3.4、§3.5） ----------

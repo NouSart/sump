@@ -1,13 +1,17 @@
 package session
 
-// context_v2 与 trigger_complete（S-001 §3.1 / §3.1.1）。
+// context_base 与 trigger_complete（S-001 §3.1 / §3.1.1）。
 //
 // memory 是唯一组装者（INV-1 / INV-3）：调用方只给 work + 触发源，拿回一份带
 // snapshot_id 的消息链。同一触发只能组装一次——`trigger_states` 决定重复触发是
 // 「沿用快照」「只补 ACK」还是「拒绝重建」，`context_snapshots` 保存那份不可变投影。
 //
-// 本文件与旧 context（facade 按会话现组装，spec §7.2）并存：方法名用 context_v2
-// 以免与既有 method 冲突（method 只增不改）。
+// R-026-D1=(a)：快照只存**基座**（messages / task / work），不冻 experience；
+// experience 由 facade 在 assembled 快照之上每次现注入。completed 只补 ACK，不读快照、
+// 不注入 experience（R-026-D2）。
+//
+// work / task 登记不在这里：reasoner 建链前先调 work_open（session.work_open），
+// 这里只读已存在的 work 与它关联的任务；work 没接任务就显式 not_found，不静默新建。
 //
 // 授权（R-023 P4）：两个入口都先过 authorizeTargetWork——载荷 work 必填，帧头 work 必须
 // 与它一致，身份必须属于该 work（owner / runtime 另有跨 work 通道）；匿名一律拒绝。
@@ -29,25 +33,25 @@ import (
 )
 
 const (
-	// contextV2Schema 是本方法的载荷版本（S-001 §3.1 的 "context/2"）。
-	contextV2Schema = "context/2"
-	// contextV2SnapshotTTL 是快照保留期默认值（S-001 §13：24h，先不做配置化）。
-	contextV2SnapshotTTL = 24 * time.Hour
+	// contextBaseSchema 是本方法的载荷版本（S-001 §3.1 的 "context/2"）。
+	contextBaseSchema = "context/2"
+	// contextBaseSnapshotTTL 是快照保留期默认值（S-001 §13：24h，先不做配置化）。
+	contextBaseSnapshotTTL = 24 * time.Hour
 )
 
 // ---------- 注册 ----------
 
-// registerContextV2 注册 context_v2 与 trigger_complete（在 registerNative 里调用）。
+// registerContextBase 注册 context_base 与 trigger_complete（在 registerNative 里调用）。
 // 两个都不是工具（Tool=false）：模型不该自己决定「要不要重开一轮」或「这轮算不算完」。
-func (s *Server) registerContextV2() {
-	s.HandleNative(contextV2Method(), s.nativeContextV2)
+func (s *Server) registerContextBase() {
+	s.HandleNative(contextBaseMethod(), s.nativeContextBase)
 	s.HandleNative(triggerCompleteMethod(), s.nativeTriggerComplete)
 }
 
-// contextV2Method 是 context_v2 的服务卡声明（独立成函数，测试可直接校验 schema）。
-func contextV2Method() spv2.Method {
+// contextBaseMethod 是 context_base 的服务卡声明（独立成函数，测试可直接校验 schema）。
+func contextBaseMethod() spv2.Method {
 	return spv2.Method{
-		Name:        "context_v2",
+		Name:        "context_base",
 		Description: "按 work + 触发源取组装好的上下文；同一触发复用同一快照（不重复组装）",
 		Input: objectSchema(map[string]any{
 			"work": stringSchema(),
@@ -95,10 +99,10 @@ func triggerCompleteMethod() spv2.Method {
 
 // ---------- 原生入口 ----------
 
-func (s *Server) nativeContextV2(ctx context.Context, call *spv2.Call) error {
-	out, err := s.contextV2(ctx, call.Frame.Body, callerOf(call))
+func (s *Server) nativeContextBase(ctx context.Context, call *spv2.Call) error {
+	out, err := s.contextBase(ctx, call.Frame.Body, callerOf(call))
 	if err != nil {
-		return replyContextV2Error(call, err)
+		return replyContextBaseError(call, err)
 	}
 	return call.Reply(out)
 }
@@ -106,14 +110,14 @@ func (s *Server) nativeContextV2(ctx context.Context, call *spv2.Call) error {
 func (s *Server) nativeTriggerComplete(ctx context.Context, call *spv2.Call) error {
 	out, err := s.triggerComplete(ctx, call.Frame.Body, callerOf(call))
 	if err != nil {
-		return replyContextV2Error(call, err)
+		return replyContextBaseError(call, err)
 	}
 	return call.Reply(out)
 }
 
-// replyContextV2Error 把共享实现里的错误翻成线上错误码：
+// replyContextBaseError 把共享实现里的错误翻成线上错误码：
 // 业务语义错误（invalid_argument / not_found / conflict）原样保留，其余按 internal。
-func replyContextV2Error(call *spv2.Call, err error) error {
+func replyContextBaseError(call *spv2.Call, err error) error {
 	var e *spv2.Error
 	if errors.As(err, &e) {
 		return call.ReplyError(e.Code, e.Message, e.Retryable, e.Details)
@@ -126,9 +130,9 @@ func v2Error(code, format string, args ...any) error {
 	return spv2.ErrCode(code, fmt.Sprintf(format, args...), false, nil)
 }
 
-// ---------- context_v2 ----------
+// ---------- context_base ----------
 
-// contextV2 是 context_v2 的共享实现（handler 只做转发）。
+// contextBase 是 context_base 的共享实现（handler 只做转发）。
 //
 // 分支（S-001 §3.1 规则 2）：
 //   - pending / 没有记录：首次组装，落快照 + 置 assembled；
@@ -136,42 +140,47 @@ func v2Error(code, format string, args ...any) error {
 //   - completed：只补 ACK——completed=true 且**不带消息**，快照清理后依然成立，
 //     重复取上下文不会把已经收口的那一轮重新推理一遍（§3.1.1）；
 //   - expired：not_found，只能显式 resume 新触发，不得静默重建。
-func (s *Server) contextV2(ctx context.Context, body []byte, c caller) (any, error) {
+func (s *Server) contextBase(ctx context.Context, body []byte, c caller) (any, error) {
 	var req protocol.ContextRequest
 	if err := protocol.DecodeRaw(body, &req); err != nil {
-		return nil, v2Error(spv2.CodeInvalidArgument, "context_v2 body 无效: %v", err)
+		return nil, v2Error(spv2.CodeInvalidArgument, "context_base body 无效: %v", err)
 	}
 	work := strings.TrimSpace(req.Work)
 	kind := strings.TrimSpace(req.Trigger.Kind)
 	item := strings.TrimSpace(req.Trigger.Item)
 	if work == "" {
-		return nil, v2Error(spv2.CodeInvalidArgument, "context_v2: work 必填")
+		return nil, v2Error(spv2.CodeInvalidArgument, "context_base: work 必填")
 	}
 	if kind == "" || item == "" {
-		return nil, v2Error(spv2.CodeInvalidArgument, "context_v2: trigger.kind 与 trigger.item 必填")
+		return nil, v2Error(spv2.CodeInvalidArgument, "context_base: trigger.kind 与 trigger.item 必填")
 	}
-	if req.Schema != "" && req.Schema != contextV2Schema {
+	if req.Schema != "" && req.Schema != contextBaseSchema {
 		return nil, v2Error(spv2.CodeInvalidArgument,
-			"context_v2: 不支持的 schema %q（只支持 %s）", req.Schema, contextV2Schema)
+			"context_base: 不支持的 schema %q（只支持 %s）", req.Schema, contextBaseSchema)
 	}
 	// 授权在触发存在性 / 快照读取之前：越权请求不能借状态差异探测别人的 work。
-	if _, err := s.authorizeTargetWork(ctx, work, c.work, "context_v2", c.from); err != nil {
+	w, err := s.authorizeTargetWork(ctx, work, c.work, "context_base", c.from)
+	if err != nil {
 		return nil, err
+	}
+	if spv2.IsTerminal(w.Status) {
+		return nil, v2Error(spv2.CodeConflict,
+			"context_base: work %s 已终态（%s），不能再取上下文", work, w.Status)
 	}
 
 	// 触发条目必须已落库：没落库的 item 会让快照绑定到一个不存在的事实上。
 	exists, err := s.cfg.Store.TriggerItemExists(ctx, work, item)
 	if err != nil {
-		return nil, v2Error(spv2.CodeInternal, "context_v2: %v", err)
+		return nil, v2Error(spv2.CodeInternal, "context_base: %v", err)
 	}
 	if !exists {
 		return nil, v2Error(spv2.CodeInvalidArgument,
-			"context_v2: trigger.item %s 未落库或不属于 work %s", item, work)
+			"context_base: trigger.item %s 未落库或不属于 work %s", item, work)
 	}
 
 	state, snapshotID, err := s.cfg.Store.GetTriggerState(ctx, work, kind, item)
 	if err != nil {
-		return nil, v2Error(spv2.CodeInternal, "context_v2: %v", err)
+		return nil, v2Error(spv2.CodeInternal, "context_base: %v", err)
 	}
 	switch state {
 	case store.TriggerStateCompleted:
@@ -180,14 +189,14 @@ func (s *Server) contextV2(ctx context.Context, body []byte, c caller) (any, err
 		return completedTriggerAck(snapshotID), nil
 	case store.TriggerStateAssembled:
 		// 同一轮的续跑：沿用那份不可变投影，不重新查库、不重新组装。
-		return s.loadContextV2Snapshot(ctx, work, kind, item, state)
+		return s.loadContextBaseSnapshot(ctx, work, kind, item, state)
 	case "", store.TriggerStatePending:
-		return s.assembleContextV2(ctx, work, kind, item, time.Now())
+		return s.assembleContextBase(ctx, work, kind, item, time.Now())
 	case store.TriggerStateExpired:
 		return nil, v2Error(spv2.CodeNotFound,
-			"context_v2: 触发（%s/%s）的快照已过期，只能显式 resume 新触发，不能静默重建", kind, item)
+			"context_base: 触发（%s/%s）的快照已过期，只能显式 resume 新触发，不能静默重建", kind, item)
 	default:
-		return nil, v2Error(spv2.CodeInternal, "context_v2: 未知触发状态 %q", state)
+		return nil, v2Error(spv2.CodeInternal, "context_base: 未知触发状态 %q", state)
 	}
 }
 
@@ -197,7 +206,7 @@ func (s *Server) contextV2(ctx context.Context, body []byte, c caller) (any, err
 // 所以这里不读快照、也不因快照缺失报 not_found。
 func completedTriggerAck(snapshotID string) protocol.ContextResponse {
 	return protocol.ContextResponse{
-		Schema:       contextV2Schema,
+		Schema:       contextBaseSchema,
 		SnapshotID:   snapshotID,
 		TriggerState: store.TriggerStateCompleted,
 		Completed:    true,
@@ -205,58 +214,67 @@ func completedTriggerAck(snapshotID string) protocol.ContextResponse {
 	}
 }
 
-// loadContextV2Snapshot 读已有快照并按原载荷返回。
+// loadContextBaseSnapshot 读已有快照并按原载荷返回。
 // 快照缺失 / 过期一律 not_found：这是「显式失败」，不得退化成重新组装。
-func (s *Server) loadContextV2Snapshot(ctx context.Context, work, kind, item, state string) (protocol.ContextResponse, error) {
+func (s *Server) loadContextBaseSnapshot(ctx context.Context, work, kind, item, state string) (protocol.ContextResponse, error) {
 	_, payload, _, err := s.cfg.Store.LoadSnapshot(ctx, work, kind, item)
 	switch {
 	case errors.Is(err, store.ErrSnapshotNotFound):
 		return protocol.ContextResponse{}, v2Error(spv2.CodeNotFound,
-			"context_v2: 触发（%s/%s）状态为 %s，但快照不存在；不能静默重建", kind, item, state)
+			"context_base: 触发（%s/%s）状态为 %s，但快照不存在；不能静默重建", kind, item, state)
 	case errors.Is(err, store.ErrSnapshotExpired):
 		return protocol.ContextResponse{}, v2Error(spv2.CodeNotFound,
-			"context_v2: 触发（%s/%s）状态为 %s，但快照已过期；不能静默重建", kind, item, state)
+			"context_base: 触发（%s/%s）状态为 %s，但快照已过期；不能静默重建", kind, item, state)
 	case err != nil:
-		return protocol.ContextResponse{}, v2Error(spv2.CodeInternal, "context_v2: %v", err)
+		return protocol.ContextResponse{}, v2Error(spv2.CodeInternal, "context_base: %v", err)
 	}
 	var resp protocol.ContextResponse
 	if err := protocol.DecodeRaw(payload, &resp); err != nil {
-		return protocol.ContextResponse{}, v2Error(spv2.CodeInternal, "context_v2: 快照载荷无法解析: %v", err)
+		return protocol.ContextResponse{}, v2Error(spv2.CodeInternal, "context_base: 快照载荷无法解析: %v", err)
 	}
 	// 状态以 trigger_states 为准（快照是那份不可变投影，不随身边的状态改）。
 	resp.TriggerState = state
 	return resp, nil
 }
 
-// assembleContextV2 首次组装：读 work / task / 消息 → assemble.Assemble →
+// assembleContextBase 首次组装：读 work / task / 消息 → assemble.Assemble →
 // 落快照 → 置 assembled。并发首次触发时，SaveSnapshot 的唯一约束决定谁赢；
 // 输的一方沿用赢家那份快照（同一触发只能有一份投影）。
-func (s *Server) assembleContextV2(ctx context.Context, work, kind, item string, now time.Time) (any, error) {
+func (s *Server) assembleContextBase(ctx context.Context, work, kind, item string, now time.Time) (any, error) {
 	taskID, err := s.cfg.Store.TaskIDOfWork(ctx, work)
 	if errors.Is(err, store.ErrWorkNotFound) {
-		return nil, v2Error(spv2.CodeNotFound, "context_v2: work %s 不存在", work)
+		return nil, v2Error(spv2.CodeNotFound, "context_base: work %s 不存在", work)
 	}
 	if err != nil {
-		return nil, v2Error(spv2.CodeInternal, "context_v2: %v", err)
+		return nil, v2Error(spv2.CodeInternal, "context_base: %v", err)
+	}
+	if taskID == "" {
+		return nil, v2Error(spv2.CodeNotFound,
+			"context_base: work %s 未关联任务（先调 work_open 登记 work 与任务）", work)
 	}
 	task, err := s.cfg.Store.TaskByID(taskID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, v2Error(spv2.CodeNotFound, "context_v2: work %s 所属任务 %q 不存在", work, taskID)
+		return nil, v2Error(spv2.CodeNotFound, "context_base: work %s 所属任务 %q 不存在", work, taskID)
 	}
 	if err != nil {
-		return nil, v2Error(spv2.CodeInternal, "context_v2: %v", err)
+		return nil, v2Error(spv2.CodeInternal, "context_base: %v", err)
 	}
 	w, err := s.cfg.Store.GetWork(ctx, work)
 	if spv2.IsCode(err, spv2.CodeNotFound) {
-		return nil, v2Error(spv2.CodeNotFound, "context_v2: work %s 不存在", work)
+		return nil, v2Error(spv2.CodeNotFound, "context_base: work %s 不存在", work)
 	}
 	if err != nil {
-		return nil, v2Error(spv2.CodeInternal, "context_v2: %v", err)
+		return nil, v2Error(spv2.CodeInternal, "context_base: %v", err)
 	}
 
-	rows, err := s.cfg.Store.RecentMessagesByWork(ctx, work, 0)
-	if err != nil {
-		return nil, v2Error(spv2.CodeInternal, "context_v2: %v", err)
+	// history_limit 是「每次带上多少条旧对话」：0 = 不带历史（trigger 本身仍需已落库）。
+	// RecentMessagesByWork 的 0 表示默认 50，所以这里显式区分「不限」与「不要」。
+	var rows []store.MessageRow
+	if limit := s.currentHistoryLimit(); limit != 0 {
+		rows, err = s.cfg.Store.RecentMessagesByWork(ctx, work, limit)
+		if err != nil {
+			return nil, v2Error(spv2.CodeInternal, "context_base: %v", err)
+		}
 	}
 	history, toolCalls, toolResults := recordsFromMessageRows(rows)
 
@@ -276,12 +294,12 @@ func (s *Server) assembleContextV2(ctx context.Context, work, kind, item string,
 		Now:     now,
 	})
 	if err != nil {
-		return nil, v2Error(spv2.CodeInternal, "context_v2: 组装失败: %v", err)
+		return nil, v2Error(spv2.CodeInternal, "context_base: 组装失败: %v", err)
 	}
 
-	expiresAt := now.Add(contextV2SnapshotTTL)
+	expiresAt := now.Add(contextBaseSnapshotTTL)
 	resp := protocol.ContextResponse{
-		Schema:       contextV2Schema,
+		Schema:       contextBaseSchema,
 		SnapshotID:   spv2.NewID(),
 		ExpiresAt:    expiresAt.UTC().Format(time.RFC3339Nano),
 		Messages:     toProtocolMessages(out.Messages),
@@ -294,12 +312,12 @@ func (s *Server) assembleContextV2(ctx context.Context, work, kind, item string,
 	}
 	payload, err := protocol.EncodePayload(resp)
 	if err != nil {
-		return nil, v2Error(spv2.CodeInternal, "context_v2: 序列化快照失败: %v", err)
+		return nil, v2Error(spv2.CodeInternal, "context_base: 序列化快照失败: %v", err)
 	}
-	err = s.cfg.Store.SaveSnapshot(ctx, resp.SnapshotID, work, kind, item, payload, contextV2Schema, now, expiresAt)
+	err = s.cfg.Store.SaveSnapshot(ctx, resp.SnapshotID, work, kind, item, payload, contextBaseSchema, now, expiresAt)
 	if errors.Is(err, store.ErrSnapshotConflict) {
 		// 同一触发的并发首组装：别人先写成功了，沿用那份，不在这里推翻它。
-		resp, loadErr := s.loadContextV2Snapshot(ctx, work, kind, item, store.TriggerStateAssembled)
+		resp, loadErr := s.loadContextBaseSnapshot(ctx, work, kind, item, store.TriggerStateAssembled)
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -312,12 +330,12 @@ func (s *Server) assembleContextV2(ctx context.Context, work, kind, item string,
 		return resp, nil
 	}
 	if err != nil {
-		return nil, v2Error(spv2.CodeInternal, "context_v2: %v", err)
+		return nil, v2Error(spv2.CodeInternal, "context_base: %v", err)
 	}
 	if err := s.cfg.Store.SetTriggerState(ctx, work, kind, item, store.TriggerStateAssembled, resp.SnapshotID); err != nil {
 		// 快照已落库（不可变事实）而状态没写上：返回快照仍然安全——下次触发会重新组装、
 		// 被唯一约束拦住后沿用这份快照，不会产生第二份投影。
-		return nil, v2Error(spv2.CodeInternal, "context_v2: %v", err)
+		return nil, v2Error(spv2.CodeInternal, "context_base: %v", err)
 	}
 	return resp, nil
 }

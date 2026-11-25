@@ -5,6 +5,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -21,20 +22,22 @@ type stubMemory struct {
 	recalls     int    // 收到的 recall 次数
 	reasonerURL string // resume 的投递目标（reasoner 启动后设置）
 	stores      []protocol.StorePayload
-	// recallContexts 是收到的 recall 上下文（断言"reasoner 把任务名托管过来"）。
-	recallContexts []protocol.TaskContext
+	// workOpens / contexts 是收到的 work_open 与 context 请求（断言任务名与触发源）。
+	workOpens map[string]protocol.WorkOpenPayload
+	contexts  []protocol.ContextRequest
 
-	task     *protocol.Task // 非空时随 resume 带回（模拟"记忆已经确定了当前任务"）
-	finished []protocol.TaskFinishPayload
-	renamed  []protocol.TaskRenamePayload
-	notes    []protocol.NotePayload // 复盘写回的经验（交付后由 reasoner 异步发来）
+	task             *protocol.Task // 非空时随 context 带回（模拟"记忆已经确定了当前任务"）
+	finished         []protocol.TaskFinishPayload
+	renamed          []protocol.TaskRenamePayload
+	triggerCompletes []protocol.TriggerCompletePayload
+	notes            []protocol.NotePayload // 复盘写回的经验（交付后由 reasoner 异步发来）
 	// publishes 是复盘发布到共享经验库的任务摘要（另一个库、另一条路）。
 	publishes []protocol.PublishSessionPayload
 	// works 记录每次入站调用的帧头 work（SPv2 的链路 id / trace）：
 	// 「trace 原样沿链」只有在对端留下记录之后才是可断言的事实。
 	works map[string][]string
 	// contextOverride 非空时 context 直接回这组消息（测试消息链形状用）。
-	contextOverride []protocol.Message
+	contextOverride []protocol.LLMMessage
 	// A2A 队列替身：message_post/claim/ack。
 	a2aQueue    map[string][]protocol.A2AMessage
 	a2aClaimed  map[string]string // message id → work id
@@ -93,7 +96,9 @@ func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
 func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMemory {
 	t.Helper()
 	e := newStubEndpoint(t, name,
+		spv2.Method{Name: "work_open", Shape: spv2.ShapeCall},
 		spv2.Method{Name: "context", Shape: spv2.ShapeCall},
+		spv2.Method{Name: "trigger_complete", Shape: spv2.ShapeCall},
 		spv2.Method{Name: "store", Shape: spv2.ShapeCall},
 		spv2.Method{Name: "task_finish", Shape: spv2.ShapeCall},
 		spv2.Method{Name: "task_rename", Shape: spv2.ShapeCall},
@@ -106,57 +111,99 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 		spv2.Method{Name: "message_claim", Shape: spv2.ShapeCall},
 		spv2.Method{Name: "message_ack", Shape: spv2.ShapeCall},
 	)
-	m := &stubMemory{srv: e.srv, url: e.URL(), name: name, works: map[string][]string{}, a2aQueue: map[string][]protocol.A2AMessage{}, a2aClaimed: map[string]string{}}
+	m := &stubMemory{srv: e.srv, url: e.URL(), name: name, works: map[string][]string{}, workOpens: map[string]protocol.WorkOpenPayload{}, a2aQueue: map[string][]protocol.A2AMessage{}, a2aClaimed: map[string]string{}}
 
+	e.handle("work_open", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.WorkOpenPayload
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		m.noteWork("work_open", call.Frame.Work)
+		m.mu.Lock()
+		m.workOpens[p.Work] = p
+		task := m.task
+		m.mu.Unlock()
+		out := protocol.WorkOpenResult{}
+		if task != nil {
+			out.TaskID = task.ID
+		}
+		return call.Reply(out)
+	})
+	e.handle("trigger_complete", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.TriggerCompletePayload
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		m.noteWork("trigger_complete", call.Frame.Work)
+		m.mu.Lock()
+		m.triggerCompletes = append(m.triggerCompletes, p)
+		m.mu.Unlock()
+		return call.Reply(protocol.TriggerCompleteResult{Completed: true})
+	})
 	e.handle("store", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.StorePayload
 		_ = call.Frame.DecodeBody(&p)
 		m.noteWork("store", call.Frame.Work)
 		m.mu.Lock()
 		m.stores = append(m.stores, p)
+		n := len(m.stores)
 		m.mu.Unlock()
-		return call.Reply(map[string]any{"ok": true})
+		return call.Reply(protocol.StoreResult{ItemID: fmt.Sprintf("item-%d", n), Seq: int64(n)})
 	})
 	e.handle("context", func(_ context.Context, call *spv2.Call) error {
-		var p protocol.ContextPayload
-		if err := call.Frame.DecodeBody(&p); err != nil {
+		var req protocol.ContextRequest
+		if err := call.Frame.DecodeBody(&req); err != nil {
 			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 		}
 		m.noteWork("context", call.Frame.Work)
-		tc := protocol.TaskContext{
-			ConversationID: p.Conversation,
-			Messages:       p.Messages,
-			Boss:           p.Boss,
-			TaskName:       p.TaskName,
-		}
 		m.mu.Lock()
 		m.recalls++
-		m.recallContexts = append(m.recallContexts, tc)
+		m.contexts = append(m.contexts, req)
 		task := m.task
-		override := append([]protocol.Message(nil), m.contextOverride...)
-		m.mu.Unlock()
-		// 与真实 memory 一样：在第一条 system 后注入记忆块，并带回 work/task。
-		if len(override) > 0 {
-			return call.Reply(map[string]any{
-				"messages": override,
-				"work":     map[string]any{"id": call.Frame.Work, "status": "running"},
-				"task":     task,
-			})
-		}
-		msgs := make([]protocol.Message, 0, len(tc.Messages)+1)
-		placed := false
-		for _, msg := range tc.Messages {
-			msgs = append(msgs, msg)
-			if !placed && msg.Role == "system" {
-				msgs = append(msgs, protocol.Message{Role: "system", Content: "【记忆】\n测试记忆块"})
-				placed = true
+		override := append([]protocol.LLMMessage(nil), m.contextOverride...)
+		var user *protocol.StorePayload
+		for i := len(m.stores) - 1; i >= 0; i-- {
+			if m.stores[i].Work == req.Work && m.stores[i].Role == "user" {
+				sp := m.stores[i]
+				user = &sp
+				break
 			}
 		}
-		return call.Reply(map[string]any{
-			"messages": msgs,
-			"work":     map[string]any{"id": call.Frame.Work, "status": "running"},
-			"task":     task,
-		})
+		m.mu.Unlock()
+
+		resp := protocol.ContextResponse{
+			Schema:       "context/2",
+			SnapshotID:   "snap-" + req.Work + "-" + req.Trigger.Item,
+			ExpiresAt:    "2099-01-01T00:00:00Z",
+			AssembledAt:  "2026-01-01T00:00:00Z",
+			TriggerState: "assembled",
+			Work:         protocol.WorkView{ID: req.Work, Status: "running", Agent: "reasoner"},
+		}
+		if task != nil && task.ID != "" {
+			resp.Task = *task
+		}
+		// 与真实 memory 一样：任务提示 system + 历史；测试替身只还原最近一条 user 与记忆块。
+		if len(override) > 0 {
+			resp.Messages = override
+			return call.Reply(resp)
+		}
+		if task != nil && task.ID != "" {
+			resp.Messages = append(resp.Messages, protocol.LLMMessage{
+				Role: "system",
+				Content: fmt.Sprintf("当前任务：《%s》（id=%s）。你的所有动作都属于这个任务；换任务时上下文会重新开始。",
+					task.Name, task.ID),
+			})
+		}
+		if user != nil {
+			resp.Messages = append(resp.Messages, protocol.LLMMessage{Role: "user", Content: user.Content})
+		}
+		memory := protocol.LLMMessage{Role: "system", Content: "【记忆】\n测试记忆块"}
+		if len(resp.Messages) > 0 && resp.Messages[0].Role == "system" {
+			resp.Messages = append(resp.Messages[:1], append([]protocol.LLMMessage{memory}, resp.Messages[1:]...)...)
+		} else {
+			resp.Messages = append([]protocol.LLMMessage{memory}, resp.Messages...)
+		}
+		return call.Reply(resp)
 	})
 	e.handle("message_post", func(_ context.Context, call *spv2.Call) error {
 		var req struct {
@@ -289,8 +336,9 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 		Addr:        e.URL(),
 		Description: "记忆测试替身",
 		Provides: []protocol.Provide{
-			{Action: "context"}, {Action: "recall"}, {Action: "store"}, {Action: "task_finish"},
-			{Action: "task_rename"}, {Action: "note"}, {Action: "publish_session"},
+			{Action: "context"}, {Action: "work_open"}, {Action: "trigger_complete"},
+			{Action: "store"}, {Action: "task_finish"}, {Action: "task_rename"},
+			{Action: "note"}, {Action: "publish_session"},
 		},
 	})
 	return m
@@ -305,10 +353,10 @@ func (m *stubMemory) setReasonerURL(u string) {
 }
 
 // setContextOverride 让 context 直接回这组消息（nil = 走默认注入逻辑）。
-func (m *stubMemory) setContextOverride(msgs []protocol.Message) {
+func (m *stubMemory) setContextOverride(msgs []protocol.LLMMessage) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.contextOverride = append([]protocol.Message(nil), msgs...)
+	m.contextOverride = append([]protocol.LLMMessage(nil), msgs...)
 }
 
 // setTask 设置随 context 带回的任务（nil = 没有当前任务）。
@@ -352,13 +400,38 @@ func (m *stubMemory) Recalls() int {
 	return m.recalls
 }
 
-// RecallContexts 返回已收到的 recall 上下文快照（断言"任务名也托管过去了"）。
+// RecallContexts 返回 context 请求对应的 work_open 投影（断言任务名 / 会话 / boss 已托管）。
 func (m *stubMemory) RecallContexts() []protocol.TaskContext {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]protocol.TaskContext, len(m.recallContexts))
-	copy(out, m.recallContexts)
+	out := make([]protocol.TaskContext, 0, len(m.contexts))
+	for _, req := range m.contexts {
+		wo := m.workOpens[req.Work]
+		out = append(out, protocol.TaskContext{
+			ConversationID: wo.ConversationID,
+			TaskName:       wo.TaskName,
+			Boss:           wo.Boss,
+		})
+	}
 	return out
+}
+
+// WorkOpens 返回收到的 work_open 请求（按 work 取最新；断言任务名 / boss）。
+func (m *stubMemory) WorkOpens() map[string]protocol.WorkOpenPayload {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]protocol.WorkOpenPayload, len(m.workOpens))
+	for k, v := range m.workOpens {
+		out[k] = v
+	}
+	return out
+}
+
+// TriggerCompletes 返回收到的 trigger_complete 请求。
+func (m *stubMemory) TriggerCompletes() []protocol.TriggerCompletePayload {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]protocol.TriggerCompletePayload(nil), m.triggerCompletes...)
 }
 
 // Notes 返回已收到的 note（复盘写回的经验）快照。

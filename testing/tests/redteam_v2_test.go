@@ -9,7 +9,7 @@ package tests
 //   - 所有调用都经过 facade，从而顺带验证门面用 CallWithRef(from=原帧 From) 转发；
 //   - 拒绝必须等于零副作用：
 //       store           → 目标会话查不到内容，同一 client_item_id 仍能被本主正常写入；
-//       context_v2      → 目标触发仍是 pending（trigger_complete 回 conflict）；
+//       context         → 目标触发仍是 pending（trigger_complete 回 conflict）；
 //       trigger_complete→ 目标触发仍能由本主完成（不是 conflict）；
 //       call_open       → 目标 work 的常驻目录行数不变；
 //       call_control    → 目标 call 两维不变，且同一 control_id 仍能被本主正常使用；
@@ -80,12 +80,12 @@ func TestRedTeamV2CrossWorkAuthorization(t *testing.T) {
 		}
 	})
 
-	t.Run("跨 work context_v2 拒绝且不产出快照", func(t *testing.T) {
+	t.Run("跨 work context 拒绝且不产出快照", func(t *testing.T) {
 		item := redTeamStoreMessage(t, memURL, bob, "reasoner-b", "红队：bob 尚未组装的触发")
-		_, err := redTeamCall(t, memURL, alice, "reasoner-a", "context_v2", protocol.ContextRequest{
+		_, err := redTeamCall(t, memURL, alice, "reasoner-a", "context", protocol.ContextRequest{
 			Work: bob, Trigger: protocol.Trigger{Kind: "user", Item: item},
 		})
-		expectRedTeamCode(t, err, spv2.CodePermissionDenied, "跨 work context_v2")
+		expectRedTeamCode(t, err, spv2.CodePermissionDenied, "跨 work context")
 
 		// 仍是 pending：没组装过就不能标记完成（若越权读取产出快照，这里会成功）。
 		_, err = redTeamCall(t, memURL, bob, "reasoner-b", "trigger_complete", protocol.TriggerCompletePayload{
@@ -170,7 +170,7 @@ func TestRedTeamV2CrossWorkAuthorization(t *testing.T) {
 				ConversationID: "conv-red-ghost", Work: ghost, Role: "user",
 				Content: "写幽灵 work", ClientItemID: "ci-red-ghost",
 			}},
-			{"context_v2", "context_v2", protocol.ContextRequest{
+			{"context", "context", protocol.ContextRequest{
 				Work: ghost, Trigger: protocol.Trigger{Kind: "user", Item: "1"},
 			}},
 			{"trigger_complete", "trigger_complete", protocol.TriggerCompletePayload{
@@ -203,13 +203,12 @@ func startRedTeamV2Stack(t *testing.T) string {
 		filepath.Join(dir, "memory.db"), filepath.Join(dir, "experience.db"))
 }
 
-// seedRedTeamWork 用 context（facade → session.context_base）登记一条 work：
+// seedRedTeamWork 用 work_open（facade → session.work_open）登记一条 work：
 // owner=部署默认人，agent=from，entry=from；同时建好会话与任务。
 func seedRedTeamWork(t *testing.T, memURL, work, from, conversation string) {
 	t.Helper()
-	_, err := redTeamCall(t, memURL, work, from, "context", protocol.ContextPayload{
-		Conversation: conversation,
-		Messages:     []protocol.Message{{Role: "user", Content: "红队 v2 建 work"}},
+	_, err := redTeamCall(t, memURL, work, from, "work_open", protocol.WorkOpenPayload{
+		Work: work, ConversationID: conversation, TaskName: "红队 v2 任务", Boss: from,
 	})
 	if err != nil {
 		t.Fatalf("登记 work %s 失败: %v", work, err)
@@ -262,7 +261,7 @@ func redTeamStoreMessage(t *testing.T, url, work, from, content string) string {
 		t.Fatalf("store（%s）失败: %v", work, err)
 	}
 	if res.ItemID == "" {
-		t.Fatal("store 应返回 item_id（context_v2 的 trigger.item 靠它）")
+		t.Fatal("store 应返回 item_id（context 的 trigger.item 靠它）")
 	}
 	return res.ItemID
 }
@@ -298,7 +297,7 @@ func redTeamResidentCount(t *testing.T, url, work, from string) int {
 func redTeamHistoryContains(t *testing.T, url, conversation, want string) bool {
 	t.Helper()
 	body, err := redTeamCall(t, url, "w-red-alice", "reasoner-a", "history", protocol.HistoryPayload{
-		ConversationID: conversation,
+		ConversationID: conversation, AllTasks: true,
 	})
 	if err != nil {
 		t.Fatalf("history（%s）失败: %v", conversation, err)

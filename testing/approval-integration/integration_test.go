@@ -331,8 +331,15 @@ func TestRealReasonerReceivesApprovalAndExecutionFeedback(t *testing.T) {
 	f.approval(t, analysis.PowerShell{Executable: f.exe})
 	f.shell(t, "approval")
 	memory := f.client(t, "memory")
+	// R-026 P2：reasoner 建链先 work_open，store 走 v2（Work + ClientItemID），deliver 后 trigger_complete。
+	memory.HandleNative(spv2.Method{Name: "work_open", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]any{"task_id": "task-approval"})
+	})
 	memory.HandleNative(spv2.Method{Name: "store", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
-		return call.Reply(map[string]bool{"stored": true})
+		return call.Reply(map[string]any{"item_id": "m-approval", "seq": 1})
+	})
+	memory.HandleNative(spv2.Method{Name: "trigger_complete", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]bool{"completed": true})
 	})
 	// spec §7.2：reasoner 现在同步要 context；替身返回固定上下文与 task（resume 回调已删）。
 	memory.HandleNative(spv2.Method{Name: "context", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
@@ -518,8 +525,15 @@ func TestLLMReviewChain(t *testing.T) {
 	a := f.reviewApproval(t, analysis.PowerShell{Executable: f.exe})
 	f.shell(t, "approval")
 	memory := f.client(t, "memory")
+	// R-026 P2：reasoner 建链先 work_open，store 走 v2（Work + ClientItemID），deliver 后 trigger_complete。
+	memory.HandleNative(spv2.Method{Name: "work_open", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]any{"task_id": "task-approval"})
+	})
 	memory.HandleNative(spv2.Method{Name: "store", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
-		return call.Reply(map[string]bool{"stored": true})
+		return call.Reply(map[string]any{"item_id": "m-approval", "seq": 1})
+	})
+	memory.HandleNative(spv2.Method{Name: "trigger_complete", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
+		return call.Reply(map[string]bool{"completed": true})
 	})
 	// spec §7.2：reasoner 现在同步要 context；替身返回固定上下文与 task（resume 回调已删）。
 	memory.HandleNative(spv2.Method{Name: "context", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {

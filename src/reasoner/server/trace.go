@@ -1,17 +1,22 @@
 // 会话轨迹：把"思考 / 终端命令 / 终端输出"写进记忆，并顺手推给能显示的入口方。
 //
 // 记忆是真相（历史回填、跨端一致）；progress 只是让界面不必等到最终答复。
-// 两条都走 Fire（不阻塞、不排队）——记录失败只记日志，绝不影响推理本身。
+// 写记忆走同步 Call：载荷带 Work 与 ClientItemID，回执里的 item_id 才能被调用方记账
+// （用户消息的 item_id 就是本轮 context 的 trigger.item）。progress 仍走 Fire：
+// 它是展示面，失败只记日志，不影响推理本身。
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/reasoner/llm"
+	"github.com/NouSart/sump/spv2"
 )
 
 // recordMaxChars 是单条轨迹记录的落库上限：终端输出上限是 256KB，
@@ -55,20 +60,21 @@ func clampRecord(text string) (string, bool) {
 
 // record 落一条会话记录：写记忆 + （入口方声明了 progress 时）推一条实况。
 // meta 只放**给人看**的附加信息（工具名、命令、call_id…），不放正文。
-func (s *Server) record(cid, boss, trace, taskID, kind, role, content string, meta map[string]any) {
-	s.recordNamed(cid, boss, trace, taskID, kind, role, content, meta, "")
+// 返回 store 回执里的 item_id；落库失败时返回错误（调用方决定是否中断）。
+func (s *Server) record(cid, boss, trace, taskID, kind, role, content string, meta map[string]any) (string, error) {
+	return s.recordNamed(cid, boss, trace, taskID, kind, role, content, meta, "")
 }
 
 // recordTask 与 record 相同，但带上**入口服务给的任务名**：正文若是用户消息、
 // 且带着来源标注前缀（见 protocol.Sender.Label），记忆侧从第一行推会推出一串标签。
 // 只有 message 那一条需要它（其余记录都挂在已有任务上）。
-func (s *Server) recordTask(cid, boss, trace, taskID, kind, role, content string, meta map[string]any, taskName string) {
-	s.recordNamed(cid, boss, trace, taskID, kind, role, content, meta, taskName)
+func (s *Server) recordTask(cid, boss, trace, taskID, kind, role, content string, meta map[string]any, taskName string) (string, error) {
+	return s.recordNamed(cid, boss, trace, taskID, kind, role, content, meta, taskName)
 }
 
-func (s *Server) recordNamed(cid, boss, trace, taskID, kind, role, content string, meta map[string]any, taskName string) {
+func (s *Server) recordNamed(cid, boss, trace, taskID, kind, role, content string, meta map[string]any, taskName string) (string, error) {
 	if strings.TrimSpace(content) == "" {
-		return
+		return "", nil
 	}
 	clamped, truncated := clampRecord(content)
 	metaJSON := ""
@@ -87,16 +93,46 @@ func (s *Server) recordNamed(cid, boss, trace, taskID, kind, role, content strin
 	}
 
 	seq := s.nextSeq()
-	s.Fire(s.memoryName(), "store", protocol.StorePayload{
-		ConversationID: cid, TaskID: taskID, Boss: boss, Role: role, Content: clamped, Kind: kind, Meta: metaJSON, Seq: seq,
-		TaskName: taskName,
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	data, err := s.Call(ctx, s.memoryName(), "store", protocol.StorePayload{
+		ConversationID: cid, Work: trace, TaskID: taskID, Boss: boss, Role: role,
+		Content: clamped, Kind: kind, Meta: metaJSON, Seq: seq,
+		TaskName: taskName, ClientItemID: s.clientItemID(boss, kind),
 	}, trace)
+	if err != nil {
+		s.logger.Printf("会话 %s：store(%s/%s) 失败: %v", cid, kind, role, err)
+		return "", fmt.Errorf("store(%s/%s) 失败: %w", kind, role, err)
+	}
+	var res protocol.StoreResult
+	if err := protocol.DecodeRaw(data, &res); err != nil {
+		s.logger.Printf("会话 %s：store(%s/%s) 回执无法解码: %v", cid, kind, role, err)
+		return "", fmt.Errorf("store(%s/%s) 回执无法解码: %w", kind, role, err)
+	}
 	if s.bossWantsProgress(boss) {
 		s.Fire(boss, "progress", protocol.ProgressPayload{
 			ConversationID: cid, TaskID: taskID, Seq: seq, Kind: kind, Content: clamped, Meta: metaJSON,
 			At: time.Now().Format(time.RFC3339Nano),
 		}, trace)
 	}
+	return res.ItemID, nil
+}
+
+// clientItemID 生成 store 幂等键（S-001 §3.0 规则 5）：
+//   - 用户 / 助手消息：<entry_service>:<entry_item_id>；reasoner 代入口写时 entry_item_id
+//     由 reasoner 生成（同一个任务内的每条记录各不相同）；
+//   - 其它（reasoning / tool_call / tool_result）：调用方生成的 ULID。
+//
+// boss 为空或 "self" 时 entry 记 reasoner 自己（结果归属方语义）。
+func (s *Server) clientItemID(boss, kind string) string {
+	if kind == "user" || kind == "assistant" {
+		entry := boss
+		if entry == "" || entry == "self" {
+			entry = s.cfg.Name
+		}
+		return entry + ":" + spv2.NewID()
+	}
+	return spv2.NewID()
 }
 
 // bossWantsProgress 判断入口方要不要实况：**只认它自己在 provides 里声明过的 progress**。

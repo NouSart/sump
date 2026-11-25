@@ -59,6 +59,21 @@ func callJumpFrom(t *testing.T, c *spv2.Client, from, to, action string, input a
 	return callResult{OK: true, Data: resp.Body}
 }
 
+// callWorkFrom 同 callJumpFrom，但帧头 work 由调用方指定（work_open / store 的授权要求
+// 帧头 work 与载荷 work 一致）。
+func callWorkFrom(t *testing.T, c *spv2.Client, work, from, to, action string, input any, ctx context.Context) callResult {
+	t.Helper()
+	call, err := spv2.NewCall(work, spv2.ServiceRef(from), spv2.ServiceRef(to), action, input)
+	if err != nil {
+		t.Fatalf("构造 %s→%s.%s 调用失败: %v", from, to, action, err)
+	}
+	resp, err := c.Call(ctx, call)
+	if err != nil {
+		return callResult{Error: err.Error()}
+	}
+	return callResult{OK: true, Data: resp.Body}
+}
+
 // newStubServer 构造一个测试替身服务：名片 Actor 与 Name 一致，
 // 方法按声明注册（未声明的方法由 spv2 默认回 not_found）。
 func newStubServer(t *testing.T, name, description string, methods ...spv2.Method) *spv2.Server {

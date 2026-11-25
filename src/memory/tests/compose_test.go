@@ -8,38 +8,6 @@ import (
 	"github.com/NouSart/sump/protocol"
 )
 
-// TestConversationTail 验证任务上下文尾部对话消息的提取边界。
-func TestConversationTail(t *testing.T) {
-	msgs := []protocol.Message{
-		{Role: "system", Content: "sys"},
-		{Role: "system", Content: compose.MemoryPrefix + "\n旧的记忆"},
-		{Role: "user", Content: "u"},
-		{Role: "assistant", ToolCalls: []protocol.ToolCall{{ID: "1", Type: "function"}}},
-		{Role: "tool", Content: "t", ToolCallID: "1"},
-	}
-	tail := compose.ConversationTail(msgs)
-	if len(tail) != 1 || tail[0].Content != "u" {
-		t.Fatalf("tail 不符: %+v", tail)
-	}
-	// 旧记忆块之后不再往前收集（任务链边界）。
-	if tail[0].Role != "user" {
-		t.Fatalf("tail[0] 角色不符: %+v", tail[0])
-	}
-}
-
-// TestTrimOverlap 验证历史尾部与任务链重复部分的裁剪。
-func TestTrimOverlap(t *testing.T) {
-	hist := []protocol.Message{{Role: "user", Content: "a"}, {Role: "assistant", Content: "b"}}
-	got := compose.TrimOverlap(hist, []protocol.Message{{Role: "assistant", Content: "b"}})
-	if len(got) != 1 || got[0].Content != "a" {
-		t.Fatalf("裁剪不符: %+v", got)
-	}
-	got2 := compose.TrimOverlap(hist, []protocol.Message{{Role: "user", Content: "z"}})
-	if len(got2) != 2 {
-		t.Fatalf("无重叠不应裁剪: %+v", got2)
-	}
-}
-
 // TestBuildText 验证记忆文本的拼接。
 func TestBuildText(t *testing.T) {
 	text := compose.BuildText([]protocol.Message{
@@ -52,9 +20,9 @@ func TestBuildText(t *testing.T) {
 	}
 }
 
-// TestInject 验证记忆块的插入 / 替换 / 移除。
+// TestInject 验证记忆块的插入 / 替换 / 移除（基座消息是 LLMMessage）。
 func TestInject(t *testing.T) {
-	base := []protocol.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "u"}}
+	base := []protocol.LLMMessage{{Role: "system", Content: "sys"}, {Role: "user", Content: "u"}}
 
 	out := compose.Inject(base, "hist")
 	if len(out) != 3 || out[1].Role != "system" || !strings.HasPrefix(out[1].Content, compose.MemoryPrefix) || !strings.Contains(out[1].Content, "hist") {
@@ -71,7 +39,7 @@ func TestInject(t *testing.T) {
 		t.Fatalf("空记忆应移除旧块: %+v", out3)
 	}
 
-	out4 := compose.Inject([]protocol.Message{{Role: "user", Content: "u"}}, "m")
+	out4 := compose.Inject([]protocol.LLMMessage{{Role: "user", Content: "u"}}, "m")
 	if len(out4) != 2 || out4[0].Role != "system" || !strings.Contains(out4[0].Content, "m") {
 		t.Fatalf("无 system 时应置顶: %+v", out4)
 	}

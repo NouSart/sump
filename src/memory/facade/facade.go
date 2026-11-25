@@ -125,7 +125,7 @@ func (s *Server) registerMethods(cards map[string]spv2.Card) error {
 			return fmt.Errorf("门面自检: 内部服务声明了未知 method %s", method)
 		}
 	}
-	// context 没有数据权威，只在门面内拼装。
+	// context 没有数据权威：session 出基座，experience 出经验，门面只做组合。
 	s.HandleNative(contextMethod(), s.nativeContext)
 	return nil
 }

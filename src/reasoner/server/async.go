@@ -249,9 +249,11 @@ func (s *Server) deliverAsyncLocked(k asyncKey, j *asyncJob, p protocol.AsyncRes
 	}
 	where := s.deliverFollowUp(j, reportText(j, p))
 	if p.Final && strings.TrimSpace(p.Text) != "" {
-		s.record(j.cid, j.boss, j.trace, j.taskID, kindToolResult, "tool", p.Text, map[string]any{
+		if _, err := s.record(j.cid, j.boss, j.trace, j.taskID, kindToolResult, "tool", p.Text, map[string]any{
 			"tool": j.name, "call_id": j.callID, "item_id": p.ItemID, "phase": p.Phase,
-		})
+		}); err != nil {
+			s.logger.Printf("会话 %s：补报结果落库失败（不阻塞交付）: %v", j.cid, err)
+		}
 	}
 	if p.Final {
 		s.asyncMu.Lock()

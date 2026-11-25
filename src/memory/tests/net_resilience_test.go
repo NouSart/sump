@@ -152,11 +152,12 @@ func TestConcurrentIdenticalNotesCreateOneEntry(t *testing.T) {
 }
 
 // TestConcurrentStoresKeepSeqOrder 验证并发写会话记录仍按 seq 排序。
-// Fire 各自成 goroutine，落库顺序不保证；排序全靠写入方给的 seq。
+// v2 store 在事务内分配 seq：并发写入谁先提交谁先取号，读回必须严格递增。
 func TestConcurrentStoresKeepSeqOrder(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 50)
 	caller := startStubCaller(t, sc.URL())
+	opened := caller.openWork(t, srv.WsURL(), "trace-test", "c-seq", "并发写入")
 
 	const n = 12
 	var wg sync.WaitGroup
@@ -167,7 +168,9 @@ func TestConcurrentStoresKeepSeqOrder(t *testing.T) {
 			defer wg.Done()
 			<-start
 			caller.call(t, srv.WsURL(), "store", protocol.StorePayload{
-				ConversationID: "c-seq", Boss: "frontend", Role: "user",
+				ConversationID: "c-seq", Work: "trace-test", TaskID: opened.TaskID,
+				ClientItemID: "reasoner:seq-" + strconv.Itoa(i),
+				Boss:         "frontend", Role: "user",
 				Content: "第 " + strconv.Itoa(i) + " 条", Seq: int64(i + 1),
 			})
 		}(i)

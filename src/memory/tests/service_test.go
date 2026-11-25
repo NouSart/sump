@@ -203,32 +203,54 @@ func (c *stubCaller) callAsWork(t *testing.T, memoryURL, work, action string, in
 	return callResult{OK: true, Data: resp.Body}
 }
 
-// contextMessages 是从 context 回执里解出的组装结果。
-type contextMessages struct {
-	Messages []protocol.Message `msgpack:"messages"`
-	Work     spv2.Work          `msgpack:"work"`
-	Task     protocol.Task      `msgpack:"task"`
+// contextMessages 是 context/2 的回执（session 基座 + 门面注入的经验块）。
+type contextMessages = protocol.ContextResponse
+
+// openWork 登记 work / 任务（生产链路的 work_open）。
+func (c *stubCaller) openWork(t *testing.T, memoryURL, work, cid, taskName string) protocol.WorkOpenResult {
+	t.Helper()
+	rp := c.callAsWork(t, memoryURL, work, "work_open", protocol.WorkOpenPayload{
+		Work: work, ConversationID: cid, TaskName: taskName, Boss: "stub-boss",
+	})
+	if !rp.OK {
+		t.Fatalf("work_open 失败: %s", rp.Error)
+	}
+	var out protocol.WorkOpenResult
+	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
+		t.Fatalf("work_open 回执无法解码: %v", err)
+	}
+	return out
 }
 
-// contextUntilReady 发一次 context 并返回组装后的消息（spec §7.2 的同步主链）。
-func (c *stubCaller) contextUntilReady(t *testing.T, memoryURL string, input protocol.ContextPayload) callResult {
+// storeV2 同步落一条记录并返回回执（context 的 trigger.item 来自这里）。
+func (c *stubCaller) storeV2(t *testing.T, memoryURL, work, cid, taskID, role, content, key string) protocol.StoreResult {
 	t.Helper()
-	rp := c.call(t, memoryURL, "context", input)
+	rp := c.callAsWork(t, memoryURL, work, "store", protocol.StorePayload{
+		ConversationID: cid, Work: work, TaskID: taskID, Boss: "stub-boss",
+		Role: role, Content: content, ClientItemID: key,
+	})
+	if !rp.OK {
+		t.Fatalf("store 失败: %s", rp.Error)
+	}
+	var out protocol.StoreResult
+	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
+		t.Fatalf("store 回执无法解码: %v", err)
+	}
+	return out
+}
+
+// contextFor 发一次 context/2（指定帧头 work 与触发源）。
+func (c *stubCaller) contextFor(t *testing.T, memoryURL, work string, trigger protocol.Trigger) protocol.ContextResponse {
+	t.Helper()
+	rp := c.callAsWork(t, memoryURL, work, "context", protocol.ContextRequest{Work: work, Trigger: trigger})
 	if !rp.OK {
 		t.Fatalf("context 失败: %s", rp.Error)
 	}
-	return rp
-}
-
-// contextAsWork 同 contextUntilReady，但指定帧头 work。
-// work 与任务一一对应（works.task）：同一个 work 换会话会触发归属冲突，用例要换 work。
-func (c *stubCaller) contextAsWork(t *testing.T, memoryURL, work string, input protocol.ContextPayload) callResult {
-	t.Helper()
-	rp := c.callAsWork(t, memoryURL, work, "context", input)
-	if !rp.OK {
-		t.Fatalf("context 失败: %s", rp.Error)
+	var out protocol.ContextResponse
+	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
+		t.Fatalf("context 回执无法解码: %v", err)
 	}
-	return rp
+	return out
 }
 
 // decodeContext 解 context 回执；失败即测试失败。
@@ -343,99 +365,43 @@ func startMemory(t *testing.T, centerURL string, historyLimit int, opts ...func(
 
 // ---------- 用例 ----------
 
-// TestRecallResumeFlow 验证完整回路：store 两条历史 → recall → resume（from=memory，含记忆块）。
-func TestRecallResumeFlow(t *testing.T) {
+// TestContextProjectsStoredHistory 验证基座组装：库里的历史按 seq 投影到消息链，
+// 当前用户消息就是触发条目；experience 为空时没有【记忆】块（历史不再折叠进记忆文本）。
+func TestContextProjectsStoredHistory(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
 
-	if rp := caller.call(t, srv.WsURL(), "store", protocol.StorePayload{ConversationID: "t1", Role: "user", Content: "上一轮的问题"}); !rp.OK {
-		t.Fatalf("store 失败: %s", rp.Error)
-	}
-	if rp := caller.call(t, srv.WsURL(), "store", protocol.StorePayload{ConversationID: "t1", Role: "assistant", Content: "上一轮的答复"}); !rp.OK {
-		t.Fatalf("store 失败: %s", rp.Error)
-	}
+	opened := caller.openWork(t, srv.WsURL(), "w-t1", "t1", "历史任务")
+	caller.storeV2(t, srv.WsURL(), "w-t1", "t1", opened.TaskID, "user", "上一轮的问题", "reasoner:p1")
+	caller.storeV2(t, srv.WsURL(), "w-t1", "t1", opened.TaskID, "assistant", "上一轮的答复", "reasoner:p2")
+	current := caller.storeV2(t, srv.WsURL(), "w-t1", "t1", opened.TaskID, "user", "新一轮问题", "reasoner:p3")
 
-	ctxReq := protocol.ContextPayload{
-		Conversation: "t1",
-		Boss:         "stub-boss",
-		Messages: []protocol.Message{
-			{Role: "system", Content: "sys"},
-			{Role: "user", Content: "新一轮问题"},
-		},
+	got := caller.contextFor(t, srv.WsURL(), "w-t1", protocol.Trigger{Kind: "user", Item: current.ItemID})
+	if got.Task.ID != opened.TaskID {
+		t.Fatalf("context 应返回 work_open 建的任务: %+v", got.Task)
 	}
-	rp := caller.contextUntilReady(t, srv.WsURL(), ctxReq)
-	got := decodeContext(t, rp)
-	if got.Task.ID == "" {
-		t.Fatal("context 应返回任务行")
-	}
-	messages := got.Messages
-	// 记忆块存在且在第一条 system 之后。
-	if len(messages) < 3 || messages[1].Role != "system" || !strings.HasPrefix(messages[1].Content, compose.MemoryPrefix) {
-		t.Fatalf("记忆块位置不符: %+v", messages)
-	}
-	if !strings.Contains(messages[1].Content, "上一轮的问题") || !strings.Contains(messages[1].Content, "上一轮的答复") {
-		t.Fatalf("记忆内容缺失: %q", messages[1].Content)
-	}
-	// 任务链消息原样保留。
-	last := messages[len(messages)-1]
-	if last.Role != "user" || last.Content != "新一轮问题" {
-		t.Fatalf("任务消息被改动: %+v", last)
-	}
-}
-
-// TestRecallDedupAndReplace 验证：任务链已有的消息不重复注入；旧记忆块被替换而非叠加。
-func TestRecallDedupAndReplace(t *testing.T) {
-	sc := startStubCenter(t)
-	srv := startMemory(t, sc.URL(), 12)
-	caller := startStubCaller(t, sc.URL())
-
-	if rp := caller.call(t, srv.WsURL(), "store", protocol.StorePayload{ConversationID: "t2", Role: "user", Content: "重复消息"}); !rp.OK {
-		t.Fatalf("store 失败: %s", rp.Error)
-	}
-
-	// 任务上下文里带着与历史尾部相同的消息 → 记忆中不应再出现它。
-	ctxReq := protocol.ContextPayload{
-		Conversation: "t2",
-		Boss:         "stub-boss",
-		Messages: []protocol.Message{
-			{Role: "system", Content: "sys"},
-			{Role: "user", Content: "重复消息"},
-		},
-	}
-	first := decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), ctxReq)).Messages
-	// 历史仅有一条“重复消息”，被去重后应为空 → 不应注入记忆块。
-	for _, m := range first {
-		if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
-			t.Fatalf("重复消息应被去重，不应有记忆块: %+v", first)
+	var order []string
+	for _, m := range got.Messages {
+		if m.Role == "user" || m.Role == "assistant" {
+			order = append(order, m.Content)
 		}
 	}
-
-	// 模拟下一轮：上下文里已带旧记忆块 → 应被替换（同位置、单个），而非叠加。
-	msgs := []protocol.Message{
-		{Role: "system", Content: "sys"},
-		{Role: "system", Content: compose.MemoryPrefix + "\n旧内容"},
-		{Role: "user", Content: "再来一轮"},
+	want := []string{"上一轮的问题", "上一轮的答复", "新一轮问题"}
+	if strings.Join(order, "|") != strings.Join(want, "|") {
+		t.Fatalf("历史投影顺序不对: %v，期望 %v（messages=%+v）", order, want, got.Messages)
 	}
-	ctxReq2 := protocol.ContextPayload{Conversation: "t2", Boss: "stub-boss", Messages: msgs}
-	second := decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), ctxReq2)).Messages
-	count := 0
-	for _, m := range second {
-		if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
-			count++
-			if strings.Contains(m.Content, "旧内容") {
-				t.Fatalf("旧记忆块应被替换: %q", m.Content)
-			}
-		}
+	if len(got.Messages) == 0 || got.Messages[0].Role != "system" {
+		t.Fatalf("第一条应是 memory 的任务提示 system: %+v", got.Messages)
 	}
-	if count != 1 {
-		t.Fatalf("记忆块数量应为 1，实际 %d: %+v", count, second)
+	if block := memoryBlockText(got.Messages); block != "" {
+		t.Fatalf("没有经验时不应注入【记忆】块: %q", block)
 	}
 }
 
 // TestRememberRecallInjection 验证长期记忆 v0 全链：
-// remember 写入（幂等）→ recall 组装带「核心记忆」（priority>0，不看相关性）与「相关记忆」（bigram 命中）；
-// forget 软删后不再出现；忘记不存在的 id 报错。
+// remember 写入（幂等）→ context 的 experience 注入带「核心记忆」（priority>0，不看相关性）
+// 与「相关记忆」（bigram 命中）；forget 软删后不再出现；忘记不存在的 id 报错。
 func TestRememberRecallInjection(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
@@ -460,35 +426,22 @@ func TestRememberRecallInjection(t *testing.T) {
 		t.Fatalf("remember 失败: %s", rp.Error)
 	}
 
-	// context：查询“我明天想喝咖啡”——核心必须带（不看相关性），相关命中“咖啡”（2 字词）。
-	ctxReq := protocol.ContextPayload{
-		Conversation: "t3",
-		Boss:         "stub-boss",
-		Messages: []protocol.Message{
-			{Role: "system", Content: "sys"},
-			{Role: "user", Content: "我明天想喝咖啡"},
-		},
-	}
-	block := memoryBlockText(decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), ctxReq)).Messages)
+	opened := caller.openWork(t, srv.WsURL(), "w-t3", "t3", "记忆任务")
+	// context：最后一条 user 消息是“我明天想喝咖啡”——核心必须带，相关命中“咖啡”。
+	q1 := caller.storeV2(t, srv.WsURL(), "w-t3", "t3", opened.TaskID, "user", "我明天想喝咖啡", "reasoner:q1")
+	block := memoryBlockText(caller.contextFor(t, srv.WsURL(), "w-t3", protocol.Trigger{Kind: "user", Item: q1.ItemID}).Messages)
 	for _, want := range []string{"（核心记忆）", "猫叫团子", "（相关记忆）", "美式咖啡"} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("记忆块缺少 %q: %q", want, block)
 		}
 	}
 
-	// forget 核心条目 → 再 context 不再出现。
+	// forget 核心条目 → 新触发再 context 不再出现。
 	if rp := caller.call(t, srv.WsURL(), "forget", protocol.ForgetPayload{ID: rr.ID}); !rp.OK {
 		t.Fatalf("forget 失败: %s", rp.Error)
 	}
-	ctxReq2 := protocol.ContextPayload{
-		Conversation: "t3",
-		Boss:         "stub-boss",
-		Messages: []protocol.Message{
-			{Role: "system", Content: "sys"},
-			{Role: "user", Content: "今天写点什么代码"},
-		},
-	}
-	if block := memoryBlockText(decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), ctxReq2)).Messages); strings.Contains(block, "团子") {
+	q2 := caller.storeV2(t, srv.WsURL(), "w-t3", "t3", opened.TaskID, "user", "今天写点什么代码", "reasoner:q2")
+	if block := memoryBlockText(caller.contextFor(t, srv.WsURL(), "w-t3", protocol.Trigger{Kind: "user", Item: q2.ItemID}).Messages); strings.Contains(block, "团子") {
 		t.Fatalf("forget 后不应再注入核心条目: %q", block)
 	}
 
@@ -499,7 +452,7 @@ func TestRememberRecallInjection(t *testing.T) {
 }
 
 // memoryBlockText 返回消息链里记忆块的文本（无则空串）。
-func memoryBlockText(messages []protocol.Message) string {
+func memoryBlockText(messages []protocol.LLMMessage) string {
 	for _, m := range messages {
 		if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
 			return m.Content

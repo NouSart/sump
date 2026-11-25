@@ -73,7 +73,7 @@ type Server struct {
 	tokenChargeHook func(ctx context.Context, trace string, tokens int) error
 	workStatusHook  func(trace, status string)
 
-	memSeq int64 // 会话记录的单调序号（atomic）：并发写（Fire 是 goroutine）也按真实先后落库
+	memSeq int64 // 会话记录的单调序号（atomic）：并发调用（多轮/补报）也按真实先后落库
 
 	setMu   sync.Mutex    // 运行时可设项锁（设置下发 / 拉取即时生效）
 	notify  string        // 工具结果通知模式（each / batch）

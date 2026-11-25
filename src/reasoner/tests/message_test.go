@@ -43,4 +43,17 @@ func TestHumanMessageOpensTaskViaContext(t *testing.T) {
 	if got := mem.RecallContexts(); len(got) == 0 || got[0].ConversationID != "c-msg-human" {
 		t.Fatalf("context 会话不对: %+v", got)
 	}
+	if wo := mem.WorkOpens()["w-msg-human"]; wo.ConversationID != "c-msg-human" || wo.TaskName != "帮我看看" {
+		t.Fatalf("work_open 应带上会话与任务名: %+v", wo)
+	}
+	// 用户消息的 store 回执 item_id 就是 context 的 trigger.item；载荷必须带 work / 幂等键。
+	var userStore protocol.StorePayload
+	for _, sp := range mem.Stores() {
+		if sp.Role == "user" {
+			userStore = sp
+		}
+	}
+	if userStore.Work != "w-msg-human" || userStore.ClientItemID == "" {
+		t.Fatalf("用户消息 store 应带 work 与非空 client_item_id: %+v", userStore)
+	}
 }

@@ -1,17 +1,12 @@
 package server
 
-// context 的任务提示插入位置（特征化测试，钉住「实际发生什么」）：
+// 黑板消息链的形状（R-026 P2c 后的特征化测试）：
 //
-// 背景：审计报告认为 infer.go 的 resume「假定 Messages[0] 是 system，user 开头的链
-// 首条被无声顶掉」。实测不成立——那一行是
-//
-//	tc.Messages = append(tc.Messages[:1:1], append([]llm.Message{{Role:"system", ...}}, tc.Messages[1:]...)...)
-//
-// 三值切片 `[:1:1]` 把容量截成 1，外层 append 必然另起一块新数组，所以第 0 条被原样
-// 保留、任务提示插在索引 1。本文件把这个真实形状钉住：
+// 任务提示由 memory 的 assemble 写进基座（system），reasoner **不再二次插入**
+// （旧 withTaskPrompt 已删除）。这里钉住：
 //   - 一条不丢、一条不被覆盖（内容逐字保留）；
-//   - 角色顺序 = [原第 0 条, system(任务提示), 其余原样]，即使第 0 条是 user；
-//   - 没有任务 id 时一条都不插（今天的每个生产者都先给 system，见 infer.go:364 / hold.go:273 / async.go:310）。
+//   - 角色顺序 = 输入原样，即使第 0 条是 user 也不插 system、不顶掉；
+//   - 没有任务 id 时同样原样。
 
 import (
 	"io"
@@ -82,8 +77,8 @@ func assertKept(t *testing.T, got []llm.Message, i int, want llm.Message) {
 	}
 }
 
-// TestResumeUserFirstChainKeepsFirstMessage 是本次的核心用例：上下文以 user 开头时，
-// 任务提示插在索引 1，第 0 条用户消息原样留着。
+// TestResumeUserFirstChainKeepsFirstMessage：上下文以 user 开头时，reasoner 不得插任务提示，
+// 第 0 条用户消息原样留着（任务提示由 memory 基座提供）。
 func TestResumeUserFirstChainKeepsFirstMessage(t *testing.T) {
 	s := resumeQuietServer(t)
 	in := []llm.Message{
@@ -94,29 +89,21 @@ func TestResumeUserFirstChainKeepsFirstMessage(t *testing.T) {
 	st := contextToBoard(t, s, "c-user-first", in, &protocol.Task{ID: "task-7", Name: "排查端口"})
 
 	got := boardMessages(st)
-	// 实际结果的角色顺序（不是「[0] 一定是 system」）：任务提示夹在第 0 条之后。
-	if strings.Join(rolesOf(got), ",") != "user,system,assistant,user" {
-		t.Fatalf("角色顺序应为 [user, system, assistant, user]，实际 %+v（消息 %+v）", rolesOf(got), got)
+	if strings.Join(rolesOf(got), ",") != "user,assistant,user" {
+		t.Fatalf("reasoner 不应再插入任务提示，实际 %+v（消息 %+v）", rolesOf(got), got)
 	}
-	if len(got) != len(in)+1 {
-		t.Fatalf("应只多出 1 条任务提示：得到 %d 条，输入 %d 条", len(got), len(in))
+	for i := range in {
+		assertKept(t, got, i, in[i])
 	}
-	// 一条不丢、一条不被覆盖。
-	assertKept(t, got, 0, in[0])
-	assertKept(t, got, 2, in[1])
-	assertKept(t, got, 3, in[2])
-	// 多出来的那条是任务提示，位置在索引 1。
-	if got[1].Role != "system" || !strings.Contains(got[1].Content, "当前任务：《排查端口》（id=task-7）") {
-		t.Fatalf("索引 1 应是任务提示: %+v", got[1])
-	}
-	if strings.Contains(got[0].Content, "当前任务：") {
-		t.Fatalf("第 0 条被任务提示顶掉了（审计报告描述的行为，不该发生）: %q", got[0].Content)
+	for _, m := range got {
+		if strings.Contains(m.Content, "当前任务：") {
+			t.Fatalf("任务提示应由 memory 基座提供，reasoner 不得自己插: %q", m.Content)
+		}
 	}
 }
 
-// TestResumeSystemFirstChainKeepsSystemPromptAtZero 记录今天真实的形状：
-// 生产者给的上下文以 system 开头，于是插入后是两条 system（骨架提示 + 任务提示）。
-// 第 0 条仍然是原文，不是被覆盖后的任务提示。
+// TestResumeSystemFirstChainKeepsSystemPromptAtZero：基座第一条 system（任务提示）原样进黑板，
+// reasoner 不再在索引 1 插第二条任务提示。
 func TestResumeSystemFirstChainKeepsSystemPromptAtZero(t *testing.T) {
 	s := resumeQuietServer(t)
 	in := []llm.Message{
@@ -126,16 +113,11 @@ func TestResumeSystemFirstChainKeepsSystemPromptAtZero(t *testing.T) {
 	st := contextToBoard(t, s, "c-system-first", in, &protocol.Task{ID: "task-8", Name: "查时间"})
 
 	got := boardMessages(st)
-	if strings.Join(rolesOf(got), ",") != "system,system,user" {
-		t.Fatalf("角色顺序应为 [system, system, user]，实际 %+v", rolesOf(got))
+	if strings.Join(rolesOf(got), ",") != "system,user" {
+		t.Fatalf("reasoner 不应再插入任务提示，实际 %+v", rolesOf(got))
 	}
-	if got[0].Content != systemPrompt {
-		t.Fatalf("索引 0 必须还是原 system 提示（逐字）: %q", clip(got[0].Content, 120))
-	}
-	if !strings.Contains(got[1].Content, "当前任务：《查时间》（id=task-8）") {
-		t.Fatalf("索引 1 应是任务提示: %q", got[1].Content)
-	}
-	assertKept(t, got, 2, in[1])
+	assertKept(t, got, 0, in[0])
+	assertKept(t, got, 1, in[1])
 }
 
 // TestResumeWithoutTaskInsertsNothing 钉住门禁：没有任务 id 就不插任务提示，

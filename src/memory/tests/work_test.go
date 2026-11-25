@@ -17,15 +17,7 @@ func TestWorkLedgerViaRecall(t *testing.T) {
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
 
-	payload := protocol.ContextPayload{
-		Conversation: "conv-work",
-		Boss:         "stub-boss",
-		Messages: []protocol.Message{
-			{Role: "system", Content: "sys"},
-			{Role: "user", Content: "把这轮跑起来"},
-		},
-	}
-	caller.contextUntilReady(t, srv.WsURL(), payload)
+	caller.openWork(t, srv.WsURL(), "trace-test", "conv-work", "把这轮跑起来")
 
 	// work_get：work 行必须存在，且归属与 recall 帧一致。
 	rp := caller.call(t, srv.WsURL(), "work_get", map[string]any{"work": "trace-test"})

@@ -22,18 +22,26 @@ import (
 // ---------- stub memory ----------
 
 type memoryStore struct {
-	Payload protocol.StorePayload
-	Meta    map[string]any // 解析后的 meta（qq 只在"只记录"模式下带）
+	Payload   protocol.StorePayload
+	Meta      map[string]any // 解析后的 meta（qq 只在"只记录"模式下带）
+	FrameWork string         // 帧头 work（store 的归属，必须与载荷 work 相同）
+}
+
+type memoryWorkOpen struct {
+	Payload   protocol.WorkOpenPayload
+	FrameWork string // 帧头 work（必须与载荷 work 相同，否则真 memory 会拒）
 }
 
 type stubMemory struct {
-	srv       *spv2.Server
-	http      *httptest.Server
-	mu        sync.Mutex
-	stores    []memoryStore
-	opens     []protocol.ConversationOpenPayload
-	failOpen  bool          // 让 conversation_open 回错（验证起名失败的处理）
-	openDelay time.Duration // 让 conversation_open 慢一点（验证起名不挡消息的路）
+	srv          *spv2.Server
+	http         *httptest.Server
+	mu           sync.Mutex
+	stores       []memoryStore
+	workOpens    []memoryWorkOpen
+	opens        []protocol.ConversationOpenPayload
+	failWorkOpen bool          // 让 work_open 回错（验证"登记失败就不发 store"）
+	failOpen     bool          // 让 conversation_open 回错（验证起名失败的处理）
+	openDelay    time.Duration // 让 conversation_open 慢一点（验证起名不挡消息的路）
 }
 
 func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
@@ -43,6 +51,7 @@ func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
 		Protocol: spv2.ProtocolVersion, Name: "memory", Actor: spv2.ServiceRef("memory"),
 		Version: "stub/1", Methods: []spv2.Method{
 			{Name: "store", Shape: spv2.ShapeCall},
+			{Name: "work_open", Shape: spv2.ShapeCall},
 			{Name: "conversation_open", Shape: spv2.ShapeCall},
 			{Name: "work_get", Shape: spv2.ShapeCall},
 		},
@@ -52,12 +61,26 @@ func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
 		t.Fatal(err)
 	}
 	sm.srv = srv
+	srv.Handle("work_open", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.WorkOpenPayload
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		sm.mu.Lock()
+		sm.workOpens = append(sm.workOpens, memoryWorkOpen{Payload: p, FrameWork: call.Frame.Work})
+		fail := sm.failWorkOpen
+		sm.mu.Unlock()
+		if fail {
+			return call.ReplyError(spv2.CodeInternal, "记忆库写不进去", false, nil)
+		}
+		return call.Reply(protocol.WorkOpenResult{TaskID: "t-stub"})
+	})
 	srv.Handle("store", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.StorePayload
 		if err := call.Frame.DecodeBody(&p); err != nil {
 			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
 		}
-		rec := memoryStore{Payload: p}
+		rec := memoryStore{Payload: p, FrameWork: call.Frame.Work}
 		if p.Meta != "" {
 			_ = json.Unmarshal([]byte(p.Meta), &rec.Meta)
 		}
@@ -105,6 +128,30 @@ func (sm *stubMemory) storesLen() int {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	return len(sm.stores)
+}
+
+func (sm *stubMemory) workOpensLen() int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return len(sm.workOpens)
+}
+
+// waitWorkOpen 等 memory.work_open（qq 的只记录路径先登记 work）。
+func (sm *stubMemory) waitWorkOpen(t *testing.T, timeout time.Duration) memoryWorkOpen {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		sm.mu.Lock()
+		if len(sm.workOpens) > 0 {
+			w := sm.workOpens[0]
+			sm.mu.Unlock()
+			return w
+		}
+		sm.mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("等待 memory.work_open 超时")
+	return memoryWorkOpen{}
 }
 
 func (sm *stubMemory) opensLen() int {

@@ -182,6 +182,42 @@ func TestSnapshotSaveLoadExpire(t *testing.T) {
 	}
 }
 
+// TestLoadSnapshotByID 按主键读快照，但归属条件必须一起生效（transcript 的读路径）：
+// 同一 snapshot_id 在别的 work 名下必须是 ErrSnapshotNotFound——与「不存在」同形，
+// 不泄漏别人的快照是否存在。过期语义与 LoadSnapshot 共用一份（同一个 scanSnapshotRow）。
+func TestLoadSnapshotByID(t *testing.T) {
+	st := openV2Store(t)
+	now := time.Now()
+	ctx := context.Background()
+	payload := []byte(`{"schema":"context/2","messages":[]}`)
+
+	if err := st.SaveSnapshot(ctx, "snap-owned", "w1", "user", "item-1", payload,
+		"context/2", now, now.Add(time.Hour)); err != nil {
+		t.Fatalf("保存快照失败: %v", err)
+	}
+
+	snapID, got, expiresAt, err := st.LoadSnapshotByID(ctx, "w1", "snap-owned")
+	if err != nil || snapID != "snap-owned" || !bytes.Equal(got, payload) || time.Until(expiresAt) <= 0 {
+		t.Fatalf("按 id 读快照不对: (%q,%q,%v) err=%v", snapID, got, expiresAt, err)
+	}
+
+	if _, _, _, err := st.LoadSnapshotByID(ctx, "w2", "snap-owned"); !errors.Is(err, ErrSnapshotNotFound) {
+		t.Fatalf("别的 work 引用该快照应 ErrSnapshotNotFound，实际: %v", err)
+	}
+	if _, _, _, err := st.LoadSnapshotByID(ctx, "w1", "no-such-snapshot"); !errors.Is(err, ErrSnapshotNotFound) {
+		t.Fatalf("不存在的 snapshot_id 应 ErrSnapshotNotFound，实际: %v", err)
+	}
+
+	if err := st.SaveSnapshot(ctx, "snap-expired", "w1", "user", "item-2", payload,
+		"context/2", now.Add(-2*time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatalf("保存过期快照失败: %v", err)
+	}
+	if _, got, _, err := st.LoadSnapshotByID(ctx, "w1", "snap-expired"); !errors.Is(err, ErrSnapshotExpired) ||
+		got != nil {
+		t.Fatalf("过期快照应 ErrSnapshotExpired 且不返回载荷，实际: (%q,%v)", got, err)
+	}
+}
+
 // TestLoadSnapshotRejectsCorruptGzip 已压缩载荷正文 / CRC / 长度损坏时必须报错，
 // 不能把「解压失败」当成「空载荷」返回——gzip 头合法不等于正文可解。
 //

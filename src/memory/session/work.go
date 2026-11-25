@@ -6,49 +6,10 @@ package session
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
-	"github.com/NouSart/sump/protocol"
 	"github.com/NouSart/sump/spv2"
 )
-
-// ensureContextWork 在 context 时登记 work（本服务是唯一 work 登记处，spec §1.6）。
-// 生产链路没有独立的 human/agent 身份：owner 记部署默认人，agent 记调用方服务。
-//
-// taskID 是 contextBase 刚解析出的任务（EnsureTask 的结果）。这里必须显式传参：
-// TaskContext.Task 在 context 链路上从来没人填过——源实现只看 tc.Task，所以那条
-// LinkWorkTask 在旧链路里实际是死代码，works.task 一直是空的（R-023 P4.5）。
-func (s *Server) ensureContextWork(ctx context.Context, meta callMeta, tc protocol.TaskContext, taskID, goal string) error {
-	if meta.trace == "" {
-		return errors.New("context_base: 缺少 frame.work，无法登记 work")
-	}
-	entry := spv2.ServiceRef(meta.from)
-	if tc.Boss != "" {
-		entry = spv2.ServiceRef(tc.Boss)
-	}
-	_, err := s.cfg.Store.EnsureWork(ctx, spv2.Work{
-		ID:     meta.trace,
-		Root:   meta.trace,
-		Class:  spv2.ClassRequest,
-		Owner:  spv2.HumanRef("owner"),
-		Agent:  spv2.AgentRef(meta.from),
-		Entry:  entry,
-		Goal:   goal,
-		Status: spv2.WorkRunning,
-	})
-	if err != nil {
-		return fmt.Errorf("登记 work %s: %w", meta.trace, err)
-	}
-	// work → task 的归属是 context_v2 解析任务的前提（works.task → tasks → conversation_id）；
-	// 没有任务就不写（老调用方 / 无会话路径），但关联失败必须往上抛，不静默降级。
-	if taskID != "" {
-		if err := s.cfg.Store.LinkWorkTask(ctx, meta.trace, taskID); err != nil {
-			return fmt.Errorf("把 work %s 挂到任务 %s: %w", meta.trace, taskID, err)
-		}
-	}
-	return nil
-}
 
 // ---------- 请求体（线路键名即契约） ----------
 

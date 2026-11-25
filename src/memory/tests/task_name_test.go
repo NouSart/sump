@@ -1,10 +1,10 @@
 package tests
 
-// 任务命名的两个来源：入口服务显式给的 task_name（优先）与从正文第一行推断（兜底）。
+// 任务命名的来源：work_open 显式给的 task_name（优先）与 memory 的兜底（空名 → 未命名任务）。
 //
 // 为什么值得一条测试：QQ 的群聊消息正文前面带着来源标注（`[群聊 · 群「xx」 · 12 人可见 · …] 你好`），
-// 从正文推会推出一串标签，而任务名要显示在界面的会话树里。入口服务给了名字就必须用它，
-// 没给（老调用方 / 门户）则行为不变。
+// 从正文推会推出一串标签，而任务名要显示在界面的会话树里。入口服务给了名字就必须用它；
+// 名字过长时截到 24 字（与协议包 ClampTaskName 同一把尺子）。
 
 import (
 	"strings"
@@ -13,23 +13,17 @@ import (
 	"github.com/NouSart/sump/protocol"
 )
 
-// TestStoreUsesExplicitTaskName 验证 store 的两个任务名来源与 recall 的一致性。
-func TestStoreUsesExplicitTaskName(t *testing.T) {
+// TestWorkOpenUsesExplicitTaskName 验证 task_name 优先与超长截断。
+func TestWorkOpenUsesExplicitTaskName(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
 
 	// 1) 显式 task_name：正文带标签也不影响任务名。
 	labeled := "[群聊 · 群「编程交流」(67890) · 12 人可见 · 张三(12345) · 非主人 · 未@我] 你好"
-	if rp := caller.call(t, srv.WsURL(), "store", protocol.StorePayload{
-		ConversationID: "qq:group:67890",
-		Role:           "user",
-		Kind:           "user",
-		Content:        labeled,
-		TaskName:       "你好",
-	}); !rp.OK {
-		t.Fatalf("store 失败: %s", rp.Error)
-	}
+	opened := caller.openWork(t, srv.WsURL(), "w-name", "qq:group:67890", "你好")
+	caller.storeV2(t, srv.WsURL(), "w-name", "qq:group:67890", opened.TaskID, "user", labeled, "reasoner:name-1")
+
 	rp := caller.call(t, srv.WsURL(), "task_list", protocol.TaskListPayload{ConversationID: "qq:group:67890"})
 	if !rp.OK {
 		t.Fatalf("task_list 失败: %s", rp.Error)
@@ -45,35 +39,9 @@ func TestStoreUsesExplicitTaskName(t *testing.T) {
 		t.Fatalf("显式 task_name 未生效（取到 %q）", list.Tasks[0].Name)
 	}
 
-	// 2) 没给 task_name：行为与旧版一致（正文第一行）。
-	if rp := caller.call(t, srv.WsURL(), "store", protocol.StorePayload{
-		ConversationID: "web:private:owner",
-		Role:           "user",
-		Content:        "看看现在几点\n附带第二行",
-	}); !rp.OK {
-		t.Fatalf("store 失败: %s", rp.Error)
-	}
-	rp = caller.call(t, srv.WsURL(), "task_list", protocol.TaskListPayload{ConversationID: "web:private:owner"})
-	if !rp.OK {
-		t.Fatalf("task_list 失败: %s", rp.Error)
-	}
-	if err := protocol.DecodeRaw(rp.Data, &list); err != nil {
-		t.Fatal(err)
-	}
-	if len(list.Tasks) != 1 || list.Tasks[0].Name != "看看现在几点" {
-		t.Fatalf("兜底取名不符: %+v", list.Tasks)
-	}
-
-	// 3) 超长名字压到 24 个字（与 reasoner 的 clampTitle 同口径）。
+	// 2) 超长名字压到 24 个字（与 reasoner 的 clampTitle 同口径）。
 	long := strings.Repeat("长", 40)
-	if rp := caller.call(t, srv.WsURL(), "store", protocol.StorePayload{
-		ConversationID: "qq:private:1",
-		Role:           "user",
-		Content:        "原始正文",
-		TaskName:       long,
-	}); !rp.OK {
-		t.Fatalf("store 失败: %s", rp.Error)
-	}
+	caller.openWork(t, srv.WsURL(), "w-long", "qq:private:1", long)
 	rp = caller.call(t, srv.WsURL(), "task_list", protocol.TaskListPayload{ConversationID: "qq:private:1"})
 	if !rp.OK {
 		t.Fatalf("task_list 失败: %s", rp.Error)
@@ -89,23 +57,18 @@ func TestStoreUsesExplicitTaskName(t *testing.T) {
 	}
 }
 
-// TestContextHonorsExplicitTaskName 验证 context 侧也认 task_name：
-// store 与 context 是两条路径，谁先到都不能把标签当任务名。
+// TestContextHonorsExplicitTaskName 验证 context 的 task 投影就是 work_open 建的任务，
+// 正文标签不会变成任务名。
 func TestContextHonorsExplicitTaskName(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
 
-	req := protocol.ContextPayload{
-		Conversation: "qq:group:99",
-		Boss:         "qq",
-		TaskName:     "在吗",
-		Messages: []protocol.Message{
-			{Role: "system", Content: "sys"},
-			{Role: "user", Content: "[群聊 · 群 99 · 5 人可见 · 李四(7) · 非主人 · 已@我] 在吗"},
-		},
-	}
-	if got := decodeContext(t, caller.contextUntilReady(t, srv.WsURL(), req)); got.Task.Name != "在吗" {
+	opened := caller.openWork(t, srv.WsURL(), "trace-qq99", "qq:group:99", "在吗")
+	msg := caller.storeV2(t, srv.WsURL(), "trace-qq99", "qq:group:99", opened.TaskID, "user",
+		"[群聊 · 群 99 · 5 人可见 · 李四(7) · 非主人 · 已@我] 在吗", "reasoner:qq99")
+	got := caller.contextFor(t, srv.WsURL(), "trace-qq99", protocol.Trigger{Kind: "user", Item: msg.ItemID})
+	if got.Task.Name != "在吗" {
 		t.Fatalf("context 未采用显式任务名: %+v", got.Task)
 	}
 }

@@ -246,7 +246,7 @@ func TestLintV2SingleImplementation(t *testing.T) {
 	// 4) session 包不得自己造 call_id：其它 id（如 snapshot_id）允许，但必须显式登记原因。
 	newIDs := callSites(t, root, serverFiles, "NewID")
 	allowedNewID := map[string]string{
-		"context_v2.go": "快照 id（snapshot_id，S-001 §4.4）；不是 call_id",
+		"context_base.go": "快照 id（snapshot_id，S-001 §4.4）；不是 call_id",
 	}
 	for _, hit := range newIDs {
 		base := filepath.Base(hit.File)
@@ -278,7 +278,9 @@ var v2ImplementationFiles = []string{
 	"src/memory/session/assemble/types.go",
 	"src/memory/session/authorize.go",
 	"src/memory/session/calls_v2.go",
-	"src/memory/session/context_v2.go",
+	"src/memory/session/context_base.go",
+	"src/memory/session/work_open.go",
+	"src/memory/session/transcript.go", // S-001 §3.2：按快照重放文本（只读）
 	"src/memory/session/store_v2.go",
 	"src/memory/session/owner_client.go", // owner 握手/对账的可注入契约（与 calls_v2 同批）
 	"src/memory/session/store/calls.go",

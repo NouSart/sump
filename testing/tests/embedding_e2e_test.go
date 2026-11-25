@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // pythonExe 选择运行 embedding 服务的解释器：仓库内 venv 优先（本地开发），
@@ -144,25 +145,9 @@ func recallStable(t *testing.T, memURL, query, conv string) string {
 // recallOnce 以 probe 的身份发起一次 context，同步取回组装后的消息并提取记忆块。
 func recallOnce(t *testing.T, memURL, query, conv string) (string, error) {
 	t.Helper()
-	c := dialSPV2(t, memURL)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	rp := callJumpFrom(t, c, "probe", "memory", "context", protocol.ContextPayload{
-		Conversation: conv,
-		Boss:         "probe",
-		Messages: []protocol.Message{
-			{Role: "system", Content: "sys"},
-			{Role: "user", Content: query},
-		},
-	}, ctx)
-	if !rp.OK {
-		return "", fmt.Errorf("context 未被受理: %s", rp.Error)
-	}
-	var out struct {
-		Messages []protocol.Message `msgpack:"messages"`
-	}
-	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
-		return "", fmt.Errorf("context 回执无法解码: %w", err)
+	out, err := contextOnce(t, memURL, query, conv)
+	if err != nil {
+		return "", err
 	}
 	for _, m := range out.Messages {
 		if m.Role == "system" && strings.HasPrefix(m.Content, "【记忆】") {
@@ -170,4 +155,47 @@ func recallOnce(t *testing.T, memURL, query, conv string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// contextOnce 跑一轮完整的 context/2（work_open → store → context），返回整份回执。
+// 供既要记忆块又要基座消息的 e2e 用例共用（例如断言原文仍在自己的历史里）。
+func contextOnce(t *testing.T, memURL, query, conv string) (protocol.ContextResponse, error) {
+	t.Helper()
+	c := dialSPV2(t, memURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	work := "w-embed-" + conv
+	var opened protocol.WorkOpenResult
+	openRP := callWorkFrom(t, c, work, "probe", "memory", "work_open", protocol.WorkOpenPayload{
+		Work: work, ConversationID: conv, TaskName: "语义召回", Boss: "probe",
+	}, ctx)
+	if !openRP.OK {
+		return protocol.ContextResponse{}, fmt.Errorf("work_open 未被受理: %s", openRP.Error)
+	}
+	if err := protocol.DecodeRaw(openRP.Data, &opened); err != nil {
+		return protocol.ContextResponse{}, fmt.Errorf("work_open 回执无法解码: %w", err)
+	}
+	storeRP := callWorkFrom(t, c, work, "probe", "memory", "store", protocol.StorePayload{
+		ConversationID: conv, Work: work, TaskID: opened.TaskID,
+		ClientItemID: "probe:" + spv2.NewID(), Boss: "probe",
+		Role: "user", Content: query,
+	}, ctx)
+	if !storeRP.OK {
+		return protocol.ContextResponse{}, fmt.Errorf("store 未被受理: %s", storeRP.Error)
+	}
+	var stored protocol.StoreResult
+	if err := protocol.DecodeRaw(storeRP.Data, &stored); err != nil {
+		return protocol.ContextResponse{}, fmt.Errorf("store 回执无法解码: %w", err)
+	}
+	rp := callWorkFrom(t, c, work, "probe", "memory", "context", protocol.ContextRequest{
+		Work: work, Trigger: protocol.Trigger{Kind: "user", Item: stored.ItemID},
+	}, ctx)
+	if !rp.OK {
+		return protocol.ContextResponse{}, fmt.Errorf("context 未被受理: %s", rp.Error)
+	}
+	var out protocol.ContextResponse
+	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
+		return protocol.ContextResponse{}, fmt.Errorf("context 回执无法解码: %w", err)
+	}
+	return out, nil
 }
