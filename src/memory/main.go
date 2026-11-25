@@ -95,6 +95,9 @@ func runSession(c runConfig) {
 		Peers: c.peers, Store: st, HistoryLimit: c.history, DBPath: c.dbPath,
 		Logger: c.logger,
 	}, c.logger)
+	// owner 客户端要拿本服务骨架做出站一跳（按服务名解析），所以在 New 之后注入。
+	// session 角色是调用账本的 owner：pause/resume/cancel 与 call_status 都要问执行服务。
+	s.SetOwnerClient(session.NewSPv2OwnerClient(s.Service))
 	serve(s, c.logger)
 }
 

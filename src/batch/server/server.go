@@ -64,6 +64,11 @@ type Server struct {
 	jobs     map[string]*runningJob // 内存里的活动任务（终态即删）
 	inflight int                    // 已预留的槽位总数（跨任务）
 
+	// owner 控制面（owner_status）：recoverAfterRestart 是否已完成。启动早期为 false，
+	// 此时「不认识」不能判 orphaned。
+	ownerMu   sync.Mutex
+	recovered bool
+
 	stopOnce sync.Once
 	stopped  chan struct{}
 
@@ -158,6 +163,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 	})
 	s.declareSettings()
 	s.registerNativeMethods()
+	// owner 侧控制面（R-029）：status 读账本，pause / resume / cancel 复用 controlOne；
+	// 见 owner_control.go。
+	s.Service.SetOwnerControl(s)
 	return s
 }
 
@@ -289,6 +297,9 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	s.recoverAfterRestart()
+	s.ownerMu.Lock()
+	s.recovered = true
+	s.ownerMu.Unlock()
 	s.startBackground(func() { s.pruneLoop() })
 	return nil
 }

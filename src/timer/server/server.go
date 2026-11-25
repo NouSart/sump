@@ -202,6 +202,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		Input:       map[string]any{"type": "object"},
 		Output:      map[string]any{"type": "object"},
 	}, s.nativeList)
+	// owner 侧控制面（R-029）：owner_status 回报在计时器；cancel 复用撤销路径；
+	// pause / resume 没有概念，回 not_supported（见 owner_control.go）。
+	s.Service.SetOwnerControl(s)
 	// 门户服务名：热改（空 = 不推快照；改名后下一次状态变化就推给新门户）。
 	s.HandleSetting("portal", cfg.Portal, func(v string) error {
 		s.setPortalName(strings.TrimSpace(v))
@@ -341,28 +344,33 @@ func (s *Server) cancel(body []byte) (any, error) {
 	if err := protocol.DecodeRaw(body, &req); err != nil {
 		return nil, err
 	}
-	if req.ItemID == "" {
+	return s.cancelTiming(req.ItemID)
+}
+
+// cancelTiming 撤销一条在计时器（cancel method 与 owner_control 共用这一条路径）。
+// 撤销即发一条 final 补报，免得调用方那边的在途记账一直挂着（它靠 final 释放）。
+// 不在表里时回 status=unknown——已到点 / 已撤销 / 从没存在过，如实说，不假装成功。
+func (s *Server) cancelTiming(itemID string) (any, error) {
+	if itemID == "" {
 		return nil, errors.New("cancel: item_id 必填")
 	}
 
 	s.mu.Lock()
-	t, ok := s.pending[req.ItemID]
+	t, ok := s.pending[itemID]
 	if ok {
-		delete(s.pending, req.ItemID)
+		delete(s.pending, itemID)
 		s.seq++
 	}
 	s.mu.Unlock()
 
 	if !ok {
-		// 已到点（补报已发）/ 已撤销 / 从没存在过：如实回，不假装成功。
-		// 到点与撤销都在同一把锁下摘登记，所以这里不会和一个正要发补报的到点撞上。
-		return protocol.TimerCancelResult{ItemID: req.ItemID, Status: "unknown"}, nil
+		return protocol.TimerCancelResult{ItemID: itemID, Status: "unknown"}, nil
 	}
 	t.timer.Stop()
 	s.report(t, "canceled", fmt.Sprintf("计时已撤销：原本还会在 %s 后到点，调用方无须再等。", durationText(t.ms)), true)
 	s.pushPortalState(t.trace)
 	s.logger.Printf("撤销计时 %s（来自 %s）", t.item, t.caller)
-	return protocol.TimerCancelResult{ItemID: req.ItemID, Status: "canceled"}, nil
+	return protocol.TimerCancelResult{ItemID: itemID, Status: "canceled"}, nil
 }
 
 // fire 到点：摘登记（摘不到 = 已被撤销）后发补报。在计时回调里跑，不碰消息循环。

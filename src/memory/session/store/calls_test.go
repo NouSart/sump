@@ -5,7 +5,8 @@ package store
 //
 // 与源 af6cfc8:src/memory/store/calls_test.go 的差异（R-023 P3）：
 //   - 图片索引用例不搬：image_index 不在本架构（D7）；
-//   - 对账候选（ListCallsForReconcile）不搬：不建周期 reconciler（D7），没有消费者；
+//   - 对账候选（ListCallsForReconcile）在 R-029 周期对账落地时补回，消费者是
+//     session 的 reconcile.go（这里只验候选集：未关闭 + 非终态）；
 //   - CreateCall 去掉 task / owner / instance 入参：task 与 owner 由 works 联表解析，
 //     instance 在 schema 与协议里都没有落点；「调用方声明与账本不一致」这个入口一并消失。
 
@@ -155,6 +156,65 @@ func TestCallStateTransitions(t *testing.T) {
 	}
 	if err := st.SetCallState(ctx, id2, CallObserveClosed, CallExecDone, "weird", ""); err == nil {
 		t.Fatal("非法 phase 取值应报错")
+	}
+}
+
+// TestListCallsForReconcileCandidates：周期对账只扫未关闭、且执行维不是终态的 call。
+func TestListCallsForReconcileCandidates(t *testing.T) {
+	st := openCallsTestStore(t)
+	ctx := context.Background()
+	ensureCallsWork(t, st, "w1", "alice")
+
+	created := createCallsTestCall(t, st, "w1", "shell", CallModeOnce, true)
+	running := createCallsTestCall(t, st, "w1", "shell", CallModeOnce, true)
+	if err := st.SetCallState(ctx, running, CallObserveWaiting, CallExecRunning, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	paused := createCallsTestCall(t, st, "w1", "shell", CallModeOnce, true)
+	if err := st.SetCallState(ctx, paused, CallObserveWaiting, CallExecRunning, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetCallState(ctx, paused, CallObserveNotWaiting, CallExecPaused, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	unknown := createCallsTestCall(t, st, "w1", "shell", CallModeOnce, true)
+	if err := st.SetCallState(ctx, unknown, CallObserveWaiting, CallExecRunning, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetCallState(ctx, unknown, CallObserveNotWaiting, CallExecUnknown, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, terminal := range []struct {
+		observe, exec, phase string
+	}{
+		{CallObserveClosed, CallExecDone, CallPhaseDone},
+		{CallObserveClosed, CallExecFailed, CallPhaseFailed},
+		{CallObserveClosed, CallExecCancelled, CallPhaseCancelled},
+	} {
+		id := createCallsTestCall(t, st, "w1", "shell", CallModeOnce, true)
+		if err := st.SetCallState(ctx, id, CallObserveWaiting, CallExecRunning, "", ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetCallState(ctx, id, terminal.observe, terminal.exec, terminal.phase, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := st.ListCallsForReconcile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, row := range rows {
+		got[row.ID] = true
+	}
+	for _, want := range []string{created, running, paused, unknown} {
+		if !got[want] {
+			t.Fatalf("候选集缺少 %s: %+v", want, got)
+		}
+	}
+	if len(got) != 4 {
+		t.Fatalf("候选集应只含 4 条未终态 call，实际 %d: %+v", len(got), got)
 	}
 }
 

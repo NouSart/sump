@@ -584,6 +584,17 @@ func (s *Store) ListResident(ctx context.Context, owner string, limit int, curso
 	return s.queryCalls(ctx, query, args...)
 }
 
+// ListCallsForReconcile 返回周期对账要看的 call：未关闭、且执行维不是终态（done / failed /
+// cancelled 已是结果，不需要 owner 再回答）。只读；按 created_at 升序（老的先看）。
+//
+// 跑在 session 的周期循环里（reconcile.go），不改变任何状态——调用方自己决定怎么保守合并。
+func (s *Store) ListCallsForReconcile(ctx context.Context) ([]CallRow, error) {
+	return s.queryCalls(ctx, selectCallSQL+`
+		WHERE c.observe_state != ? AND c.exec_state NOT IN (?, ?, ?)
+		ORDER BY c.created_at ASC, c.id ASC`,
+		CallObserveClosed, CallExecDone, CallExecFailed, CallExecCancelled)
+}
+
 func (s *Store) queryCalls(ctx context.Context, query string, args ...any) ([]CallRow, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
