@@ -123,6 +123,15 @@ LLM 工具名 = **`<service>__<method>`**（由 reasoner 依据名册 `provides`
 
 **结果多大由提供方决定**：如果能力类动作回的是大块数据（图片、文件、长列表），提供方要自己给结果设上限并按需分片（例：`images.fetch` 默认只回缩略图，要看细节用矩形参数取局部），不要把「会不会撑爆上下文」的判断留给 reasoner——reasoner 只有一张硬编码黑名单，第三方服务它认不出来。
 
+### 5.4 v2 预览 method（P1，零生产调用方）
+
+以下 method 已实现但**没有任何生产调用方**，属 P1 预览：`context_v2`（四态：pending / assembled / completed / expired）、`trigger_complete`、`call_open`、`call_control`、`call_status`、`resident_list`。
+
+- 现行 `context` / `store` 仍承担 100% 生产流量；预览 method 只在直连调用时可用，不改变现行链。
+- P2 切换时 `context_v2` 改名为 `context` 并删除旧 method；在此之前不制造第二条生产路径。
+- 名字登记在 §9 的「v2 预览」两行，**不作为 LLM 工具**暴露；协议字段均为加法。
+- 未闭环项（transcript、grants、周期对账、图片索引、owner 客户端等）见 [TODO.md](../../TODO.md)「v2 契约层未闭环」。
+
 ## 6. 异步：受理即回执与补报
 
 有些动作的耗时不可预期（跑一条命令、跑一次训练）——让调用方等结果既会撞上工具超时，也违反「边界」：等待不该跨服务传递。
@@ -190,8 +199,10 @@ LLM 工具名 = **`<service>__<method>`**（由 reasoner 依据名册 `provides`
 | 帧类型（`type`） | 裸名词，四选一 | `call` `reply` `event` `stream` |
 | 控制面 method | 小写下划线 | `register` `heartbeat` `roster` `settings` `ping` `report` `list_settings` `set_setting` `reset_setting` `report_setting` `configure` `hello` `health` `metrics` |
 | 业务 method（`call.method`） | 小写下划线、动词_名词；保留 method 见 §5.1 | `embed` `run` `report_result` `approval_request` `approval_pending` `approval_decide` `approval_list` `capabilities`；timer：`sleep` `cancel` `list`；memory：`remember` `forget` `consolidate` `note` `dig` `lineheads` `prune` `publish_session` `shared_sessions` `shared_forget` `conversation_open` `conversation_archive`；files：`save` `fetch` `read` `write` `edit_word` `edit_ppt` `edit_pdf` `outline` `read_range` `find` `patch` `verify` |
+| v2 预览 method（P1，零调用方） | 小写下划线；P2 切换前不进入生产流量；语义见 §5.4 | `context_v2` `trigger_complete` `call_open` `call_control` `call_status` `resident_list` |
 | 退役 method（词汇保留） | 名字保留；不得用同一名字表示其他语义；历史语义与替代机制在此登记 | `step`（原自跳继续；实现已于 8c403ad 删除；无替代 method，轮次由 reasoner `boardKick` 推进） |
 | 载荷字段 | snake_case；可选即省略（omitempty）；跨服务新字段先在本表落一行 | `key` `value` `default` `overridden` `cause` `service` `results` `ok` `error` `heartbeat_ms`；设置项三类标记：`secret` `readonly` `set`；服务自报：`actual` `reported`；用户消息：`images` `files` `notes`（附注不是用户说的话）；上下文消息：`image_ids` `file_ids`；batch：`on_error`（`continue` 默认 / `stop`）`kind`（`once` / `resident`）`wake`；文件链：`filename` `files` `file_ids` `truncated` `sheet` `cell` `edits` `updated` `operations` `op` `old` `new` `replaced` `pages` `degrees` `properties` `applied`（`patch` 也用它）；文档链：`doc_kind` `digest` `depth` `node` `nodes` `node_count` `chars` `tables` `parts` `warnings` `offset` `limit` `total` `next` `regex` `matches` `run` `start` `end` `context` `range` `anchor` `exact_anchor` `exact_digest` `diff` `before` `after` `contains` `not_contains` `failures`；节点字段：`type` `level` `children`；embedding：`texts` `query` `vectors` `dim` `model`；异步受理与补报：`item_id` `phase` `text` `data` `final`；shell：`command` `work_dir` `exit_code` `stdout` `stderr` `stdout_bytes` `stderr_bytes` `timed_out` `truncated` `duration_ms`；timer：`ms` `note` `fire_at` `seq` `timers` `caller` `status`；共享经验库（跨会话只放提炼物）：`session_id` `task_id` `title` `goal` `outcome` `capabilities` `private` `sessions` `archived` `exclude` |
+| v2 预览载荷字段（P1，零调用方） | snake_case；结构见 `src/protocol/payloads_v2.go` 与 `payloads.go` 的 `StorePayload`；只在预览 method 的 body 里出现 | `work` `visibility` `client_item_id` `report` `report_id` `report_seq` `source_service` `trigger` `trigger_state` `snapshot_id` `completed` `assembled_at` `degraded` `repair_hint` `call_id` `control_id` `exec` `observe` `pausable` `ttl_ms` `exec_deadline_ms` `owner_service` `owner_recovery_complete` `origin_session` `deduped` |
 | 审批载荷字段 | snake_case；结构由 `src/protocol/approval.go` 定义 | `schema_version` `plan` `decision` `decision_id` `plan_digest` `policy_version` `reason_code` `valid_for_ms` `llm_feedback` `summary` `unknowns` `rule_ids`；补报新增 `approval`；第二层：`requested_by` `created_ms` `expires_ms` `note` |
 | exec 域执行描述字段 | 当前 `plan` 是命令域专用结构；每个字段只保留一个语义 | `version` `command` `work_dir` `shell_path` `args` `dialect` `platform` `profile` `timeout_ms` `max_output_bytes`；`dialect` 只表示 shell 方言，`profile` 只表示执行环境约定 |
 | 域判别字段（将来） | 新增第二个执行域时定义独立字段；当前协议尚未发送，不复用 `dialect` | 建议 `kind`，取值如 `exec` / `fs` / `http`；其他域各自声明执行字段组，裁决包、摘要绑定、有效期、fail-closed 共用 |
