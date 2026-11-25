@@ -46,6 +46,7 @@ type Server struct {
 	principalCalls  map[string]int
 	lifetime        context.Context
 	asyncImports    *asyncImports
+	importExecs     *importExecLedger
 	jobs            *Jobs
 	controls        int
 }
@@ -54,7 +55,7 @@ func New(cfg Config) (*Server, error) {
 	if err := cfg.defaults(); err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, bindings: BuiltinBindings(), principalCalls: make(map[string]int), asyncImports: newAsyncImports()}
+	s := &Server{cfg: cfg, bindings: BuiltinBindings(), principalCalls: make(map[string]int), asyncImports: newAsyncImports(), importExecs: newImportExecLedger()}
 	s.jobs = NewJobs(JobsConfig{MaxJobs: cfg.MaxJobs, MaxBytes: cfg.MaxOutputBytes / 4, MaxEarlyReports: 8, TTL: cfg.JobTTL, Timeout: cfg.AsyncTimeout})
 	p, err := readPolicy(cfg.ConfigPath, s.bindings)
 	if err != nil {
@@ -78,6 +79,9 @@ func New(cfg Config) (*Server, error) {
 		s.svc.HandleReadOnly(item[0], item[1])
 	}
 	s.registerNativeMethods()
+	// owner 侧控制面（R-029）：owner_status 按导入受理句柄回报执行维；
+	// cancel 只撤本地等待，pause / resume 回 not_supported（见 owner_control.go）。
+	s.svc.SetOwnerControl(s)
 	s.http, err = NewHTTPServer(cfg.HTTP, s.configureMCP, s.verifyToken)
 	if err != nil {
 		s.imports.Close()

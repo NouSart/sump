@@ -73,6 +73,20 @@ func (a *asyncImports) cancelOwned(id, owner string) bool {
 	return true
 }
 
+// cancelByHandle 撤销一条受理句柄的本地等待，不校验原始 from：owner_control 的
+// hook 只拿得到句柄、拿不到发起者（见 owner_control.go 的「调用者身份」）。
+// 原生 cancel_import 仍走 cancelOwned，保留「只有原 from 能取消」的检查。
+func (a *asyncImports) cancelByHandle(id string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	call := a.active[id]
+	if call == nil || call.cancel == nil {
+		return false
+	}
+	call.cancel()
+	return true
+}
+
 // Close rejects new work, cancels existing local waits and drains workers while
 // the native service is still alive to deliver their final observations.
 func (a *asyncImports) Close(ctx context.Context) error {
@@ -119,6 +133,8 @@ func (s *Server) asyncImport(ctx context.Context, action string, body []byte, ca
 		s.release(principal)
 		return nil, errors.New("MCP_IMPORT_REJECTED: service closing or request cancelled; remote tool not submitted")
 	}
+	// 受理即记 running：owner_status 在这个句柄回执发出后就能看到它。
+	s.importExecs.accepted(id)
 	go func() {
 		defer s.asyncImports.finish(id)
 		defer s.release(principal)
@@ -127,6 +143,8 @@ func (s *Server) asyncImport(ctx context.Context, action string, body []byte, ca
 		value, runErr := prepared.Run(workCtx)
 		s.asyncImports.observed(id)
 		report := importReport(id, value, runErr, prepared.submitted.Load())
+		// 本地执行结束：补报阶段翻成执行维（已经确认取消的句柄不被这里的终态覆盖）。
+		s.importExecs.finished(id, importExecOfPhase(report.Phase))
 		// Delivery gets its own bounded context, including during shutdown. A lost
 		// acknowledgment never triggers replay of the remote business operation.
 		deliveryCtx, stop := context.WithTimeout(context.Background(), s.cfg.DeliveryTimeout)
@@ -176,6 +194,8 @@ func (s *Server) cancelImport(body []byte, caller string) (any, error) {
 	status := "unknown"
 	if s.asyncImports.cancelOwned(id, caller) {
 		status = "observation_cancelled"
+		// 同一条本地取消路径：owner_status 也要能看见「本地等待已撤销」。
+		s.importExecs.cancelled(id)
 	}
 	return map[string]any{"item_id": id, "status": status, "remote_outcome": "unknown"}, nil
 }
