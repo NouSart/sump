@@ -6,7 +6,7 @@
 //	run 受理（立即回执，带回 item 句柄）
 //	  → 审批（接缝，见 approval.go；未通过即补报 rejected 结束，不执行）
 //	  → 执行（立刻跑；只有"同时在跑已达上限"时才拒绝）
-//	  → report_result 补报（approved / rejected / done / failed；结果可能晚于调用方收尾）
+//	  → report_result 补报（approved / rejected / done / failed / cancelled；结果可能晚于调用方收尾）
 //
 // 这里**没有队列、没有调度、没有顺序承诺**。并行还是串行是调用方的决定：一次派发几条就是
 // 几条并行，要串行就等上一条的补报再发下一条。旧版有个"并发 8 + FIFO 队列"，它让互不相干
@@ -81,11 +81,12 @@ type Server struct {
 	running          int
 	pendingApprovals chan struct{}
 
-	// 控制面账本（owner_status）：受理句柄 → 执行维。只记账，不参与调度——
-	// shell 仍然没有队列。终态记保留窗口见 owner_control.go。
+	// 控制面账本（owner_status）：受理句柄 → 执行维 + 取消句柄。只记账，不参与调度——
+	// shell 仍然没有队列。终态记保留窗口见 owner_control.go；取消句柄见 job_control.go。
 	trackMu    sync.Mutex
 	tracked    map[string]trackedJob
 	trackOrder []string
+	cancelWait time.Duration // 取消后等执行路径收尾的上限（默认 cancelSettleTimeout）
 }
 
 // job 是一条已受理的命令：审批 → 执行，全程带着补报所需的信息。
@@ -101,6 +102,8 @@ type job struct {
 	approvedUntil time.Time
 	progressReady chan struct{} // 先完成 approved 的投递尝试，再允许执行结果发出。
 	progressOnce  sync.Once
+	terminalOnce  sync.Once   // 终态只写一次（补报阶段 panic 的兜底不得改写已确认的终态）
+	ctl           *jobControl // 取消句柄（受理时登记；白盒测试直接构造的 job 为 nil）
 }
 
 func (j *job) finishProgress() {
@@ -150,6 +153,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		approvalWait:     cfg.ApprovalTimeout,
 		pendingApprovals: make(chan struct{}, maxPendingApprovals),
 		tracked:          map[string]trackedJob{},
+		cancelWait:       cancelSettleTimeout,
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
@@ -170,8 +174,8 @@ func New(cfg Config, logger *log.Logger) *Server {
 		},
 		Logger: logger,
 	})
-	// owner 侧控制面（R-029）：owner_status 能给出受理句柄的执行维；
-	// cancel / pause / resume 没有路径，回 not_supported（见 owner_control.go）。
+	// owner 侧控制面（R-029）：owner_status 能给出受理句柄的执行维；cancel 有真实
+	// 终止路径（见 job_control.go）；pause / resume 回 not_supported（见 owner_control.go）。
 	s.Service.SetOwnerControl(s)
 
 	// 可设置项：预设 = 本服务的启动引导值（来源由服务自己决定，见 main.go 的 flag）。
@@ -351,16 +355,19 @@ func (s *Server) run(caller, trace string, body []byte) (any, error) {
 		s.release()
 		return nil, errors.New("run: 同时待审批的命令太多，请稍后重试")
 	}
+	item := protocol.NewID()
 	j := &job{
-		item:          protocol.NewID(),
+		item:          item,
 		caller:        caller,
 		trace:         trace,
 		command:       p.Command,
 		workDir:       dir,
 		progressReady: make(chan struct{}),
+		ctl:           newJobControl(),
 	}
 	s.logger.Printf("受理命令 %s（来自 %s，命令 %d 字节）", j.item, j.caller, len(j.command))
-	s.track(j.item, protocol.OwnerExecCreated)
+	// 受理与挂取消句柄在同一把锁内完成：控制面不会看到「受理了但没有句柄」的中间态。
+	s.trackWith(j.item, protocol.OwnerExecCreated, j.ctl)
 	go s.process(j)
 	return protocol.ShellRunResult{ItemID: j.item, Phase: "queued"}, nil
 }
@@ -400,18 +407,26 @@ func (s *Server) process(j *job) {
 		defer j.finishProgress()
 		if r := recover(); r != nil {
 			s.Report("shell_internal", "审批或进展处理发生内部异常；item="+j.item)
-			s.track(j.item, protocol.OwnerExecFailed)
+			s.markTerminal(j, protocol.OwnerExecFailed)
 			s.report(j, "rejected", fmt.Sprintf("未执行：审批处理发生内部异常\n$ %s", j.command),
 				protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: "internal error"})
 		}
 	}()
 	svc := s.approvalServiceNow()
-	actx, cancel := context.WithTimeout(context.Background(), s.approvalWaitNow())
+	// 审批也用命令的生命周期 ctx：取消要能中断等待裁决，而不是等满 approvalWait。
+	actx, cancel := context.WithTimeout(j.lifecycleCtx(), s.approvalWaitNow())
 	verr := s.approveJob(actx, j, svc)
 	cancel()
+	if j.cancelRequested() {
+		// 取消发生在审批阶段：命令没有启动，这是能确认的「已停止」。
+		s.markTerminal(j, protocol.OwnerExecCancelled)
+		s.report(j, "cancelled", fmt.Sprintf("命令已被取消（未执行）\n$ %s", j.command),
+			protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: "已取消，未执行"})
+		return
+	}
 	if verr != nil {
 		s.logger.Printf("命令 %s 未通过审批: %v", j.item, verr)
-		s.track(j.item, protocol.OwnerExecFailed)
+		s.markTerminal(j, protocol.OwnerExecFailed)
 		s.report(j, "rejected", fmt.Sprintf("未执行：审批未通过——%v\n$ %s", verr, j.command),
 			protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: verr.Error()})
 		return
@@ -420,18 +435,45 @@ func (s *Server) process(j *job) {
 		protocol.ShellEventData{Command: j.command, WorkDir: j.workDir})
 	// approved 已经投递过（尝试过），放行终态补报的投递；否则 reportAfterProgress 会等自己。
 	j.finishProgress()
+	// 审批通过后、启动前被取消：不启动命令（取消不该先跑一条再杀）。
+	if j.cancelRequested() {
+		s.markTerminal(j, protocol.OwnerExecCancelled)
+		s.report(j, "cancelled", fmt.Sprintf("命令已被取消（未执行）\n$ %s", j.command),
+			protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: "已取消，未执行"})
+		return
+	}
 	// 执行完立刻让出名额：补报可能慢（网络）或暂未被认领，不能让它占着名额。
 	s.track(j.item, protocol.OwnerExecRunning)
-	phase, text, data := s.executeAndCollect(j)
+	out := s.executeAndCollect(j)
 	s.release()
 	released = true
-	s.track(j.item, terminalExecOfPhase(phase))
-	s.reportAfterProgress(j, phase, text, data)
+	s.markTerminal(j, out.exec)
+	s.reportAfterProgress(j, out.phase, out.text, out.data)
 }
 
-func (s *Server) executeAndCollect(j *job) (string, string, protocol.ShellEventData) {
+// markTerminal 写终态、摘掉取消句柄，然后放行等待取消确认的一方。
+// 顺序不能反：控制面在 done 关闭后按账本回答，账本必须先有终态。
+// 只认第一次：补报阶段 panic 的兜底不得把已确认的终态（例如 cancelled）改写成 failed。
+func (s *Server) markTerminal(j *job, exec string) {
+	j.terminalOnce.Do(func() {
+		s.track(j.item, exec)
+		j.ctl.finish()
+	})
+}
+
+// execOutcome 是一条命令执行后的完整结论：补报阶段、账本执行维（两者通常一致，
+// 只有「取消未确认」例外：账本记 unknown，补报按失败说清原因）。
+type execOutcome struct {
+	phase string // 补报阶段：done / failed / cancelled
+	exec  string // 账本执行维：protocol.OwnerExec*
+	text  string
+	data  protocol.ShellEventData
+}
+
+func (s *Server) executeAndCollect(j *job) execOutcome {
 	if err := j.validateBeforeExecution(); err != nil {
-		return "rejected", err.Error(), protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: err.Error()}
+		return execOutcome{phase: "rejected", exec: protocol.OwnerExecFailed, text: err.Error(),
+			data: protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: err.Error()}}
 	}
 	start := time.Now()
 	limit := s.maxOutputNow() // 每次执行只读一次上限：截断与补报文案共用，杜绝两次读数不一致
@@ -440,14 +482,25 @@ func (s *Server) executeAndCollect(j *job) (string, string, protocol.ShellEventD
 	}
 	res, err := s.runCommand(j, limit)
 	res.DurationMS = time.Since(start).Milliseconds()
+	// 取消的结论优先于「执行报错」：进程若已收回，err 可能只是等待管道收尾的噪声；
+	// 没收回则必须是 unknown，不能落成 failed 或 done。
+	confirmed, unconfirmed := j.ctl.cancelState()
 	switch {
+	case confirmed:
+		return execOutcome{phase: "cancelled", exec: protocol.OwnerExecCancelled, text: renderCancelled(j, res, limit), data: res}
+	case unconfirmed:
+		if res.Error == "" {
+			res.Error = "取消后未能确认进程已终止（进程可能仍在运行）"
+		}
+		return execOutcome{phase: "failed", exec: protocol.OwnerExecUnknown, text: renderCancelUnconfirmed(j, res, limit), data: res}
 	case err != nil:
 		if res.Error == "" {
 			res.Error = err.Error()
 		}
-		return "failed", fmt.Sprintf("未能执行：%v\n$ %s", err, j.command), res
+		return execOutcome{phase: "failed", exec: protocol.OwnerExecFailed,
+			text: fmt.Sprintf("未能执行：%v\n$ %s", err, j.command), data: res}
 	default:
-		return "done", renderDone(j, res, limit), res
+		return execOutcome{phase: "done", exec: protocol.OwnerExecDone, text: renderDone(j, res, limit), data: res}
 	}
 }
 

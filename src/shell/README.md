@@ -1,6 +1,6 @@
 ﻿# shell：命令执行服务
 
-> **读者**：要跑命令、或改执行护栏与审批接缝的人 ｜ **读完能做**：发起命令、读懂并行/串行归谁决定、知道护栏在哪 ｜ **最后校验**：2026-10-30
+> **读者**：要跑命令、或改执行护栏与审批接缝的人 ｜ **读完能做**：发起命令、读懂并行/串行归谁决定、知道护栏在哪 ｜ **最后校验**：2026-11-25
 
 代客执行命令的“代理商”：谁下单执行谁，自己不设判断（判断外包给审批），**受理即回执**，结果另行补报。
 
@@ -8,8 +8,11 @@
 run 受理（立即回执 {item_id, phase:"queued"}）
   → 审批（接缝；未通过 → 补报 rejected，不执行）
   → 执行（立刻跑；只有"同时在跑已达上限"时才拒绝）
-  → 补报 report_result（approved → done / failed）
+  → 补报 report_result（approved → done / failed / cancelled）
 ```
+
+执行中的命令可被 owner 侧 `owner_control cancel` 终止（整棵进程树；5 秒有界确认，
+确认不了回 `exec=unknown` + `reason=outcome_unknown`）；`pause` / `resume` 没有路径，回 `not_supported`。
 
 端口默认 `:9701`；模块 `shell/`，入口 `shell/main.go`。
 
@@ -106,7 +109,8 @@ Git Bash 绝对路径 → `bash` → `pwsh` → `powershell` → `cmd`（Linux/m
 | `approved` | 审批通过，开始执行 | 否 |
 | `rejected` | 未执行（审批未通过 / 名额已满 / 内部异常） | 是 |
 | `done` | 执行结束（含超时：看 `timed_out` / `exit_code` / `error`——超时且终止失败时 `error` 写明原因） | 是 |
-| `failed` | 没能跑起来 / 没能跑完（如解释器缺失、进程启动失败） | 是 |
+| `failed` | 没能跑起来 / 没能跑完（如解释器缺失、进程启动失败、取消后未能确认终止） | 是 |
+| `cancelled` | 被 owner 侧 `owner_control cancel` 取消（审批阶段取消则未执行；执行中取消是进程已确认停下） | 是 |
 
 补报发往**发起跳转时的 `from`**（调用方）；调用方离线时记日志并上报投递故障，不做持久队列。只有明确 ignored 的早到补报在 3 秒窗口内重试，网络错误不盲目重发。
 `data` 字段带结构化结果（`command` / `work_dir` / `exit_code` / `stdout` / `stderr` / `stdout_bytes` / `stderr_bytes` / `timed_out` / `truncated` / `duration_ms` / `error`）。

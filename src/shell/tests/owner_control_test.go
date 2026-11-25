@@ -1,13 +1,14 @@
 package tests
 
 // owner 侧控制面（R-029）的 shell 行为：owner_status 认识/不认识受理句柄；
-// cancel / pause / resume 没有路径 → not_supported（不假装成功）。
+// cancel 有真实执行面（在跑的命令会被真的终止）；pause / resume 仍没有路径。
 
 import (
 	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,6 +65,20 @@ func ownerStatus(t *testing.T, c *spv2.Client, ids ...string) protocol.OwnerStat
 	return st
 }
 
+// ownerControl 发一次 owner_control 并解出确认后的执行维。
+func ownerControl(t *testing.T, c *spv2.Client, id, op string) protocol.OwnerControlResult {
+	t.Helper()
+	raw, err := ownerRequest(t, c, "owner_control", protocol.OwnerControlPayload{ID: id, Op: op})
+	if err != nil {
+		t.Fatalf("owner_control %s %s 失败: %v", op, id, err)
+	}
+	var res protocol.OwnerControlResult
+	if err := protocol.DecodeRaw(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
 // waitOwnerExec 轮询到指定执行维（受理后先 created、审批通过再 running，存在短暂窗口）。
 func waitOwnerExec(t *testing.T, c *spv2.Client, id, want string, within time.Duration) {
 	t.Helper()
@@ -79,10 +94,10 @@ func waitOwnerExec(t *testing.T, c *spv2.Client, id, want string, within time.Du
 	t.Fatalf("%s 内 %s 没到 exec=%s（当前 %q）", within, id, want, last)
 }
 
-// TestOwnerStatusAndUnsupportedControl：在跑的命令可被 status 看到；三种控制都回
-// not_supported 并指明对象；不认识的句柄回 not_found；跑完后 status 仍是 done。
-func TestOwnerStatusAndUnsupportedControl(t *testing.T) {
-	sh, sleepCmd := slowPowerShell(t, 3)
+// TestOwnerStatusAndCancelRunningCommand：在跑的命令可被 status 看到；pause / resume 仍回
+// not_supported；cancel 必须**真的终止**它（远早于命令自然结束），账本与补报都记 cancelled。
+func TestOwnerStatusAndCancelRunningCommand(t *testing.T) {
+	sh, sleepCmd := slowPowerShell(t, 5)
 	sc := startStubCenter(t)
 	cl := startCaller(t, sc, "caller")
 	s := startShell(t, sc, server.Config{Root: t.TempDir(), Shell: sh, Approver: allowAll{}})
@@ -103,8 +118,8 @@ func TestOwnerStatusAndUnsupportedControl(t *testing.T) {
 		t.Fatalf("不认识的 id 不该出现在 states 里: %+v", st.States)
 	}
 
-	// shell 没有暂停/恢复/终止路径：三种 op 都回 not_supported（不是"已取消"）。
-	for _, op := range []string{protocol.OwnerOpPause, protocol.OwnerOpResume, protocol.OwnerOpCancel} {
+	// pause / resume 仍没有执行面：not_supported，且错误信息指明对象。
+	for _, op := range []string{protocol.OwnerOpPause, protocol.OwnerOpResume} {
 		_, err := ownerRequest(t, c, "owner_control", protocol.OwnerControlPayload{ID: res.ItemID, Op: op})
 		if !spv2.IsCode(err, spv2.CodeNotSupported) {
 			t.Fatalf("%s 没有实现路径，应回 not_supported，实际 %v", op, err)
@@ -114,33 +129,119 @@ func TestOwnerStatusAndUnsupportedControl(t *testing.T) {
 		}
 	}
 
-	// 不认识的句柄：not_found（先认对象，再说能力）。
+	// cancel 在跑的命令：命令睡 5 秒，取消必须在远早于自然结束前确认终止。
+	start := time.Now()
+	ctl := ownerControl(t, c, res.ItemID, protocol.OwnerOpCancel)
+	if ctl.Exec != protocol.OwnerExecCancelled || ctl.Reason != "" {
+		t.Fatalf("取消成功应回 exec=cancelled（reason 空），实际 %+v", ctl)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("取消应真的终止命令，而不是等它自然结束（耗时 %v，命令要睡 5s）", elapsed)
+	}
+
+	// 执行路径的补报：cancelled 终态、退出码 -1、文案不说"执行完成"。
+	p := waitReportItem(t, cl, "cancelled", res.ItemID)
+	if !p.Final {
+		t.Fatal("cancelled 应为终态（final=true）")
+	}
+	d := eventData(t, p)
+	if d.ExitCode != -1 {
+		t.Fatalf("被取消的命令退出码应为 -1: %+v", d)
+	}
+	if !strings.Contains(p.Text, "已被取消") {
+		t.Fatalf("补报文本应说明命令已被取消: %q", p.Text)
+	}
+	if strings.Contains(p.Text, "执行完成") {
+		t.Fatalf("被取消的命令不得说成执行完成: %q", p.Text)
+	}
+
+	// 账本与补报一致：终态是 cancelled；执行名额已归还（执行路径确实收尾了）。
+	if got := ownerStatus(t, c, res.ItemID).States[res.ItemID]; got != protocol.OwnerExecCancelled {
+		t.Fatalf("取消后执行维应为 cancelled，实际 %q", got)
+	}
+	if n := s.RunningCount(); n != 0 {
+		t.Fatalf("取消后执行名额应已归还，仍有 %d 条在跑", n)
+	}
+}
+
+// TestOwnerControlCancelFinishedJob：已终态的句柄没有可取消的执行——如实回它的终态 + reason，
+// 不谎称取消成功。
+func TestOwnerControlCancelFinishedJob(t *testing.T) {
+	sc := startStubCenter(t)
+	cl := startCaller(t, sc, "caller")
+	s := startShell(t, sc, server.Config{Root: t.TempDir(), Approver: allowAll{}})
+	c := dial(t, s.WsURL())
+
+	res := run(t, c, echoCommand("sump-shell-done"), "")
+	waitReportItem(t, cl, "done", res.ItemID)
+
+	ctl := ownerControl(t, c, res.ItemID, protocol.OwnerOpCancel)
+	if ctl.Exec != protocol.OwnerExecDone {
+		t.Fatalf("已结束的命令应如实回 done，实际 %+v", ctl)
+	}
+	if ctl.Reason != "already_terminal" {
+		t.Fatalf("应说明没有可取消的执行（already_terminal），实际 reason=%q", ctl.Reason)
+	}
+	if got := ownerStatus(t, c, res.ItemID).States[res.ItemID]; got != protocol.OwnerExecDone {
+		t.Fatalf("cancel 不该改写已终态的执行维，实际 %q", got)
+	}
+}
+
+// TestOwnerControlCancelUnknownID：不认识的句柄回 not_found（先认对象，再说能力）。
+func TestOwnerControlCancelUnknownID(t *testing.T) {
+	sc := startStubCenter(t)
+	s := startShell(t, sc, server.Config{Root: t.TempDir(), Approver: allowAll{}})
+	c := dial(t, s.WsURL())
+
 	if _, err := ownerRequest(t, c, "owner_control", protocol.OwnerControlPayload{
 		ID: "never-accepted", Op: protocol.OwnerOpCancel,
 	}); !spv2.IsCode(err, spv2.CodeNotFound) {
 		t.Fatalf("不认识的句柄应回 not_found，实际 %v", err)
 	}
-
-	// 跑完：终态在保留窗口内，status 给 done（不能变成"不认识"）。
-	waitReportItem(t, cl, "done", res.ItemID)
-	if got := ownerStatus(t, c, res.ItemID).States[res.ItemID]; got != protocol.OwnerExecDone {
-		t.Fatalf("跑完后执行维应为 done，实际 %q", got)
-	}
 }
 
-// TestOwnerStatusFailedJob：审批未通过（未执行）的受理记录是 failed，不写成 done。
-func TestOwnerStatusFailedJob(t *testing.T) {
+// gatedApprover 先声明已进入审批，再一直等到 ctx 结束——用来钉住「取消能中断等裁决」。
+type gatedApprover struct {
+	once    sync.Once
+	entered chan struct{}
+}
+
+func (g *gatedApprover) Approve(ctx context.Context, _ server.ApprovalRequest) error {
+	g.once.Do(func() { close(g.entered) })
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestOwnerControlCancelDuringApproval：命令还没开跑（审批中）时取消——不启动命令、
+// 不用等满审批超时，账本与补报都是 cancelled（这是能确认的「已停止」）。
+func TestOwnerControlCancelDuringApproval(t *testing.T) {
+	approver := &gatedApprover{entered: make(chan struct{})}
 	sc := startStubCenter(t)
 	cl := startCaller(t, sc, "caller")
-	// Approver 未注入 + approval.service 为空 = FailClosed。
-	s := startShell(t, sc, server.Config{Root: t.TempDir()})
+	s := startShell(t, sc, server.Config{Root: t.TempDir(), Approver: approver, ApprovalTimeout: 30 * time.Second})
 	c := dial(t, s.WsURL())
 
-	res := run(t, c, echoCommand("x"), "")
-	waitReportItem(t, cl, "rejected", res.ItemID)
+	res := run(t, c, echoCommand("must-not-run"), "")
+	select {
+	case <-approver.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("审批没有被调用")
+	}
 
-	st := ownerStatus(t, c, res.ItemID)
-	if st.States[res.ItemID] != protocol.OwnerExecFailed {
-		t.Fatalf("被拒执行的受理记录应为 failed: %+v", st.States)
+	start := time.Now()
+	ctl := ownerControl(t, c, res.ItemID, protocol.OwnerOpCancel)
+	if ctl.Exec != protocol.OwnerExecCancelled {
+		t.Fatalf("审批中的取消应回 cancelled，实际 %+v", ctl)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("取消应中断等裁决，而不是等满 approval.timeout（耗时 %v）", elapsed)
+	}
+
+	p := waitReportItem(t, cl, "cancelled", res.ItemID)
+	if !strings.Contains(p.Text, "未执行") {
+		t.Fatalf("审批阶段取消应说明命令未执行: %q", p.Text)
+	}
+	if got := ownerStatus(t, c, res.ItemID).States[res.ItemID]; got != protocol.OwnerExecCancelled {
+		t.Fatalf("取消后执行维应为 cancelled，实际 %q", got)
 	}
 }
