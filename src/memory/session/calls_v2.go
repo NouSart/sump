@@ -11,8 +11,8 @@ package session
 //   - call_status 单次读（只回答「现在是什么」；周期推进在 reconcile.go）：未注入 owner
 //     时 owner_recovery_complete 恒 false；注入后按 calls.remote_item_id 分批问，问不到
 //     不算 orphaned（§3.5 规则 1：问不到 ≠ 不存在）；本地查不到的 id 只回 id；
-//   - origin_session 留空：不透明会话 ID 由 experience/redact 提供，session 不能 import
-//     experience（架构测试钉死），本笔不在这里复制第二套脱敏实现。
+//   - origin_session 回填 conversation_id：它是 memory 自己的不透明会话标识，居民列表的
+//     消费者（门户 / owner）不需要 experience 的路径脱敏；session 仍不 import experience。
 //
 // pause / resume 需要 owner 确认（见 owner_client.go）：未注入客户端时明确回 unavailable
 // 且不改状态；注入后以 owner 的回答为准（空串 = 已确认但未带状态维）。cancel 始终可本地
@@ -666,10 +666,11 @@ func (s *Server) residentListFor(ctx context.Context, req residentListRequest, c
 			Exec:         row.Exec,
 			Phase:        row.Phase,
 			OwnerService: row.Service,
-			// OriginSession 留空：不透明会话 ID 在 experience/redact，session 不得 import
-			// experience（架构测试）；这里不复制第二套脱敏实现。
-			CreatedAt: row.CreatedAt,
-			UpdatedAt: row.UpdatedAt,
+			// conversation_id 是 memory 自己的不透明会话标识；不做路径脱敏，
+			// 路径脱敏属于 experience。
+			OriginSession: row.ConversationID,
+			CreatedAt:     row.CreatedAt,
+			UpdatedAt:     row.UpdatedAt,
 		})
 	}
 	if len(rows) == limit {
