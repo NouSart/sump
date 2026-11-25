@@ -61,6 +61,10 @@ type Service struct {
 
 	native map[string]NativeMethod
 
+	// ownerControl 是 owner 侧对账 / 控制面的实现（SetOwnerControl 注入；Start 前只写，
+	// 之后只读）。nil = 两个 method 不注册（见 owner_control.go）。
+	ownerControl OwnerControl
+
 	settingsMu    sync.Mutex        // 设置声明与生效值
 	settings      []settingEntry    // 已声明的设置项（按声明顺序）
 	settingIndex  map[string]int    // 键 → settings 下标
