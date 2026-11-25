@@ -180,12 +180,17 @@ func newOwnerContractServer(t *testing.T, owner OwnerClient) (*Server, *store.St
 	return New(Config{Store: st, OwnerClient: owner}, log.New(io.Discard, "", 0)), st
 }
 
-// dispatchCallsTestCall 把 call_open 的 created 推进到 running（模拟已派发给 owner）。
+// dispatchCallsTestCall 把 call_open 的 created 推进到 running（模拟已派发给 owner），
+// 并回填 owner 的受理句柄。生产里 remote_item_id 由派发回执回填；测试用 call_id 当句柄，
+// 让 fake 按同一个字符串回答案，同时证明调用点发上线的是 remote_item_id 而不是 call_id。
 func dispatchCallsTestCall(t *testing.T, st *store.Store, id string) {
 	t.Helper()
 	if err := st.SetCallState(context.Background(), id, store.CallObserveWaiting,
 		store.CallExecRunning, "", "dispatched"); err != nil {
 		t.Fatalf("置 running: %v", err)
+	}
+	if err := st.SetCallRemote(context.Background(), id, id); err != nil {
+		t.Fatalf("回填受理句柄: %v", err)
 	}
 }
 
@@ -675,6 +680,90 @@ func TestOwnerContractStatusReportsOwnerExecByService(t *testing.T) {
 		if row := mustCallRow(t, st, id); row.Exec != want {
 			t.Fatalf("对账不应改本地账本（%s）: %+v", id, row)
 		}
+	}
+}
+
+// TestOwnerContractStatusWithoutRemoteHandleDoesNotOrphan：有 owner 客户端且 owner 恢复完整，
+// 但本地 call 还没有受理句柄（remote_item_id 未回填）时没有对象可问：不得判 orphaned，
+// 也不该把空句柄发给 owner（那会让 owner 把「空 id」当成一个真实句柄回答）。
+func TestOwnerContractStatusWithoutRemoteHandleDoesNotOrphan(t *testing.T) {
+	fake := &fakeOwner{statusRecovery: true}
+	s, st := newOwnerContractServer(t, fake)
+	seedCallsWork(t, st, "w1", "alice", "reasoner")
+
+	// 同一批里放一条有句柄的 call，证明「恢复完整 + 不认识」的 orphaned 判定仍然生效；
+	// owner 恢复完整是整批的结论，不能因为同批有「没句柄」的 call 就被拖成 false。
+	withHandle := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	dispatchCallsTestCall(t, st, withHandle)
+	// 已派发但回执未回填：本地是 running，受理句柄仍为空。
+	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	if err := st.SetCallState(context.Background(), id, store.CallObserveWaiting,
+		store.CallExecRunning, "", "dispatched"); err != nil {
+		t.Fatalf("置 running: %v", err)
+	}
+	// 未派发：仍 created。
+	createdID := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+
+	res, err := statusCalls(t, s, protocol.CallStatusPayload{IDs: []string{withHandle, id, createdID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OwnerRecoveryComplete {
+		t.Fatal("owner 恢复完整时应照实上报 true")
+	}
+	if _, _, _, status := fake.counts(); status != 1 {
+		t.Fatalf("只应对有受理句柄的那条 call 发对账（调用 %d 次）", status)
+	}
+	byID := map[string]protocol.CallStatusItem{}
+	for _, item := range res.Items {
+		byID[item.ID] = item
+	}
+	if got := byID[withHandle]; got.Exec != store.CallExecUnknown || got.Phase != store.CallPhaseOrphaned {
+		t.Fatalf("有句柄且 owner 不认识的 call 应报告 orphaned: %+v", got)
+	}
+	if got := byID[id]; got.Exec != store.CallExecRunning || got.Phase != "" {
+		t.Fatalf("没有句柄的 running 不得被判 orphaned: %+v", got)
+	}
+	if got := byID[createdID]; got.Exec != store.CallExecCreated || got.Phase != "" {
+		t.Fatalf("created 没有句柄时保持本地意图: %+v", got)
+	}
+	if row := mustCallRow(t, st, id); row.Exec != store.CallExecRunning || row.Phase != "" {
+		t.Fatalf("对账不应改本地账本: %+v", row)
+	}
+}
+
+// TestOwnerContractControlWithoutRemoteHandle：有客户端但受理句柄未回填时，控制不得
+// 猜一个 id 发上线；pause/resume fail-visible，cancel 不能假装远端已停。
+func TestOwnerContractControlWithoutRemoteHandle(t *testing.T) {
+	fake := &fakeOwner{}
+	s, st := newOwnerContractServer(t, fake)
+	seedCallsWork(t, st, "w1", "alice", "reasoner")
+	id := openCallsTestCall(t, s, "w1", store.CallModeOnce, true)
+	if err := st.SetCallState(context.Background(), id, store.CallObserveWaiting,
+		store.CallExecRunning, "", "dispatched"); err != nil {
+		t.Fatalf("置 running: %v", err)
+	}
+
+	if _, err := controlCalls(t, s, protocol.CallControlPayload{
+		ID: id, ControlID: "ctl-pause-nohandle", Op: "pause",
+	}); !spv2.IsCode(err, spv2.CodeUnavailable) {
+		t.Fatalf("没有受理句柄时 pause 应 unavailable: %v", err)
+	}
+	cancel, err := controlCalls(t, s, protocol.CallControlPayload{
+		ID: id, ControlID: "ctl-cancel-nohandle", Op: "cancel",
+	})
+	if err != nil {
+		t.Fatalf("没有受理句柄时 cancel 仍应本地关闭: %v", err)
+	}
+	if cancel.Observe != store.CallObserveClosed || cancel.Exec != store.CallExecUnknown ||
+		cancel.Reason != "cancel_unconfirmed" {
+		t.Fatalf("没有受理句柄的 cancel 不能假装远端已停: %+v", cancel)
+	}
+	if row := mustCallRow(t, st, id); !row.RemoteMayContinue {
+		t.Fatalf("没有受理句柄的 cancel 应标 remote_may_continue: %+v", row)
+	}
+	if p, r, c, _ := fake.counts(); p != 0 || r != 0 || c != 0 {
+		t.Fatalf("没有受理句柄时不应向 owner 发控制: pause=%d resume=%d cancel=%d", p, r, c)
 	}
 }
 

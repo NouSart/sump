@@ -130,7 +130,7 @@ LLM 工具名 = **`<service>__<method>`**（由 reasoner 依据名册 `provides`
 - **快照只冻结基座**（messages / task / work）；experience 由门面在 assembled 快照之上**每次现注入**（R-026-D1=(a)）。`completed` 只补 ACK：不读快照、不注入 experience（R-026-D2）。
 - `work_open` 在建链前登记 work 与它所属的任务（幂等；`works.task` 的唯一写入口）；`trigger_complete` 在模型输出与后续动作安全落库后收口本轮；`transcript` 只读地按 `snapshot_id` 重放文本（S-001 §3.2）；`call_open` / `call_control` / `call_status` / `resident_list` 是调用账本与常驻目录。
 - 这些 method **都不作为 LLM 工具**暴露；协议字段均为加法。
-- **owner 侧控制面**（R-029）：`owner_status {ids}` / `owner_control {id, op, ttl_ms?}` 是执行服务对 memory `call_status` / `call_control` 的对端。`states` 只含 owner 认识的 call；`recovery_complete=false`（启动早期、持久受理记录未恢复完）时「不认识」不能判 orphaned。`exec` 成功值为 `paused` / `running` / `cancelled`，空串 = 已确认但未带状态维，其它值 = 未确认（`reason` 说明为什么）；不支持的操作回 `not_supported`、不认识的 id 回 `not_found`，都不假装成功。未接控制面的服务不注册这两个 method（direct call 得 `not_found`）。
+- **owner 侧控制面**（R-029）：`owner_status {ids}` / `owner_control {id, op, ttl_ms?}` 是执行服务对 memory `call_status` / `call_control` 的对端。`id` 是 owner 自己的受理句柄（memory 侧对应 `calls.remote_item_id`，不是 memory 的 `call_id`）。`states` 只含 owner 认识的句柄；`recovery_complete=false`（启动早期、持久受理记录未恢复完）时「不认识」不能判 orphaned。`exec` 成功值为 `paused` / `running` / `cancelled`，空串 = 已确认但未带状态维，其它值 = 未确认（`reason` 说明为什么）；不支持的操作回 `not_supported`、不认识的 id 回 `not_found`，都不假装成功。未接控制面的服务不注册这两个 method（direct call 得 `not_found`）。
 - 旧的按会话现拼 `context`（`{conversation, messages, ...}`）与无幂等键的 `store` 分叉已在 P2c 删除；回滚 = revert 切换提交并保留旧库（不清库）。
 - `transcript` 的默认口径（`snapshot_id` 必填、`budget.max_chars` 按字符计、文本按消息顺序 `role: content`、`omitted` 只数整条丢弃）登记在 [transcript.go](../../src/memory/session/transcript.go) 文件头与 `transcript_test.go`；S-001 §3.2 未定义 budget 与文本格式。
 - 未闭环项（grants、周期对账、图片索引、owner 客户端等）见 [TODO.md](../../TODO.md)「v2 契约层未闭环」。
