@@ -329,6 +329,11 @@ func (s *Server) assembleContextBase(ctx context.Context, work, kind, item strin
 		}
 		return resp, nil
 	}
+	if errors.Is(err, store.ErrSnapshotTooLarge) {
+		// 容量上限是显式失败（S-001 §4.4）：不截断投影、不静默丢弃，也不写触发状态。
+		// 存储层错误已带 work / trigger 与字节数，这里只补线上错误码。
+		return nil, v2Error(spv2.CodeInvalidArgument, "context_base: %v", err)
+	}
 	if err != nil {
 		return nil, v2Error(spv2.CodeInternal, "context_base: %v", err)
 	}

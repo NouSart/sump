@@ -37,6 +37,8 @@ func main() {
 	dbPath := flag.String("db", "data/memory.db", "会话库（私有）路径")
 	sharedFlag := flag.String("shared-db", "", "共享经验库路径（空 = 与会话库同目录的 experience.db）")
 	history := flag.Int("history", 12, "context_base 返回的最近消息条数")
+	snapshotTotal := flag.Int64("snapshot-total", store.DefaultSnapshotTotalLimit,
+		"已存上下文快照总量上限（字节，按 gzip 后的 payload 累加；session 角色生效）")
 	embedding := flag.String("embedding", "embedding", "embedding 服务名")
 	flag.Parse()
 
@@ -65,7 +67,8 @@ func main() {
 	}
 	cfg := runConfig{
 		name: *name, addr: *addr, center: *center, dbPath: *dbPath, sharedPath: sharedPath,
-		history: *history, embedding: *embedding, peers: parsePeers(*peers), logger: logger,
+		history: *history, snapshotTotal: *snapshotTotal, embedding: *embedding,
+		peers: parsePeers(*peers), logger: logger,
 	}
 	switch r {
 	case roleSession:
@@ -80,12 +83,13 @@ func main() {
 type runConfig struct {
 	name, addr, center, dbPath, sharedPath, embedding string
 	history                                           int
+	snapshotTotal                                     int64
 	peers                                             map[string]string
 	logger                                            *log.Logger
 }
 
 func runSession(c runConfig) {
-	st, err := store.Open(c.dbPath)
+	st, err := store.Open(c.dbPath, store.WithSnapshotTotalLimit(c.snapshotTotal))
 	if err != nil {
 		c.logger.Fatalf("打开会话库失败: %v", err)
 	}

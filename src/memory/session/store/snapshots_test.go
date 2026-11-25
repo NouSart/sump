@@ -12,7 +12,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,6 +182,107 @@ func TestSnapshotSaveLoadExpire(t *testing.T) {
 	if snapID != "snap-old" || got != nil {
 		t.Fatalf("过期快照应返回 id 且不返回载荷，实际 (%q,%q)", snapID, got)
 	}
+}
+
+// TestSnapshotPayloadLimit 单份投影上限 1 MiB（S-001 §4.4）：
+// 恰好 1 MiB 放行，多 1 字节拒绝，且拒绝不留下截断行。
+func TestSnapshotPayloadLimit(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+
+	t.Run("恰 1 MiB 放行", func(t *testing.T) {
+		st := openV2Store(t)
+		payload := bytes.Repeat([]byte("x"), SnapshotMaxPayloadBytes)
+		if err := st.SaveSnapshot(ctx, "snap-edge", "w1", "user", "item-edge", payload,
+			"context/2", now, now.Add(time.Hour)); err != nil {
+			t.Fatalf("恰好 %d 字节的投影应放行，实际: %v", SnapshotMaxPayloadBytes, err)
+		}
+		if _, got, _, err := st.LoadSnapshot(ctx, "w1", "user", "item-edge"); err != nil ||
+			!bytes.Equal(got, payload) {
+			t.Fatalf("边界快照应可原样读回: err=%v len=%d", err, len(got))
+		}
+	})
+
+	t.Run("超 1 字节拒绝", func(t *testing.T) {
+		st := openV2Store(t)
+		payload := bytes.Repeat([]byte("x"), SnapshotMaxPayloadBytes+1)
+		err := st.SaveSnapshot(ctx, "snap-over", "w1", "user", "item-over", payload,
+			"context/2", now, now.Add(time.Hour))
+		if !errors.Is(err, ErrSnapshotTooLarge) {
+			t.Fatalf("投影超过 1 MiB 应 ErrSnapshotTooLarge，实际: %v", err)
+		}
+		for _, want := range []string{"w1", "user/item-over", strconv.Itoa(SnapshotMaxPayloadBytes)} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("拒绝信息应带 %q（work / trigger / 上限）: %v", want, err)
+			}
+		}
+		var n int
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM context_snapshots`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("拒绝后不得留下截断或半截快照，实际 %d 行", n)
+		}
+	})
+}
+
+// TestSnapshotTotalLimitRejects 已存总量上限（S-001 §4.4）：
+// 插入后总量超过上限 → ErrSnapshotTooLarge，整笔写入回滚（不留新行）。
+func TestSnapshotTotalLimitRejects(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	payload := bytes.Repeat([]byte("total-limit"), 64)
+	size := gzipSnapshotLen(t, payload)
+
+	path := filepath.Join(t.TempDir(), "memory.db")
+	st, err := Open(path, WithSnapshotTotalLimit(size))
+	if err != nil {
+		t.Fatalf("按总量上限打开库失败: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	if err := st.SaveSnapshot(ctx, "snap-1", "w1", "user", "item-1", payload,
+		"context/2", now, now.Add(time.Hour)); err != nil {
+		t.Fatalf("恰好等于总量上限应放行，实际: %v", err)
+	}
+	err = st.SaveSnapshot(ctx, "snap-2", "w2", "user", "item-2", payload,
+		"context/2", now, now.Add(time.Hour))
+	if !errors.Is(err, ErrSnapshotTooLarge) {
+		t.Fatalf("超过总量上限应 ErrSnapshotTooLarge，实际: %v", err)
+	}
+	if !strings.Contains(err.Error(), "w2") || !strings.Contains(err.Error(), "user/item-2") {
+		t.Fatalf("拒绝信息应带 work / trigger: %v", err)
+	}
+	if _, _, _, err := st.LoadSnapshot(ctx, "w2", "user", "item-2"); !errors.Is(err, ErrSnapshotNotFound) {
+		t.Fatalf("超限写入应整笔回滚，实际读回: %v", err)
+	}
+	if _, _, _, err := st.LoadSnapshot(ctx, "w1", "user", "item-1"); err != nil {
+		t.Fatalf("原有快照不应受影响: %v", err)
+	}
+}
+
+// TestOpenRejectsNonPositiveSnapshotTotalLimit 容量上限没有「0 = 不限」语义：
+// 非正值让 Open 失败，而不是静默回落到默认值。
+func TestOpenRejectsNonPositiveSnapshotTotalLimit(t *testing.T) {
+	for _, limit := range []int64{0, -1} {
+		if _, err := Open(filepath.Join(t.TempDir(), "memory.db"), WithSnapshotTotalLimit(limit)); err == nil {
+			t.Fatalf("上限 %d 应让 Open 失败", limit)
+		}
+	}
+}
+
+// gzipSnapshotLen 用与 store 相同的 gzip 默认参数计算落盘字节数（容量上限测试用）。
+func gzipSnapshotLen(t *testing.T, payload []byte) int64 {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return int64(buf.Len())
 }
 
 // TestLoadSnapshotByID 按主键读快照，但归属条件必须一起生效（transcript 的读路径）：

@@ -580,6 +580,38 @@ func TestTriggerCompletePendingConflict(t *testing.T) {
 	}
 }
 
+// TestContextBaseRejectsOversizedSnapshot 单份投影超过 1 MiB（S-001 §4.4）：
+// 线上必须 invalid_argument，错误里带 work / trigger / 上限；不落快照、不改触发状态。
+func TestContextBaseRejectsOversizedSnapshot(t *testing.T) {
+	const workID = "w-oversize"
+	s, st, taskID := newContextBaseTestServer(t, workID)
+	trigger := insertContextBaseMessage(t, st, workID, taskID, "user", "user",
+		strings.Repeat("x", store.SnapshotMaxPayloadBytes+1), "", 1)
+
+	_, err := callContextBase(t, s, protocol.ContextRequest{
+		Work:    workID,
+		Trigger: protocol.Trigger{Kind: "user", Item: trigger},
+	})
+	if !spv2.IsCode(err, spv2.CodeInvalidArgument) {
+		t.Fatalf("超大投影应 invalid_argument，实际: %v", err)
+	}
+	for _, want := range []string{workID, "user/" + trigger, strconv.Itoa(store.SnapshotMaxPayloadBytes)} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误信息应带 %q: %v", want, err)
+		}
+	}
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM context_snapshots`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("超限组装不得落快照，实际 %d 行", n)
+	}
+	if state, _, err := st.GetTriggerState(context.Background(), workID, "user", trigger); err != nil || state != "" {
+		t.Fatalf("超限组装不得改触发状态，实际 state=%q err=%v", state, err)
+	}
+}
+
 // TestContextBaseMethodDeclarations 注册声明：方法名、非工具、schema 是 object 且必填项齐全。
 func TestContextBaseMethodDeclarations(t *testing.T) {
 	for _, m := range []spv2.Method{contextBaseMethod(), triggerCompleteMethod()} {
