@@ -12,7 +12,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -120,7 +123,7 @@ func TestSnapshotSaveLoadExpire(t *testing.T) {
 	now := time.Now()
 	payload := []byte(`{"schema":"context/2","messages":[]}`)
 
-	if err := st.SaveSnapshot(ctx, "snap-1", "w1", "user", "item-1", payload, "context/2", now, now.Add(time.Hour)); err != nil {
+	if _, err := st.SaveSnapshot(ctx, "snap-1", "w1", "user", "item-1", payload, "context/2", now, now.Add(time.Hour)); err != nil {
 		t.Fatalf("保存快照失败: %v", err)
 	}
 
@@ -155,7 +158,7 @@ func TestSnapshotSaveLoadExpire(t *testing.T) {
 	}
 
 	// 同一 (work, kind, item) 已有快照 → conflict，原快照不被覆盖。
-	err = st.SaveSnapshot(ctx, "snap-2", "w1", "user", "item-1", []byte("新的"), "context/2", now, now.Add(time.Hour))
+	_, err = st.SaveSnapshot(ctx, "snap-2", "w1", "user", "item-1", []byte("新的"), "context/2", now, now.Add(time.Hour))
 	if !errors.Is(err, ErrSnapshotConflict) {
 		t.Fatalf("重复快照应 ErrSnapshotConflict，实际: %v", err)
 	}
@@ -169,7 +172,7 @@ func TestSnapshotSaveLoadExpire(t *testing.T) {
 	}
 
 	// 过期 → ErrSnapshotExpired，且不返回载荷。
-	if err := st.SaveSnapshot(ctx, "snap-old", "w1", "tool_result", "item-2", payload, "context/2",
+	if _, err := st.SaveSnapshot(ctx, "snap-old", "w1", "tool_result", "item-2", payload, "context/2",
 		now.Add(-2*time.Hour), now.Add(-time.Hour)); err != nil {
 		t.Fatalf("保存过期快照失败: %v", err)
 	}
@@ -182,6 +185,206 @@ func TestSnapshotSaveLoadExpire(t *testing.T) {
 	}
 }
 
+// TestSnapshotPayloadLimit 单份投影上限 1 MiB（S-001 §4.4）：
+// 恰好 1 MiB 放行，多 1 字节拒绝，且拒绝不留下截断行。
+func TestSnapshotPayloadLimit(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+
+	t.Run("恰 1 MiB 放行", func(t *testing.T) {
+		st := openV2Store(t)
+		payload := bytes.Repeat([]byte("x"), SnapshotMaxPayloadBytes)
+		if _, err := st.SaveSnapshot(ctx, "snap-edge", "w1", "user", "item-edge", payload,
+			"context/2", now, now.Add(time.Hour)); err != nil {
+			t.Fatalf("恰好 %d 字节的投影应放行，实际: %v", SnapshotMaxPayloadBytes, err)
+		}
+		if _, got, _, err := st.LoadSnapshot(ctx, "w1", "user", "item-edge"); err != nil ||
+			!bytes.Equal(got, payload) {
+			t.Fatalf("边界快照应可原样读回: err=%v len=%d", err, len(got))
+		}
+	})
+
+	t.Run("超 1 字节拒绝", func(t *testing.T) {
+		st := openV2Store(t)
+		payload := bytes.Repeat([]byte("x"), SnapshotMaxPayloadBytes+1)
+		_, err := st.SaveSnapshot(ctx, "snap-over", "w1", "user", "item-over", payload,
+			"context/2", now, now.Add(time.Hour))
+		if !errors.Is(err, ErrSnapshotTooLarge) {
+			t.Fatalf("投影超过 1 MiB 应 ErrSnapshotTooLarge，实际: %v", err)
+		}
+		for _, want := range []string{"w1", "user/item-over", strconv.Itoa(SnapshotMaxPayloadBytes)} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("拒绝信息应带 %q（work / trigger / 上限）: %v", want, err)
+			}
+		}
+		var n int
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM context_snapshots`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("拒绝后不得留下截断或半截快照，实际 %d 行", n)
+		}
+	})
+}
+
+// TestSnapshotEvictionOrder 总量超限时的逐出顺序（S-001 §4.4）：
+// 先逐出已过期（哪怕它比某些未过期的新），再按 created_at 最老逐出；
+// 被逐出的快照读取走既有 not_found，trigger_states 不被连带删除。
+func TestSnapshotEvictionOrder(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	payload := bytes.Repeat([]byte("evict-me"), 128)
+	size := gzipSnapshotLen(t, payload)
+
+	path := filepath.Join(t.TempDir(), "memory.db")
+	st, err := Open(path) // 默认上限：先造三行，不被容量打扰
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []struct {
+		id, item  string
+		createdAt time.Time
+		expiresAt time.Time
+	}{
+		{"snap-old-live", "item-old-live", now.Add(-2 * time.Hour), now.Add(time.Hour)},
+		{"snap-expired", "item-expired", now.Add(-30 * time.Minute), now.Add(-10 * time.Minute)},
+		{"snap-new-live", "item-new-live", now.Add(-time.Hour), now.Add(time.Hour)},
+	}
+	for _, r := range rows {
+		if _, err := st.SaveSnapshot(ctx, r.id, "w-evict", "user", r.item, payload, "context/2", r.createdAt, r.expiresAt); err != nil {
+			t.Fatalf("造快照 %s 失败: %v", r.id, err)
+		}
+		if err := st.SetTriggerState(ctx, "w-evict", "user", r.item, TriggerStateAssembled, r.id); err != nil {
+			t.Fatalf("造触发状态 %s 失败: %v", r.id, err)
+		}
+	}
+	// completed 记录与快照分离：逐出不能动 completed_at（S-001 §4.4）。
+	if err := st.SetTriggerState(ctx, "w-evict", "user", "item-done", TriggerStateCompleted, "snap-done"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 上限 = 两行：第 4 次保存必须逐出「已过期」再逐出「最老未过期」。
+	st, err = Open(path, WithSnapshotTotalLimit(2*size))
+	if err != nil {
+		t.Fatalf("按两行上限重开库失败: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	evicted, err := st.SaveSnapshot(ctx, "snap-new", "w-evict", "user", "item-new", payload,
+		"context/2", now, now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("超限保存应逐出成功，实际: %v", err)
+	}
+	if evicted != 2 {
+		t.Fatalf("应逐出 2 份（过期 1 + 最老 1），实际 %d", evicted)
+	}
+
+	for _, id := range []string{"snap-expired", "snap-old-live"} {
+		if _, _, _, err := st.LoadSnapshotByID(ctx, "w-evict", id); !errors.Is(err, ErrSnapshotNotFound) {
+			t.Fatalf("被逐出的 %s 读取应 ErrSnapshotNotFound，实际: %v", id, err)
+		}
+	}
+	for _, id := range []string{"snap-new-live", "snap-new"} {
+		if _, _, _, err := st.LoadSnapshotByID(ctx, "w-evict", id); err != nil {
+			t.Fatalf("未逐出的 %s 应可读: %v", id, err)
+		}
+	}
+
+	state, snapID, err := st.GetTriggerState(ctx, "w-evict", "user", "item-old-live")
+	if err != nil || state != TriggerStateAssembled || snapID != "snap-old-live" {
+		t.Fatalf("逐出不应删除 trigger_states: state=%q snapshot=%q err=%v", state, snapID, err)
+	}
+	state, _, err = st.GetTriggerState(ctx, "w-evict", "user", "item-done")
+	if err != nil || state != TriggerStateCompleted {
+		t.Fatalf("completed 记录不应受逐出影响: state=%q err=%v", state, err)
+	}
+	var completedAtSet int
+	if err := st.db.QueryRow(
+		`SELECT completed_at IS NOT NULL FROM trigger_states
+		 WHERE work='w-evict' AND trigger_kind='user' AND trigger_item='item-done'`).Scan(&completedAtSet); err != nil {
+		t.Fatal(err)
+	}
+	if completedAtSet != 1 {
+		t.Fatal("completed_at 不应随逐出丢失")
+	}
+}
+
+// TestConcurrentSnapshotSavesStayUnderTotalLimit 并发保存必须靠事务串行化守住总量：
+// 不新增进程内锁，也不允许出现「两个保存各自看到旧总量、最后一起越界」。
+func TestConcurrentSnapshotSavesStayUnderTotalLimit(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	payload := bytes.Repeat([]byte("concurrent"), 128)
+	size := gzipSnapshotLen(t, payload)
+	limit := 3 * size
+
+	st, err := Open(filepath.Join(t.TempDir(), "memory.db"), WithSnapshotTotalLimit(limit))
+	if err != nil {
+		t.Fatalf("按总量上限打开库失败: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	const workers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := st.SaveSnapshot(ctx, "snap-"+strconv.Itoa(i), "w-concurrent", "user",
+				"item-"+strconv.Itoa(i), payload, "context/2", now, now.Add(time.Hour))
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("并发保存失败: %v", err)
+		}
+	}
+
+	var count int
+	var total int64
+	if err := st.db.QueryRow(
+		`SELECT COUNT(*), COALESCE(SUM(length(payload)), 0) FROM context_snapshots`).Scan(&count, &total); err != nil {
+		t.Fatal(err)
+	}
+	if total > limit {
+		t.Fatalf("并发保存后总量 %d 字节超过上限 %d 字节（%d 行）", total, limit, count)
+	}
+	if want := int(limit / size); count != want {
+		t.Fatalf("逐出后应恰好保留 %d 行，实际 %d 行", want, count)
+	}
+}
+
+// TestOpenRejectsNonPositiveSnapshotTotalLimit 容量上限没有「0 = 不限」语义：
+// 非正值让 Open 失败，而不是静默回落到默认值。
+func TestOpenRejectsNonPositiveSnapshotTotalLimit(t *testing.T) {
+	for _, limit := range []int64{0, -1} {
+		if _, err := Open(filepath.Join(t.TempDir(), "memory.db"), WithSnapshotTotalLimit(limit)); err == nil {
+			t.Fatalf("上限 %d 应让 Open 失败", limit)
+		}
+	}
+}
+
+// gzipSnapshotLen 用与 store 相同的 gzip 默认参数计算落盘字节数（容量上限测试用）。
+func gzipSnapshotLen(t *testing.T, payload []byte) int64 {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return int64(buf.Len())
+}
+
 // TestLoadSnapshotByID 按主键读快照，但归属条件必须一起生效（transcript 的读路径）：
 // 同一 snapshot_id 在别的 work 名下必须是 ErrSnapshotNotFound——与「不存在」同形，
 // 不泄漏别人的快照是否存在。过期语义与 LoadSnapshot 共用一份（同一个 scanSnapshotRow）。
@@ -191,7 +394,7 @@ func TestLoadSnapshotByID(t *testing.T) {
 	ctx := context.Background()
 	payload := []byte(`{"schema":"context/2","messages":[]}`)
 
-	if err := st.SaveSnapshot(ctx, "snap-owned", "w1", "user", "item-1", payload,
+	if _, err := st.SaveSnapshot(ctx, "snap-owned", "w1", "user", "item-1", payload,
 		"context/2", now, now.Add(time.Hour)); err != nil {
 		t.Fatalf("保存快照失败: %v", err)
 	}
@@ -208,7 +411,7 @@ func TestLoadSnapshotByID(t *testing.T) {
 		t.Fatalf("不存在的 snapshot_id 应 ErrSnapshotNotFound，实际: %v", err)
 	}
 
-	if err := st.SaveSnapshot(ctx, "snap-expired", "w1", "user", "item-2", payload,
+	if _, err := st.SaveSnapshot(ctx, "snap-expired", "w1", "user", "item-2", payload,
 		"context/2", now.Add(-2*time.Hour), now.Add(-time.Hour)); err != nil {
 		t.Fatalf("保存过期快照失败: %v", err)
 	}
@@ -250,7 +453,7 @@ func TestLoadSnapshotRejectsCorruptGzip(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			st := openV2Store(t)
-			if err := st.SaveSnapshot(ctx, "snap-bad", "w-bad", "user", "item-bad", payload,
+			if _, err := st.SaveSnapshot(ctx, "snap-bad", "w-bad", "user", "item-bad", payload,
 				"context/2", now, now.Add(time.Hour)); err != nil {
 				t.Fatalf("保存快照失败: %v", err)
 			}

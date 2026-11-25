@@ -130,6 +130,15 @@ func v2Error(code, format string, args ...any) error {
 	return spv2.ErrCode(code, fmt.Sprintf(format, args...), false, nil)
 }
 
+// recordSnapshotEvictionsTo 记快照逐出份数（nil 安全的纯函数形态，单测直接喂注册表）。
+// 低基数：不把 work / trigger 放进 label——那会把 series 数量绑到业务数据上。
+func recordSnapshotEvictionsTo(m *spv2.Registry, n int) {
+	if m == nil || n <= 0 {
+		return
+	}
+	m.Counter("sump_snapshot_evictions_total", "快照容量逐出的快照份数", nil, float64(n))
+}
+
 // ---------- context_base ----------
 
 // contextBase 是 context_base 的共享实现（handler 只做转发）。
@@ -314,7 +323,12 @@ func (s *Server) assembleContextBase(ctx context.Context, work, kind, item strin
 	if err != nil {
 		return nil, v2Error(spv2.CodeInternal, "context_base: 序列化快照失败: %v", err)
 	}
-	err = s.cfg.Store.SaveSnapshot(ctx, resp.SnapshotID, work, kind, item, payload, contextBaseSchema, now, expiresAt)
+	evicted, err := s.cfg.Store.SaveSnapshot(ctx, resp.SnapshotID, work, kind, item, payload, contextBaseSchema, now, expiresAt)
+	if evicted > 0 {
+		recordSnapshotEvictionsTo(s.Metrics(), evicted)
+		s.logger.Printf("context_base: 快照总量超过上限，逐出 %d 份（work=%s trigger=%s/%s）",
+			evicted, work, kind, item)
+	}
 	if errors.Is(err, store.ErrSnapshotConflict) {
 		// 同一触发的并发首组装：别人先写成功了，沿用那份，不在这里推翻它。
 		resp, loadErr := s.loadContextBaseSnapshot(ctx, work, kind, item, store.TriggerStateAssembled)
@@ -328,6 +342,11 @@ func (s *Server) assembleContextBase(ctx context.Context, work, kind, item strin
 			_ = s.cfg.Store.SetTriggerState(ctx, work, kind, item, store.TriggerStateAssembled, resp.SnapshotID)
 		}
 		return resp, nil
+	}
+	if errors.Is(err, store.ErrSnapshotTooLarge) {
+		// 容量上限是显式失败（S-001 §4.4）：不截断投影、不静默丢弃，也不写触发状态。
+		// 存储层错误已带 work / trigger 与字节数，这里只补线上错误码。
+		return nil, v2Error(spv2.CodeInvalidArgument, "context_base: %v", err)
 	}
 	if err != nil {
 		return nil, v2Error(spv2.CodeInternal, "context_base: %v", err)

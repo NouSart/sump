@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -36,8 +37,21 @@ var (
 	ErrSnapshotExpired = errors.New("上下文快照已过期")
 	// ErrSnapshotConflict 表示同一 (work, trigger_kind, trigger_item) 已有快照（首次并发触发）。
 	ErrSnapshotConflict = errors.New("同一触发的上下文快照已存在")
+	// ErrSnapshotTooLarge 表示单份投影或已存总量超过容量上限（S-001 §4.4）。
+	// 调用方必须显式报 invalid_argument：不截断、不静默降级。
+	ErrSnapshotTooLarge = errors.New("上下文快照超过容量上限")
 	// ErrTriggerConflict 表示当前触发状态不允许该操作（如对 pending 调 trigger_complete）。
 	ErrTriggerConflict = errors.New("触发状态不允许该操作")
+)
+
+// 快照容量（S-001 §4.4）：单份投影上限 1 MiB；已存总量默认 2 GiB。
+const (
+	// SnapshotMaxPayloadBytes 是单份快照投影（**未压缩** payload）的上限：1 MiB。
+	// 判定在压缩之前；超限直接拒绝，不截断。
+	SnapshotMaxPayloadBytes = 1 << 20
+	// DefaultSnapshotTotalLimit 是已存快照总量默认上限：2 GiB。
+	// 计量口径是落盘的 gzip 后 payload（length(payload) 之和），不是明文投影。
+	DefaultSnapshotTotalLimit int64 = 2 << 30
 )
 
 // triggerState 是 trigger_states.state 的取值（S-001 §3.9：pending / assembled / completed / expired）。
@@ -168,33 +182,176 @@ func (s *Store) CompleteTrigger(ctx context.Context, work, kind, item string) er
 }
 
 // SaveSnapshot 保存一份快照：payload 先 gzip 压缩再写 BLOB（§4.4），不可变投影。
-// 同一 (work, trigger_kind, trigger_item) 已存在时返回 ErrSnapshotConflict（首次并发触发由调用方兜底）。
-func (s *Store) SaveSnapshot(ctx context.Context, snapshotID, work, kind, item string, payload []byte, schemaName string, createdAt, expiresAt time.Time) error {
+//
+// 容量语义（S-001 §4.4）：
+//   - 单份投影（未压缩 payload）> SnapshotMaxPayloadBytes（1 MiB）→ ErrSnapshotTooLarge；
+//   - 已存总量（gzip 后 payload 之和）超过 Store.snapshotTotalLimit 时，先逐出已过期、
+//     再按 created_at 最老逐出，直到总量回到上限以内（保持本次写入的那条）；
+//   - 冲突（同一触发已有快照）→ ErrSnapshotConflict，且不会留下本次写入 / 容量改动。
+//
+// 单条判定在压缩前；容量判定与逐出在同一个事务内，靠 SQLite 单连接串行化并发保存
+// （不另加进程内锁）。返回本次逐出的份数：只有提交成功才非零，失败一律回滚。
+func (s *Store) SaveSnapshot(ctx context.Context, snapshotID, work, kind, item string, payload []byte, schemaName string, createdAt, expiresAt time.Time) (int, error) {
+	if len(payload) > SnapshotMaxPayloadBytes {
+		return 0, fmt.Errorf("保存上下文快照 %s（work=%s trigger=%s/%s）: 投影 %d 字节超过单条上限 %d 字节: %w",
+			snapshotID, work, kind, item, len(payload), SnapshotMaxPayloadBytes, ErrSnapshotTooLarge)
+	}
+	raw, err := encodeSnapshotPayload(snapshotID, payload)
+	if err != nil {
+		return 0, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("开启上下文快照保存事务 %s: %w", snapshotID, err)
+	}
+	// 成功提交后 Rollback 返回 ErrTxDone，可以直接忽略；失败路径统一由它收尾。
+	defer func() { _ = tx.Rollback() }()
+
+	inserted, err := insertSnapshotRow(ctx, tx, snapshotID, work, kind, item, raw, schemaName, createdAt, expiresAt)
+	if err != nil {
+		return 0, err
+	}
+	if !inserted {
+		return 0, fmt.Errorf("保存上下文快照 %s（work=%s kind=%s item=%s）: %w",
+			snapshotID, work, kind, item, ErrSnapshotConflict)
+	}
+	evicted, err := evictSnapshotsToLimit(ctx, tx, snapshotID, s.snapshotTotalLimit, time.Now())
+	if err != nil {
+		return 0, fmt.Errorf("保存上下文快照 %s（work=%s trigger=%s/%s）: %w", snapshotID, work, kind, item, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("提交上下文快照 %s: %w", snapshotID, err)
+	}
+	return evicted, nil
+}
+
+// snapshotEvictionCandidate 是逐出排序的一行：已过期优先，再按 created_at 最老。
+type snapshotEvictionCandidate struct {
+	id      string
+	size    int64
+	created time.Time
+	expired bool
+}
+
+// evictSnapshotsToLimit 在事务内把已存总量降到 limit 以内：先删已过期的，再按
+// created_at 最老优先（同时间按 snapshot_id 稳定排序）。keepID 是刚写入的那条，不参与逐出。
+//
+// 逐出只删 context_snapshots：trigger_states 的 completed_at / state 不动，
+// 被逐出的快照读取走既有 ErrSnapshotNotFound（不重建）。
+func evictSnapshotsToLimit(ctx context.Context, tx *sql.Tx, keepID string, limit int64, now time.Time) (int, error) {
+	total, err := snapshotTotalBytes(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	if total <= limit {
+		return 0, nil
+	}
+	rows, err := tx.QueryContext(ctx,
+		`SELECT snapshot_id, length(payload), expires_at, created_at FROM context_snapshots
+		 WHERE snapshot_id <> ?`, keepID)
+	if err != nil {
+		return 0, fmt.Errorf("列举待逐出的上下文快照: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	candidates := make([]snapshotEvictionCandidate, 0, 16)
+	for rows.Next() {
+		var (
+			id, expires, created string
+			size                 int64
+		)
+		if err := rows.Scan(&id, &size, &expires, &created); err != nil {
+			return 0, fmt.Errorf("读取待逐出的上下文快照: %w", err)
+		}
+		exp, err := parseSnapshotTime(expires)
+		if err != nil {
+			return 0, fmt.Errorf("解析快照 %s 的 expires_at %q: %w", id, expires, err)
+		}
+		ct, err := parseSnapshotTime(created)
+		if err != nil {
+			return 0, fmt.Errorf("解析快照 %s 的 created_at %q: %w", id, created, err)
+		}
+		candidates = append(candidates, snapshotEvictionCandidate{
+			id: id, size: size, created: ct, expired: now.After(exp),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("读取待逐出的上下文快照: %w", err)
+	}
+	// 先释放查询游标，再在同一事务里 DELETE：避免边读边写同一张表。
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].expired != candidates[j].expired {
+			return candidates[i].expired // 已过期的一律排在未过期之前
+		}
+		if !candidates[i].created.Equal(candidates[j].created) {
+			return candidates[i].created.Before(candidates[j].created)
+		}
+		return candidates[i].id < candidates[j].id
+	})
+
+	evicted := 0
+	for _, c := range candidates {
+		if total <= limit {
+			break
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM context_snapshots WHERE snapshot_id = ?`, c.id); err != nil {
+			return 0, fmt.Errorf("逐出上下文快照 %s: %w", c.id, err)
+		}
+		total -= c.size
+		evicted++
+	}
+	if total > limit {
+		// 单条快照本身就装不进总量上限（配置过小）：显式失败并回滚，不静默留下超限行。
+		return 0, fmt.Errorf("逐出后已存总量 %d 字节仍超过上限 %d 字节: %w", total, limit, ErrSnapshotTooLarge)
+	}
+	return evicted, nil
+}
+
+// encodeSnapshotPayload 是快照 gzip 压缩的唯一实现（decodeSnapshotPayload 的逆操作）。
+// 压缩失败一律报错：不能把「压不成」当成「没有正文」继续写空载荷。
+func encodeSnapshotPayload(snapshotID string, payload []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
 	if _, err := zw.Write(payload); err != nil {
 		_ = zw.Close()
-		return fmt.Errorf("压缩上下文快照 %s: %w", snapshotID, err)
+		return nil, fmt.Errorf("压缩上下文快照 %s: %w", snapshotID, err)
 	}
 	if err := zw.Close(); err != nil {
-		return fmt.Errorf("压缩上下文快照 %s: %w", snapshotID, err)
+		return nil, fmt.Errorf("压缩上下文快照 %s: %w", snapshotID, err)
 	}
-	res, err := s.db.ExecContext(ctx,
+	return buf.Bytes(), nil
+}
+
+// insertSnapshotRow 在事务里写一行快照；false = 同一触发已存在（唯一约束命中）。
+func insertSnapshotRow(ctx context.Context, tx *sql.Tx, snapshotID, work, kind, item string, raw []byte, schemaName string, createdAt, expiresAt time.Time) (bool, error) {
+	res, err := tx.ExecContext(ctx,
 		`INSERT INTO context_snapshots(snapshot_id, work, trigger_kind, trigger_item, payload, schema, created_at, expires_at)
 		 VALUES(?,?,?,?,?,?,?,?)
 		 ON CONFLICT DO NOTHING`,
-		snapshotID, work, kind, item, buf.Bytes(), schemaName,
+		snapshotID, work, kind, item, raw, schemaName,
 		createdAt.UTC().Format(time.RFC3339Nano), expiresAt.UTC().Format(time.RFC3339Nano))
 	if err != nil {
-		return fmt.Errorf("保存上下文快照 %s: %w", snapshotID, err)
+		return false, fmt.Errorf("保存上下文快照 %s: %w", snapshotID, err)
 	}
-	if n, err := res.RowsAffected(); err != nil {
-		return err
-	} else if n == 0 {
-		return fmt.Errorf("保存上下文快照 %s（work=%s kind=%s item=%s）: %w",
-			snapshotID, work, kind, item, ErrSnapshotConflict)
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
 	}
-	return nil
+	return n > 0, nil
+}
+
+// snapshotTotalBytes 统计已存快照的 gzip 后字节总量（S-001 §4.4 的计量口径）。
+func snapshotTotalBytes(ctx context.Context, tx *sql.Tx) (int64, error) {
+	var total int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(length(payload)), 0) FROM context_snapshots`).Scan(&total); err != nil {
+		return 0, fmt.Errorf("统计上下文快照总量: %w", err)
+	}
+	return total, nil
 }
 
 // LoadSnapshot 读一份快照并解压。过期返回 ErrSnapshotExpired（不返回载荷）；

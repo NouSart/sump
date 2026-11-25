@@ -17,6 +17,25 @@ import (
 // Store 是一个会话库。
 type Store struct {
 	db *sql.DB
+
+	// snapshotTotalLimit 是 context_snapshots 已存载荷（gzip 后）的总量上限，单位字节。
+	// 只在 Open 时定值、之后只读：并发 SaveSnapshot 读它不需要锁（见 snapshots.go）。
+	snapshotTotalLimit int64
+}
+
+// openConfig 是 Open 的启动选项（零值由 Open 补默认）。
+type openConfig struct {
+	snapshotTotalLimit int64
+}
+
+// Option 是 Open 的启动选项。
+type Option func(*openConfig)
+
+// WithSnapshotTotalLimit 设置已存快照总量上限（字节，按 gzip 后的 payload 累加；
+// 默认 DefaultSnapshotTotalLimit = 2 GiB）。非正值让 Open 失败：容量上限没有
+// 「0 = 不限」的语义，静默当成默认会掩盖配置错误。
+func WithSnapshotTotalLimit(limit int64) Option {
+	return func(o *openConfig) { o.snapshotTotalLimit = limit }
 }
 
 // Open 打开（或创建）数据库并建表。
@@ -27,7 +46,16 @@ type Store struct {
 //   - 存在、user_version == 0 且库里没有任何表 → 空库，按新库处理；
 //   - 其余（0 但已有表 = 旧库；或高于 SchemaVersion）→ ErrSchemaVersionMismatch，
 //     不建表、不写库，提示删库或改名备份后重建。
-func Open(path string) (*Store, error) {
+func Open(path string, opts ...Option) (*Store, error) {
+	o := openConfig{snapshotTotalLimit: DefaultSnapshotTotalLimit}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	if o.snapshotTotalLimit <= 0 {
+		return nil, fmt.Errorf("快照总量上限必须是正数，收到 %d 字节", o.snapshotTotalLimit)
+	}
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("创建会话库目录 %s: %w", dir, err)
@@ -63,7 +91,7 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("迁移会话库 %s: %w", path, err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, snapshotTotalLimit: o.snapshotTotalLimit}, nil
 }
 
 // migrate 补上后来加的列 / 索引（幂等：已有就跳过），并回填老数据。
