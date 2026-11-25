@@ -23,6 +23,7 @@ func (s *Server) registerNative() {
 		Description: "记一条会话记录（同一任务下与上一条完全相同则幂等跳过）",
 		Input: objectSchema(map[string]any{
 			"conversation_id": stringSchema(),
+			"work":            stringSchema(),
 			"boss":            stringSchema(),
 			"role":            stringSchema(),
 			"content":         stringSchema(),
@@ -31,7 +32,19 @@ func (s *Server) registerNative() {
 			"seq":             integerSchema(),
 			"task_id":         stringSchema(),
 			"task_name":       stringSchema(),
-		}),
+			"client_item_id":  stringSchema(),
+			"visibility":      stringSchema(),
+			"report": objectSchema(map[string]any{
+				"source_service": stringSchema(),
+				"report_id":      stringSchema(),
+				"report_seq":     integerSchema(),
+				"call_id":        stringSchema(),
+				"phase":          stringSchema(),
+				"final":          booleanSchema(),
+				"data":           map[string]any{"type": "object"},
+				"remote_item_id": stringSchema(),
+			}, "source_service", "report_id", "report_seq", "call_id"),
+		}, "work"),
 		Output: objectSchema(nil),
 	}, s.nativeStore)
 	s.HandleNative(spv2.Method{

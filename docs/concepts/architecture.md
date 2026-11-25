@@ -89,8 +89,8 @@ flowchart LR
 
 LLM 服务不自己持有记忆——**每次新任务启动前，都要先向记忆服务要上下文**：
 
-- 收到入口 `message` 时先同步调用 memory `context`：把会话号、来源（含结果归属方）、任务名交过去，**等到组装好的 messages/task 才开黑板**；失败直接回错误，不调 LLM。
-- 记忆服务查询会话历史、组装记忆并 `EnsureTask`——**注入什么记忆、上下文最终长什么样，全由记忆服务决定**（reasoner 只负责把组装结果交给 LLM API）。
+- 收到入口 `message` 时先同步调 memory `work_open`：把 work、会话号、任务名、入口服务（结果归属方）交过去，由会话服务解析或新建任务（`EnsureTask` 在 `src/memory/session/work_open.go`，`context` 不再建任务）；再 `store` 落这条用户消息，最后 `context` 按 work + 触发源取基座——**等到组装好的 messages/task 才开黑板**；任一步失败直接回错误，不调 LLM。
+- 记忆服务只按 `work_open` 已登记的 work 读基座、组装记忆——**注入什么记忆、上下文最终长什么样，全由记忆服务决定**（reasoner 只负责把组装结果交给 LLM API）。
 - 任务内的后续轮次由黑板延续，不再重复取 context；agent 的消息注入同一进行中任务（`message` 的 agent 路径）。
 - 结果归属：SPv2 没有 `boss` 字段，归属方就是帧头 `from`——入口服务把 `from` 设成自己，交付时 reasoner 沿它 deliver。
 
@@ -100,8 +100,9 @@ sequenceDiagram
     participant L as LLM 服务
     participant M as 记忆服务
     B->>L: message（from=归属方）
-    L->>M: context（会话 + 来源 + 任务名）
-    Note over M: 查历史 / EnsureTask / 组装记忆
+    L->>M: work_open（work + 会话 + 任务名）
+    L->>M: context（work + 触发源）
+    Note over M: 读已登记的 work/task 历史 / 组装记忆
     M->>L: reply(messages + task)
     Note over L: 拿到上下文后开黑板、调 LLM API
     L-->>B: （工具异步派发 / 自调推进；结束 deliver 直达）

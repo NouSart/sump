@@ -73,12 +73,13 @@ settings-center 与调用方只看见 `memory`。门面按 method 路由：
 
 ```text
 call to=session method=context_base work=w1
-  body {conversation, messages, owner?, task_name?}
-reply {task, work, messages}          // ensure work + 取当前任务历史
+  body {work, trigger:{kind, item}, schema?}   // schema = "context/2"（四态：首次组装 / 复用快照 / 已完成 / 过期 not_found）
+  reply {schema, snapshot_id, expires_at, messages, task, work, degraded, warnings, assembled_at, trigger_state, completed}
+        // 基座：只读 work_open 已登记的 work 与它关联的任务；不再 ensure work、不再 EnsureTask
 
 call to=experience method=inject work=w1
-  body {viewer, origin, query, work, budget}
-reply {block}                         // 已按查看者过滤的记忆块
+  body {viewer, origin, query}          // 帧头 work 同一个工作号；不带会话原文
+  reply {core, relevant, experience, others}
 ```
 
 约定：

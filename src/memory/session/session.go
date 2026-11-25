@@ -113,7 +113,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 // context_base 是内部 method（facade 调）；work / A2A / staged_* / settings_schema 同样不进这里。
 func provides() []protocol.Provide {
 	return []protocol.Provide{
-		{Action: "store", Input: "{conversation_id, role, content}", Output: "落库回执"},
+		{Action: "store", Input: "{work, conversation_id, role, content, boss?, kind?, meta?, seq?, task_id?, client_item_id?, visibility?, report?}（work 必填；client_item_id 是幂等键；report 只走补报路径）", Output: "{item_id, seq, deduped}（落库回执；同 work + client_item_id 同内容重放不重复写入）"},
 		{Action: "history", Input: "{conversation_id, limit}", Output: "{conversation_id, messages:[{role, content, at}]}（按时间正序；供界面回填，不做记忆组装）"},
 		{Action: "conversation_list", Input: "{limit?, include_archived?}", Output: "{conversations:[{id, title, entry, status, created_at, updated_at}]}（按最近活跃排序；不暴露给模型 — 给界面列会话，不是给模型的工具）"},
 		{Action: "conversation_rename", Input: "{id, title}（空标题 = 清掉名字）", Output: "{conversation}（不暴露给模型）"},

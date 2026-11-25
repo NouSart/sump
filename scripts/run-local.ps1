@@ -268,7 +268,11 @@ try {
     $experienceAddr = '127.0.0.1:9312'
     $dbFile = Join-Path $dataDir 'memory.db'
     $sharedFile = Join-Path $dataDir 'experience.db'
-    $memSession = Start-Process -FilePath (Join-Path $binDir 'memory.exe') -ArgumentList '-role', 'session', '-addr', $sessionAddr, '-db', $dbFile, '-shared-db', $sharedFile -PassThru -WindowStyle Hidden
+    # session 是调用账本的 owner：pause/resume/cancel 与 call_status 对账要按服务名找到执行服务。
+    # session 以独立模式启动（不注册中心），所以这些依赖只能靠静态 peers 解析——和 experience 一样。
+    # 不改成给 session 传 -center：内部服务一旦注册，设置中心就会同时收到它们的设置声明，
+    # `context.history_limit` / `context.*` 会出现第二组真相（设置归属仍是门面），见 TODO「owner 恢复」的剩余项。
+    $memSession = Start-Process -FilePath (Join-Path $binDir 'memory.exe') -ArgumentList '-role', 'session', '-addr', $sessionAddr, '-db', $dbFile, '-shared-db', $sharedFile, '-peers', "shell=ws://$ShellAddr/spv2,timer=ws://$TimerAddr/spv2,batch=ws://$BatchAddr/spv2,mcp=ws://$MCPAddr/spv2" -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $sessionAddr 60 $memSession)) { throw 'memory session 未在 60 秒内就绪' }
     $memExperience = Start-Process -FilePath (Join-Path $binDir 'memory.exe') -ArgumentList '-role', 'experience', '-addr', $experienceAddr, '-db', $dbFile, '-shared-db', $sharedFile, '-peers', "session=ws://$sessionAddr/spv2,embedding=ws://$EmbeddingAddr/spv2,reasoner=ws://$ReasonerAddr/spv2" -PassThru -WindowStyle Hidden
     if (-not (Wait-Port $experienceAddr 60 $memExperience)) { throw 'memory experience 未在 60 秒内就绪' }
