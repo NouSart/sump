@@ -66,9 +66,9 @@ func TestFeedbackGateDoesNotHoldSlot(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		phase, text, data := s.executeAndCollect(j)
-		s.release()                                 // 执行结束 → 立刻归还名额
-		s.reportAfterProgress(j, phase, text, data) // 卡在 progressReady 上
+		out := s.executeAndCollect(j)
+		s.release()                                             // 执行结束 → 立刻归还名额
+		s.reportAfterProgress(j, out.phase, out.text, out.data) // 卡在 progressReady 上
 		close(done)
 	}()
 

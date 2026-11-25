@@ -19,7 +19,7 @@
 2. shell 固定本次的命令、目录、解释器、参数、环境、超时和输出限额，再请求 `approval.approval_request`。
 3. approval 校验上下文，按方言提取结构（PowerShell 原生 AST / POSIX shell 保守词法器），按不可变规则快照返回一份裁决，附模型反馈。
 4. shell 核验任务、摘要和有效期。仅 `allow` 可以进入执行队列；`deny`、`review`、服务失联或响应不完整都停止本次命令。
-5. shell 发送 `approved` 的同时可执行命令；`approved` 的投递尝试结束后再发送 `done` / `failed`；拒绝则发送 `rejected`。补报含结构化裁决，以及 reasoner 可直接读到的原因、命中规则与未知结构。
+5. shell 发送 `approved` 的同时可执行命令；`approved` 的投递尝试结束后再发送 `done` / `failed`；被 owner 取消的发送 `cancelled`；拒绝则发送 `rejected`。补报含结构化裁决，以及 reasoner 可直接读到的原因、命中规则与未知结构。
 6. reasoner 把补报加入当前模型上下文，或在任务收尾后启动补报轮；用户输出沿原有 deliver 通道返回。
 
 approval 不会绕过工具再额外直发一条模型反馈，因此不会因双通道重复触发模型。
@@ -85,7 +85,7 @@ approval 不会绕过工具再额外直发一条模型反馈，因此不会因�
 ```
 
 - `ShellEventData.approval` 保存完整裁决包；`AsyncResultPayload.text` 含可读原因、规则和未知结构（reasoner 读的是 `text`）。
-- 先报 `approved`（非终态），结束报 `done` / `failed`（终态）；执行可与 `approved` 投递并行，执行槽在命令结束后释放，终态反馈等待 `approved` 投递尝试结束；拒绝 / review 报 `rejected`（终态）。
+- 先报 `approved`（非终态），结束报 `done` / `failed`（终态），被 `owner_control cancel` 终止的报 `cancelled`（终态）；执行可与 `approved` 投递并行，执行槽在命令结束后释放，终态反馈等待 `approved` 投递尝试结束；拒绝 / review 报 `rejected`（终态）。
 - 原始命令保留在工具反馈中；**approval 自身故障上报不含原始命令**。
 - 工具在后台顺序投递，每次最多等 3 秒。只有明确 `status=ignored` 才按 50 / 100 / 200 / 400ms 退避重试（解决受理回执与补报的先后竞争）；网络错误不确定对端是否已接收，不盲目重发。超过期限上报 `shell_feedback`，执行流程仍按已有裁决继续，**不声称反馈已送达**。
 - 调用 `shell.run` 两次会创建两个任务，**没有跨请求幂等键**；调用方遇到网络错误不得自动重提交有副作用的命令。

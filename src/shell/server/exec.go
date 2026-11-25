@@ -25,6 +25,10 @@ import (
 // 那条命令会永久占住执行槽位，攒满并发上限后所有命令都被拒。有它就最多多占 10 秒。
 const waitDelay = 10 * time.Second
 
+// killProcessTree 是 killTree 的注入接缝：只给包内白盒测试覆盖「终止失败」分支用。
+// 生产路径始终是 killTree（Windows: taskkill /T /F，POSIX: 进程组 SIGKILL）。
+var killProcessTree = killTree
+
 // runCommand 真正执行一条命令。
 // 返回的 error 只表示“没能跑起来 / 没能跑完”（shell 缺失、进程启动失败等）；
 // 超时属于执行结果（TimedOut=true，退出码 -1）。
@@ -51,7 +55,8 @@ func (s *Server) runCommand(j *job, limit int64) (protocol.ShellEventData, error
 	if j.plan != nil {
 		timeout = time.Duration(j.plan.TimeoutMS) * time.Millisecond
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// 父 ctx 是命令的生命周期（owner_control cancel 取消它）；超时是执行路径上的第二层闸。
+	ctx, cancel := context.WithTimeout(j.lifecycleCtx(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = j.workDir
@@ -65,7 +70,7 @@ func (s *Server) runCommand(j *job, limit int64) (protocol.ShellEventData, error
 	// killErr 留档：终止失败要如实进补报——不许默认“已终止”。
 	var killErr error
 	cmd.Cancel = func() error {
-		killErr = killTree(cmd.Process)
+		killErr = killProcessTree(cmd.Process)
 		return killErr
 	}
 	cmd.WaitDelay = waitDelay
@@ -75,6 +80,11 @@ func (s *Server) runCommand(j *job, limit int64) (protocol.ShellEventData, error
 		return res, fmt.Errorf("启动失败: %w", err)
 	}
 	werr := cmd.Wait()
+	// 把收尾事实留给控制面：取消是 Canceled、超时是 DeadlineExceeded；
+	// ProcessState 非 nil 表示进程已被 Wait 收回（真的不再运行）。
+	if j.ctl != nil {
+		j.ctl.recordRun(errors.Is(ctx.Err(), context.Canceled), cmd.ProcessState != nil, killErr)
+	}
 
 	res.Stdout = decodeOutput(stdout.Bytes())
 	res.Stderr = decodeOutput(stderr.Bytes())
@@ -87,6 +97,15 @@ func (s *Server) runCommand(j *job, limit int64) (protocol.ShellEventData, error
 		// 只有确实杀掉了才叫“被终止”；杀不掉要把原样原因说清楚（进程可能仍在运行）。
 		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
 			res.Error = fmt.Sprintf("超时后终止失败（进程可能仍在运行）: %v", killErr)
+		}
+		return res, nil
+	}
+	if errors.Is(ctx.Err(), context.Canceled) && !errors.Is(killErr, os.ErrProcessDone) {
+		// 被 owner_control 取消：killErr == os.ErrProcessDone 表示进程本来已经结束，
+		// 那不算我们停的，落到下面的真实退出码分支。
+		res.ExitCode = -1
+		if killErr != nil {
+			res.Error = fmt.Sprintf("取消后终止失败（进程可能仍在运行）: %v", killErr)
 		}
 		return res, nil
 	}
@@ -159,13 +178,35 @@ func renderDone(j *job, res protocol.ShellEventData, limit int64) string {
 	default:
 		fmt.Fprintf(&b, "命令执行完成（退出码 %d，耗时 %dms）\n", res.ExitCode, res.DurationMS)
 	}
-	fmt.Fprintf(&b, "$ %s\n", j.command)
-	if res.Shell != "" {
-		fmt.Fprintf(&b, "（shell: %s，目录: %s）\n", res.Shell, j.workDir)
-	}
-	writeStream(&b, "stdout", res.Stdout, res.StdoutBytes, res.Truncated, limit)
-	writeStream(&b, "stderr", res.Stderr, res.StderrBytes, res.Truncated, limit)
+	writeResultBody(&b, j, res, limit)
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderCancelled 把「被 owner_control 确认取消」的结果整理成可读文本。
+// 单独一条分支：被取消不是超时，也不能说成「执行完成」。
+func renderCancelled(j *job, res protocol.ShellEventData, limit int64) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "命令已被取消（退出码 %d，耗时 %dms）\n", res.ExitCode, res.DurationMS)
+	writeResultBody(&b, j, res, limit)
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderCancelUnconfirmed 说明「取消了，但没确认停住」：进程可能仍在运行，不假报成功。
+func renderCancelUnconfirmed(j *job, res protocol.ShellEventData, limit int64) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "取消未能确认终止（进程可能仍在运行；退出码 %d，耗时 %dms）：%s\n", res.ExitCode, res.DurationMS, res.Error)
+	writeResultBody(&b, j, res, limit)
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// writeResultBody 追加命令原文、执行环境与两路输出（三种终态文案共用的部分）。
+func writeResultBody(b *strings.Builder, j *job, res protocol.ShellEventData, limit int64) {
+	fmt.Fprintf(b, "$ %s\n", j.command)
+	if res.Shell != "" {
+		fmt.Fprintf(b, "（shell: %s，目录: %s）\n", res.Shell, j.workDir)
+	}
+	writeStream(b, "stdout", res.Stdout, res.StdoutBytes, res.Truncated, limit)
+	writeStream(b, "stderr", res.Stderr, res.StderrBytes, res.Truncated, limit)
 }
 
 // writeStream 追加一路输出；超限时标注“保留了多少、实际多少”。
