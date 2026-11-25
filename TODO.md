@@ -46,7 +46,8 @@
 - [ ] **记忆缺席 / 失败** — 当前是硬门（链停在原地、日志可见），重试与降级策略未定
 - [ ] **长期记忆** — 自动提炼与巩固线（sleep）、去重 / 冲突
 - [ ] **错误上报** — 前端视图 / 落盘 / 富日志挂点；更多上报点
-- [ ] **approval-integration 偶发失败** — PR #117（docs-only，基线 = `main`）首跑红：Linux `TestRealReasonerReceivesApprovalAndExecutionFeedback`、Windows `TestLLMReviewChain`；同一提交的 main push 绿、`gh run rerun --failed` 后绿（run 45547412109 两次对比）。疑为负载下进程/端口/超时抖动；需定位后加隔离或重试策略，不能靠重跑掩盖。
+- [ ] **名册最终一致的调用窗口** — 根因：`register` 回执先于 roster 广播、各服务异步写本地名册，窗口期内 `Resolve` 报「未知目标服务」（诊断见 `reports/R-027-approval-flake-diagnosis.md`，实测 2/20 复现、与 CI 错误逐字相同）。测试侧已用「等发起方自己的名册」修掉偶发；**生产侧仍是 fail-visible 且无重试**：注册后立刻跨服务调用会失败。需决定：调用方有界重试 / 注册回执携带全量名册 / 连接后先 `hello`。
+- [x] ~~**approval-integration 偶发失败**~~ — 已定位为上面的名册窗口并修测试侧（PR #117 首跑红、同提交 main push 绿、重跑绿的那次），不再靠重跑掩盖。
 - [ ] **评测 · 真模型录制/回放** — `testing/evals/` 现在用剧本化假 LLM（`-record` / `-replay` 未实现），在它落地前评测结果**不能用来比较模型**（见 [evals/README.md](testing/evals/README.md)）
 - [ ] **评测 · 沙箱** — `shell` 类任务现在在临时工作目录里跑真命令；`sandbox: true` 的任务在加载时被拒，尚未实现可丢弃环境
 - [ ] **`src/protocol/` 是否对外发布版本**（当前是仓库内本地模块 `v0.0.0` + `replace`）

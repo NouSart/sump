@@ -140,6 +140,24 @@ func (f *fixture) client(t *testing.T, name string) *service.Service {
 	s := service.New(service.Config{Name: name, Listen: "127.0.0.1:0", Center: f.center, Logger: f.logger})
 	return s
 }
+
+// waitResolve 等 svc **自己的名册**能解析 to。
+// 注册回执只说明中心收下了服务；roster 广播随后才逐连接推送、由各服务异步落本地名册，
+// 所以“别的服务看得见 X”不蕴含“我要用的服务看得见 X”，等错对象会撞上“未知目标服务”。
+func waitResolve(t *testing.T, svc *service.Service, to string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, _, err := svc.Resolve(to); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s 的名册等不到 %s（当前 %v）", svc.WsURL(), to, svc.Roster())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func (f *fixture) req(command string) protocol.CommandApprovalRequest {
 	return protocol.CommandApprovalRequest{Version: 1, ItemID: protocol.NewID(), Plan: protocol.ExecutionPlan{Version: 1, Command: command, WorkDir: f.root, ShellPath: f.exe, Args: protocol.PowerShellArgs(), Dialect: "powershell", Platform: runtime.GOOS, Profile: protocol.PowerShellProfile, TimeoutMS: 5000, MaxOutputBytes: 4096}}
 }
@@ -345,17 +363,9 @@ func TestRealReasonerReceivesApprovalAndExecutionFeedback(t *testing.T) {
 	fake := &recordingLLM{observed: make(chan string, 64)}
 	r := reasoner.New(reasoner.Config{Name: "reasoner", Listen: "127.0.0.1:0", Center: f.center, LLM: fake}, f.logger)
 	f.start(t, r.Service)
-	// 注册返回与名册广播异步；等待 memory 实际看到 reasoner，而不是猜测 sleep 时长。
-	for {
-		if _, _, err := memory.Resolve("reasoner"); err == nil {
-			break
-		}
-		select {
-		case <-f.ctx.Done():
-			t.Fatal("reasoner not discovered")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
+	// 注册回执与名册广播异步：要等**发起方 boss** 自己看到 reasoner，而不是等 memory 看到。
+	// 等 memory 只证明中心收下了注册；boss 可能还没收到 roster 广播（CI 上就撞过这个窗口）。
+	waitResolve(t, boss, "reasoner")
 	// 入口发起 message；reasoner 同步向 memory 要 context 后开黑板（resume 已删）。
 	if _, err := boss.Call(f.ctx, "reasoner", "message", protocol.MessagePayload{Text: "运行示例命令", Conversation: "approval-fixture", Sender: &protocol.Sender{Channel: "private", Owner: true}}, "trace-llm"); err != nil {
 		t.Fatalf("message 未被受理: %v", err)
@@ -388,7 +398,7 @@ func TestUserReviewSecondLayer(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := setup(t)
-			f.reviewApproval(t, analysis.PowerShell{Executable: f.exe})
+			a := f.reviewApproval(t, analysis.PowerShell{Executable: f.exe})
 			f.shell(t, "approval")
 			events := make(chan protocol.AsyncResultPayload, 16)
 			c := f.client(t, "observer")
@@ -411,19 +421,9 @@ func TestUserReviewSecondLayer(t *testing.T) {
 				}
 				return tc.decision, "集成测试"
 			})
-			// 等门户与 shell 都进名册（否则 approval 会按"无人裁决"直接 review）。
-			deadline := time.Now().Add(5 * time.Second)
-			for time.Now().Before(deadline) {
-				var names []string
-				for _, card := range c.Roster() {
-					names = append(names, card.Name)
-				}
-				joined := strings.Join(names, ",")
-				if strings.Contains(joined, "portal") && strings.Contains(joined, "shell") && strings.Contains(joined, "approval") {
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+			// 挂起与否由 **approval 自己的名册** 决定：必须等它看到门户，
+			// 等观察者 c 的名册只能证明广播推进到 c，不能证明推进到 approval。
+			waitResolve(t, a.Service, "portal")
 
 			// Get-Process 不在白名单 → 第一层 review → 第二层挂起等门户。
 			raw, err := c.Call(f.ctx, "shell", "run", protocol.ShellRunPayload{Command: "Get-Process"}, "trace-review")
@@ -515,7 +515,7 @@ func (f *reviewLLM) Chat(_ context.Context, req llm.ChatRequest) (llm.ChatResult
 
 func TestLLMReviewChain(t *testing.T) {
 	f := setup(t)
-	f.reviewApproval(t, analysis.PowerShell{Executable: f.exe})
+	a := f.reviewApproval(t, analysis.PowerShell{Executable: f.exe})
 	f.shell(t, "approval")
 	memory := f.client(t, "memory")
 	memory.HandleNative(spv2.Method{Name: "store", Shape: spv2.ShapeCall}, func(_ context.Context, call *spv2.Call) error {
@@ -556,20 +556,14 @@ func TestLLMReviewChain(t *testing.T) {
 		}
 		return protocol.DecisionAllow, "集成测试自动批准"
 	})
+	// approval 只有在**自己的名册**里看到门户时才挂起；否则会按“无人裁决”直接 review。
+	waitResolve(t, a.Service, "portal")
 
 	fake := &reviewLLM{observed: make(chan string, 64)}
 	r := reasoner.New(reasoner.Config{Name: "reasoner", Listen: "127.0.0.1:0", Center: f.center, LLM: fake}, f.logger)
 	f.start(t, r.Service)
-	for {
-		if _, _, err := memory.Resolve("reasoner"); err == nil {
-			break
-		}
-		select {
-		case <-f.ctx.Done():
-			t.Fatal("reasoner not discovered")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
+	// 注册回执与名册广播异步：必须等**发起方 boss** 自己看到 reasoner。
+	waitResolve(t, boss, "reasoner")
 	// 入口发起 message；reasoner 同步向 memory 要 context 后开黑板（resume 已删）。
 	if _, err := boss.Call(f.ctx, "reasoner", "message", protocol.MessagePayload{Text: "看看现在有哪些进程", Conversation: "llm-review", Sender: &protocol.Sender{Channel: "private", Owner: true}}, "trace-llm-review"); err != nil {
 		t.Fatalf("message 未被受理: %v", err)
