@@ -73,6 +73,11 @@
 - [ ] **`origin_session` 留空** — 不透明会话 ID 的脱敏在 `experience/redact`；`session` 不得 import `experience`，复制第二套会造第二份真相。
 - [ ] **两个版本闸门是 fail-closed** — 会话库 / 共享库 `user_version=0` 且已有表会拒绝启动（错误文案提示手动删 / 改名）；未提供自动迁移，也未提供 `-reset`。
 
+## 文档残差（P2 切换后）
+
+- [ ] `architecture.md`（`EnsureTask` 的归属描述）、`memory-target.md`（`context_base` 旧 body 形状）、`src/memory/session/native.go` 的 `store` 卡片（仍写旧入参）与 `session.go` 的 provides 描述——与 P2 现状不一致，逐处按代码改。
+- [ ] `protocol.StorePayload.task_name` 已无读者（任务名改由 `work_open` 承担），reasoner/qq 仍在发；字段删除属协议破坏性变更，先定去留再动。
+
 ## 文档缺口
 
 - [ ] **`docs/index.md` 的链接由 `testing/tests/docs_test.go` 守着**——新增或移动文档后跑一次 `cd testing/tests; go test -run Docs ./...`
