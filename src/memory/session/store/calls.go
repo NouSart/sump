@@ -6,8 +6,9 @@ package store
 //   - `created` 是本地意图（call_open 之后、owner 受理之前），不是执行超时；
 //   - pause / resume 必须等 owner 确认（会话层注入的 owner 客户端），因此 store **不提供**
 //     「直接把状态写成 paused」的快捷入口——那等于允许调用方本地假装控制成功；
-//   - calls 表没有 task / owner / instance 列：task 与 owner 从 works 行联表解析
-//     （GetCall / ListResident 都带上）；instance 在当前 schema 与协议里都没有落点，不预留列。
+//   - calls 表没有 task / owner / instance 列：task 与 owner 从 works 行联表解析，
+//     conversation_id 再从 tasks 行取（GetCall / ListResident 都带上）；instance 在当前
+//     schema 与协议里都没有落点，不预留列。
 //
 // 两维状态机（S-001 §5.1）：
 //
@@ -63,17 +64,19 @@ var (
 
 // CallRow 是 calls 表的一行。
 //
-// Owner / Task 来自 works 的联表（calls 表没有这两列）；它们不是 calls 自己的字段，
-// 因此只读，写入永远经由 works。
+// Owner / Task / ConversationID 来自联表（calls 表没有这些列）：owner 与 task 取 works 行，
+// conversation_id 再沿 works.task 取 tasks 行。它们不是 calls 自己的字段，因此只读，
+// 写入永远经由 works / tasks。
 type CallRow struct {
-	ID       string
-	Work     string
-	Task     string // works.task（work 关联的任务；可为空）
-	Owner    string // works.owner_id（常驻目录的隔离键）
-	Service  string
-	Action   string
-	Mode     string
-	Pausable bool
+	ID             string
+	Work           string
+	Task           string // works.task（work 关联的任务；可为空）
+	ConversationID string // tasks.conversation_id（work 没挂 task 或任务行缺失时为空）
+	Owner          string // works.owner_id（常驻目录的隔离键）
+	Service        string
+	Action         string
+	Mode           string
+	Pausable       bool
 
 	TTLMS          int64
 	ExecDeadlineMS int64
@@ -244,13 +247,15 @@ func (s *Store) CreateCall(ctx context.Context, work, service, action, mode stri
 	return id, nil
 }
 
-// selectCallSQL 是 calls 行 + works 联表的统一投影（列顺序与 scanCallRow 对齐）。
+// selectCallSQL 是 calls 行 + works / tasks 联表的统一投影（列顺序与 scanCallRow 对齐）。
+// tasks 走 LEFT JOIN：work 没挂 task 或任务行缺失时 conversation_id 为空，不报错。
 const selectCallSQL = `SELECT c.id, c.work, c.service, c.action, c.mode, c.pausable,
 	c.ttl_ms, c.exec_deadline_ms, COALESCE(c.remote_item_id, ''), c.observe_state, c.exec_state,
 	COALESCE(c.phase, ''), c.reason, c.result_ref, c.remote_may_continue, c.created_at, c.updated_at,
-	COALESCE(w.owner_id, ''), COALESCE(w.task, '')
+	COALESCE(w.owner_id, ''), COALESCE(w.task, ''), COALESCE(t.conversation_id, '')
 	FROM calls c
-	LEFT JOIN works w ON w.id = c.work`
+	LEFT JOIN works w ON w.id = c.work
+	LEFT JOIN tasks t ON t.id = w.task`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -262,7 +267,7 @@ func scanCallRow(r rowScanner) (CallRow, error) {
 	if err := r.Scan(&out.ID, &out.Work, &out.Service, &out.Action, &out.Mode, &pausable,
 		&out.TTLMS, &out.ExecDeadlineMS, &out.RemoteItemID, &out.Observe, &out.Exec,
 		&out.Phase, &out.Reason, &out.ResultRef, &remoteMayContinue, &out.CreatedAt, &out.UpdatedAt,
-		&out.Owner, &out.Task); err != nil {
+		&out.Owner, &out.Task, &out.ConversationID); err != nil {
 		return CallRow{}, err
 	}
 	out.Pausable = pausable != 0
@@ -270,7 +275,7 @@ func scanCallRow(r rowScanner) (CallRow, error) {
 	return out, nil
 }
 
-// GetCall 读一条 call（含 works 联表的 owner / task）。
+// GetCall 读一条 call（含 works / tasks 联表的 owner / task / conversation_id）。
 func (s *Store) GetCall(ctx context.Context, id string) (CallRow, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -560,6 +565,8 @@ func (s *Store) GetControl(ctx context.Context, controlID string) (ControlRow, b
 // ListResident 列出某个 owner 名下的常驻调用（mode=resident，按 created_at 倒序）。
 // owner 来自 works.owner_id（S-001 §9）；limit 默认 50、上限 200；
 // cursor 是上一页最后一条 call id（下一页从它之后继续，空 = 第一页）。
+// conversation_id 沿 works.task → tasks 联表带出（resident_list 的 origin_session 来源）；
+// work 没挂 task 或任务行缺失时为空串，不报错。
 func (s *Store) ListResident(ctx context.Context, owner string, limit int, cursor string) ([]CallRow, error) {
 	owner = strings.TrimSpace(owner)
 	if owner == "" {

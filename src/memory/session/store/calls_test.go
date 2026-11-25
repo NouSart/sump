@@ -1,7 +1,7 @@
 package store
 
 // 调用账本（S-001 §4.5 / §5.1）的存储层证据：初始两维、非法转移、control 幂等、
-// remote 回填唯一、常驻过滤与分页、works 联表字段。
+// remote 回填唯一、常驻过滤与分页、works / tasks 联表字段。
 //
 // 与源 af6cfc8:src/memory/store/calls_test.go 的差异（R-023 P3）：
 //   - 图片索引用例不搬：image_index 不在本架构（D7）；
@@ -389,12 +389,72 @@ func TestCreateCallResolvesWorkJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row.Owner != "alice" || row.Task != task.ID {
-		t.Fatalf("GetCall 联表字段不对: owner=%q task=%q（want alice / %s）", row.Owner, row.Task, task.ID)
+	if row.Owner != "alice" || row.Task != task.ID || row.ConversationID != "conv-1" {
+		t.Fatalf("GetCall 联表字段不对: owner=%q task=%q conversation=%q（want alice / %s / conv-1）",
+			row.Owner, row.Task, row.ConversationID, task.ID)
 	}
 	rows, err := st.ListResident(ctx, "alice", 10, "")
-	if err != nil || len(rows) != 1 || rows[0].Task != task.ID {
+	if err != nil || len(rows) != 1 || rows[0].Task != task.ID || rows[0].ConversationID != "conv-1" {
 		t.Fatalf("ListResident 联表字段不对: %+v, err=%v", rows, err)
+	}
+}
+
+// TestListResidentOriginSessionJoin 钉住 origin_session 的存储来源：conversation_id 沿
+// works.task → tasks.conversation_id 联表带出；work 没挂 task、works.task 指向不存在的
+// 任务（历史残留）时为空串且不报错；calls.work 指向不存在的 work 也不拖垮列表。
+func TestListResidentOriginSessionJoin(t *testing.T) {
+	st := openCallsTestStore(t)
+	ctx := context.Background()
+	ensureCallsWork(t, st, "w-task", "alice")
+	ensureCallsWork(t, st, "w-no-task", "alice")
+	ensureCallsWork(t, st, "w-dangling", "alice")
+
+	task, err := st.OpenTask("conv-1", "有会话的任务")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LinkWorkTask(ctx, "w-task", task.ID); err != nil {
+		t.Fatal(err)
+	}
+	// LinkWorkTask 会拒绝不存在的 task，直接写 works.task 模拟历史残留的悬空关联。
+	if _, err := st.db.ExecContext(ctx, `UPDATE works SET task = ? WHERE id = ?`,
+		"t-missing", "w-dangling"); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = createCallsTestCall(t, st, "w-task", "shell", CallModeResident, true)
+	_ = createCallsTestCall(t, st, "w-no-task", "shell", CallModeResident, true)
+	_ = createCallsTestCall(t, st, "w-dangling", "shell", CallModeResident, true)
+
+	// calls 没有外键：直接插一条 work 不在 works 里的旧行（例如 work 被清理过）。
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO calls
+		(id, work, service, action, mode, pausable, ttl_ms, exec_deadline_ms,
+		 observe_state, exec_state, reason, result_ref, remote_may_continue, created_at, updated_at)
+		VALUES ('call-ghost', 'w-ghost', 'shell', 'run', ?, 0, 0, 0, ?, ?, '', '', 0, ?, ?)`,
+		CallModeResident, CallObserveWaiting, CallExecCreated,
+		callTimestamp(), callTimestamp()); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := st.ListResident(ctx, "alice", 10, "")
+	if err != nil {
+		t.Fatalf("联表不应因缺 task / 缺 work 报错: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("alice 常驻调用 = %d, want 3（未知 work 的 call 不属于任何 owner）: %+v", len(rows), rows)
+	}
+	got := make(map[string]string, len(rows))
+	for _, row := range rows {
+		got[row.Work] = row.ConversationID
+	}
+	if got["w-task"] != "conv-1" {
+		t.Fatalf("挂了任务的 work conversation_id = %q, want conv-1", got["w-task"])
+	}
+	if v, ok := got["w-no-task"]; !ok || v != "" {
+		t.Fatalf("没挂任务的 work 应出现在列表且 conversation_id 为空: %+v", rows)
+	}
+	if v, ok := got["w-dangling"]; !ok || v != "" {
+		t.Fatalf("任务行缺失时应为空而不是报错: %+v", rows)
 	}
 }
 

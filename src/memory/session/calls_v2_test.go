@@ -10,8 +10,9 @@ package session
 //     call_open / call_control / call_status / resident_list 语义；
 //   - 保留 7 个等价用例，并补 2 条本阶段的真实错误路径（未知 call / 非法 op /
 //     空参数；同 control_id 换 call 的冲突且不泄漏 id），共 9 个；
-//   - origin_session 断言改为「必须为空」：不透明会话 ID 在 experience/redact，
-//     session 不得 import experience（架构测试），本笔不复制第二套脱敏实现；
+//   - origin_session 回填 conversation_id（memory 自己的不透明会话标识）：断言由
+//     「必须为空」改为「等于该 work 所属任务的 conversation_id」；session 仍不 import
+//     experience（架构测试），这里不做路径脱敏；
 //   - work 关联 task 不再手工挂（works.task 的写入方是会话生命周期），call 行的
 //     owner/task 联表字段由 store 层用例覆盖。
 //
@@ -450,6 +451,14 @@ func TestResidentListFiltersByOwner(t *testing.T) {
 	ctx := context.Background()
 	seedCallsWork(t, st, "w-alice", "alice", "reasoner")
 	seedCallsWork(t, st, "w-bob", "bob", "reasoner-b")
+	// w-alice 挂一个任务：常驻项的 origin_session 应回填该任务的 conversation_id。
+	task, err := st.OpenTask("conv-alice", "常驻任务")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LinkWorkTask(ctx, "w-alice", task.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	a1 := openCallsTestCall(t, s, "w-alice", store.CallModeResident, true)
 	time.Sleep(time.Millisecond) // 让 created_at 明确分先后
@@ -472,9 +481,9 @@ func TestResidentListFiltersByOwner(t *testing.T) {
 		if item.Kind != "call" || item.OwnerService != "shell" || item.Exec == "" {
 			t.Fatalf("常驻项字段不对: %+v", item)
 		}
-		// 不透明会话 ID 留给 experience/redact：这里必须为空，不能是原文。
-		if item.OriginSession != "" {
-			t.Fatalf("origin_session 本笔应为空（脱敏实现不在 session）: %q", item.OriginSession)
+		// origin_session 回填 memory 自己的不透明会话标识（不做路径脱敏）。
+		if item.OriginSession != "conv-alice" {
+			t.Fatalf("origin_session 应回填会话 ID: got %q, want conv-alice", item.OriginSession)
 		}
 	}
 
