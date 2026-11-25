@@ -279,6 +279,62 @@ func TestSenderWireKeys(t *testing.T) {
 	}
 }
 
+// TestOwnerControlWireKeys 钉住 owner 侧对账 / 控制面的线路键名（R-029）：memory 的
+// OwnerClient 是另一个进程，按这些键读写；改名会与既有读者静默漂移。
+func TestOwnerControlWireKeys(t *testing.T) {
+	statusRaw, err := EncodePayload(OwnerStatusPayload{IDs: []string{"c1", "c2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusIn := decodeMap(t, statusRaw)
+	if _, has := statusIn["ids"]; !has {
+		t.Fatalf("owner_status 缺少线路键 ids（当前键：%v）", keysOf(statusIn))
+	}
+
+	resRaw, err := EncodePayload(OwnerStatusResult{
+		RecoveryComplete: true, States: map[string]string{"c1": OwnerExecRunning},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusOut := decodeMap(t, resRaw)
+	for _, key := range []string{"recovery_complete", "states"} {
+		if _, has := statusOut[key]; !has {
+			t.Fatalf("owner_status 结果缺少线路键 %q（当前键：%v）", key, keysOf(statusOut))
+		}
+	}
+
+	ctlRaw, err := EncodePayload(OwnerControlPayload{ID: "c1", Op: OwnerOpPause, TTLMS: 1500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctlIn := decodeMap(t, ctlRaw)
+	for _, key := range []string{"id", "op", "ttl_ms"} {
+		if _, has := ctlIn[key]; !has {
+			t.Fatalf("owner_control 缺少线路键 %q（当前键：%v）", key, keysOf(ctlIn))
+		}
+	}
+
+	ctlOutRaw, err := EncodePayload(OwnerControlResult{ID: "c1", Exec: OwnerExecPaused})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctlOut := decodeMap(t, ctlOutRaw)
+	for _, key := range []string{"id", "exec"} {
+		if _, has := ctlOut[key]; !has {
+			t.Fatalf("owner_control 结果缺少线路键 %q（当前键：%v）", key, keysOf(ctlOut))
+		}
+	}
+	// exec 的空串是「已确认但未带状态维」，必须显式上线——不能被 omitempty 变成缺字段。
+	emptyRaw, err := EncodePayload(OwnerControlResult{ID: "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, has := decodeMap(t, emptyRaw)["exec"]; !has {
+		t.Fatal("exec 为空串时必须显式出现在线路上（空串有语义：已确认但未带状态维）")
+	}
+}
+
 // keysOf 取 map 的键（失败信息里要看得见到底出现了哪些键）。
 func keysOf(m map[string]any) []string {
 	out := make([]string, 0, len(m))

@@ -3,7 +3,7 @@ package protocol
 // 记忆中心 v2（S-001）的载荷类型——P1 子集：store 的幂等 / 补报（§3.0 / §3.0.1 / §4.3）；
 // P2 子集：context 组装的四态与 trigger_complete（§3.1 / §3.1.1）、transcript（§3.2）；
 // P3 子集：调用生命周期（call_open / call_control / call_status）与常驻目录（resident_list，
-// §3.0.2 / §3.4 / §3.5 / §3.6）。
+// §3.0.2 / §3.4 / §3.5 / §3.6）；R-029：执行服务侧的对账 / 控制面（owner_status / owner_control）。
 // 命名一律按 S-001 §3.9 词汇表；线上键名是 snake_case，且**只增不改**。
 // 没有写入方的字段不预留：pending / task_blockers / image 相关类型都没有搬。
 //
@@ -235,6 +235,65 @@ type CallStatusItem struct {
 type CallStatusResult struct {
 	OwnerRecoveryComplete bool             `msgpack:"owner_recovery_complete" json:"owner_recovery_complete"`
 	Items                 []CallStatusItem `msgpack:"items" json:"items"`
+}
+
+// ---------- owner 侧对账 / 控制面（R-029；call_status / call_control 的执行服务对端） ----------
+
+// owner_control 的 op 取值：与 S-001 §3.4 的 pause / resume / cancel 是同一套动作。
+const (
+	OwnerOpPause  = "pause"
+	OwnerOpResume = "resume"
+	OwnerOpCancel = "cancel"
+)
+
+// owner_status 回的执行维 / owner_control 确认后的执行维：S-001 §3.9 的 exec 词汇
+// （owner 与 memory 共用同一套值，串一个都不行）。owner_control 的成功值只有
+// paused / running / cancelled；其余值出现在 owner_status 里表示调用已终结或尚未开跑。
+const (
+	OwnerExecCreated   = "created"
+	OwnerExecRunning   = "running"
+	OwnerExecPaused    = "paused"
+	OwnerExecDone      = "done"
+	OwnerExecFailed    = "failed"
+	OwnerExecCancelled = "cancelled"
+	OwnerExecUnknown   = "unknown"
+)
+
+// OwnerStatusPayload 是 owner_status 的入参（R-029）：一批待对账的 call id。
+// memory 的 call_status 按 owner_service 分组后问到这里；id 是 owner 自己发过的受理句柄。
+type OwnerStatusPayload struct {
+	IDs []string `msgpack:"ids" json:"ids"`
+}
+
+// OwnerStatusResult 是 owner_status 的结果（R-029）。
+//
+// States 只包含本服务认识的 call（call_id → 执行维）；不认识的 id 不出现，也不猜一个值。
+// RecoveryComplete 必须显式上线（false 也有意义）：为 false（启动早期，持久受理记录尚未
+// 恢复完）时，「不认识」不能判成 orphaned（S-001 §3.5 规则 1）。
+type OwnerStatusResult struct {
+	RecoveryComplete bool              `msgpack:"recovery_complete" json:"recovery_complete"`
+	States           map[string]string `msgpack:"states" json:"states"`
+}
+
+// OwnerControlPayload 是 owner_control 的入参（R-029）：对一次已受理的执行做控制。
+// Op 取 OwnerOp*；TTLMS 是本轮控制等待 owner 确认的上限（省略 = 不额外限制，
+// 仍受服务 action timeout 约束）。
+type OwnerControlPayload struct {
+	ID    string `msgpack:"id" json:"id"`
+	Op    string `msgpack:"op" json:"op"`
+	TTLMS int64  `msgpack:"ttl_ms,omitempty" json:"ttl_ms,omitempty"`
+}
+
+// OwnerControlResult 是 owner_control 的回执（R-029）。
+//
+// Exec 是 owner 确认后的执行维：成功时分别为 paused / running / cancelled；
+// 空串 = 已确认但未带状态维（调用方按约定值处理）；其它值 = 未确认（Reason 说明为什么，
+// 例如「取消已受理，但在飞项还要跑完」）。失败必须走错误码（not_found / not_supported /
+// deadline_exceeded …），不用结果字段假装成功。
+type OwnerControlResult struct {
+	ID     string `msgpack:"id" json:"id"`
+	Exec   string `msgpack:"exec" json:"exec"`
+	Reason string `msgpack:"reason,omitempty" json:"reason,omitempty"`
 }
 
 // ---------- 常驻目录（S-001 §3.6，同 v4） ----------
