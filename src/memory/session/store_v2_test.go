@@ -66,6 +66,17 @@ func callState(t *testing.T, st *store.Store, callID string) (observe, exec, pha
 	return observe, exec, phase, resultRef
 }
 
+// callRemote 读一行 call 已回填的 owner 受理句柄（空串 = 未回填）。
+func callRemote(t *testing.T, st *store.Store, callID string) string {
+	t.Helper()
+	var remote string
+	if err := st.DB().QueryRow(
+		`SELECT COALESCE(remote_item_id, '') FROM calls WHERE id = ?`, callID).Scan(&remote); err != nil {
+		t.Fatalf("读取 call %s 的 remote_item_id: %v", callID, err)
+	}
+	return remote
+}
+
 func storeV2Body(t *testing.T, p protocol.StorePayload) []byte {
 	t.Helper()
 	body, err := protocol.EncodePayload(p)
@@ -392,6 +403,91 @@ func TestStoreV2ReportAcceptedKeepsCallOpen(t *testing.T) {
 	observe, exec, phase, _ := callState(t, st, callID)
 	if observe != store.CallObserveWaiting || exec != store.CallExecRunning || phase != "" {
 		t.Fatalf("accepted 补报应只推进到 running、不写 phase，实际 (%s,%s,%s)", observe, exec, phase)
+	}
+}
+
+// 补报可以携带 owner 的受理句柄（R-030）：首次非空值回填 calls.remote_item_id，
+// 并与 phase 推进在同一事务里生效。空值不回填（NULL 保持 NULL）。
+func TestStoreV2ReportFillsRemoteItemOnce(t *testing.T) {
+	s, st := newStoreV2TestServer(t)
+	callID := seedV2Call(t, st, "w1", "shell")
+	p := reportPayload("w1", "report:shell:r1", callID, "已开始执行")
+	p.Report.Phase = "accepted"
+	p.Report.Final = false
+	p.Report.RemoteItemID = "owner-item-1"
+	mustStoreResult(t, s, storeV2Body(t, p))
+
+	if got := callRemote(t, st, callID); got != "owner-item-1" {
+		t.Fatalf("受理补报应回填 remote_item_id，实际 %q", got)
+	}
+	if observe, exec, phase, _ := callState(t, st, callID); observe != store.CallObserveWaiting ||
+		exec != store.CallExecRunning || phase != "" {
+		t.Fatalf("回填句柄与推进状态应同事务生效，实际 (%s,%s,%s)", observe, exec, phase)
+	}
+
+	// 同一 call 的后续补报带另一个句柄：不覆盖首个值，补报本身照常入账。
+	p.ClientItemID = "report:shell:r2"
+	p.Report.ReportID = "r2"
+	p.Report.ReportSeq = 2
+	p.Report.RemoteItemID = "owner-item-2"
+	p.Content = "另一种说法"
+	mustStoreResult(t, s, storeV2Body(t, p))
+	if got := callRemote(t, st, callID); got != "owner-item-1" {
+		t.Fatalf("已有句柄不能被后续补报覆盖，实际 %q", got)
+	}
+
+	// 空值忽略：没有句柄的补报不改既有回填。
+	p.ClientItemID = "report:shell:r3"
+	p.Report.ReportID = "r3"
+	p.Report.ReportSeq = 3
+	p.Report.RemoteItemID = ""
+	p.Report.Phase = "done"
+	p.Report.Final = true
+	p.Content = "命令完成"
+	mustStoreResult(t, s, storeV2Body(t, p))
+	if got := callRemote(t, st, callID); got != "owner-item-1" {
+		t.Fatalf("空 remote_item_id 不应改动账本，实际 %q", got)
+	}
+}
+
+// remote_item_id 与既有句柄不同不是存储失败：补报照常入账，差异由 store 层标记
+// （V2RecordResult.RemoteMismatch），session 记日志——回滚会丢掉一条真实进展。
+func TestStoreV2ReportRemoteMismatchStillCommits(t *testing.T) {
+	s, st := newStoreV2TestServer(t)
+	callID := seedV2Call(t, st, "w1", "shell")
+	p := reportPayload("w1", "report:shell:r1", callID, "第一次")
+	p.Report.RemoteItemID = "owner-item-1"
+	mustStoreResult(t, s, storeV2Body(t, p))
+
+	p.ClientItemID = "report:shell:r2"
+	p.Report.ReportID = "r2"
+	p.Report.ReportSeq = 2
+	p.Report.RemoteItemID = "owner-item-2"
+	p.Content = "第二次"
+	mustStoreResult(t, s, storeV2Body(t, p)) // 冲突不产生错误码
+
+	if n := countStoreV2Rows(t, st, `SELECT COUNT(*) FROM messages WHERE content = '第二次'`); n != 1 {
+		t.Fatalf("句柄冲突不应回滚补报消息，实际 %d 行", n)
+	}
+	if n := countStoreV2Rows(t, st, `SELECT COUNT(*) FROM report_receipts`); n != 2 {
+		t.Fatalf("两条补报都应留下回执，实际 %d 行", n)
+	}
+}
+
+// 超长 remote_item_id 是载荷错误：invalid_argument，且不留下任何写入。
+func TestStoreV2ReportRejectsOversizedRemoteItem(t *testing.T) {
+	s, st := newStoreV2TestServer(t)
+	callID := seedV2Call(t, st, "w1", "shell")
+	p := reportPayload("w1", "report:shell:r1", callID, "命令完成")
+	p.Report.RemoteItemID = strings.Repeat("x", 513)
+	if _, err := storeV2(t, s, storeV2Body(t, p)); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
+		t.Fatalf("超长 remote_item_id 应回 invalid_argument，实际 %v", err)
+	}
+	if n := countStoreV2Rows(t, st, `SELECT COUNT(*) FROM messages`); n != 0 {
+		t.Fatalf("被拒绝的补报不应留下消息，实际 %d 行", n)
+	}
+	if got := callRemote(t, st, callID); got != "" {
+		t.Fatalf("被拒绝的补报不应回填句柄，实际 %q", got)
 	}
 }
 

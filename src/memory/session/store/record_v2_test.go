@@ -330,6 +330,103 @@ func TestRecordV2AtomicReportDrivesCallState(t *testing.T) {
 	}
 }
 
+// callRemote 读一行 call 已回填的 owner 受理句柄。
+func callRemote(t *testing.T, st *Store, callID string) string {
+	t.Helper()
+	var remote string
+	if err := st.db.QueryRow(`SELECT COALESCE(remote_item_id, '') FROM calls WHERE id = ?`, callID).Scan(&remote); err != nil {
+		t.Fatalf("读取 call %s 的 remote_item_id: %v", callID, err)
+	}
+	return remote
+}
+
+// TestRecordV2AtomicRemoteItemWrittenOnce owner 句柄只回填一次（R-030）：
+// 首次非空值写入；同值幂等；不同值保留原值并回 RemoteMismatch=true；空值忽略。
+func TestRecordV2AtomicRemoteItemWrittenOnce(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ensureCallsWork(t, s, "w1", "alice")
+	callID := createV2Call(t, s, "w1", "shell")
+
+	first := recReport("k1", recHashA, "shell", "r1", callID, "accepted", 1, false)
+	first.Report.RemoteItemID = "owner-item-1"
+	res, err := s.RecordV2Atomic(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RemoteMismatch {
+		t.Fatal("首次回填不应标记冲突")
+	}
+	if got := callRemote(t, s, callID); got != "owner-item-1" {
+		t.Fatalf("首次非空句柄应回填，实际 %q", got)
+	}
+
+	same := recReport("k2", recHashB, "shell", "r2", callID, "approved", 2, false)
+	same.Report.RemoteItemID = "owner-item-1"
+	res, err = s.RecordV2Atomic(ctx, same)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RemoteMismatch {
+		t.Fatal("同值句柄不应标记冲突")
+	}
+
+	diff := recReport("k3", recHashA, "shell", "r3", callID, "done", 3, true)
+	diff.Report.RemoteItemID = "owner-item-2"
+	res, err = s.RecordV2Atomic(ctx, diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.RemoteMismatch {
+		t.Fatal("不同句柄应回 RemoteMismatch=true（可见，但不回滚补报）")
+	}
+	if got := callRemote(t, s, callID); got != "owner-item-1" {
+		t.Fatalf("冲突时不得覆盖首个句柄，实际 %q", got)
+	}
+
+	// 空值忽略：另开一条 call，避免在已关闭的账本上制造非法转移。
+	other := createV2Call(t, s, "w1", "shell")
+	empty := recReport("k4", recHashB, "shell", "r4", other, "accepted", 1, false)
+	empty.Report.RemoteItemID = ""
+	res, err = s.RecordV2Atomic(ctx, empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RemoteMismatch || callRemote(t, s, other) != "" {
+		t.Fatalf("空句柄应忽略（mismatch=%v remote=%q）", res.RemoteMismatch, callRemote(t, s, other))
+	}
+}
+
+// TestRecordV2AtomicRemoteItemUniqueCollision 句柄已被同一 (service, work) 的另一条 call
+// 占用（部分唯一索引）：不换绑、不失败，回 RemoteMismatch=true，补报照常入账。
+func TestRecordV2AtomicRemoteItemUniqueCollision(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ensureCallsWork(t, s, "w1", "alice")
+	holder := createV2Call(t, s, "w1", "shell")
+	if err := s.SetCallRemote(ctx, holder, "taken-handle"); err != nil {
+		t.Fatal(err)
+	}
+	callID := createV2Call(t, s, "w1", "shell")
+	res, err := s.RecordV2Atomic(ctx, func() V2RecordInput {
+		in := recReport("k1", recHashA, "shell", "r1", callID, "accepted", 1, false)
+		in.Report.RemoteItemID = "taken-handle"
+		return in
+	}())
+	if err != nil {
+		t.Fatalf("句柄撞键不应让补报失败: %v", err)
+	}
+	if !res.RemoteMismatch {
+		t.Fatal("句柄撞键应回 RemoteMismatch=true")
+	}
+	if got := callRemote(t, s, callID); got != "" {
+		t.Fatalf("撞键的 call 不应获得别人的句柄，实际 %q", got)
+	}
+	if observe, exec, _, _ := callState(t, s, callID); observe != CallObserveWaiting || exec != CallExecRunning {
+		t.Fatalf("补报仍应按 phase 推进，实际 (%s,%s)", observe, exec)
+	}
+}
+
 // TestRecordV2AtomicReportRejectsMismatchedLedger 补报与账本对不上时整笔拒绝，一条消息都不留。
 func TestRecordV2AtomicReportRejectsMismatchedLedger(t *testing.T) {
 	cases := []struct {

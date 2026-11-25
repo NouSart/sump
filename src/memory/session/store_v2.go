@@ -96,11 +96,16 @@ func (s *Server) storeV2(p *protocol.StorePayload, c caller) (protocol.StoreResu
 			Phase:         p.Report.Phase,
 			Final:         p.Report.Final,
 			Data:          p.Report.Data,
+			RemoteItemID:  p.Report.RemoteItemID,
 		}
 	}
 	res, err := s.cfg.Store.RecordV2Atomic(context.Background(), in)
 	if err != nil {
 		return protocol.StoreResult{}, storeReceiptError(work, p.ClientItemID, err)
+	}
+	// remote_item_id 与账本已有句柄不一致：补报照常入账，但必须可见（R-030）。
+	if res.RemoteMismatch {
+		s.logger.Printf("store: 补报 call %s 携带的 remote_item_id 与账本已有句柄冲突，保留原值", p.Report.CallID)
 	}
 	// 与旧 store 路径一致的派生记账（都不在原子事务里，失败只记日志、不影响 ACK）：
 	//   - 用户消息进整理池，等 experience 分类；
@@ -132,6 +137,9 @@ func validateStoreReport(r *protocol.StoreReport) error {
 	if r.ReportSeq <= 0 {
 		return fmt.Errorf("补报 report.report_seq 必须从 1 开始，收到 %d", r.ReportSeq)
 	}
+	if len(r.RemoteItemID) > 512 {
+		return fmt.Errorf("补报 report.remote_item_id 超长（%d > 512）", len(r.RemoteItemID))
+	}
 	switch r.Phase {
 	case "accepted", "approved":
 		if r.Final {
@@ -150,7 +158,8 @@ func validateStoreReport(r *protocol.StoreReport) error {
 // storePayloadHash 计算 store 幂等用的 payload_hash（S-001 §3.0 规则 4）。
 //
 // 载荷形状与规范一致：{kind, role, content, meta, visibility, report?}；report 仅补报路径出现，
-// 且覆盖 source_service / report_id / report_seq / call_id / phase / final / data 全字段。
+// 且覆盖 source_service / report_id / report_seq / call_id / phase / final / data 全字段
+// （R-030 的 remote_item_id 非空时也进 hash；空值不进，保持旧补报的 hash 稳定）。
 // 先按 JCS 归一（对象键排序、数字最短形式），再 sha256——键序 / 空白 / 数字写法不同但语义
 // 相同的载荷必须得到同一个 hash，否则重试会被误判成 conflict。
 func storePayloadHash(p *protocol.StorePayload, visibility string) (string, error) {
@@ -170,7 +179,7 @@ func storePayloadHash(p *protocol.StorePayload, visibility string) (string, erro
 		if err != nil {
 			return "", err
 		}
-		payload["report"] = map[string]any{
+		report := map[string]any{
 			"source_service": p.Report.SourceService,
 			"report_id":      p.Report.ReportID,
 			"report_seq":     p.Report.ReportSeq,
@@ -179,6 +188,11 @@ func storePayloadHash(p *protocol.StorePayload, visibility string) (string, erro
 			"final":          p.Report.Final,
 			"data":           data,
 		}
+		// 只有非空才进 hash：旧补报（没有该字段）的 payload_hash 必须保持不变。
+		if remote := strings.TrimSpace(p.Report.RemoteItemID); remote != "" {
+			report["remote_item_id"] = remote
+		}
+		payload["report"] = report
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

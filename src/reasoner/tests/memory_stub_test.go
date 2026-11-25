@@ -46,6 +46,23 @@ type stubMemory struct {
 	leaseCharges []spv2.Charge
 	workStatuses []string
 	leaseErr     string // 非空时 lease_charge 一律回这个错误（验证"扣不到租约就不执行工具"）
+	// R-030 调用账本：call_open 收到的载荷与 call_open 失败注入。
+	callOpens   []protocol.CallOpenPayload
+	callOpenErr string
+}
+
+// CallOpens 返回收到的 call_open 请求快照（按到达顺序）。
+func (m *stubMemory) CallOpens() []protocol.CallOpenPayload {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]protocol.CallOpenPayload(nil), m.callOpens...)
+}
+
+// setCallOpenError 让后续 call_open 回 internal 错误（空串 = 恢复正常）。
+func (m *stubMemory) setCallOpenError(msg string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callOpenErr = msg
 }
 
 // LeaseCharges 返回按到达顺序的租约扣减快照。
@@ -97,6 +114,7 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 	t.Helper()
 	e := newStubEndpoint(t, name,
 		spv2.Method{Name: "work_open", Shape: spv2.ShapeCall},
+		spv2.Method{Name: "call_open", Shape: spv2.ShapeCall},
 		spv2.Method{Name: "context", Shape: spv2.ShapeCall},
 		spv2.Method{Name: "trigger_complete", Shape: spv2.ShapeCall},
 		spv2.Method{Name: "store", Shape: spv2.ShapeCall},
@@ -128,6 +146,22 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 			out.TaskID = task.ID
 		}
 		return call.Reply(out)
+	})
+	e.handle("call_open", func(_ context.Context, call *spv2.Call) error {
+		var p protocol.CallOpenPayload
+		if err := call.Frame.DecodeBody(&p); err != nil {
+			return call.ReplyError(spv2.CodeInvalidArgument, err.Error(), false, nil)
+		}
+		m.noteWork("call_open", call.Frame.Work)
+		m.mu.Lock()
+		m.callOpens = append(m.callOpens, p)
+		n := len(m.callOpens)
+		errMsg := m.callOpenErr
+		m.mu.Unlock()
+		if errMsg != "" {
+			return call.ReplyError(spv2.CodeInternal, errMsg, false, nil)
+		}
+		return call.Reply(protocol.CallOpenResult{CallID: fmt.Sprintf("call-%d", n)})
 	})
 	e.handle("trigger_complete", func(_ context.Context, call *spv2.Call) error {
 		var p protocol.TriggerCompletePayload
@@ -336,7 +370,7 @@ func startStubMemoryNamed(t *testing.T, center *stubCenter, name string) *stubMe
 		Addr:        e.URL(),
 		Description: "记忆测试替身",
 		Provides: []protocol.Provide{
-			{Action: "context"}, {Action: "work_open"}, {Action: "trigger_complete"},
+			{Action: "context"}, {Action: "work_open"}, {Action: "call_open"}, {Action: "trigger_complete"},
 			{Action: "store"}, {Action: "task_finish"}, {Action: "task_rename"},
 			{Action: "note"}, {Action: "publish_session"},
 		},

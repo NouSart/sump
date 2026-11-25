@@ -32,6 +32,11 @@ type asyncJob struct {
 	kind       string // once | resident; only the receipt establishes this classification
 	origin     *taskState
 	at         time.Time
+
+	// R-030：memory 的调用账本对象。memCallID 为空 = call_open 失败，本 job 不补报。
+	memCallID string
+	reports   map[string]asyncReportKey // 报告指纹 → 幂等键（同一份报告重试复用）
+	reportSeq int64                     // 本 call 内已分配的最大 report_seq
 }
 
 const (
@@ -244,11 +249,18 @@ func (s *Server) deliverAsyncLocked(k asyncKey, j *asyncJob, p protocol.AsyncRes
 	if !current {
 		return map[string]any{"status": "ignored"}
 	}
+	// R-030：先把补报 relay 到 memory 的调用账本，再交付给模型。
+	// relay 失败不阻塞交付（owner 已发出 ACK；账本缺一条由日志 + 指标可见），
+	// 终态且未 relay 时退回旧路径直接记 tool_result。
+	stored, relayErr := s.relayReport(j, reportFingerprint(p.ItemID, p), p.ItemID, p.Phase, p.Final, p.Text, p.Data, true)
+	if relayErr != nil {
+		s.logger.Printf("会话 %s：补报 %s 未写入调用账本（不阻塞交付）: %v", j.cid, p.ItemID, relayErr)
+	}
 	if p.Final {
 		j.final = true
 	}
 	where := s.deliverFollowUp(j, reportText(j, p))
-	if p.Final && strings.TrimSpace(p.Text) != "" {
+	if p.Final && !stored && strings.TrimSpace(p.Text) != "" {
 		if _, err := s.record(j.cid, j.boss, j.trace, j.taskID, kindToolResult, "tool", p.Text, map[string]any{
 			"tool": j.name, "call_id": j.callID, "item_id": p.ItemID, "phase": p.Phase,
 		}); err != nil {

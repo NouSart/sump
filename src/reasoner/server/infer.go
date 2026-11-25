@@ -210,7 +210,9 @@ func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCa
 	}
 	// 先登记待回执，再派发：远端后台补报可能抢在受理响应之前到达。
 	var pending *asyncJob
+	var provide protocol.Provide
 	if p, ok := s.provideOf(svc, action); ok && p.LongRunning {
+		provide = p
 		pending, err = s.beginAsync(svc, st, call)
 		if err != nil {
 			return "", err
@@ -220,6 +222,11 @@ func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCa
 	// spec §6.4：真正执行工具前先扣租约；扣不到就不执行（工具错误回给模型，不静默放行）。
 	if err := s.chargeBeforeTool(ctx, st.trace); err != nil {
 		return "", err
+	}
+	// R-030：扣到租约、确定要派发之后才开 call（租约失败不会派发，账本不该留 created）。
+	// 失败只退化为「没有账本对象」，派发继续；空 call_id 时后续补报全部跳过。
+	if pending != nil {
+		pending.memCallID = s.openToolCall(ctx, svc, action, st.trace, provide)
 	}
 	data, err := s.Call(ctx, svc, action, rawIn, st.trace)
 	if err != nil {
@@ -233,6 +240,9 @@ func (s *Server) runToolCall(ctx context.Context, st *taskState, call llm.ToolCa
 		if err := protocol.DecodeRaw(data, &receipt); err != nil || receipt.ItemID == "" || len(receipt.ItemID) > 512 {
 			return "", errors.New("异步受理回执无有效 item_id；执行结果未知")
 		}
+		// 受理回执先 relay（report_seq=1），再交付早到补报：账本里「已受理」必须排在
+		// 「进展」之前，否则早到的终态会把账本关掉、后续 accepted 变成非法转移。
+		s.relayAcceptance(pending, receipt.ItemID, rawToJSONText(data))
 		st.mu.Lock()
 		if job, ok := st.pending[call.ID]; ok {
 			job.async = true
