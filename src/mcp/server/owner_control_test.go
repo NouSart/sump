@@ -23,11 +23,11 @@ func TestOwnerStatusKnownUnknownAndTerminal(t *testing.T) {
 	s.importExecs.finished("h-done", protocol.OwnerExecDone)
 	s.importExecs.finished("h-failed", protocol.OwnerExecFailed)
 	s.importExecs.accepted("h-cancelled")
-	s.importExecs.cancelled("h-cancelled")
+	s.importExecs.cancelUnknown("h-cancelled")
 	s.importExecs.finished("h-unknown", protocol.OwnerExecUnknown)
 	// 取消已生效之后 worker 才落终态：本地等待已被撤销，不能被改写成 done。
 	s.importExecs.accepted("h-race")
-	s.importExecs.cancelled("h-race")
+	s.importExecs.cancelUnknown("h-race")
 	s.importExecs.finished("h-race", protocol.OwnerExecDone)
 
 	states, complete, err := s.OwnerStatus(context.Background(), []string{
@@ -43,9 +43,9 @@ func TestOwnerStatusKnownUnknownAndTerminal(t *testing.T) {
 		"h-running":   protocol.OwnerExecRunning,
 		"h-done":      protocol.OwnerExecDone,
 		"h-failed":    protocol.OwnerExecFailed,
-		"h-cancelled": protocol.OwnerExecCancelled,
+		"h-cancelled": protocol.OwnerExecUnknown,
 		"h-unknown":   protocol.OwnerExecUnknown,
-		"h-race":      protocol.OwnerExecCancelled,
+		"h-race":      protocol.OwnerExecUnknown,
 	}
 	if len(states) != len(want) {
 		t.Fatalf("states = %v, want %v", states, want)
@@ -109,7 +109,7 @@ func TestOwnerMethodsOverSPv2(t *testing.T) {
 }
 
 // TestOwnerControlCancelOnlyLocalWait：两条本地取消路径（owner_control / cancel_import）
-// 都只撤本地等待，回 cancelled + outcome_unknown，且 owner_status 能看到 cancelled。
+// 都只撤本地等待，回 unknown + outcome_unknown，且 owner_status 能看到 unknown。
 func TestOwnerControlCancelOnlyLocalWait(t *testing.T) {
 	s := startGateway(t, Config{}, nil, `{}`)
 	c := dialNativeMCP(t, s)
@@ -127,7 +127,7 @@ func TestOwnerControlCancelOnlyLocalWait(t *testing.T) {
 	if err != nil {
 		t.Fatalf("owner_control cancel 失败: %v", err)
 	}
-	if exec != protocol.OwnerExecCancelled || reason != importCancelReason {
+	if exec != protocol.OwnerExecUnknown || reason != importCancelReason {
 		t.Fatalf("cancel 回执 = (%q, %q), want (cancelled, outcome_unknown)", exec, reason)
 	}
 	if ownerCtx.Err() == nil {
@@ -161,8 +161,8 @@ func TestOwnerControlCancelOnlyLocalWait(t *testing.T) {
 		t.Fatalf("owner_status 调用失败: %v", err)
 	}
 	for _, id := range []string{"h-owner", "h-native"} {
-		if status.States[id] != protocol.OwnerExecCancelled {
-			t.Fatalf("取消后 states[%q] = %q, want cancelled（全部: %v）", id, status.States[id], status.States)
+		if status.States[id] != protocol.OwnerExecUnknown {
+			t.Fatalf("取消后 states[%q] = %q, want unknown（全部: %v）", id, status.States[id], status.States)
 		}
 	}
 }

@@ -10,8 +10,9 @@ package server
 //   - status：受理句柄 → 执行维。仍在本地观察 = running；本地观察结束 = done /
 //     failed / unknown（远端结果没有确认）/ cancelled（本地等待已被撤销）。终态只在
 //     保留窗口内可见，之后不再认识这个句柄；
-//   - cancel：复用 cancel_import 的本地取消路径，回 exec=cancelled +
+//   - cancel：复用 cancel_import 的本地取消路径，回 exec=unknown +
 //     reason=outcome_unknown——远端工具可能仍在执行，mcp 不声称能停掉它；
+//     返回 cancelled 等于声称远端已停，会让 memory 的取消确认误判，故用 unknown。
 //   - pause / resume：导入没有暂停 / 恢复路径，回 not_supported。
 //
 // recoveryComplete 恒 true：异步导入只有内存里的观察，进程重启即丢，启动后没有待恢复的
@@ -44,8 +45,9 @@ const (
 
 // importExecRecord 是一条导入受理句柄的执行维与最近更新时间。
 type importExecRecord struct {
-	exec    string
-	updated time.Time
+	exec      string
+	updated   time.Time
+	cancelled bool // 由 cancel 路径写入：worker 之后的终态不得覆盖
 }
 
 // importExecLedger 记账「受理句柄 → 执行维」，只做对账，不调度导入。
@@ -70,9 +72,19 @@ func (l *importExecLedger) finished(id, exec string) {
 	l.set(id, exec, false)
 }
 
-// cancelled 记录本地等待已被撤销（cancel_import / owner_control cancel 共用）。
-func (l *importExecLedger) cancelled(id string) {
-	l.set(id, protocol.OwnerExecCancelled, true)
+// cancelUnknown 记录本地等待已被撤销，但远端是否停止未知（不能记成 cancelled）。
+func (l *importExecLedger) cancelUnknown(id string) {
+	if id == "" {
+		return
+	}
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.byID[id]; !ok {
+		l.order = append(l.order, id)
+	}
+	l.byID[id] = importExecRecord{exec: protocol.OwnerExecUnknown, updated: now, cancelled: true}
+	l.pruneLocked(now)
 }
 
 // exec 取一条受理记录的当前执行维；终态过期后视为不认识。
@@ -92,7 +104,7 @@ func (l *importExecLedger) set(id, exec string, forced bool) {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if old, ok := l.byID[id]; ok && !forced && old.exec == protocol.OwnerExecCancelled {
+	if old, ok := l.byID[id]; ok && !forced && old.cancelled {
 		return // 取消已生效：worker 之后的终态不能把「本地等待已撤销」改回去。
 	}
 	if _, ok := l.byID[id]; !ok {
@@ -196,8 +208,8 @@ func (s *Server) cancelImportOwner(id, exec string) (string, string, error) {
 		return exec, importEndedReason(exec), nil
 	}
 	if s.asyncImports.cancelByHandle(id) {
-		s.importExecs.cancelled(id)
-		return protocol.OwnerExecCancelled, importCancelReason, nil
+		s.importExecs.cancelUnknown(id)
+		return protocol.OwnerExecUnknown, importCancelReason, nil
 	}
 	// 竞态：本地观察刚好在收尾（cancel 已置空但终态还没记账）。以账本里的终态为准；
 	// 仍是 running 就如实回「未确认」，不报成功。

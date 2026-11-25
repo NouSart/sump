@@ -195,7 +195,7 @@ func (s *Server) cancelImport(body []byte, caller string) (any, error) {
 	if s.asyncImports.cancelOwned(id, caller) {
 		status = "observation_cancelled"
 		// 同一条本地取消路径：owner_status 也要能看见「本地等待已撤销」。
-		s.importExecs.cancelled(id)
+		s.importExecs.cancelUnknown(id)
 	}
 	return map[string]any{"item_id": id, "status": status, "remote_outcome": "unknown"}, nil
 }
