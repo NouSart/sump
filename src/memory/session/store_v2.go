@@ -2,7 +2,8 @@ package session
 
 // store 的 v2 路径：client_item_id 幂等与补报 receipt 接收（S-001 §3.0 / §4.3 / §5.4）。
 //
-// 旧路径（不带 client_item_id）完全不变，见 actions.go 的 store；这里只处理新契约：
+// 唯一路径（R-026 P2c 删除了旧分叉）：actions.go 的 store 解码后直接进这里；
+// client_item_id 可空（纯追加语义），但 work 必填——
 //
 //  1. work 必填——消息归属执行单元，task_id 不能冒充 work；
 //  2. payload_hash = sha256(JCS(规范化载荷))，覆盖 kind / role / content / meta /
@@ -12,9 +13,9 @@ package session
 //  4. 同键同 hash / 同 report_id 同 hash = 重放；同键不同 hash / 换 ID 占同一
 //     (call_id, report_seq) = conflict；任何冲突都不得留下部分写入。
 //
-// 授权（R-023 P4）：走 v2 路径的每个请求都先在 authorizeTargetWork 里校验
+// 授权（R-023 P4）：每个请求都先在 authorizeTargetWork 里校验
 // 「帧头 work == 载荷 work + 身份属于该 work」（owner / runtime 另有跨 work 通道），
-// 匿名 from.id 一律拒绝。旧路径（ClientItemID 为空）不经过这里，行为不变。
+// 匿名 from.id 一律拒绝。
 
 import (
 	"context"
