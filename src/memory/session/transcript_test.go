@@ -70,16 +70,16 @@ func newTranscriptWork(t *testing.T, s *Server, st *store.Store, workID string) 
 // 成功调用是只读的（快照数、触发状态都不动），重复调用结果一致。
 func TestTranscriptRendersSnapshotInOrder(t *testing.T) {
 	const workID = "w-transcript"
-	s, st, taskID := newContextV2TestServer(t, workID)
+	s, st, taskID := newContextBaseTestServer(t, workID)
 
-	trigger := insertContextV2Message(t, st, workID, taskID, "user", "user", "问题一", "", 1)
-	insertContextV2Message(t, st, workID, taskID, "assistant", "assistant", "答复一", "", 2)
-	insertContextV2Message(t, st, workID, taskID, "assistant", "tool_call", "pwd",
+	trigger := insertContextBaseMessage(t, st, workID, taskID, "user", "user", "问题一", "", 1)
+	insertContextBaseMessage(t, st, workID, taskID, "assistant", "assistant", "答复一", "", 2)
+	insertContextBaseMessage(t, st, workID, taskID, "assistant", "tool_call", "pwd",
 		`{"tool":"shell__run","call_id":"call-1","arguments":"{\"command\":\"pwd\"}"}`, 3)
-	insertContextV2Message(t, st, workID, taskID, "tool", "tool_result", "工作目录",
+	insertContextBaseMessage(t, st, workID, taskID, "tool", "tool_result", "工作目录",
 		`{"call_id":"call-1"}`, 4)
 
-	snap, err := callContextV2(t, s, protocol.ContextRequest{
+	snap, err := callContextBase(t, s, protocol.ContextRequest{
 		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: trigger},
 	})
 	if err != nil {
@@ -133,18 +133,18 @@ func TestTranscriptRendersSnapshotInOrder(t *testing.T) {
 // 同一 work 有两份快照时，要的是旧的那份就不能给最新的。
 func TestTranscriptUsesRequestedSnapshotNotLatest(t *testing.T) {
 	const workID = "w-transcript-two-snapshots"
-	s, st, taskID := newContextV2TestServer(t, workID)
+	s, st, taskID := newContextBaseTestServer(t, workID)
 
-	firstTrigger := insertContextV2Message(t, st, workID, taskID, "user", "user", "第一轮问题", "", 1)
-	first, err := callContextV2(t, s, protocol.ContextRequest{
+	firstTrigger := insertContextBaseMessage(t, st, workID, taskID, "user", "user", "第一轮问题", "", 1)
+	first, err := callContextBase(t, s, protocol.ContextRequest{
 		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: firstTrigger},
 	})
 	if err != nil {
 		t.Fatalf("第一份快照失败: %v", err)
 	}
 	// 第二轮：新增消息后再组装，第二份快照包含更多历史。
-	secondTrigger := insertContextV2Message(t, st, workID, taskID, "user", "user", "第二轮问题", "", 2)
-	second, err := callContextV2(t, s, protocol.ContextRequest{
+	secondTrigger := insertContextBaseMessage(t, st, workID, taskID, "user", "user", "第二轮问题", "", 2)
+	second, err := callContextBase(t, s, protocol.ContextRequest{
 		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: secondTrigger},
 	})
 	if err != nil {
@@ -226,10 +226,10 @@ func TestTranscriptBudgetTruncation(t *testing.T) {
 // TestTranscriptBudgetWiring 预算经 handler 生效：输出字符数不超预算，且明确说被截了。
 func TestTranscriptBudgetWiring(t *testing.T) {
 	const workID = "w-transcript-budget"
-	s, st, taskID := newContextV2TestServer(t, workID)
-	trigger := insertContextV2Message(t, st, workID, taskID, "user", "user", "问题一", "", 1)
-	insertContextV2Message(t, st, workID, taskID, "assistant", "assistant", "答复一", "", 2)
-	snap, err := callContextV2(t, s, protocol.ContextRequest{
+	s, st, taskID := newContextBaseTestServer(t, workID)
+	trigger := insertContextBaseMessage(t, st, workID, taskID, "user", "user", "问题一", "", 1)
+	insertContextBaseMessage(t, st, workID, taskID, "assistant", "assistant", "答复一", "", 2)
+	snap, err := callContextBase(t, s, protocol.ContextRequest{
 		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: trigger},
 	})
 	if err != nil {
@@ -255,11 +255,11 @@ func TestTranscriptBudgetWiring(t *testing.T) {
 // 帧头 work / 身份不匹配别人的 work 是 permission_denied；拒绝不产生副作用。
 func TestTranscriptRejectsForeignSnapshot(t *testing.T) {
 	const ownWork, otherWork = "w-transcript-own", "w-transcript-other"
-	s, st, taskID := newContextV2TestServer(t, ownWork)
+	s, st, taskID := newContextBaseTestServer(t, ownWork)
 	newTranscriptWork(t, s, st, otherWork)
 
-	otherTrigger := insertContextV2Message(t, st, otherWork, taskID, "user", "user", "别人的问题", "", 1)
-	otherSnap, err := callContextV2(t, s, protocol.ContextRequest{
+	otherTrigger := insertContextBaseMessage(t, st, otherWork, taskID, "user", "user", "别人的问题", "", 1)
+	otherSnap, err := callContextBase(t, s, protocol.ContextRequest{
 		Work: otherWork, Trigger: protocol.Trigger{Kind: "user", Item: otherTrigger},
 	})
 	if err != nil {
@@ -301,9 +301,9 @@ func TestTranscriptRejectsForeignSnapshot(t *testing.T) {
 // TestTranscriptNotFoundAndExpired 快照缺失 / 过期 / work 不存在都回 not_found，且不得静默重建。
 func TestTranscriptNotFoundAndExpired(t *testing.T) {
 	const workID = "w-transcript-missing"
-	s, st, taskID := newContextV2TestServer(t, workID)
-	trigger := insertContextV2Message(t, st, workID, taskID, "user", "user", "触发", "", 1)
-	snap, err := callContextV2(t, s, protocol.ContextRequest{
+	s, st, taskID := newContextBaseTestServer(t, workID)
+	trigger := insertContextBaseMessage(t, st, workID, taskID, "user", "user", "触发", "", 1)
+	snap, err := callContextBase(t, s, protocol.ContextRequest{
 		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: trigger},
 	})
 	if err != nil {
@@ -339,7 +339,7 @@ func TestTranscriptNotFoundAndExpired(t *testing.T) {
 // TestTranscriptRejectsBadRequest body / work / snapshot_id / budget 的非法输入 → invalid_argument。
 func TestTranscriptRejectsBadRequest(t *testing.T) {
 	const workID = "w-transcript-bad"
-	s, st, _ := newContextV2TestServer(t, workID)
+	s, st, _ := newContextBaseTestServer(t, workID)
 	ctx := context.Background()
 	good := caller{work: workID, from: spv2.AgentRef("reasoner")}
 
@@ -374,9 +374,9 @@ func TestTranscriptRejectsBadRequest(t *testing.T) {
 // TestTranscriptCorruptPayloadIsInternal 解压 / 解码失败回 internal：坏数据不能变成空文本。
 func TestTranscriptCorruptPayloadIsInternal(t *testing.T) {
 	const workID = "w-transcript-corrupt"
-	s, st, taskID := newContextV2TestServer(t, workID)
-	trigger := insertContextV2Message(t, st, workID, taskID, "user", "user", "触发", "", 1)
-	snap, err := callContextV2(t, s, protocol.ContextRequest{
+	s, st, taskID := newContextBaseTestServer(t, workID)
+	trigger := insertContextBaseMessage(t, st, workID, taskID, "user", "user", "触发", "", 1)
+	snap, err := callContextBase(t, s, protocol.ContextRequest{
 		Work: workID, Trigger: protocol.Trigger{Kind: "user", Item: trigger},
 	})
 	if err != nil {

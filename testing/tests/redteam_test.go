@@ -336,20 +336,18 @@ func startRedTeamMemory(t *testing.T) string {
 	return memURL
 }
 
-// contextWork 用固定 work id 从 reasoner 身份要一次 context（memory 会 ensure work 行）。
+// contextWork 用固定 work id 从 reasoner 身份登记 work / 任务（work_open）。
 func contextWork(t *testing.T, memURL, cid, workID string) {
 	t.Helper()
 	c := dialSPV2(t, memURL)
 	ctx := mustCtx(t)
-	call, err := spv2.NewCall(workID, spv2.ServiceRef("reasoner"), spv2.ServiceRef("memory"), "context", protocol.ContextPayload{
-		Conversation: cid,
-		Boss:         "e2e",
-		Messages:     []protocol.Message{{Role: "user", Content: "红队"}},
+	call, err := spv2.NewCall(workID, spv2.ServiceRef("reasoner"), spv2.ServiceRef("memory"), "work_open", protocol.WorkOpenPayload{
+		Work: workID, ConversationID: cid, TaskName: "红队", Boss: "e2e",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.Call(ctx, call); err != nil {
-		t.Fatalf("context 建 work 失败: %v", err)
+		t.Fatalf("work_open 建 work 失败: %v", err)
 	}
 }

@@ -18,12 +18,7 @@ func TestA2AQueueAndLifecycleViaNative(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
-	payload := protocol.ContextPayload{
-		Conversation: "conv-a2a",
-		Boss:         "stub-boss",
-		Messages:     []protocol.Message{{Role: "user", Content: "跑一个 A2A 任务"}},
-	}
-	caller.contextUntilReady(t, srv.WsURL(), payload)
+	caller.openWork(t, srv.WsURL(), "trace-test", "conv-a2a", "跑一个 A2A 任务")
 
 	// 入队：to 是 reasoner 自己，才能被自己 claim。
 	rp := caller.call(t, srv.WsURL(), "message_post", map[string]any{
@@ -121,11 +116,7 @@ func TestA2AQueueDepthMetric(t *testing.T) {
 	sc := startStubCenter(t)
 	srv := startMemory(t, sc.URL(), 12)
 	caller := startStubCaller(t, sc.URL())
-	payload := protocol.ContextPayload{
-		Conversation: "conv-depth", Boss: "stub-boss",
-		Messages: []protocol.Message{{Role: "user", Content: "队列深度"}},
-	}
-	caller.contextUntilReady(t, srv.WsURL(), payload)
+	caller.openWork(t, srv.WsURL(), "trace-test", "conv-depth", "队列深度")
 	if rp := caller.call(t, srv.WsURL(), "message_post", map[string]any{
 		"work": "trace-test", "to": map[string]any{"kind": "agent", "id": "reasoner"},
 		"body": "depth",

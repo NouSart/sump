@@ -19,78 +19,15 @@ type callMeta struct {
 	trace string // 链路 id（= frame.work，work 账本的主键）
 }
 
-// store 记一条会话记录（对话消息幂等：与上一条完全相同时跳过）。
-// Kind 为空按 Role 推断；新类型（reasoning/tool_call/tool_result）不去重也不进 LLM 上下文。
-// 记录必须归属某个任务：调用方没给就归到当前进行中的任务（没有就现建一个）。
-//
-// 分派只看载荷里的 client_item_id：为空 = 旧调用方，走下面逐行不变的旧路径
-// （不新增身份校验，保持 reasoner 兼容）；非空 = v2 契约，交给 storeV2 的幂等单事务
-// （帧头 work / from 与载荷 work 的三重校验在这里之前完成）。
+// store 记一条会话记录：唯一路径是 storeV2 的幂等单事务（R-026 P2c 删除旧分叉）。
+// 载荷必须带 work；work / task 由 work_open 事先登记，这里不做 EnsureTask。
+// client_item_id 是幂等键（可空 = 纯追加）；帧头 work / from 与载荷 work 的授权在 storeV2 内。
 func (s *Server) store(body []byte, c caller) (any, error) {
 	var p protocol.StorePayload
 	if err := protocol.DecodeRaw(body, &p); err != nil {
 		return nil, err
 	}
-	if p.ClientItemID != "" {
-		return s.storeV2(&p, c)
-	}
-	if strings.TrimSpace(p.Content) == "" {
-		return map[string]any{}, nil
-	}
-	cid := p.ConversationID
-	if cid == "" {
-		cid = "default"
-	}
-	taskID := p.TaskID
-	if taskID == "" {
-		if p.Kind == "" || p.Kind == "user" {
-			// 用户消息可以开新任务（"没有任务必须创建"）。
-			// 入口服务给了任务名就用它：正文可能带来源标注前缀（QQ 的群聊/私聊标签），
-			// 从第一行推会推出一串标签，而任务名要显示在界面上。
-			name := protocol.ClampTaskName(p.TaskName)
-			if name == "" {
-				name = taskNameFrom(p.Content)
-			}
-			task, err := s.cfg.Store.EnsureTask(cid, name)
-			if err != nil {
-				return nil, fmt.Errorf("任务解析失败: %w", err)
-			}
-			taskID = task.ID
-		} else if t, ok, err := s.cfg.Store.LatestTask(cid); err == nil && ok {
-			// 迟到的事件（答复 / 轨迹）没有任务归属：挂到最近那个任务上，绝不拿它当任务名新建。
-			taskID = t.ID
-		}
-	}
-	if err := s.cfg.Store.Record(cid, p.Role, p.Content, p.Kind, p.Meta, p.Seq, taskID); err != nil {
-		return nil, fmt.Errorf("落库失败: %w", err)
-	}
-	// 用户说的话是长期记忆的候选；先在私有整理池留一份原文，等 experience 分类。
-	// 助手答复 / 工具轨迹不进来：它们可重算，且容易把模型幻觉记成事实。
-	if p.Role == "user" && (p.Kind == "" || p.Kind == "user") {
-		if _, err := s.cfg.Store.Stage(cid, p.Role, p.Content); err != nil {
-			s.logger.Printf("记忆候选入池失败（不影响本轮）: %v", err)
-		}
-	}
-	// 会话的入口只在第一次写时填上（Record 已保证会话行存在，这里只补入口，幂等）。
-	// 用 boss 而不是 from：记录是 reasoner 代写的，真正"从哪扇门进来"的是它替谁办事。
-	if err := s.cfg.Store.EnsureConversation(cid, "", p.Boss); err != nil {
-		s.logger.Printf("记录会话入口失败: %v", err)
-	}
-	if err := s.cfg.Store.TouchTask(taskID); err != nil {
-		s.logger.Printf("刷新任务活跃时间失败: %v", err)
-	}
-	return map[string]any{}, nil
-}
-
-// taskNameFrom 从一条用户消息里取任务名：第一行、压掉空白、截到 24 个字。
-// 模型之后可以用 task_rename 把它改准。
-func taskNameFrom(text string) string {
-	line := strings.TrimSpace(strings.SplitN(text, "\n", 2)[0])
-	name := protocol.ClampTaskName(line)
-	if name == "" {
-		return "未命名任务"
-	}
-	return name
+	return s.storeV2(&p, c)
 }
 
 // history 把某会话最近的记录原样交还（界面回填用：不做记忆组装、不碰长期记忆、不改上下文）。
@@ -315,16 +252,6 @@ func (s *Server) taskList(body []byte) (any, error) {
 		return nil, fmt.Errorf("查询任务列表失败: %w", err)
 	}
 	return protocol.TaskListResult{Tasks: tasks}, nil
-}
-
-// recallQuery 取任务上下文里最后一条用户消息文本——用来推任务名（不用于检索）。
-func recallQuery(messages []protocol.Message) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" && strings.TrimSpace(messages[i].Content) != "" {
-			return messages[i].Content
-		}
-	}
-	return ""
 }
 
 // metaOfCall 把 SPv2 帧翻成动作需要的调用元信息。

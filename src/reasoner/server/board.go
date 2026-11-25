@@ -64,11 +64,12 @@ type taskState struct {
 	lastError  string                // 上一轮 LLM 失败的原文（清空即可重试；空 = 没有待重试的失败）
 	stream     *streamSink           // 非 nil = 这个任务在给调用方做 token 级流式答复
 
-	taskID      string // 这次工作所属的任务（记忆服务在 recall 时确定）
-	taskName    string // 任务名（写进系统提示，也是历史列表的标题）
-	judged      bool   // 本轮是否已用 task_status 判定过完成与否
-	judgedDone  bool   // 判定结果：true = 任务完成
-	judgedTitle string // 判定时顺带修正的任务名（空 = 不改）
+	taskID      string           // 这次工作所属的任务（work_open 登记时确定）
+	taskName    string           // 任务名（历史列表的标题）
+	trigger     protocol.Trigger // 本轮 context 的触发源（收尾时交给 trigger_complete）
+	judged      bool             // 本轮是否已用 task_status 判定过完成与否
+	judgedDone  bool             // 判定结果：true = 任务完成
+	judgedTitle string           // 判定时顺带修正的任务名（空 = 不改）
 	// judgedSilent：这一轮的答复不发出去（群里判断不该插话）。与 judgedDone 无关，
 	// 每次判定重设；派发新工具时和 judged 一起作废（新进展要重新决定说不说）。
 	judgedSilent bool
@@ -129,6 +130,24 @@ func (s *Server) boardClose(st *taskState) {
 		delete(s.board, st.cid)
 	}
 	s.boardMu.Unlock()
+}
+
+// completeTrigger 在模型输出与后续动作安全落库后标记本轮触发完成（S-001 §3.1.1）。
+// trigger 与建链时一致（用户消息 store 回执的 item_id）；失败只记日志，不把"没完成"
+// 伪装成完成——重取 context 仍会走 assembled，而不是 completed。
+func (s *Server) completeTrigger(st *taskState) {
+	st.mu.Lock()
+	trigger, trace := st.trigger, st.trace
+	st.mu.Unlock()
+	if trigger.Kind == "" || trigger.Item == "" {
+		return // 补报轮 / 无 context 触发：没有可收口的一轮
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := s.Call(ctx, s.memoryName(), "trigger_complete",
+		protocol.TriggerCompletePayload{Work: trace, Trigger: trigger}, trace); err != nil {
+		s.logger.Printf("会话 %s：trigger_complete(%s/%s) 失败: %v", st.cid, trigger.Kind, trigger.Item, err)
+	}
 }
 
 // boardKick 若有未处理的进展且当前没有轮在跑，开一轮（防轮次重入、防丢唤醒）。
@@ -217,7 +236,9 @@ func (s *Server) boardRound(st *taskState) {
 	}
 
 	// 思考先落库再派发：seq 保证「想了什么 → 跑了什么」的先后（给人看的历史）。
-	s.record(st.cid, st.boss, st.trace, st.taskID, kindReasoning, "assistant", resp.Reasoning, nil)
+	if _, err := s.record(st.cid, st.boss, st.trace, st.taskID, kindReasoning, "assistant", resp.Reasoning, nil); err != nil {
+		s.logger.Printf("会话 %s：思考轨迹落库失败（不阻塞推理）: %v", st.cid, err)
+	}
 
 	switch {
 	case len(resp.ToolCalls) > 0:
@@ -279,7 +300,9 @@ func (s *Server) dispatchToolCalls(st *taskState, resp llm.Message) {
 			continue
 		}
 		text, meta := toolCallTrace(call)
-		s.record(cid, boss, trace, taskID, kindToolCall, "assistant", text, meta)
+		if _, err := s.record(cid, boss, trace, taskID, kindToolCall, "assistant", text, meta); err != nil {
+			s.logger.Printf("会话 %s：工具调用轨迹落库失败（不阻塞执行）: %v", cid, err)
+		}
 	}
 
 	for _, call := range resp.ToolCalls {
@@ -394,7 +417,10 @@ func (s *Server) boardResult(st *taskState, call llm.ToolCall, content string) {
 	cid, boss, trace, taskID := st.cid, st.boss, st.trace, st.taskID
 	st.mu.Unlock()
 	if !job.async {
-		s.record(cid, boss, trace, taskID, kindToolResult, "tool", content, map[string]any{"tool": call.Function.Name, "call_id": call.ID})
+		if _, err := s.record(cid, boss, trace, taskID, kindToolResult, "tool", content,
+			map[string]any{"tool": call.Function.Name, "call_id": call.ID}); err != nil {
+			s.logger.Printf("会话 %s：工具结果落库失败（不阻塞下一轮）: %v", cid, err)
+		}
 	}
 	s.logger.Printf("会话 %s：工具 %s 结果入账（还剩 %d 个在跑）", st.cid, call.Function.Name, remaining)
 	s.boardKick(st)
@@ -457,8 +483,12 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 		}
 		// 静默也走到了收尾：判定在这里才落库（done → 完结；否则只改名）。
 		s.commitJudgement(st, st.trace)
-		s.record(st.cid, st.boss, st.trace, st.taskID, kindReasoning,
-			"assistant", "（静默：这一轮没有对任何人发出去）\n"+text, nil)
+		if _, err := s.record(st.cid, st.boss, st.trace, st.taskID, kindReasoning,
+			"assistant", "（静默：这一轮没有对任何人发出去）\n"+text, nil); err != nil {
+			s.logger.Printf("会话 %s：静默文本落库失败，本轮 trigger 不标记完成: %v", st.cid, err)
+		} else {
+			s.completeTrigger(st)
+		}
 		s.boardClose(st)
 		s.logger.Printf("会话 %s：静默收尾（判定为不必发送）", st.cid)
 		return
@@ -494,9 +524,14 @@ func (s *Server) tryClose(st *taskState, gen0 int64, text string) {
 	replaced = st.closed
 	st.mu.Unlock()
 
-	s.Fire(s.memoryName(), "store", protocol.StorePayload{
-		ConversationID: st.cid, Boss: st.boss, Role: "assistant", Content: text, Kind: "assistant", Seq: s.nextSeq(), TaskID: st.taskID,
-	}, st.trace)
+	// assistant 输出同步落库：拿到回执才说明"模型输出已安全落库"，之后才能标记 trigger 完成。
+	// 落库失败时不调 trigger_complete（本轮仍未收口，重取 context 会走 assembled 而不是 completed），
+	// 错误在日志里可见；答复已经送达，不能撤回。
+	if _, err := s.record(st.cid, st.boss, st.trace, st.taskID, "assistant", "assistant", text, nil); err != nil {
+		s.logger.Printf("会话 %s：assistant 落库失败，本轮 trigger 不标记完成: %v", st.cid, err)
+	} else {
+		s.completeTrigger(st)
+	}
 	// 答复已经送达：这一轮的判定在这里落库（done → 完结；否则只改名）。
 	// 交付失败时不会走到这里——任务保持进行中，下一次事件/重试再说。
 	s.commitJudgement(st, st.trace)

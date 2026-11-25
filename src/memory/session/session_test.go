@@ -74,12 +74,27 @@ func TestStoreThenHistory(t *testing.T) {
 	srv, _ := startService(t)
 	c := dial(t, srv.WsURL())
 
-	if _, err := call(t, c, spv2.ServiceRef("reasoner"), "trace-store", "store", protocol.StorePayload{
-		ConversationID: "c-1", Role: "user", Content: "把这一步记下来",
+	body, err := call(t, c, spv2.ServiceRef("reasoner"), "w-store", "work_open", protocol.WorkOpenPayload{
+		Work: "w-store", ConversationID: "c-1", TaskName: "记录回路",
+	})
+	if err != nil {
+		t.Fatalf("work_open 失败: %v", err)
+	}
+	var opened protocol.WorkOpenResult
+	if err := protocol.DecodeRaw(body, &opened); err != nil {
+		t.Fatal(err)
+	}
+	if opened.TaskID == "" {
+		t.Fatal("work_open 应返回 task_id")
+	}
+	// 故意不传 task_id：work_open 已把 work 挂到任务，store 应从 works.task 派生。
+	if _, err := call(t, c, spv2.ServiceRef("reasoner"), "w-store", "store", protocol.StorePayload{
+		ConversationID: "c-1", Work: "w-store", ClientItemID: "reasoner:t1",
+		Role: "user", Content: "把这一步记下来",
 	}); err != nil {
 		t.Fatalf("store 失败: %v", err)
 	}
-	body, err := call(t, c, spv2.ServiceRef("portal"), "trace-history", "history", protocol.HistoryPayload{ConversationID: "c-1"})
+	body, err = call(t, c, spv2.ServiceRef("portal"), "trace-history", "history", protocol.HistoryPayload{ConversationID: "c-1"})
 	if err != nil {
 		t.Fatalf("history 失败: %v", err)
 	}
@@ -95,52 +110,75 @@ func TestStoreThenHistory(t *testing.T) {
 	}
 }
 
-// TestContextBase 钉住 context_base 的两条路径：正常取原材料（任务 + work + 历史）
-// 与越权（别人登记的 work 不能拿来要上下文）。
+// TestContextBase 钉住 context_base 的两条路径：正常组装（work_open 登记的任务 + work + 历史）
+// 与越权（别人的 work 不能拿来要上下文）。
 func TestContextBase(t *testing.T) {
 	srv, _ := startService(t)
 	c := dial(t, srv.WsURL())
-	payload := protocol.ContextPayload{
-		Conversation: "c-ctx",
-		Messages:     []protocol.Message{{Role: "user", Content: "把这件事做完"}},
+
+	var opened protocol.WorkOpenResult
+	body, err := call(t, c, spv2.AgentRef("agent-a"), "w-ctx", "work_open", protocol.WorkOpenPayload{
+		Work: "w-ctx", ConversationID: "c-ctx", TaskName: "把这件事做完",
+	})
+	if err != nil {
+		t.Fatalf("work_open 失败: %v", err)
+	}
+	if err := protocol.DecodeRaw(body, &opened); err != nil {
+		t.Fatal(err)
+	}
+	var stored protocol.StoreResult
+	body, err = call(t, c, spv2.AgentRef("agent-a"), "w-ctx", "store", protocol.StorePayload{
+		ConversationID: "c-ctx", Work: "w-ctx", ClientItemID: "agent-a:t1",
+		Role: "user", Content: "把这件事做完",
+	})
+	if err != nil {
+		t.Fatalf("store 失败: %v", err)
+	}
+	if err := protocol.DecodeRaw(body, &stored); err != nil {
+		t.Fatal(err)
 	}
 
-	body, err := call(t, c, spv2.AgentRef("agent-a"), "w-ctx", "context_base", payload)
+	req := protocol.ContextRequest{
+		Work: "w-ctx", Trigger: protocol.Trigger{Kind: "user", Item: stored.ItemID},
+	}
+	body, err = call(t, c, spv2.AgentRef("agent-a"), "w-ctx", "context_base", req)
 	if err != nil {
 		t.Fatalf("context_base 正常路径失败: %v", err)
 	}
-	var res contextBaseResult
+	var res protocol.ContextResponse
 	if err := protocol.DecodeRaw(body, &res); err != nil {
 		t.Fatal(err)
 	}
-	if res.Task.ConversationID != "c-ctx" || res.Task.Name != "把这件事做完" {
-		t.Fatalf("任务应由第一条用户消息就地建出: %+v", res.Task)
+	if res.Task.ConversationID != "c-ctx" || res.Task.Name != "把这件事做完" || res.Task.ID != opened.TaskID {
+		t.Fatalf("任务投影不对: %+v（work_open 回 %q）", res.Task, opened.TaskID)
 	}
-	if res.Work.ID != "w-ctx" || res.Work.Agent.ID != "agent-a" {
+	if res.Work.ID != "w-ctx" || res.Work.Agent != "agent-a" {
 		t.Fatalf("work 应以调用方为 agent 登记: %+v", res.Work)
+	}
+	if len(res.Messages) == 0 || res.TriggerState != "assembled" {
+		t.Fatalf("首次组装回执不对: %+v", res)
 	}
 
 	// 换一个调用方用同一条 work：不是它的 agent/owner/entry，必须拒绝。
-	if _, err := call(t, c, spv2.AgentRef("agent-b"), "w-ctx", "context_base", payload); !spv2.IsCode(err, spv2.CodePermissionDenied) {
+	if _, err := call(t, c, spv2.AgentRef("agent-b"), "w-ctx", "context_base", req); !spv2.IsCode(err, spv2.CodePermissionDenied) {
 		t.Fatalf("越权应回 permission_denied，实际: %v", err)
 	}
 }
 
-// TestContextBaseLinksWorkTask 钉住 work → task 归属（R-023 P4.5）：
-// context_base 登记 work 之后，必须把刚解析出的任务写进 works.task——
-// context_v2 的 TaskIDOfWork 靠这一列找任务；不接线时 works.task 永远是空的。
-func TestContextBaseLinksWorkTask(t *testing.T) {
+// TestWorkOpenLinksWorkTask 钉住 work → task 归属（R-023 P4.5）：
+// work_open 登记 work 之后，必须把解析出的任务写进 works.task——
+// context_base 的 TaskIDOfWork 靠这一列找任务；不接线时 works.task 永远是空的。
+func TestWorkOpenLinksWorkTask(t *testing.T) {
 	srv, st := startService(t)
 	c := dial(t, srv.WsURL())
 
-	body, err := call(t, c, spv2.ServiceRef("reasoner"), "w-link", "context_base", protocol.ContextPayload{
-		Conversation: "c-link",
-		Messages:     []protocol.Message{{Role: "user", Content: "把归属接上"}},
+	body, err := call(t, c, spv2.ServiceRef("reasoner"), "w-link", "work_open", protocol.WorkOpenPayload{
+		Work: "w-link", ConversationID: "c-link", TaskName: "把归属接上",
 	})
 	if err != nil {
-		t.Fatalf("context_base 失败: %v", err)
+		t.Fatalf("work_open 失败: %v", err)
 	}
-	var res contextBaseResult
+	var res protocol.WorkOpenResult
 	if err := protocol.DecodeRaw(body, &res); err != nil {
 		t.Fatal(err)
 	}
@@ -148,13 +186,14 @@ func TestContextBaseLinksWorkTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取 works.task 失败: %v", err)
 	}
-	if res.Task.ID == "" || got != res.Task.ID {
-		t.Fatalf("context_base 后 works.task = %q，期望 %q", got, res.Task.ID)
+	if res.TaskID == "" || got != res.TaskID {
+		t.Fatalf("work_open 后 works.task = %q，期望 %q", got, res.TaskID)
 	}
 
 	// 没有任务时跳过关联：work 照样登记，works.task 保持空（不拿空 id 去报错）。
-	if err := srv.ensureContextWork(context.Background(),
-		callMeta{from: "reasoner", trace: "w-no-task"}, protocol.TaskContext{}, "", ""); err != nil {
+	if _, err := call(t, c, spv2.ServiceRef("reasoner"), "w-no-task", "work_open", protocol.WorkOpenPayload{
+		Work: "w-no-task",
+	}); err != nil {
 		t.Fatalf("无任务登记 work 失败: %v", err)
 	}
 	if got, err := st.TaskIDOfWork(context.Background(), "w-no-task"); err != nil || got != "" {
@@ -230,7 +269,7 @@ func TestCardOnlySessionDomain(t *testing.T) {
 		"store", "history", "conversation_list", "conversation_rename",
 		"conversation_open", "conversation_archive",
 		"task_current", "task_open", "task_finish", "task_resume", "task_rename", "task_list",
-		"context_v2", "trigger_complete", "transcript",
+		"work_open", "trigger_complete", "transcript",
 		// v2 调用账本与常驻目录（R-023 P3）
 		"call_open", "call_control", "call_status", "resident_list",
 		// 内部 method（注册但不进 provides）

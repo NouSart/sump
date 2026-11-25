@@ -1,5 +1,6 @@
-// Package compose 是记忆块拼装（门面私有）：把会话历史与经验四节拼成消息链。
-// 它不属于共享库——experience 只负责产生节，不负责插入位置与裁剪。
+// Package compose 是记忆块拼装（门面私有）：把经验四节拼成一条 system 记忆块，
+// 并把它插进 session 返回的基座消息链。它不属于共享库——experience 只负责产生节，
+// 不负责插入位置。
 package compose
 
 import (
@@ -10,43 +11,6 @@ import (
 
 // MemoryPrefix 是记忆消息的内容前缀（用于识别并替换自己的旧注入）。
 const MemoryPrefix = "【记忆】"
-
-// ConversationTail 提取任务上下文尾部的对话消息（user/assistant 文本），
-// 遇到第一条 system（system prompt 或旧记忆块）即停——那是任务链的边界。
-func ConversationTail(messages []protocol.Message) []protocol.Message {
-	var tail []protocol.Message
-	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
-		if m.Role == "system" {
-			break
-		}
-		if isDialogText(m) {
-			tail = append(tail, m)
-		}
-	}
-	for i, j := 0, len(tail)-1; i < j; i, j = i+1, j-1 {
-		tail[i], tail[j] = tail[j], tail[i]
-	}
-	return tail
-}
-
-func isDialogText(m protocol.Message) bool {
-	return (m.Role == "user" || m.Role == "assistant") &&
-		strings.TrimSpace(m.Content) != "" && len(m.ToolCalls) == 0
-}
-
-// TrimOverlap 从 history 尾部裁去与 tail 尾部逐条相同（role+content）的部分。
-func TrimOverlap(history, tail []protocol.Message) []protocol.Message {
-	i, j := len(history)-1, len(tail)-1
-	for i >= 0 && j >= 0 {
-		if history[i].Role != tail[j].Role || history[i].Content != tail[j].Content {
-			break
-		}
-		i--
-		j--
-	}
-	return history[:i+1]
-}
 
 // BuildText 把历史消息拼成“用户: … / 助手: …”的记忆文本。
 func BuildText(history []protocol.Message) string {
@@ -66,7 +30,8 @@ func BuildText(history []protocol.Message) string {
 	return strings.TrimSpace(b.String())
 }
 
-// BuildMemory 组装记忆文本：最近对话 + 核心记忆 + 相关记忆 + 经验线头 + 其他会话。
+// BuildMemory 组装记忆文本：最近对话（可选）+ 核心记忆 + 相关记忆 + 经验线头 + 其他会话。
+// 切换后基座消息链里已经带着历史，门面传 nil history，只拼 experience 四节。
 func BuildMemory(history []protocol.Message, core, relevant, experience, others []string) string {
 	var sections []string
 	if text := BuildText(history); text != "" {
@@ -92,25 +57,26 @@ func BuildMemory(history []protocol.Message, core, relevant, experience, others 
 }
 
 // Inject 将记忆文本注入消息链：替换已有记忆块，否则插到第一条 system 之后。
-func Inject(messages []protocol.Message, memoryText string) []protocol.Message {
-	out := make([]protocol.Message, 0, len(messages)+1)
+// 入参 / 出参都是 session 的基座投影（LLMMessage），不经过旧 Message 形状。
+func Inject(messages []protocol.LLMMessage, memoryText string) []protocol.LLMMessage {
+	out := make([]protocol.LLMMessage, 0, len(messages)+1)
 	placed := false
 	for _, m := range messages {
 		if m.Role == "system" && strings.HasPrefix(m.Content, MemoryPrefix) {
 			if memoryText != "" && !placed {
-				out = append(out, protocol.Message{Role: "system", Content: MemoryPrefix + "\n" + memoryText})
+				out = append(out, protocol.LLMMessage{Role: "system", Content: MemoryPrefix + "\n" + memoryText})
 				placed = true
 			}
 			continue
 		}
 		out = append(out, m)
 		if memoryText != "" && !placed && m.Role == "system" {
-			out = append(out, protocol.Message{Role: "system", Content: MemoryPrefix + "\n" + memoryText})
+			out = append(out, protocol.LLMMessage{Role: "system", Content: MemoryPrefix + "\n" + memoryText})
 			placed = true
 		}
 	}
 	if memoryText != "" && !placed {
-		out = append([]protocol.Message{{Role: "system", Content: MemoryPrefix + "\n" + memoryText}}, out...)
+		out = append([]protocol.LLMMessage{{Role: "system", Content: MemoryPrefix + "\n" + memoryText}}, out...)
 	}
 	return out
 }

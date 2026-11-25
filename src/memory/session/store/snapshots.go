@@ -269,7 +269,7 @@ func parseSnapshotTime(v string) (time.Time, error) {
 	return time.Parse(time.RFC3339, v)
 }
 
-// RecentMessagesByWork 取某 work 的最近消息（按 seq 升序返回），供 context_v2 组装。
+// RecentMessagesByWork 取某 work 的最近消息（按 seq 升序返回），供 context_base 组装。
 //
 // 归属规则（S-001 §4.2 / §5.2）：只取 work_id = work 的消息。不按 task 兜底
 // `work_id` 为空字符串的老记录（R-014 T4）：那条路会把别的 work 的历史混进来。

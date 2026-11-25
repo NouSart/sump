@@ -15,7 +15,7 @@ import (
 
 // nativeActions 是 server 注册的全部原生动作（顺序无关）。
 var nativeActions = []string{
-	"context", "context_v2", "trigger_complete", "transcript",
+	"context", "work_open", "trigger_complete", "transcript",
 	"store", "history", "conversation_list", "conversation_rename",
 	"note", "dig", "lineheads", "prune", "remember", "forget", "consolidate",
 	"publish_session", "shared_sessions", "shared_forget",
@@ -86,7 +86,15 @@ func TestMemoryNativeSPv2(t *testing.T) {
 	if opened.Conversation.ID != "native1" {
 		t.Fatalf("conversation_open = %+v", opened)
 	}
-	must("store", protocol.StorePayload{ConversationID: "native1", Boss: "web", Role: "user", Content: "你好"}, nil)
+	var openedWork protocol.WorkOpenResult
+	must("work_open", protocol.WorkOpenPayload{
+		Work: "w-native", ConversationID: "native1", TaskName: "原生任务", Boss: "web",
+	}, &openedWork)
+	var firstStore protocol.StoreResult
+	must("store", protocol.StorePayload{
+		ConversationID: "native1", Work: "w-native", TaskID: openedWork.TaskID,
+		ClientItemID: "reasoner:native-1", Boss: "web", Role: "user", Content: "你好",
+	}, &firstStore)
 	var hist protocol.HistoryResult
 	must("history", protocol.HistoryPayload{ConversationID: "native1"}, &hist)
 	if len(hist.Messages) != 1 || hist.Messages[0].Content != "你好" {
@@ -175,15 +183,19 @@ func TestMemoryNativeSPv2(t *testing.T) {
 	}
 
 	// context：原生入口同步返回组装后的消息与 work/task（不再有 resume 回调）。
-	ack := must("context", protocol.ContextPayload{
-		Conversation: "native3",
-		Boss:         "stub-boss",
-		Messages:     []protocol.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "原生上下文"}},
+	var ctxWork protocol.WorkOpenResult
+	mustOn("w-native-ctx", "work_open", protocol.WorkOpenPayload{
+		Work: "w-native-ctx", ConversationID: "native3", TaskName: "原生上下文", Boss: "stub-boss",
+	}, &ctxWork)
+	var ctxStore protocol.StoreResult
+	mustOn("w-native-ctx", "store", protocol.StorePayload{
+		ConversationID: "native3", Work: "w-native-ctx", TaskID: ctxWork.TaskID,
+		ClientItemID: "reasoner:native-ctx", Boss: "stub-boss", Role: "user", Content: "原生上下文",
+	}, &ctxStore)
+	ack := mustOn("w-native-ctx", "context", protocol.ContextRequest{
+		Work: "w-native-ctx", Trigger: protocol.Trigger{Kind: "user", Item: ctxStore.ItemID},
 	}, nil)
-	var got struct {
-		Messages []protocol.Message `msgpack:"messages"`
-		Task     protocol.Task      `msgpack:"task"`
-	}
+	var got protocol.ContextResponse
 	if err := ack.DecodeBody(&got); err != nil {
 		t.Fatalf("context 回执解码失败: %v", err)
 	}

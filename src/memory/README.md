@@ -25,9 +25,9 @@ src/memory/
 
 ## 职责
 
-- `session`：`store` / `history` / `conversation_*` / `task_*` / `work_get` / `lease_*` / `work_update|sweep|cancel|renew` / `message_*`。
+- `session`：`store` / `history` / `conversation_*` / `task_*` / `work_open` / `work_get` / `lease_*` / `work_update|sweep|cancel|renew` / `message_*`。
 - `experience`：`remember` / `forget` / `consolidate` / `note` / `dig` / `lineheads` / `prune` / `publish_session` / `shared_sessions` / `shared_forget`。
-- 门面 `context`：调 `session.context_base` 取任务 / work / 最近记录，调 `experience.inject` 取记忆四节，本地拼装；不碰数据库。
+- 门面 `context`：调 `session.context_base` 取四态基座（messages / task / work + 快照），completed 直通；其余调 `experience.inject` 取记忆四节，在基座上现注入；不碰数据库。
 - 内部 method（不进门面名片）：`context_base`、`inject`、`settings_schema`、`staged_pending|mark|retry`。
 
 ## 设置

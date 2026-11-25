@@ -5,7 +5,7 @@ package session
 // 每个 handler 只做三件事：把 call.Frame.Body 交给共享实现、把帧元信息翻成 callMeta、
 // 用 call.Reply / call.ReplyError 回应。业务语义全在共享实现里。
 //
-// 注册分两档：对外 method（provides 里声明的 19 个）与内部 method（work / A2A /
+// 注册分两档：对外 method（provides 里声明的动作）与内部 method（work / A2A /
 // context_base / staged_* / settings_schema，只注册、不进 provides）。
 
 import (
@@ -137,7 +137,7 @@ func (s *Server) registerNative() {
 	}, s.nativeTaskList)
 
 	// ---------- 对外 method：v2 上下文四态（都不是工具） ----------
-	s.registerContextV2()
+	s.registerContextBase()
 
 	// ---------- 对外 method：transcript（只读重放；不是工具） ----------
 	s.registerTranscript()
@@ -257,13 +257,10 @@ func (s *Server) registerNative() {
 		Output: objectSchema(nil),
 	}, s.nativeMessageNack)
 
+	// ---------- 公开 method：work / task 登记（reasoner 建链前调用） ----------
+	s.HandleNative(workOpenMethod(), s.nativeWorkOpen)
+
 	// ---------- 内部 method：上下文原材料 / 整理池 / 设置声明 ----------
-	s.HandleNative(spv2.Method{
-		Name:        "context_base",
-		Description: "会话侧上下文原材料（内部：任务 / work / 最近记录）",
-		Input:       objectSchema(map[string]any{"conversation": stringSchema(), "messages": map[string]any{"type": "array"}}),
-		Output:      objectSchema(nil),
-	}, s.nativeContextBase)
 	s.HandleNative(spv2.Method{
 		Name:        "staged_pending",
 		Description: "取一批待整理观察（内部）",

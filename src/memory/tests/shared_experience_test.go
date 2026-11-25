@@ -12,20 +12,17 @@ import (
 
 	"github.com/NouSart/sump/memory/facade/compose"
 	"github.com/NouSart/sump/protocol"
+	"github.com/NouSart/sump/spv2"
 )
 
 // recallMemoryBlock 跑一轮 context 并把注入的记忆块取出来（没有就返回空）。
 func recallMemoryBlock(t *testing.T, caller *stubCaller, memoryURL, cid, userText string) string {
 	t.Helper()
-	req := protocol.ContextPayload{
-		Conversation: cid,
-		Boss:         "stub-boss",
-		Messages: []protocol.Message{
-			{Role: "system", Content: "sys"},
-			{Role: "user", Content: userText},
-		},
-	}
-	for _, m := range decodeContext(t, caller.contextUntilReady(t, memoryURL, req)).Messages {
+	work := "trace-" + cid
+	opened := caller.openWork(t, memoryURL, work, cid, "共享经验")
+	msg := caller.storeV2(t, memoryURL, work, cid, opened.TaskID, "user", userText, "reasoner:shared-"+spv2.NewID())
+	for _, m := range caller.contextFor(t, memoryURL, work,
+		protocol.Trigger{Kind: "user", Item: msg.ItemID}).Messages {
 		if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
 			return m.Content
 		}
@@ -52,11 +49,8 @@ func TestRecallInjectsOtherSessions(t *testing.T) {
 
 	// A 会话：存一条"原文"，再发布摘要。
 	const secret = "机密原文：数据库口令是 hunter2"
-	if rp := caller.call(t, srv.WsURL(), "store", protocol.StorePayload{
-		ConversationID: "qq:private:42", Role: "user", Content: secret,
-	}); !rp.OK {
-		t.Fatalf("store 失败: %s", rp.Error)
-	}
+	opened := caller.openWork(t, srv.WsURL(), "trace-qq:private:42", "qq:private:42", "共享原文")
+	caller.storeV2(t, srv.WsURL(), "trace-qq:private:42", "qq:private:42", opened.TaskID, "user", secret, "reasoner:secret")
 	publish(t, caller, srv.WsURL(), protocol.PublishSessionPayload{
 		ConversationID: "qq:private:42",
 		TaskID:         "task-a",

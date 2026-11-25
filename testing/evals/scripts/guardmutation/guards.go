@@ -717,13 +717,10 @@ var guards = []guard{
 	},
 	// ---------- 生产 work 账本（src/memory · spec §6/§6.8）----------
 	{
-		name: "context 不再登记 work 行",
-		file: "src/memory/session/context.go",
-		old: `	if err := s.ensureContextWork(ctx, meta, tc, task.ID, task.Name); err != nil {
-		return protocol.Task{}, nil, err
-	}
-`,
-		new: "",
+		name: "work_open 不再建任务 / 挂 work（works.task 空）",
+		file: "src/memory/session/work_open.go",
+		old:  `if conversation != "" || taskName != "" {`,
+		new:  `if false && (conversation != "" || taskName != "") {`,
 	},
 	{
 		name: "work 非法状态转移不再拦",
@@ -975,8 +972,8 @@ var guards = []guard{
 		new:  `	if false && time.Now().After(exp) {`,
 	},
 	{
-		name: "V2 context_v2 completed 改为读快照（已完成轮被重新打开）",
-		file: "src/memory/session/context_v2.go",
+		name: "V2 context_base completed 改为读快照（已完成轮被重新打开）",
+		file: "src/memory/session/context_base.go",
 		old: `	case store.TriggerStateCompleted:
 		// 已完成：只补 ACK。这一步的意义在于「不做事」——不重新组装、不再灌一遍历史，
 		// 否则 agent 会以为拿到了新一轮的上下文，把已经收口的对话再推理一次（§3.1.1）。
@@ -984,16 +981,16 @@ var guards = []guard{
 		new: `	case store.TriggerStateCompleted:
 		// 异变：改成读旧快照——snapshotID 仍被用到才编译得过，语义已经变成「重新打开已完成的一轮」。
 		_ = snapshotID
-		return s.loadContextV2Snapshot(ctx, work, kind, item, state)`,
+		return s.loadContextBaseSnapshot(ctx, work, kind, item, state)`,
 	},
 	{
-		name: "V2 context_v2 assembled 改为重新组装（同一轮续跑被重开）",
-		file: "src/memory/session/context_v2.go",
+		name: "V2 context_base assembled 改为重新组装（同一轮续跑被重开）",
+		file: "src/memory/session/context_base.go",
 		old: `	case store.TriggerStateAssembled:
 		// 同一轮的续跑：沿用那份不可变投影，不重新查库、不重新组装。
-		return s.loadContextV2Snapshot(ctx, work, kind, item, state)`,
+		return s.loadContextBaseSnapshot(ctx, work, kind, item, state)`,
 		new: `	case store.TriggerStateAssembled:
-		return s.assembleContextV2(ctx, work, kind, item, time.Now())`,
+		return s.assembleContextBase(ctx, work, kind, item, time.Now())`,
 	},
 	{
 		name: "V2 snapshots gzip 解压错误被忽略（坏载荷当空载荷返回）",
@@ -1109,10 +1106,10 @@ var guards = []guard{
 
 	// ---------- V2 新增：store 的 v2 入口（src/memory/session/actions.go · store_v2.go）----------
 	{
-		name: "V2 store_v2 client_item_id 为空也走幂等路径（老调用方被当新幂等键）",
+		name: "store 静默丢弃（不走 storeV2，调用方以为已落库）",
 		file: "src/memory/session/actions.go",
-		old:  `	if p.ClientItemID != "" {`,
-		new:  `	if true {`,
+		old:  `	return s.storeV2(&p, c)`,
+		new:  `	return map[string]any{}, nil`,
 	},
 	{
 		name: "V2 store_v2 payload_hash 不覆盖 report 字段（换补报内容不算新载荷）",

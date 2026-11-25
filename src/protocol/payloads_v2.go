@@ -37,6 +37,24 @@ type StoreResult struct {
 	Deduped bool   `msgpack:"deduped,omitempty" json:"deduped,omitempty"`
 }
 
+// ---------- work_open（R-026 P2c） ----------
+
+// WorkOpenPayload 是 work_open 的入参：登记执行单元，并按会话解析 / 创建它所属的任务。
+// Work 必填；ConversationID / TaskName 是首次建任务所需（省略时只登记 work，回既有 task id 或空）。
+// Boss 是结果归属方（入口服务），落进 works.entry；省略时用帧头 from。
+// 幂等：同一 work 重复调用不重建（已关联别的 task 时由会话库回 conflict）。
+type WorkOpenPayload struct {
+	Work           string `msgpack:"work" json:"work"`
+	ConversationID string `msgpack:"conversation_id,omitempty" json:"conversation_id,omitempty"`
+	TaskName       string `msgpack:"task_name,omitempty" json:"task_name,omitempty"`
+	Boss           string `msgpack:"boss,omitempty" json:"boss,omitempty"`
+}
+
+// WorkOpenResult 是 work_open 的回执：这次 work 归属的任务 id（没有任务时为空）。
+type WorkOpenResult struct {
+	TaskID string `msgpack:"task_id" json:"task_id"`
+}
+
 // ---------- context 组装（S-001 §3.1 / §3.1.1） ----------
 
 // Trigger 是一次 context 组装的触发源（S-001 §3.1）。

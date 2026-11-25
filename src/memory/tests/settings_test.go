@@ -6,6 +6,7 @@ package tests
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -66,14 +67,23 @@ func TestSettingsLive(t *testing.T) {
 		}
 	}
 
-	// 预置三条历史。
-	for _, m := range []protocol.StorePayload{
+	// 预置三条历史（同一 work / 任务；最后一条作为 context 的触发条目）。
+	opened := caller.openWork(t, srv.WsURL(), "trace-test", "t9", "设置历史")
+	var last protocol.StoreResult
+	for i, m := range []protocol.StorePayload{
 		{ConversationID: "t9", Role: "user", Content: "历史一"},
 		{ConversationID: "t9", Role: "assistant", Content: "历史二"},
 		{ConversationID: "t9", Role: "user", Content: "历史三"},
 	} {
-		if rp := caller.call(t, srv.WsURL(), "store", m); !rp.OK {
+		m.Work = "trace-test"
+		m.TaskID = opened.TaskID
+		m.ClientItemID = "reasoner:settings-" + strconv.Itoa(i)
+		rp := caller.call(t, srv.WsURL(), "store", m)
+		if !rp.OK {
 			t.Fatalf("store 失败: %s", rp.Error)
+		}
+		if err := protocol.DecodeRaw(rp.Data, &last); err != nil {
+			t.Fatalf("store 回执无法解码: %v", err)
 		}
 	}
 
@@ -135,28 +145,15 @@ func TestSettingsLive(t *testing.T) {
 		t.Fatalf("生效值应为 1，实际 %q", v)
 	}
 
-	// context：只应注入最近一条历史（历史三）。
-	req := protocol.ContextPayload{
-		Conversation: "t9",
-		Boss:         "stub-boss",
-		Messages: []protocol.Message{
-			{Role: "system", Content: "sys"},
-			{Role: "user", Content: "新一轮"},
-		},
-	}
-	// 这个会话（t9）前面只落过记录、没登记过 work；用会话专属 work 取上下文。
-	messages := decodeContext(t, caller.contextAsWork(t, srv.WsURL(), "trace-t9", req)).Messages
-	block := ""
+	// context：history_limit=1 时基座只带最近一条历史（历史三）。
+	messages := caller.contextFor(t, srv.WsURL(), "trace-test",
+		protocol.Trigger{Kind: "user", Item: last.ItemID}).Messages
+	var joined string
 	for _, m := range messages {
-		if strings.HasPrefix(m.Content, compose.MemoryPrefix) {
-			block = m.Content
-		}
+		joined += m.Content + "\n"
 	}
-	if block == "" {
-		t.Fatalf("应有记忆块: %+v", messages)
-	}
-	if !strings.Contains(block, "历史三") || strings.Contains(block, "历史一") || strings.Contains(block, "历史二") {
-		t.Fatalf("history_limit=1 应只注入最近一条: %q", block)
+	if !strings.Contains(joined, "历史三") || strings.Contains(joined, "历史一") || strings.Contains(joined, "历史二") {
+		t.Fatalf("history_limit=1 应只带最近一条历史: %+v", messages)
 	}
 }
 
@@ -164,15 +161,11 @@ func TestSettingsLive(t *testing.T) {
 // work 按会话派生：一个 work 只对上一个任务（works.task），跨会话复用同一个 work 会显式冲突。
 func recallBlock(t *testing.T, caller *stubCaller, srv *testStack, conv string) string {
 	t.Helper()
-	req := protocol.ContextPayload{
-		Conversation: conv,
-		Boss:         "stub-boss",
-		Messages: []protocol.Message{
-			{Role: "system", Content: "sys"},
-			{Role: "user", Content: "苹果"},
-		},
-	}
-	for _, m := range decodeContext(t, caller.contextAsWork(t, srv.WsURL(), "trace-"+conv, req)).Messages {
+	work := "trace-" + conv
+	opened := caller.openWork(t, srv.WsURL(), work, conv, "召回预算")
+	msg := caller.storeV2(t, srv.WsURL(), work, conv, opened.TaskID, "user", "苹果", "reasoner:recall-"+spv2.NewID())
+	for _, m := range caller.contextFor(t, srv.WsURL(), work,
+		protocol.Trigger{Kind: "user", Item: msg.ItemID}).Messages {
 		if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
 			return m.Content
 		}

@@ -13,8 +13,9 @@ var sessionMethods = map[string]bool{
 	"conversation_open": true, "conversation_archive": true,
 	"task_current": true, "task_open": true, "task_finish": true,
 	"task_resume": true, "task_rename": true, "task_list": true,
-	// v2 上下文四态（R-023 P2）：由 session 实现，门面只转发。
-	"context_v2": true, "trigger_complete": true,
+	// v2 上下文四态（R-023 P2）：context 由门面组合（session.context_base + experience），
+	// work_open / trigger_complete 由 session 实现，门面只转发。
+	"work_open": true, "trigger_complete": true,
 	// transcript（S-001 §3.2）：同样由 session 实现，门面只转发。
 	"transcript": true,
 	// v2 调用账本与常驻目录（R-023 P3）：同样由 session 实现，门面只转发。
@@ -94,8 +95,8 @@ var settingOrder = []string{
 // provides 是 memory 对外能力名册；顺序与拆分前一致。
 func provides() []protocol.Provide {
 	return []protocol.Provide{
-		{Action: "context", Input: "{conversation, messages, boss?, task_name?}（spec §7.2 同步上下文）", Output: "{messages, work, task}（组装后的上下文与 work 行）"},
-		{Action: "context_v2", Input: "{work, trigger:{kind,item}, schema?}（v2：按 work + 触发源取组装好的上下文；同一触发复用同一快照）", Output: "{schema, snapshot_id, expires_at, messages, task, work, degraded, warnings, assembled_at, trigger_state, completed}（不暴露给模型）"},
+		{Action: "context", Input: "{work, trigger:{kind,item}, schema?}（context/2：按 work + 触发源取基座，再注入 experience；同一触发复用同一基座快照）", Output: "{schema, snapshot_id, expires_at, messages, task, work, degraded, warnings, assembled_at, trigger_state, completed}（不暴露给模型）"},
+		{Action: "work_open", Input: "{work, conversation_id?, task_name?, boss?}（建链前登记 work 与所属任务；幂等）", Output: "{task_id}（不暴露给模型）"},
 		{Action: "trigger_complete", Input: "{work, trigger:{kind,item}}（幂等；本轮模型输出与动作安全落库后调用）", Output: "{completed}（不暴露给模型）"},
 		{Action: "transcript", Input: "{work, snapshot_id, budget:{max_chars?}}（v2：只读地把指定快照渲染成文本；snapshot_id 必填）", Output: "{text, truncated, omitted}（不暴露给模型）"},
 		{Action: "call_open", Input: "{work, service, action?, mode?, pausable?, ttl_ms?, exec_deadline_ms?}（v2：派发前分配 call_id；本地意图 observe=waiting / exec=created）", Output: "{call_id}（不暴露给模型）"},
@@ -130,18 +131,28 @@ func provides() []protocol.Provide {
 func contextMethod() spv2.Method {
 	return spv2.Method{
 		Name:        "context",
-		Description: "同步返回组装后的上下文与 work 行（spec §7.2；替代 recall+resume 两跳）",
+		Description: "按 work + 触发源取上下文（session 基座 + experience 现注入；completed 只补 ACK）",
 		Input: objectSchema(map[string]any{
-			"conversation": stringSchema(),
-			"messages":     map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
-			"boss":         stringSchema(),
-			"task_name":    stringSchema(),
-		}, "messages"),
+			"work": stringSchema(),
+			"trigger": objectSchema(map[string]any{
+				"kind": stringSchema(),
+				"item": stringSchema(),
+			}, "kind", "item"),
+			"schema": stringSchema(),
+		}, "work", "trigger"),
 		Output: objectSchema(map[string]any{
-			"messages": map[string]any{"type": "array"},
-			"work":     map[string]any{"type": "object"},
-			"task":     map[string]any{"type": "object"},
-		}),
+			"schema":        stringSchema(),
+			"snapshot_id":   stringSchema(),
+			"expires_at":    stringSchema(),
+			"messages":      map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+			"task":          map[string]any{"type": "object"},
+			"work":          map[string]any{"type": "object"},
+			"degraded":      map[string]any{"type": "object"},
+			"warnings":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"assembled_at":  stringSchema(),
+			"trigger_state": stringSchema(),
+			"completed":     booleanSchema(),
+		}, "schema", "trigger_state", "snapshot_id"),
 	}
 }
 
@@ -156,4 +167,5 @@ func objectSchema(props map[string]any, required ...any) map[string]any {
 	return out
 }
 
-func stringSchema() map[string]any { return map[string]any{"type": "string"} }
+func stringSchema() map[string]any  { return map[string]any{"type": "string"} }
+func booleanSchema() map[string]any { return map[string]any{"type": "boolean"} }

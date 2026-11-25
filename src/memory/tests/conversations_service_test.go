@@ -28,8 +28,10 @@ func TestConversationActions(t *testing.T) {
 		t.Fatalf("空库不该有会话: %+v", empty.Conversations)
 	}
 
+	opened := caller.openWork(t, srv.WsURL(), "trace-test", "conv-a", "从门户进来的第一句")
 	rp = caller.call(t, srv.WsURL(), "store", protocol.StorePayload{
-		ConversationID: "conv-a", Boss: "frontend", Role: "user", Content: "从门户进来的第一句",
+		ConversationID: "conv-a", Work: "trace-test", TaskID: opened.TaskID,
+		ClientItemID: "reasoner:conv-a", Boss: "frontend", Role: "user", Content: "从门户进来的第一句",
 	})
 	if !rp.OK {
 		t.Fatalf("store 失败: %s", rp.Error)

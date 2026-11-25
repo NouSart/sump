@@ -6,51 +6,42 @@ import (
 	"testing"
 )
 
-// TestTaskContextRoundTrip 验证同步上下文（含工具调用链）的编解码保真。
-func TestTaskContextRoundTrip(t *testing.T) {
-	in := ContextPayload{
-		Conversation: "conv-1",
-		Boss:         "qq",
-		Messages: []Message{
-			{Role: "system", Content: "sys"},
-			{Role: "user", Content: "你好", ImageIDs: []string{"img-1", "img-2"}, FileIDs: []string{"file-1"}},
-			{Role: "assistant", ToolCalls: []ToolCall{{
-				ID: "c1", Type: "function",
-				Function: FunctionCall{Name: "svc__act", Arguments: `{"a":1}`},
-			}}},
-			{Role: "tool", Content: `{"ok":true}`, ToolCallID: "c1"},
-		},
+// TestContextRequestRoundTrip 验证 context/2 请求与 work_open 载荷的编解码保真。
+func TestContextRequestRoundTrip(t *testing.T) {
+	in := ContextRequest{
+		Work:    "w-1",
+		Trigger: Trigger{Kind: "user", Item: "42"},
+		Schema:  "context/2",
 	}
 	raw, err := EncodePayload(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out ContextPayload
+	var out ContextRequest
 	if err := DecodeRaw(raw, &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Conversation != in.Conversation || out.Boss != in.Boss {
-		t.Fatalf("上下文头不符: %+v", out)
+	if out.Work != in.Work || out.Trigger != in.Trigger || out.Schema != in.Schema {
+		t.Fatalf("context 请求不符: %+v", out)
 	}
-	if len(out.Messages) != len(in.Messages) {
-		t.Fatalf("消息条数不符: %d != %d", len(out.Messages), len(in.Messages))
+
+	opened := WorkOpenPayload{
+		Work: "w-1", ConversationID: "c-1", TaskName: "名字", Boss: "qq",
 	}
-	m := out.Messages[2]
-	if m.Role != "assistant" || len(m.ToolCalls) != 1 || m.ToolCalls[0].Function.Name != "svc__act" || m.ToolCalls[0].Function.Arguments != `{"a":1}` {
-		t.Fatalf("工具调用消息不符: %+v", m)
+	raw, err = EncodePayload(opened)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if out.Messages[3].ToolCallID != "c1" {
-		t.Fatalf("tool_call_id 丢失: %+v", out.Messages[3])
+	var back WorkOpenPayload
+	if err := DecodeRaw(raw, &back); err != nil {
+		t.Fatal(err)
 	}
-	if len(out.Messages[1].ImageIDs) != 2 || out.Messages[1].ImageIDs[0] != "img-1" {
-		t.Fatalf("ImageIDs 丢失: %+v", out.Messages[1])
-	}
-	if len(out.Messages[1].FileIDs) != 1 || out.Messages[1].FileIDs[0] != "file-1" {
-		t.Fatalf("FileIDs 丢失: %+v", out.Messages[1])
+	if back != opened {
+		t.Fatalf("work_open 载荷不符: %+v", back)
 	}
 
 	// Store 同构走一遍。
-	if _, err := EncodePayload(StorePayload{ConversationID: "conv-1", Role: "user", Content: "你好"}); err != nil {
+	if _, err := EncodePayload(StorePayload{ConversationID: "conv-1", Work: "w-1", Role: "user", Content: "你好"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -260,13 +251,15 @@ func TestSenderWireKeys(t *testing.T) {
 	if _, has := store["task_name"]; !has {
 		t.Fatalf("store 载荷缺少线路键 task_name（当前键：%v）", keysOf(store))
 	}
-	ctxRaw, err := EncodePayload(ContextPayload{TaskName: "名字"})
+	workRaw, err := EncodePayload(WorkOpenPayload{Work: "w", ConversationID: "c", TaskName: "名字"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := decodeMap(t, ctxRaw)
-	if _, has := ctx["task_name"]; !has {
-		t.Fatalf("context 缺少线路键 task_name（当前键：%v）", keysOf(ctx))
+	work := decodeMap(t, workRaw)
+	for _, key := range []string{"work", "conversation_id", "task_name"} {
+		if _, has := work[key]; !has {
+			t.Fatalf("work_open 缺少线路键 %s（当前键：%v）", key, keysOf(work))
+		}
 	}
 
 	// 反方向：别的实现按文档写的键名，我们必须能解出来。

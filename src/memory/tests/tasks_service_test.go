@@ -5,6 +5,7 @@ package tests
 // 这里走真 WS + 真 SQLite，钉住动作的参数校验、状态流转与返回形状。
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -52,14 +53,14 @@ func TestTaskActionsLifecycle(t *testing.T) {
 		t.Fatalf("当前任务不符: %+v", got.Task)
 	}
 
-	// 写入两条消息（store 会自动归到当前任务）。
-	for _, m := range []protocol.StorePayload{
-		{ConversationID: "task-c1", Role: "user", Content: "开始做"},
-		{ConversationID: "task-c1", Role: "assistant", Content: "做完了"},
+	// 写入两条消息：work_open 把 work 挂到刚开的任务，store 显式带 work / task。
+	work := caller.openWork(t, srv.WsURL(), "trace-tasks", "task-c1", "写测试")
+	for i, m := range []struct{ role, content string }{
+		{"user", "开始做"},
+		{"assistant", "做完了"},
 	} {
-		if rp := caller.call(t, srv.WsURL(), "store", m); !rp.OK {
-			t.Fatalf("store 失败: %s", rp.Error)
-		}
+		caller.storeV2(t, srv.WsURL(), "trace-tasks", "task-c1", work.TaskID,
+			m.role, m.content, "reasoner:task-"+strconv.Itoa(i))
 	}
 
 	// 改名不改状态。

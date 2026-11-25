@@ -52,19 +52,6 @@ const systemPrompt = `你是 SUMP 服务网络中的“单步推理器”（reas
 - 「已@我 / 未@我」说明这条有没有点到你：没点到的群消息可能只是在说说，先想清楚是否真的需要开口。
 - 群里拿不准该不该说、该不该外发敏感内容时，默认**不说、不发**：用 task_status 的 silent 收尾。`
 
-// taskPrompt 把"你在为哪个任务工作"插到系统提示之后（每次 context 现拼，任务名可能已被改准）。
-func taskPrompt(name, id string) string {
-	if name == "" {
-		name = "未命名任务"
-	}
-	return fmt.Sprintf("当前任务：《%s》（id=%s）。你的所有动作都属于这个任务；换任务时上下文会重新开始。", name, id)
-}
-
-// withTaskPrompt 把任务提示插到索引 1，第 0 条原样保留（三值切片防止外层 append 覆写）。
-func withTaskPrompt(msgs []llm.Message, name, id string) []llm.Message {
-	return append(msgs[:1:1], append([]llm.Message{{Role: "system", Content: taskPrompt(name, id)}}, msgs[1:]...)...)
-}
-
 // 内置工具名（不来自名册，由 reasoner 自己执行）。
 const taskStatusToolName = "task_status"
 
@@ -328,44 +315,66 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 	return out
 }
 
-// fetchContext 同步向 memory 要上下文（spec §7.2）：拿不到就失败，绝不在没有记忆的
-// 状态下继续调 LLM。这里也同时完成 work 行登记——memory 是唯一 work 登记处。
-func (s *Server) fetchContext(ctx context.Context, boss, trace, conversationID, taskName string, messages []llm.Message) (protocol.TaskContext, error) {
-	data, err := s.Call(ctx, s.memoryName(), "context", protocol.ContextPayload{
-		Conversation: conversationID,
-		Messages:     messages,
-		Boss:         boss,
-		TaskName:     taskName,
+// fetchedContext 是 context 回执加上本轮 trigger（trigger_complete 必须用它）。
+type fetchedContext struct {
+	tc      protocol.TaskContext
+	trigger protocol.Trigger
+}
+
+// fetchContext 同步向 memory 要上下文（R-026 P2c）：请求只带 work + trigger；
+// 调用方 systemPrompt 不再随请求传，拿到基座后在这里 prepend。
+// 拿不到就失败，绝不在没有记忆的状态下继续调 LLM。work / task 已由 work_open 登记。
+func (s *Server) fetchContext(ctx context.Context, boss, trace, conversationID string, trigger protocol.Trigger) (fetchedContext, error) {
+	data, err := s.Call(ctx, s.memoryName(), "context", protocol.ContextRequest{
+		Work:    trace,
+		Trigger: trigger,
+		Schema:  "context/2",
 	}, trace)
 	if err != nil {
-		return protocol.TaskContext{}, fmt.Errorf("记忆 context 失败（本轮不启动）: %w", err)
+		return fetchedContext{}, fmt.Errorf("记忆 context 失败（本轮不启动）: %w", err)
 	}
-	var res struct {
-		Messages []llm.Message  `msgpack:"messages"`
-		Task     *protocol.Task `msgpack:"task"`
-		Work     map[string]any `msgpack:"work"`
-	}
+	var res protocol.ContextResponse
 	if err := protocol.DecodeRaw(data, &res); err != nil {
-		return protocol.TaskContext{}, fmt.Errorf("context 回执无法解码: %w", err)
+		return fetchedContext{}, fmt.Errorf("context 回执无法解码: %w", err)
 	}
 	if len(res.Messages) == 0 {
-		return protocol.TaskContext{}, errors.New("context 回执为空（memory 必须返回组装后的 messages）")
+		return fetchedContext{}, errors.New("context 回执为空（memory 必须返回组装后的 messages）")
 	}
-	return protocol.TaskContext{
-		ConversationID: conversationID,
-		Messages:       res.Messages,
-		Boss:           boss,
-		Task:           res.Task,
+	msgs := make([]llm.Message, 0, len(res.Messages)+1)
+	msgs = append(msgs, llm.Message{Role: "system", Content: systemPrompt})
+	for _, m := range res.Messages {
+		lm := llm.Message{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
+		for _, tc := range m.ToolCalls {
+			lm.ToolCalls = append(lm.ToolCalls, llm.ToolCall{
+				ID: tc.ID, Type: "function",
+				Function: llm.FunctionCall{Name: tc.Name, Arguments: tc.Arguments},
+			})
+		}
+		msgs = append(msgs, lm)
+	}
+	var task *protocol.Task
+	if res.Task.ID != "" {
+		task = &res.Task
+	}
+	return fetchedContext{
+		tc: protocol.TaskContext{
+			ConversationID: conversationID,
+			Messages:       msgs,
+			Boss:           boss,
+			Task:           task,
+		},
+		trigger: trigger,
 	}, nil
 }
 
 // startTask 用组装好的上下文开黑板并立即推进一轮（后台跑，入口只等受理）。
 func (s *Server) startTask(tc protocol.TaskContext, boss, trace string) any {
-	return s.startTaskWithStream(tc, boss, trace, nil)
+	return s.startTaskWithStream(tc, boss, trace, nil, protocol.Trigger{})
 }
 
 // startTaskWithStream 同 startTask；stream 非 nil 时这一轮 LLM 的 token 增量会推给流式答复。
-func (s *Server) startTaskWithStream(tc protocol.TaskContext, boss, trace string, stream *streamSink) any {
+// trigger 是本轮 context 的触发源，收尾时原样交给 trigger_complete。
+func (s *Server) startTaskWithStream(tc protocol.TaskContext, boss, trace string, stream *streamSink, trigger protocol.Trigger) any {
 	if boss == "" {
 		boss = tc.Boss
 	}
@@ -377,12 +386,10 @@ func (s *Server) startTaskWithStream(tc protocol.TaskContext, boss, trace string
 	if tc.Task != nil {
 		taskID, taskName = tc.Task.ID, tc.Task.Name
 	}
-	// 任务名写进系统提示：agent 始终知道自己在为哪个任务工作。
-	if taskID != "" && len(tc.Messages) > 0 {
-		tc.Messages = withTaskPrompt(tc.Messages, taskName, taskID)
-	}
+	// 任务提示已由 memory 的 assemble 写进基座（system），这里不再二次插入。
 	st := s.boardOpen(cid, boss, trace, taskID, taskName, tc.Messages)
 	st.stream = stream
+	st.trigger = trigger
 	// spec §6.8：先把排给这个 work 的 A2A 消息取回并注入（claim→注入→ack），再开轮。
 	claimCtx, claimCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	queued, claimErr := s.claimA2AMessages(claimCtx, trace)
@@ -419,10 +426,25 @@ func (s *Server) humanMessage(parent context.Context, boss, trace string, p prot
 	text := withSender(p.Sender, p.Text)
 	taskName := taskNameOf(p.Text, p.Images, p.Files)
 
-	// 记一条用户消息（尽力送达；幂等与去重在记忆服务侧处理）。
+	// spec §7.2 的同步链（R-026 P2c）：
+	//   work_open（登记 work + 任务）→ store（用户消息，拿 trigger.item）→ context（基座）。
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	opened, err := s.openWork(ctx, boss, trace, cid, taskName)
+	if err != nil {
+		return nil, err
+	}
+	// 记一条用户消息（同步；失败就不启动本轮，否则 context 的 trigger.item 不存在）。
 	// 任务名显式给：正文可能带着来源标注前缀，记忆侧从第一行推会推出一串标签。
 	// 结构化来源与附件 id 一并落库：与 qq「只记录」路径同一个形状（protocol.MessageMeta）。
-	s.recordTask(cid, "", trace, "", "user", "user", text, protocol.MessageMeta(p.Sender, p.Images, p.Files), taskName)
+	itemID, err := s.recordTask(cid, boss, trace, opened.TaskID, "user", "user", text,
+		protocol.MessageMeta(p.Sender, p.Images, p.Files), taskName)
+	if err != nil {
+		return nil, fmt.Errorf("记录用户消息失败（本轮不启动）: %w", err)
+	}
+	if itemID == "" {
+		return nil, errors.New("store 未返回 item_id（context 的 trigger.item 无法确定）")
+	}
 
 	// 用户说话了：解除停手，并把附注拼成前缀块（用户的话与系统附注在数据层是分开的）。
 	s.clearHold(cid)
@@ -430,22 +452,45 @@ func (s *Server) humanMessage(parent context.Context, boss, trace string, p prot
 		text = renderNotes(notes) + "\n" + text
 	}
 
-	messages := []llm.Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: text, ImageIDs: p.Images},
-	}
-	// spec §7.2：同步向 memory 要上下文；失败就回错误（入口能看到），不静默只回 accepted。
-	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
-	defer cancel()
-	tc, err := s.fetchContext(ctx, boss, trace, cid, taskName, messages)
+	trigger := protocol.Trigger{Kind: "user", Item: itemID}
+	fetched, err := s.fetchContext(ctx, boss, trace, cid, trigger)
 	if err != nil {
 		return nil, err
+	}
+	// context/2 的消息只承载模型输入字段（LLMMessage 没有 image_ids）；本轮用户刚发的图片
+	// 由 reasoner 自己挂回最后一条 user 消息，resolveImages 才能照旧 fetch_full 内联。
+	// image_index 未搬（R-026-D5）：这是入口事实，不是记忆投影。
+	if len(p.Images) > 0 {
+		for i := len(fetched.tc.Messages) - 1; i >= 0; i-- {
+			if fetched.tc.Messages[i].Role == "user" {
+				fetched.tc.Messages[i].ImageIDs = p.Images
+				break
+			}
+		}
 	}
 	var sink *streamSink
 	if p.Stream {
 		sink = newStreamSink()
 	}
-	return s.startTaskWithStream(tc, boss, trace, sink), nil
+	return s.startTaskWithStream(fetched.tc, boss, trace, sink, fetched.trigger), nil
+}
+
+// openWork 在 memory 里登记 work 与它所属的任务（建链前唯一登记点）。
+func (s *Server) openWork(ctx context.Context, boss, trace, cid, taskName string) (protocol.WorkOpenResult, error) {
+	data, err := s.Call(ctx, s.memoryName(), "work_open", protocol.WorkOpenPayload{
+		Work:           trace,
+		ConversationID: cid,
+		TaskName:       taskName,
+		Boss:           boss,
+	}, trace)
+	if err != nil {
+		return protocol.WorkOpenResult{}, fmt.Errorf("记忆 work_open 失败（本轮不启动）: %w", err)
+	}
+	var res protocol.WorkOpenResult
+	if err := protocol.DecodeRaw(data, &res); err != nil {
+		return protocol.WorkOpenResult{}, fmt.Errorf("work_open 回执无法解码: %w", err)
+	}
+	return res, nil
 }
 
 // withSender 把来源标注拼到正文前面（同一行，空标注原样返回）。

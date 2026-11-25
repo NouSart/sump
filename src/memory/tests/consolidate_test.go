@@ -148,6 +148,33 @@ func TestConsolidateArchivesStagedCandidates(t *testing.T) {
 		t.Fatalf("reasoner peer 注入失败: addr=%q err=%v want=%q", addr, err, stub.URL())
 	}
 
+	// store 统一走 v2：整理池用例需要一条已登记的 work / task。
+	const work = "w-consolidate"
+	task, err := st.EnsureTask("c1", "整理测试")
+	if err != nil {
+		t.Fatalf("建任务失败: %v", err)
+	}
+	if _, err := st.EnsureWork(context.Background(), spv2.Work{
+		ID: work, Root: work, Class: spv2.ClassRequest,
+		Owner: spv2.HumanRef("owner"), Agent: spv2.AgentRef("tester"),
+		Entry: spv2.ServiceRef("frontend"), Status: spv2.WorkRunning,
+	}); err != nil {
+		t.Fatalf("登记 work 失败: %v", err)
+	}
+	if err := st.LinkWorkTask(context.Background(), work, task.ID); err != nil {
+		t.Fatalf("关联 work/task 失败: %v", err)
+	}
+	storeMsg := func(role, content string) {
+		t.Helper()
+		if err := callMemory(t, srv.WsURL(), "store", protocol.StorePayload{
+			ConversationID: "c1", Work: work, TaskID: task.ID,
+			ClientItemID: "reasoner:" + spv2.NewID(),
+			Role:         role, Content: content,
+		}, nil); err != nil {
+			t.Fatalf("store 失败: %v", err)
+		}
+	}
+
 	// remember 的 salience 参数要校验；合法值只升不降。
 	var bad protocol.RememberResult
 	if err := callMemory(t, srv.WsURL(), "remember", protocol.RememberPayload{Kind: "身份", Content: "测试记忆", Salience: 1.5}, &bad); err == nil {
@@ -170,12 +197,8 @@ func TestConsolidateArchivesStagedCandidates(t *testing.T) {
 	}
 
 	// 用户消息进入整理池；助手答复不进。
-	if err := callMemory(t, srv.WsURL(), "store", protocol.StorePayload{ConversationID: "c1", Role: "user", Content: "我住在杭州"}, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := callMemory(t, srv.WsURL(), "store", protocol.StorePayload{ConversationID: "c1", Role: "assistant", Content: "好的"}, nil); err != nil {
-		t.Fatal(err)
-	}
+	storeMsg("user", "我住在杭州")
+	storeMsg("assistant", "好的")
 	if pending, _, _, _, err := st.StagingCounts(); err != nil || pending != 1 {
 		t.Fatalf("整理池应只有 1 条用户候选: pending=%d err=%v", pending, err)
 	}
@@ -201,9 +224,7 @@ func TestConsolidateArchivesStagedCandidates(t *testing.T) {
 	}
 
 	// 冲突 keep_old：模型选择保留旧条目 → 新候选 skipped，旧条目不动。
-	if err := callMemory(t, srv.WsURL(), "store", protocol.StorePayload{ConversationID: "c1", Role: "user", Content: "我养了一只猫"}, nil); err != nil {
-		t.Fatal(err)
-	}
+	storeMsg("user", "我养了一只猫")
 	pid = pendingID(t, st)
 	stub.setText(fmt.Sprintf(`[{"id":%d,"keep":true,"kind":"身份","content":"养猫","salience":0.5,"priority":0,"durability":"durable","conflicts":[{"id":%d,"resolution":"keep_old"}]}]`, pid, merged.ID))
 	res, err = consolidateUntilReady(t, srv.WsURL())
@@ -221,9 +242,7 @@ func TestConsolidateArchivesStagedCandidates(t *testing.T) {
 	}
 
 	// transient：只属于当前任务，不入长期记忆。
-	if err := callMemory(t, srv.WsURL(), "store", protocol.StorePayload{ConversationID: "c1", Role: "user", Content: "今天有点热"}, nil); err != nil {
-		t.Fatal(err)
-	}
+	storeMsg("user", "今天有点热")
 	pid = pendingID(t, st)
 	stub.setText(fmt.Sprintf(`[{"id":%d,"keep":true,"kind":"事件","content":"今天有点热","salience":0.2,"priority":0,"durability":"transient"}]`, pid))
 	res, err = consolidateUntilReady(t, srv.WsURL())
@@ -233,9 +252,7 @@ func TestConsolidateArchivesStagedCandidates(t *testing.T) {
 
 	// 模型输出坏掉：整批不落共享库，候选留在池里重试。
 	stub.setText("这不是 JSON")
-	if err := callMemory(t, srv.WsURL(), "store", protocol.StorePayload{ConversationID: "c1", Role: "user", Content: "再记一条"}, nil); err != nil {
-		t.Fatal(err)
-	}
+	storeMsg("user", "再记一条")
 	var dummy protocol.ConsolidateResult
 	if err := callMemory(t, srv.WsURL(), "consolidate", struct{}{}, &dummy); err == nil {
 		t.Fatal("模型输出坏掉时应报错")

@@ -2,7 +2,7 @@ package session
 
 // transcript（S-001 §3.2，A 切片）：把一份已组装好的上下文快照渲染成可读文本。
 //
-// 与 context_v2 共用读取 / 构建代码：同一个 protocol.ContextResponse 投影、同一个
+// 与 context_base 共用读取 / 构建代码：同一个 protocol.ContextResponse 投影、同一个
 // LoadSnapshotByID（同一份 gzip 解压与过期判定）。本文件不重新查 messages、不重新组装、
 // 不改触发状态、不落任何东西——只读，天然幂等。
 //
@@ -46,7 +46,7 @@ func (s *Server) registerTranscript() {
 func transcriptMethod() spv2.Method {
 	return spv2.Method{
 		Name:        "transcript",
-		Description: "把指定快照渲染成文本（只读；与 context_v2 共用读取代码）",
+		Description: "把指定快照渲染成文本（只读；与 context_base 共用读取代码）",
 		Input: objectSchema(map[string]any{
 			"work":        stringSchema(),
 			"snapshot_id": stringSchema(),
@@ -67,7 +67,7 @@ func transcriptMethod() spv2.Method {
 func (s *Server) nativeTranscript(ctx context.Context, call *spv2.Call) error {
 	out, err := s.transcript(ctx, call.Frame.Body, callerOf(call))
 	if err != nil {
-		return replyContextV2Error(call, err)
+		return replyContextBaseError(call, err)
 	}
 	return call.Reply(out)
 }

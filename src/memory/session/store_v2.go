@@ -41,6 +41,16 @@ func (s *Server) storeV2(p *protocol.StorePayload, c caller) (protocol.StoreResu
 	if _, err := s.authorizeTargetWork(context.Background(), work, c.work, "store", c.from); err != nil {
 		return protocol.StoreResult{}, err
 	}
+	// task_id 可由 work 派生：work_open 已把 work 挂到唯一任务（works.task），
+	// 调用方只带 work 时不必再查一次任务 id（消息仍归属同一个任务，history 不会漏）。
+	taskID := strings.TrimSpace(p.TaskID)
+	if taskID == "" {
+		id, err := s.cfg.Store.TaskIDOfWork(context.Background(), work)
+		if err != nil {
+			return protocol.StoreResult{}, storeReceiptError(work, p.ClientItemID, err)
+		}
+		taskID = id
+	}
 	visibility := strings.TrimSpace(p.Visibility)
 	if visibility == "" {
 		visibility = "work" // 默认可见性：跨 work 读取默认不可见（INV-14）
@@ -70,7 +80,7 @@ func (s *Server) storeV2(p *protocol.StorePayload, c caller) (protocol.StoreResu
 		Kind:           p.Kind,
 		Content:        p.Content,
 		Meta:           p.Meta,
-		TaskID:         p.TaskID,
+		TaskID:         taskID,
 		WorkID:         work,
 		Visibility:     visibility,
 		ClientItemID:   p.ClientItemID,
@@ -90,6 +100,21 @@ func (s *Server) storeV2(p *protocol.StorePayload, c caller) (protocol.StoreResu
 	res, err := s.cfg.Store.RecordV2Atomic(context.Background(), in)
 	if err != nil {
 		return protocol.StoreResult{}, storeReceiptError(work, p.ClientItemID, err)
+	}
+	// 与旧 store 路径一致的派生记账（都不在原子事务里，失败只记日志、不影响 ACK）：
+	//   - 用户消息进整理池，等 experience 分类；
+	//   - 会话入口只在第一次写时落，用来在历史里分清"从哪扇门进来"；
+	//   - 刷新任务活跃时间（历史列表按它排序）。
+	if p.Role == "user" && (p.Kind == "" || p.Kind == "user") {
+		if _, err := s.cfg.Store.Stage(cid, p.Role, p.Content); err != nil {
+			s.logger.Printf("记忆候选入池失败（不影响落库）: %v", err)
+		}
+	}
+	if err := s.cfg.Store.EnsureConversation(cid, "", p.Boss); err != nil {
+		s.logger.Printf("记录会话入口失败: %v", err)
+	}
+	if err := s.cfg.Store.TouchTask(taskID); err != nil {
+		s.logger.Printf("刷新任务活跃时间失败: %v", err)
 	}
 	return protocol.StoreResult{ItemID: res.ItemID, Seq: res.Seq, Deduped: res.Deduped}, nil
 }

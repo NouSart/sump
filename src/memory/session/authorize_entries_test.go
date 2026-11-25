@@ -129,14 +129,14 @@ func TestEntryAuthorizationStoreV2(t *testing.T) {
 	}
 }
 
-// TestEntryAuthorizationContextAndTrigger：context_v2 / trigger_complete 在读触发、落快照、
+// TestEntryAuthorizationContextAndTrigger：context_base / trigger_complete 在读触发、落快照、
 // 改状态之前授权；越权读取不产生快照，越权完成不改 trigger_states。
 func TestEntryAuthorizationContextAndTrigger(t *testing.T) {
 	s, st, taskID := newAuthorizeEntriesServer(t)
 	ctx := context.Background()
-	item := insertContextV2Message(t, st, "w-bob", taskID, "user", "user", "bob 的触发", "", 1)
+	item := insertContextBaseMessage(t, st, "w-bob", taskID, "user", "user", "bob 的触发", "", 1)
 	reqBody := entryPayload(t, protocol.ContextRequest{
-		Work: "w-bob", Trigger: protocol.Trigger{Kind: "user", Item: item}, Schema: contextV2Schema,
+		Work: "w-bob", Trigger: protocol.Trigger{Kind: "user", Item: item}, Schema: contextBaseSchema,
 	})
 
 	for _, tc := range []struct {
@@ -146,8 +146,8 @@ func TestEntryAuthorizationContextAndTrigger(t *testing.T) {
 		{"跨 work", callerAlice},
 		{"匿名", callerAnonymous},
 	} {
-		t.Run("context_v2 "+tc.name, func(t *testing.T) {
-			if _, err := s.contextV2(ctx, reqBody, tc.c); !spv2.IsCode(err, spv2.CodePermissionDenied) {
+		t.Run("context_base "+tc.name, func(t *testing.T) {
+			if _, err := s.contextBase(ctx, reqBody, tc.c); !spv2.IsCode(err, spv2.CodePermissionDenied) {
 				t.Fatalf("应 permission_denied，实际: %v", err)
 			}
 			if n := entryCount(t, st, `SELECT COUNT(*) FROM context_snapshots WHERE work = ?`, "w-bob"); n != 0 {
@@ -159,7 +159,7 @@ func TestEntryAuthorizationContextAndTrigger(t *testing.T) {
 		})
 	}
 
-	resp, err := s.contextV2(ctx, reqBody, callerBob)
+	resp, err := s.contextBase(ctx, reqBody, callerBob)
 	if err != nil {
 		t.Fatalf("bob 自己读应成功: %v", err)
 	}
@@ -195,8 +195,8 @@ func TestEntryAuthorizationContextAndTrigger(t *testing.T) {
 	ghostCtx := entryPayload(t, protocol.ContextRequest{
 		Work: "w-ghost", Trigger: protocol.Trigger{Kind: "user", Item: item},
 	})
-	if _, err := s.contextV2(ctx, ghostCtx, caller{work: "w-ghost", from: spv2.AgentRef("reasoner-a")}); !spv2.IsCode(err, spv2.CodeNotFound) {
-		t.Fatalf("context_v2 的 work 不存在应 not_found，实际: %v", err)
+	if _, err := s.contextBase(ctx, ghostCtx, caller{work: "w-ghost", from: spv2.AgentRef("reasoner-a")}); !spv2.IsCode(err, spv2.CodeNotFound) {
+		t.Fatalf("context_base 的 work 不存在应 not_found，实际: %v", err)
 	}
 	ghostTrigger := entryPayload(t, protocol.TriggerCompletePayload{
 		Work: "w-ghost", Trigger: protocol.Trigger{Kind: "user", Item: item},

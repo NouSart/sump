@@ -567,41 +567,14 @@ func TestStoreV2SeqIncrements(t *testing.T) {
 	}
 }
 
-// 旧调用方（无 client_item_id）行为不变：照旧落库、照旧连续相同对话去重、不写 receipt，
-// 回执仍是旧路径的空 map（不是 v2 的 StoreResult）。
-func TestStoreLegacyWithoutClientItemIDUnchanged(t *testing.T) {
-	s, st := newStoreV2TestServer(t)
-	p := protocol.StorePayload{ConversationID: "c1", Role: "user", Content: "老调用方"}
-	body := storeV2Body(t, p)
-
-	out, err := s.store(body, caller{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res, ok := out.(map[string]any); !ok || len(res) != 0 {
-		t.Fatalf("旧路径应回空 map，实际 %T %+v", out, out)
-	}
-	if _, err := s.store(body, caller{}); err != nil { // 旧规则：连续完全相同 → 跳过，不报错
-		t.Fatal(err)
-	}
-
-	if n := countStoreV2Rows(t, st, `SELECT COUNT(*) FROM messages WHERE conversation_id = 'c1'`); n != 1 {
-		t.Fatalf("旧路径连续相同消息应只留一行，实际 %d 行", n)
-	}
-	if n := countStoreV2Rows(t, st, `SELECT COUNT(*) FROM store_receipts`); n != 0 {
-		t.Fatalf("旧路径不应写 store_receipts，实际 %d 行", n)
-	}
-
-	// 空正文：旧行为是直接回空回执、不落库。
-	out, err = s.store(storeV2Body(t, protocol.StorePayload{ConversationID: "c1", Role: "user"}), caller{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res, ok := out.(map[string]any); !ok || len(res) != 0 {
-		t.Fatalf("空正文也应回空 map，实际 %T %+v", out, out)
-	}
-	if n := countStoreV2Rows(t, st, `SELECT COUNT(*) FROM messages WHERE conversation_id = 'c1'`); n != 1 {
-		t.Fatalf("空正文不应落库，实际 %d 行", n)
+// 旧调用方（无 work）不再有兼容路径：store 统一走 v2，必须显式 invalid_argument。
+// R-026 P2c 删除了 actions.go 的 ClientItemID 分叉；qq 只记录路径需要随 P2 之外的一笔
+// 补 work / client_item_id（范围不在本提交）。
+func TestStoreRequiresWork(t *testing.T) {
+	s, _ := newStoreV2TestServer(t)
+	body := storeV2Body(t, protocol.StorePayload{ConversationID: "c1", Role: "user", Content: "老调用方"})
+	if _, err := s.store(body, caller{}); !spv2.IsCode(err, spv2.CodeInvalidArgument) {
+		t.Fatalf("无 work 的 store 应 invalid_argument，实际: %v", err)
 	}
 }
 

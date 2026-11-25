@@ -162,6 +162,28 @@ func TestInferChain(t *testing.T) {
 		t.Fatal("超时：boss 未收到 deliver")
 	}
 
+	// 收尾证据：assistant 落库后调用 trigger_complete，work/trigger 与建链时一致。
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(mem.TriggerCompletes()) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	completes := mem.TriggerCompletes()
+	if len(completes) == 0 {
+		t.Fatal("收尾后应调用 trigger_complete")
+	}
+	if c := completes[0]; c.Work == "" || c.Trigger.Kind != "user" || c.Trigger.Item == "" {
+		t.Fatalf("trigger_complete 应带建链时的 work/trigger: %+v", c)
+	}
+	opened := mem.Works("work_open")
+	if len(opened) == 0 || completes[0].Work != opened[0] {
+		t.Fatalf("trigger_complete 的 work 应与 work_open 一致: %v vs %v", completes[0].Work, opened)
+	}
+	for _, sp := range mem.Stores() {
+		if sp.Work == "" || sp.ClientItemID == "" {
+			t.Fatalf("reasoner 的 store 必须带 work 与 client_item_id: %+v", sp)
+		}
+	}
+
 	// 校验异步工具链：派发轮（回执）→ wait 轮（阻塞等待）→ 收尾轮——Fake 共收到 3 次请求。
 	if fake.CallCount() != 3 {
 		t.Fatalf("Fake LLM 调用次数 = %d, want 3", fake.CallCount())

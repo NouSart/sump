@@ -79,7 +79,7 @@ func TestAuthorizeTargetWork(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w, err := s.authorizeTargetWork(ctx, tc.targetWork, tc.callerWork, "context_v2", tc.from)
+			w, err := s.authorizeTargetWork(ctx, tc.targetWork, tc.callerWork, "context_base", tc.from)
 			if tc.code != "" {
 				if !spv2.IsCode(err, tc.code) {
 					t.Fatalf("期望 %s，实际 %v", tc.code, err)

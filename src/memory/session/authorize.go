@@ -3,7 +3,7 @@ package session
 // work 归属授权原语（S-001 §9；R-011 §2.2 红队修复；R-023 P4）。
 //
 // 两个判定覆盖 v2 入口：
-//   - authorizeTargetWork：载荷里指定了目标 work 的入口（store v2 / context_v2 /
+//   - authorizeTargetWork：载荷里指定了目标 work 的入口（store v2 / context_base /
 //     trigger_complete / call_open）。普通调用方必须「帧头 work == 载荷 work」且身份属于
 //     目标 work（agent / owner / entry）；owner / runtime 保留跨 work 通道，但 owner 必须
 //     精确匹配 works.owner.id，不能只凭 authority 字段跨 work。

@@ -73,16 +73,9 @@ func TestFacadeWorksWithFakeExperiencePeer(t *testing.T) {
 	}, nil)
 	start(t, f)
 
-	var out struct {
-		Messages []protocol.Message `msgpack:"messages"`
-		Task     protocol.Task      `msgpack:"task"`
-	}
-	if err := call(t, f.WsURL(), "reasoner", "w-fake", "context", protocol.ContextPayload{
-		Conversation: "c-fake", Boss: "e2e",
-		Messages: []protocol.Message{{Role: "user", Content: "只有会话"}},
-	}, &out); err != nil {
-		t.Fatal(err)
-	}
+	opened := openWork(t, f, "reasoner", "w-fake", "c-fake", "只有会话")
+	stored := storeEntry(t, f, "reasoner", "w-fake", "c-fake", opened.TaskID, "user", "只有会话", "reasoner:fake")
+	out := getContext(t, f, "reasoner", "w-fake", protocol.Trigger{Kind: "user", Item: stored.ItemID})
 	if out.Task.ID == "" {
 		t.Fatalf("假 experience 下仍应有会话任务: %+v", out)
 	}

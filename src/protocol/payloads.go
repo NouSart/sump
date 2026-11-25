@@ -249,14 +249,6 @@ type A2AClaimResult struct {
 	Message A2AMessage `msgpack:"message" json:"message"`
 }
 
-// ContextPayload 是 context 的入参（spec §7.2）：reasoner 同步向 memory 要上下文。
-type ContextPayload struct {
-	Conversation string    `msgpack:"conversation,omitempty" json:"conversation,omitempty"`
-	Messages     []Message `msgpack:"messages" json:"messages"`
-	Boss         string    `msgpack:"boss,omitempty" json:"boss,omitempty"`
-	TaskName     string    `msgpack:"task_name,omitempty" json:"task_name,omitempty"`
-}
-
 // StorePayload 是 store 的 payload：向记忆服务记一条会话记录。
 // Kind 区分记录类型（空 = 按 Role 推断）：user / assistant / reasoning / tool_call / tool_result。
 // Seq 是**会话内单调序号**（由写入方给）：让并发写（Fire 是 goroutine）也能按真实先后落库与排序。

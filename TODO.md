@@ -64,8 +64,8 @@
 
 ## v2 契约层未闭环（#116 移植后）
 
-- [ ] **P2 切换** — `context_v2` 改名 `context`、删除旧 `context`/旧 `store` 分叉、reasoner 接入 `client_item_id`。前置：下列各项 + A 冻结门禁（双跑含 `system`、transcript）。切换前预览 method 零生产流量（[protocol.md §5.4](docs/concepts/protocol.md)）。
-- [ ] **`context_v2` 未接 memories / experience / shared** — 目前只投影 session 基座；`session` 依 `architecture_test` 不得 import `experience`，接入方式（facade 组合 vs 新边界）未定。
+- [ ] **`context` 的 shared 目录未接** — 基座 + experience 四节已由 facade 组合（R-026-D1=(a)）；共享会话目录仍只经 `shared_sessions` 工具读取，不注入 context。`session` 依 `architecture_test` 不得 import `experience`。
+- [ ] **qq 只记录路径缺 work / client_item_id** — P2c 后 `store` 统一走 v2 且必须带 `work`；qq 的 `storeQuietly` 仍在用旧载荷，只记录消息会落库失败（有日志与 report 上报，不静默）。补法：qq 先 `work_open` 再 `store`；改动在 `src/qq`，不在 P2c 授权范围。
 - [ ] **`work_context_grants` 死表** — 只建表，无读写路径；跨 work 的引用级授权未实现。
 - [ ] **周期 call 对账** — 只有单次 `call_status`；`created` 悬挂与 orphaned 判定没有周期 reconciler。
 - [ ] **owner 恢复与生产 owner 客户端** — `owner_recovery_complete` 恒 `false` 的保守口径；生产 owner 客户端仍缺（只有接口 + fake），`pause/resume` 在未注入时 `unavailable`。

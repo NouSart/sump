@@ -1,8 +1,8 @@
 package tests
 
 // 从模型那一侧看 context 的消息链形状（与 server/resume_messages_test.go 同一件事的另一半）：
-// context 回以 user 开头的上下文时，任务提示插在索引 1，第一条用户消息原样到达模型——
-// 既没有被顶掉，也没有被丢掉。审计报告认为这里「首条被无声覆盖」，这条用例把实际形状钉住。
+// R-026 P2c 后调用方 systemPrompt 由 reasoner 在基座前 prepend；context 回以 user 开头的
+// 基座时，第一条用户消息原样到达模型，不被顶掉、不被覆盖。
 
 import (
 	"strings"
@@ -33,7 +33,7 @@ func TestNativeContextUserFirstReachesModelUntouched(t *testing.T) {
 	s, _, mem := startAttrEnv(t, fake)
 	mem.setTask(&protocol.Task{ID: "task-native-1", Name: "原生任务名"})
 
-	in := []protocol.Message{
+	in := []protocol.LLMMessage{
 		{Role: "user", Content: "第一条：用户先开口"},
 		{Role: "assistant", Content: "上一轮的助手发言"},
 		{Role: "user", Content: "这一轮用户又说了"},
@@ -44,23 +44,23 @@ func TestNativeContextUserFirstReachesModelUntouched(t *testing.T) {
 
 	req := waitFirstRequest(t, fake)
 	if len(req.Messages) != len(in)+1 {
-		t.Fatalf("模型应看到原三条 + 一条任务提示，实际 %d 条: %+v", len(req.Messages), req.Messages)
+		t.Fatalf("模型应看到原三条 + 一条调用方 system，实际 %d 条: %+v", len(req.Messages), req.Messages)
 	}
-	want := []string{"user", "system", "assistant", "user"}
+	want := []string{"system", "user", "assistant", "user"}
 	for i, role := range want {
 		if req.Messages[i].Role != role {
 			t.Fatalf("第 %d 条角色应为 %q，实际 %+v", i, role, rolesOfMessages(req.Messages))
 		}
 	}
-	// 一条不丢、一条不被覆盖（第 0 条就是用户那句话本身，不是任务提示）。
-	if req.Messages[0].Content != "第一条：用户先开口" {
-		t.Fatalf("第一条用户消息被改写了: %q", req.Messages[0].Content)
+	if !strings.Contains(req.Messages[0].Content, "单步推理器") {
+		t.Fatalf("索引 0 应是 reasoner 的 systemPrompt: %q", req.Messages[0].Content)
+	}
+	// 一条不丢、一条不被覆盖。
+	if req.Messages[1].Content != "第一条：用户先开口" {
+		t.Fatalf("第一条用户消息被改写了: %q", req.Messages[1].Content)
 	}
 	if req.Messages[2].Content != in[1].Content || req.Messages[3].Content != in[2].Content {
 		t.Fatalf("中间的轮次被弄丢了: %+v", req.Messages)
-	}
-	if !strings.Contains(req.Messages[1].Content, "当前任务：《原生任务名》（id=task-native-1）") {
-		t.Fatalf("索引 1 应是任务提示: %q", req.Messages[1].Content)
 	}
 }
 
