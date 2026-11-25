@@ -335,6 +335,39 @@ func TestOwnerControlWireKeys(t *testing.T) {
 	}
 }
 
+// TestStoreReportRemoteItemWireKey 钉住 store 补报的新增线路键 remote_item_id（R-030）：
+// agent 与 memory 是两个进程，字段名漂移不会被 Go 结构体往返测试抓到。
+func TestStoreReportRemoteItemWireKey(t *testing.T) {
+	raw, err := EncodePayload(StorePayload{
+		Work: "w1", Role: "tool", Content: "done",
+		Report: &StoreReport{SourceService: "timer", ReportID: "r1", ReportSeq: 1,
+			CallID: "call-1", Phase: "done", Final: true, RemoteItemID: "owner-item-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, ok := decodeMap(t, raw)["report"].(map[string]any)
+	if !ok {
+		t.Fatalf("store 载荷缺少 report 对象: %v", decodeMap(t, raw))
+	}
+	if _, has := report["remote_item_id"]; !has {
+		t.Fatalf("report 缺少线路键 remote_item_id（当前键：%v）", keysOf(report))
+	}
+	// 省略时不得上线空字段：旧写方的 hash 不能因为新增字段而漂移。
+	raw, err = EncodePayload(StorePayload{
+		Work: "w1", Role: "tool", Content: "done",
+		Report: &StoreReport{SourceService: "timer", ReportID: "r1", ReportSeq: 1,
+			CallID: "call-1", Phase: "done", Final: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report = decodeMap(t, raw)["report"].(map[string]any)
+	if _, has := report["remote_item_id"]; has {
+		t.Fatal("remote_item_id 为空时不应上线（旧补报的载荷形状必须保持不变）")
+	}
+}
+
 // keysOf 取 map 的键（失败信息里要看得见到底出现了哪些键）。
 func keysOf(m map[string]any) []string {
 	out := make([]string, 0, len(m))
@@ -352,6 +385,13 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 		out  any
 	}{
 		{"deliver", DeliverPayload{Text: "hi", ConversationID: "qq:private:10001"}, &DeliverPayload{}},
+		{"storeWithReport", StorePayload{
+			ConversationID: "c1", Work: "w1", Role: "tool", Kind: "tool_result", Content: "done",
+			Report: &StoreReport{
+				SourceService: "shell", ReportID: "r1", ReportSeq: 2, CallID: "call-1",
+				Phase: "done", Final: true, RemoteItemID: "owner-item-1",
+			},
+		}, &StorePayload{}},
 		{"message", MessagePayload{Text: "hi", Conversation: "qq:private:10001", Images: []string{"img-1"}}, &MessagePayload{}},
 		{"messageFiles", MessagePayload{Text: "hi", Files: []string{"file-1", "file-2"}}, &MessagePayload{}},
 		{"messagePrivateSender", MessagePayload{Text: "hi", Conversation: "qq:private:10001", Sender: &Sender{

@@ -19,6 +19,10 @@ import "github.com/vmihailenco/msgpack/v5"
 // 它是 report_receipts 的幂等键来源：同一 (source_service, report_id) 重放只入账一次；
 // (call_id, report_seq) 的唯一约束防止“换 report_id 重放”。
 // Phase / Final / Data 一并持久化；Data 原样透传 owner_service 自定的结构化补充（msgpack 字节不改写）。
+//
+// RemoteItemID 是 owner 自己的受理句柄（R-030 加法字段）：owner 的补报经 agent 中转，
+// agent 从受理回执的 item_id 拿到它，随补报带回 memory，用于回填 calls.remote_item_id。
+// 省略 / 空串 = 本次补报不携带句柄（memory 保持原值，不回填空值）。
 type StoreReport struct {
 	SourceService string             `msgpack:"source_service" json:"source_service"`
 	ReportID      string             `msgpack:"report_id" json:"report_id"`
@@ -27,6 +31,7 @@ type StoreReport struct {
 	Phase         string             `msgpack:"phase,omitempty" json:"phase,omitempty"`
 	Final         bool               `msgpack:"final,omitempty" json:"final,omitempty"`
 	Data          msgpack.RawMessage `msgpack:"data,omitempty" json:"data,omitempty"`
+	RemoteItemID  string             `msgpack:"remote_item_id,omitempty" json:"remote_item_id,omitempty"`
 }
 
 // StoreResult 是 store 的回执（S-001 §3.0）：item_id 是落库记录 id，seq 是会话内单调序号。

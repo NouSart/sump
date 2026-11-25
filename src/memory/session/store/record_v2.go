@@ -49,6 +49,9 @@ type V2ReportInput struct {
 	Phase         string // accepted / approved / done / failed / timeout / cancelled
 	Final         bool   // 终态报告才为 true
 	Data          []byte // owner 自定的结构化补充，原样透传
+	// RemoteItemID 是 owner 的受理句柄（R-030 加法字段）：只在首次非空时回填
+	// calls.remote_item_id；空值忽略，与既有值不同则保留既有值（见 V2RecordResult）。
+	RemoteItemID string
 }
 
 // V2RecordInput 是一次 v2 store 请求的全部事实。
@@ -67,10 +70,15 @@ type V2RecordInput struct {
 }
 
 // V2RecordResult 是落库回执。Deduped=true 表示本次没有新行，ItemID / Seq 是既有那条。
+//
+// RemoteMismatch=true 表示补报带的 remote_item_id 与 calls 已回填的句柄不同（或该句柄
+// 已被同一 service/work 的另一条 call 占用）：账本保留首个句柄，补报本身照常入账。
+// 这是给调用方记日志的可见标记，不是失败——回滚补报会让账本丢掉一条真实进展。
 type V2RecordResult struct {
-	ItemID  string
-	Seq     int64
-	Deduped bool
+	ItemID         string
+	Seq            int64
+	Deduped        bool
+	RemoteMismatch bool
 }
 
 // RecordV2Atomic 在一个事务里完成「幂等判定 + 落消息 + 落回执 + 推进 call」。
@@ -189,6 +197,7 @@ func (s *Store) RecordV2Atomic(ctx context.Context, in V2RecordInput) (V2RecordR
 	}
 
 	// 4) 落回执（与消息同一事务，所以不会再出现「有回执没消息」或反之）。
+	remoteMismatch := false
 	if in.ClientItemID != "" {
 		if fillPlaceholder {
 			if _, err := tx.ExecContext(ctx,
@@ -214,7 +223,7 @@ func (s *Store) RecordV2Atomic(ctx context.Context, in V2RecordInput) (V2RecordR
 			reportDataArg(in.Report.Data), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return V2RecordResult{}, fmt.Errorf("写入补报幂等记录: %w", mapReceiptConflict(err))
 		}
-		if err := applyReportToCall(ctx, tx, work, in.Report, itemID); err != nil {
+		if err := applyReportToCall(ctx, tx, work, in.Report, itemID, &remoteMismatch); err != nil {
 			return V2RecordResult{}, err
 		}
 	}
@@ -222,7 +231,7 @@ func (s *Store) RecordV2Atomic(ctx context.Context, in V2RecordInput) (V2RecordR
 	if err := tx.Commit(); err != nil {
 		return V2RecordResult{}, fmt.Errorf("提交 v2 落库: %w", err)
 	}
-	return V2RecordResult{ItemID: itemID, Seq: seqOut, Deduped: dedupedMsg}, nil
+	return V2RecordResult{ItemID: itemID, Seq: seqOut, Deduped: dedupedMsg, RemoteMismatch: remoteMismatch}, nil
 }
 
 // checkReportShape 校验补报的最小自洽性（词汇表见 S-001 §3.9）。
@@ -316,18 +325,20 @@ func insertMessageV2(ctx context.Context, tx *sql.Tx, in V2RecordInput) (string,
 	return strconv.FormatInt(id, 10), seq, false, nil
 }
 
-// loadCallForReport 读一行 call 并返回它的归属与两维状态（补报入账前核对用）。
-func loadCallForReport(ctx context.Context, tx *sql.Tx, callID string) (callWork, service, observe, exec string, err error) {
+// loadCallForReport 读一行 call 并返回它的归属、两维状态与已回填的 owner 受理句柄
+// （补报入账前核对用）。remote_item_id 为空表示 owner 尚未受理 / 句柄未回填。
+func loadCallForReport(ctx context.Context, tx *sql.Tx, callID string) (callWork, service, observe, exec, remote string, err error) {
 	err = tx.QueryRowContext(ctx,
-		`SELECT work, service, observe_state, exec_state FROM calls WHERE id = ?`,
-		callID).Scan(&callWork, &service, &observe, &exec)
+		`SELECT work, service, observe_state, exec_state, COALESCE(remote_item_id, '')
+		   FROM calls WHERE id = ?`,
+		callID).Scan(&callWork, &service, &observe, &exec, &remote)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", "", "", fmt.Errorf("%w: %s", ErrCallNotFound, callID)
+		return "", "", "", "", "", fmt.Errorf("%w: %s", ErrCallNotFound, callID)
 	}
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("读取 call %s: %w", callID, err)
+		return "", "", "", "", "", fmt.Errorf("读取 call %s: %w", callID, err)
 	}
-	return callWork, service, observe, exec, nil
+	return callWork, service, observe, exec, remote, nil
 }
 
 // applyReportToCall 按补报的 phase 推进 call 账本（S-001 §5.1 两维状态机）。
@@ -337,9 +348,14 @@ func loadCallForReport(ctx context.Context, tx *sql.Tx, callID string) (callWork
 //   - done / failed / timeout / cancelled：终态报告，exec 落对应值、phase 落报告值、
 //     observe=closed，result_ref 指向刚落库的消息（结果先落库、同一事务里关闭）。
 //
+// 补报若带 remote_item_id（R-030），在本事务里首次回填 calls.remote_item_id：
+// 空值忽略、同值幂等；已有值与新值不同（或句柄已被同 service/work 的另一条 call
+// 占用）时**保留原值**并把 remoteMismatch 置真，由上层记日志——补报本身照常入账，
+// 不因为一个句柄对不上就丢掉真实进展。
+//
 // 非法转移一律 ErrCallConflict，整笔回滚：补报不能让已取消的调用「复活成完成」。
-func applyReportToCall(ctx context.Context, tx *sql.Tx, work string, r *V2ReportInput, itemID string) error {
-	callWork, service, observe, exec, err := loadCallForReport(ctx, tx, r.CallID)
+func applyReportToCall(ctx context.Context, tx *sql.Tx, work string, r *V2ReportInput, itemID string, remoteMismatch *bool) error {
+	callWork, service, observe, exec, remote, err := loadCallForReport(ctx, tx, r.CallID)
 	if err != nil {
 		return err
 	}
@@ -350,6 +366,13 @@ func applyReportToCall(ctx context.Context, tx *sql.Tx, work string, r *V2Report
 	if strings.TrimSpace(service) != strings.TrimSpace(r.SourceService) {
 		return fmt.Errorf("%w: call %s 的 owner 是 %s，补报却来自 %s",
 			ErrCallConflict, r.CallID, service, r.SourceService)
+	}
+	mismatch, err := applyRemoteItem(ctx, tx, r.CallID, r.RemoteItemID, remote)
+	if err != nil {
+		return err
+	}
+	if remoteMismatch != nil {
+		*remoteMismatch = mismatch
 	}
 
 	toObserve, toExec := observe, exec
@@ -403,6 +426,35 @@ func applyReportToCall(ctx context.Context, tx *sql.Tx, work string, r *V2Report
 		return fmt.Errorf("关闭 call %s（%s）: %w", r.CallID, r.Phase, err)
 	}
 	return nil
+}
+
+// applyRemoteItem 首次回填 owner 受理句柄（R-030）。返回 mismatch=true 表示
+// 补报带来的句柄与账本里已有的值不一致（或撞上同 service/work 的另一条 call）：
+// 保留账本原值，不覆盖；补报本身不因此失败。
+func applyRemoteItem(ctx context.Context, tx *sql.Tx, callID, provided, stored string) (bool, error) {
+	provided = strings.TrimSpace(provided)
+	stored = strings.TrimSpace(stored)
+	switch {
+	case provided == "":
+		return false, nil
+	case stored == provided:
+		return false, nil
+	case stored != "":
+		// 已经有了另一个句柄：账本只认首次回填，差异交给上层记日志。
+		return true, nil
+	}
+	_, err := tx.ExecContext(ctx,
+		`UPDATE calls SET remote_item_id = ? WHERE id = ? AND (remote_item_id IS NULL OR remote_item_id = '')`,
+		provided, callID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			// 句柄已被同一 (service, work) 的另一条 call 占用（部分唯一索引）：
+			// 不覆盖、不换绑，标记差异；补报仍按 phase 推进本条 call。
+			return true, nil
+		}
+		return false, fmt.Errorf("回填 call %s 的 remote_item_id: %w", callID, err)
+	}
+	return false, nil
 }
 
 // reportDataArg 把空的补报 data 落成 NULL（区分「没有补充」与「补充是空 msgpack」）。
