@@ -41,3 +41,28 @@ func TestQueueDepthMetricCoversAllStates(t *testing.T) {
 		}
 	}
 }
+
+// TestSnapshotEvictionMetric 逐出份数进 counter；nil 注册表与 0 份不产生 series。
+func TestSnapshotEvictionMetric(t *testing.T) {
+	reg := spv2.NewRegistry()
+	recordSnapshotEvictionsTo(reg, 2)
+	var got float64
+	for _, m := range reg.Snapshot() {
+		if m.Name == "sump_snapshot_evictions_total" {
+			got = m.Value
+			if len(m.Labels) != 0 {
+				t.Fatalf("逐出计数不应带业务 label: %+v", m.Labels)
+			}
+		}
+	}
+	if got != 2 {
+		t.Fatalf("sump_snapshot_evictions_total = %v，期望 2", got)
+	}
+	recordSnapshotEvictionsTo(nil, 1) // 未启动骨架：不得 panic
+	recordSnapshotEvictionsTo(reg, 0) // 0 份不新增/累加
+	for _, m := range reg.Snapshot() {
+		if m.Name == "sump_snapshot_evictions_total" && m.Value != 2 {
+			t.Fatalf("0 份不应累加: %+v", m)
+		}
+	}
+}
