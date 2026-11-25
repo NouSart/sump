@@ -80,6 +80,12 @@ type Server struct {
 	runMu            sync.Mutex // 名额锁：running 只在此锁下读写
 	running          int
 	pendingApprovals chan struct{}
+
+	// 控制面账本（owner_status）：受理句柄 → 执行维。只记账，不参与调度——
+	// shell 仍然没有队列。终态记保留窗口见 owner_control.go。
+	trackMu    sync.Mutex
+	tracked    map[string]trackedJob
+	trackOrder []string
 }
 
 // job 是一条已受理的命令：审批 → 执行，全程带着补报所需的信息。
@@ -143,6 +149,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		approvalService:  cfg.ApprovalService,
 		approvalWait:     cfg.ApprovalTimeout,
 		pendingApprovals: make(chan struct{}, maxPendingApprovals),
+		tracked:          map[string]trackedJob{},
 	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
@@ -163,6 +170,9 @@ func New(cfg Config, logger *log.Logger) *Server {
 		},
 		Logger: logger,
 	})
+	// owner 侧控制面（R-029）：owner_status 能给出受理句柄的执行维；
+	// cancel / pause / resume 没有路径，回 not_supported（见 owner_control.go）。
+	s.Service.SetOwnerControl(s)
 
 	// 可设置项：预设 = 本服务的启动引导值（来源由服务自己决定，见 main.go 的 flag）。
 	s.HandleSetting("exec.root", root, func(v string) error {
@@ -350,6 +360,7 @@ func (s *Server) run(caller, trace string, body []byte) (any, error) {
 		progressReady: make(chan struct{}),
 	}
 	s.logger.Printf("受理命令 %s（来自 %s，命令 %d 字节）", j.item, j.caller, len(j.command))
+	s.track(j.item, protocol.OwnerExecCreated)
 	go s.process(j)
 	return protocol.ShellRunResult{ItemID: j.item, Phase: "queued"}, nil
 }
@@ -389,6 +400,7 @@ func (s *Server) process(j *job) {
 		defer j.finishProgress()
 		if r := recover(); r != nil {
 			s.Report("shell_internal", "审批或进展处理发生内部异常；item="+j.item)
+			s.track(j.item, protocol.OwnerExecFailed)
 			s.report(j, "rejected", fmt.Sprintf("未执行：审批处理发生内部异常\n$ %s", j.command),
 				protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: "internal error"})
 		}
@@ -399,6 +411,7 @@ func (s *Server) process(j *job) {
 	cancel()
 	if verr != nil {
 		s.logger.Printf("命令 %s 未通过审批: %v", j.item, verr)
+		s.track(j.item, protocol.OwnerExecFailed)
 		s.report(j, "rejected", fmt.Sprintf("未执行：审批未通过——%v\n$ %s", verr, j.command),
 			protocol.ShellEventData{Command: j.command, WorkDir: j.workDir, Error: verr.Error()})
 		return
@@ -408,9 +421,11 @@ func (s *Server) process(j *job) {
 	// approved 已经投递过（尝试过），放行终态补报的投递；否则 reportAfterProgress 会等自己。
 	j.finishProgress()
 	// 执行完立刻让出名额：补报可能慢（网络）或暂未被认领，不能让它占着名额。
+	s.track(j.item, protocol.OwnerExecRunning)
 	phase, text, data := s.executeAndCollect(j)
 	s.release()
 	released = true
+	s.track(j.item, terminalExecOfPhase(phase))
 	s.reportAfterProgress(j, phase, text, data)
 }
 

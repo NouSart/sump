@@ -49,6 +49,13 @@ var handledButUndeclared = map[string]map[string]string{
 		"settings_schema": "入站：门面读取设置声明做聚合与冲突检查（内部）",
 	},
 	"mcp": {"cancel_import": "入站：外部取消导入", "report_result": "入站：导入进度补报"},
+	// 服务骨架的 owner 控制面：memory 按名直接调用（call_status / call_control 的执行服务
+	// 对端，R-029），不是名册里的能力，也不给模型当工具。实现挂在 src/service 骨架里，
+	// 接线的服务自动具备，所以按模块登记在骨架这里。
+	"service": {
+		"owner_status":  "控制面：owner 侧对账（memory 的对端，非能力）",
+		"owner_control": "控制面：owner 侧控制（memory 的对端，非能力）",
+	},
 	// reasoner 自己接收的入站动作（门户停手/继续）。
 	"reasoner_self": {
 		"user_hold": "入站：门户停手/继续",

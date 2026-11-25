@@ -67,7 +67,7 @@
 - [ ] **`context` 的 shared 目录未接** — 基座 + experience 四节已由 facade 组合（R-026-D1=(a)）；共享会话目录仍只经 `shared_sessions` 工具读取，不注入 context。`session` 依 `architecture_test` 不得 import `experience`。
 - [ ] **`work_context_grants` 死表** — 只建表，无读写路径；跨 work 的引用级授权未实现。
 - [ ] **周期 call 对账** — 只有单次 `call_status`；`created` 悬挂与 orphaned 判定没有周期 reconciler。
-- [ ] **owner 恢复与生产 owner 客户端** — `owner_recovery_complete` 恒 `false` 的保守口径；生产 owner 客户端仍缺（只有接口 + fake），`pause/resume` 在未注入时 `unavailable`。
+- [ ] **owner 恢复与生产 owner 客户端** — owner 侧的 `owner_status` / `owner_control` 已落地（R-029：shell 只有 status，cancel/pause/resume 回 `not_supported`；timer 支持 status/cancel；batch 三种都支持）；memory 侧的生产 `OwnerClient` 仍缺（只有接口 + fake），未注入时 `pause/resume` 回 `unavailable`、`owner_recovery_complete` 恒 `false`。
 - [ ] **快照容量** — `context_snapshots` 只有 24h 过期，无 1 MiB 单条上限 / 2 GiB 总量 / 逐出。
 - [ ] **图片索引** — 新架构无 `image_index` / `image_note`；图片「首次建行」与 `fetch` 失败转 `lost` 未接。
 - [ ] **`origin_session` 留空** — 不透明会话 ID 的脱敏在 `experience/redact`；`session` 不得 import `experience`，复制第二套会造第二份真相。
