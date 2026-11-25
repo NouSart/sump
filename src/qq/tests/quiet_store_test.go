@@ -27,13 +27,22 @@ func startBrokenMemory(t *testing.T, center *stubCenter) *stubMemory {
 	sm := &stubMemory{}
 	srv, err := spv2.NewServer(spv2.Card{
 		Protocol: spv2.ProtocolVersion, Name: "memory", Actor: spv2.ServiceRef("memory"),
-		Version: "stub/1", Methods: []spv2.Method{{Name: "store", Shape: spv2.ShapeCall}},
+		Version: "stub/1", Methods: []spv2.Method{
+			{Name: "work_open", Shape: spv2.ShapeCall},
+			{Name: "store", Shape: spv2.ShapeCall},
+		},
 		Limits: spv2.Limits{MaxBody: 1 << 20},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	sm.srv = srv
+	srv.Handle("work_open", func(_ context.Context, call *spv2.Call) error {
+		sm.mu.Lock()
+		sm.workOpens = append(sm.workOpens, memoryWorkOpen{FrameWork: call.Frame.Work})
+		sm.mu.Unlock()
+		return call.Reply(protocol.WorkOpenResult{TaskID: "t-stub"})
+	})
 	srv.Handle("store", func(_ context.Context, call *spv2.Call) error {
 		sm.mu.Lock()
 		sm.stores = append(sm.stores, memoryStore{})
@@ -89,6 +98,9 @@ func TestQuietStoreFailureIsVisible(t *testing.T) {
 	if broken.storesLen() < 2 {
 		t.Fatalf("应当尝试落库两条，实际 %d", broken.storesLen())
 	}
+	if broken.workOpensLen() < 2 {
+		t.Fatalf("落库前应先登记 work，实际 work_open %d 次", broken.workOpensLen())
+	}
 
 	// 日志里要看得见"累计"——这是"漏了多少条"的唯一线索。
 	deadline = time.Now().Add(3 * time.Second)
@@ -105,5 +117,79 @@ func TestQuietStoreFailureIsVisible(t *testing.T) {
 	// 观察档的消息不进推理链：失败也不该突然去打扰模型。
 	if al.count() != 0 {
 		t.Fatalf("观察档不该触发推理，实际 %d 条", al.count())
+	}
+}
+
+// TestQuietStoreOpensWorkThenStores 观察档的正常链路：先 work_open 登记会话级 work，
+// 再带着同一个 work（帧头 + 载荷）与幂等键 store。work 按会话稳定，同会话的消息共用一个。
+func TestQuietStoreOpensWorkThenStores(t *testing.T) {
+	sc := startStubCenter(t)
+	nc := startStubNapCat(t)
+	startStubReasoner(t, sc)
+	sm := startStubMemory(t, sc)
+	qq := startQQ(t, sc, nc, "2271917353")
+	nc.waitConn(t, 5*time.Second)
+
+	if rp := pushConfigure(t, qq.WsURL(), protocol.ConfigurePayload{Key: "group.mode", Value: "observe"}); !rp.OK {
+		t.Fatalf("group.mode 应可热改: %+v", rp)
+	}
+	nc.sendEvent(t, groupTextEvent(t, 67890, 12345, "随便聊聊", false))
+
+	wantWork := "qq-quiet:qq:group:67890"
+	opened := sm.waitWorkOpen(t, 5*time.Second)
+	if opened.Payload.Work != wantWork || opened.FrameWork != wantWork {
+		t.Fatalf("work_open 的帧头/载荷 work 应一致且按会话稳定: 帧头=%q 载荷=%q", opened.FrameWork, opened.Payload.Work)
+	}
+	if opened.Payload.ConversationID != "qq:group:67890" || opened.Payload.TaskName != "随便聊聊" || opened.Payload.Boss != "qq" {
+		t.Fatalf("work_open 参数不符: %+v", opened.Payload)
+	}
+
+	saved := sm.waitStore(t, 5*time.Second)
+	if saved.Payload.Work != wantWork || saved.FrameWork != wantWork {
+		t.Fatalf("store 必须带同一个 work（帧头=%q 载荷=%q）", saved.FrameWork, saved.Payload.Work)
+	}
+	if saved.Payload.ClientItemID == "" || !strings.HasPrefix(saved.Payload.ClientItemID, "qq:") {
+		t.Fatalf("store 应带 qq 生成的幂等键，实际 %q", saved.Payload.ClientItemID)
+	}
+	if saved.Payload.ConversationID != "qq:group:67890" || saved.Payload.Role != "user" || saved.Payload.Kind != "user" {
+		t.Fatalf("store 其余字段应保持不变: %+v", saved.Payload)
+	}
+}
+
+// TestQuietStoreSkipsStoreWhenWorkOpenFails 登记 work 失败就不发 store：
+// 工作没登记，store 必然再失败一次；但仍然要留下可见信号（日志 + 累计次数）。
+func TestQuietStoreSkipsStoreWhenWorkOpenFails(t *testing.T) {
+	sc := startStubCenter(t)
+	nc := startStubNapCat(t)
+	startStubReasoner(t, sc)
+	sm := startStubMemory(t, sc)
+	sm.mu.Lock()
+	sm.failWorkOpen = true
+	sm.mu.Unlock()
+	var logs syncBuffer
+	qq := startQQWithLog(t, sc, nc, "2271917353", io.MultiWriter(os.Stdout, &logs))
+	nc.waitConn(t, 5*time.Second)
+
+	if rp := pushConfigure(t, qq.WsURL(), protocol.ConfigurePayload{Key: "group.mode", Value: "observe"}); !rp.OK {
+		t.Fatalf("group.mode 应可热改: %+v", rp)
+	}
+	nc.sendEvent(t, groupTextEvent(t, 67890, 12345, "登记不了", false))
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && sm.workOpensLen() == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if sm.workOpensLen() == 0 {
+		t.Fatal("应当先尝试登记 work")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got := sm.storesLen(); got != 0 {
+		t.Fatalf("work_open 失败后不该再发 store，实际发了 %d 次", got)
+	}
+	text := logs.String()
+	for _, want := range []string{"work_open", "累计 1 次", "这条消息不在上下文里了"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("work_open 失败要留下可见信号（缺 %q）:\n%s", want, text)
+		}
 	}
 }

@@ -568,8 +568,8 @@ func TestStoreV2SeqIncrements(t *testing.T) {
 }
 
 // 旧调用方（无 work）不再有兼容路径：store 统一走 v2，必须显式 invalid_argument。
-// R-026 P2c 删除了 actions.go 的 ClientItemID 分叉；qq 只记录路径需要随 P2 之外的一笔
-// 补 work / client_item_id（范围不在本提交）。
+// R-026 P2c 删除了 actions.go 的 ClientItemID 分叉；qq 只记录路径已改为先 work_open
+// 再带 work / client_item_id 的 store（fix(qq): 只记录路径接入 work_open 与 v2 store）。
 func TestStoreRequiresWork(t *testing.T) {
 	s, _ := newStoreV2TestServer(t)
 	body := storeV2Body(t, protocol.StorePayload{ConversationID: "c1", Role: "user", Content: "老调用方"})

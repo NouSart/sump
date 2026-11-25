@@ -724,11 +724,20 @@ func (s *Server) groupInfo(groupID int64) groupMeta {
 	return meta
 }
 
+// quietWork 返回"只记录"路径按会话稳定的 work id：
+// 同一会话的消息共用一个执行单元（work_open 幂等，重复调用不重建），
+// 这样消息的归属（store v2 的 work）不会随进程重启或消息条数变化。
+func quietWork(cid string) string { return "qq-quiet:" + cid }
+
 // storeQuietly 把一条"只记录不推理"的消息写进记忆：上下文里留痕，但不烧推理轮次。
 //
 // 正文带上与推理侧同样的来源标注（Sender.Label 是协议里的唯一实现），
 // 这样以后模型召回这段历史时知道这句话是谁在群里说的；
 // 任务名显式给出（否则会从标注那一行推出一个像标签的任务名）。
+//
+// store v2 要求消息归属一个已登记的 work（P2 后 store 统一走 v2，work 必填）：
+// 所以先 work_open（同一帧头 work）再 store；work_open 失败就不发 store——
+// 工作没登记，store 必然再失败一次，只会把同一个错误记两遍。
 func (s *Server) storeQuietly(cid string, sender *protocol.Sender, text string, ids, fileIDs []string) {
 	label := sender.Label()
 	content := text
@@ -740,26 +749,43 @@ func (s *Server) storeQuietly(cid string, sender *protocol.Sender, text string, 
 		}
 	}
 	meta, _ := json.Marshal(protocol.MessageMeta(sender, ids, fileIDs))
+	taskName := taskNameOf(text, ids, fileIDs)
+	work := quietWork(cid)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if _, err := s.Call(ctx, s.memoryName(), "work_open", protocol.WorkOpenPayload{
+		Work:           work,
+		ConversationID: cid,
+		TaskName:       taskName,
+		Boss:           s.cfg.Name,
+	}, work); err != nil {
+		s.quietStoreFailed(cid, "work_open", err)
+		return
+	}
 	_, err := s.Call(ctx, s.memoryName(), "store", protocol.StorePayload{
 		ConversationID: cid,
+		Work:           work,
+		ClientItemID:   s.cfg.Name + ":" + protocol.NewID(),
 		Boss:           s.cfg.Name,
 		Role:           "user",
 		Kind:           "user",
 		Content:        content,
 		Meta:           string(meta),
-		TaskName:       taskNameOf(text, ids, fileIDs),
-	}, protocol.NewID())
+		TaskName:       taskName,
+	}, work)
 	if err != nil {
-		// 这条消息就此从上下文里消失了——只写一行日志的话，没人知道"少了多少条"。
-		// 记一个累计数（日志里能看出规模），并沿既有的 report 通道上报中心（与"跳转未送达"同一处可见）。
-		failures := s.quietStoreFailures.Add(1)
-		s.logger.Printf("会话 %s：只记录模式落库失败（累计 %d 次，这条消息不在上下文里了）: %v", cid, failures, err)
-		s.Report("store", fmt.Sprintf("qq 只记录落库失败（累计 %d 次，会话 %s）: %v", failures, cid, err))
+		s.quietStoreFailed(cid, "store", err)
 		return
 	}
 	s.quietStoreOK.Add(1)
+}
+
+// quietStoreFailed 记录"只记录"路径的一次失败：这条消息不在上下文里了，必须有可见信号。
+// 记一个累计数（日志里能看出规模），并沿既有的 report 通道上报中心（与"跳转未送达"同一处可见）。
+func (s *Server) quietStoreFailed(cid, step string, err error) {
+	failures := s.quietStoreFailures.Add(1)
+	s.logger.Printf("会话 %s：只记录模式落库失败（%s，累计 %d 次，这条消息不在上下文里了）: %v", cid, step, failures, err)
+	s.Report("store", fmt.Sprintf("qq 只记录落库失败（%s，累计 %d 次，会话 %s）: %v", step, failures, cid, err))
 }
 
 // taskNameOf 从消息正文里取一个任务名；正文为空（只发了图 / 文件）时按附件类型兜底——
