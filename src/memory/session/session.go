@@ -56,6 +56,9 @@ type Server struct {
 
 	ownerMu     sync.RWMutex // ownerClient 的注入/读取（Start 前后都可能问）
 	ownerClient OwnerClient  // 执行服务客户端（可空：nil 有明确语义，见 owner_client.go）
+
+	reconcileMu     sync.Mutex                     // 周期对账的 owner 离线退避（reconcile.go）
+	reconcileOwners map[string]ownerReconcileState // owner service → 连续失败次数与下次可问时间
 }
 
 // New 创建实例并注册动作（对外 method 进 provides，内部 method 只注册）。
