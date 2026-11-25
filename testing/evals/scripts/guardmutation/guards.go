@@ -945,10 +945,10 @@ var guards = []guard{
 	{
 		name: "V2 record_v2 补报推进账本的错误被吞（非法补报照样入账）",
 		file: "src/memory/session/store/record_v2.go",
-		old: `		if err := applyReportToCall(ctx, tx, work, in.Report, itemID); err != nil {
+		old: `		if err := applyReportToCall(ctx, tx, work, in.Report, itemID, &remoteMismatch); err != nil {
 			return V2RecordResult{}, err
 		}`,
-		new: `		_ = applyReportToCall(ctx, tx, work, in.Report, itemID)`,
+		new: `		_ = applyReportToCall(ctx, tx, work, in.Report, itemID, &remoteMismatch)`,
 	},
 	{
 		name: "V2 record_v2 不核对 call 的归属 work（可替别人的调用记账）",
