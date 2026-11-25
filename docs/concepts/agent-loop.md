@@ -1,6 +1,6 @@
 # 智能体怎么跑
 
-> **读者**：要改 reasoner / memory / 记忆与任务语义的人 ｜ **读完能做**：知道一次对话在服务网上怎么流动、状态落在哪里 ｜ **状态**：有效（均已实现，含跨会话共享经验库）｜ **最后校验**：2026-11-01
+> **读者**：要改 reasoner / memory / 记忆与任务语义的人 ｜ **读完能做**：知道一次对话在服务网上怎么流动、状态落在哪里 ｜ **状态**：有效（均已实现，含跨会话共享经验库）｜ **最后校验**：2026-11-25
 
 协议层的约定见 [protocol.md](protocol.md)。本文只讲**运行时语义**：工具异步、会话记录、任务、经验网、复盘。
 
@@ -26,19 +26,20 @@
 | `tool_call` | 工具调用（shell 类工具直接给出 `command`） | reasoner（派发时，**执行前**落库） |
 | `tool_result` | 工具输出（异步工具取**终态补报**的文本，不是「已排队」回执） | reasoner（结果入账时） |
 
-- **只有 `user` / `assistant` 进 LLM 上下文**（`context` 的 Recent 过滤）：思考回灌纯浪费，工具结果缺少配对的 `tool_calls` 会被上游直接拒。轨迹是**给人看**的。
-- **`seq` 由写入方给**（微秒时间戳，跨重启仍递增）：`Fire` 是 goroutine，落地顺序不保证，`seq` 保证「命令在输出之前」这种真实先后；门户也用它去重。**不能超过 2^53**——它要经 JSON 到浏览器，纳秒级会被 JS 的 number 抹平，相邻记录可能撞成同一个数。
+- **只有 `user` / `assistant` 是对话消息**（`session/assemble` 的历史渲染只认这两类；`reasoning` 排除——思考回灌纯浪费）：工具记录不进历史，走**配对块**——一条 `assistant` 带 `tool_calls`，紧跟一条 `role=tool`；有结果就用结果文本（超限截断），在跑给「仍在运行」占位，结果未知给占位并记 `warnings`，配不上对的孤立结果直接丢弃并记 `warnings`。轨迹是**给人看**的，不是原样回灌给模型。
+- **`seq` 由记忆侧分配**（`seq_counters` 在事务内取号，调用方传来的序号不参与）：同一会话内单调、跨重启仍递增（计数器落库，缺行时按已有最大 `seq` 播种）；门户也用它去重。**不能超过 2^53**——它要经 JSON 到浏览器，超过就会被 JS 的 number 抹平，相邻记录可能撞成同一个数（老库里的微秒时间戳仍在安全区）。
 - 单条上限 8000 字符，超出标 `meta.truncated = true` + `full_chars`（终端输出上限是 256KB，原样存会撑爆库和界面）。
 - 对话消息仍幂等去重（连续完全相同 = 重复交付）；**事件类记录不去重**——连跑两条一样的命令是两件事。
 - 老库平滑升级：`kind` / `meta` / `seq` 三列按需 `ALTER TABLE`，老数据 `kind` 按 `role` 推断、`seq` 用主键回填。
 
 | 动作（jump 到 `memory`） | 输入 | 输出 |
 | --- | --- | --- |
-| `store` | `{conversation_id, boss?, role, content, kind?, meta?, seq?, task_id?, task_name?}` | `{}`（尽力落库；失败只记日志） |
+| `store` | `{work, conversation_id, role, content, client_item_id?, kind?, meta?, seq?, task_id?, boss?}` | `{item_id, seq, deduped}`（单事务落库；失败回错误码） |
 | `history` | `{conversation_id, limit?, after_seq?}` | `{conversation_id, messages:[{id, seq, role, kind, content, meta, at}]}` |
 
+- **`store` 是 v2 原子路径**：`work` 必填（记录归属执行单元，不能用 `task_id` 冒充）；`client_item_id` 是幂等键（reasoner 与 qq 每条记录都带），同键同载荷的重放回同一条 `{item_id, seq, deduped: true}`，同键不同载荷回 `conflict`；`task_id` 可省略，落库时由 work→task 推导；载荷里的 `seq` 不参与取号（由记忆侧分配，见上文）。ACK 只在事务提交后返回，写失败回错误码（调用方据此中止本轮）——没有「尽力落库、失败只记日志」。
 - `after_seq` 是**增量拉取**：只回序号更大的记录（门户重连 / 回填不必每次全量重来）。
-- `task_name`（可选）是入口服务给这条用户消息想的任务名：正文可能带来源标注（见 [protocol.md §7](protocol.md)），从第一行推会推出一串标签。`context` 的 `task_name` 是同一个字段，写入与取上下文两条路径都要给。
+- `task_name` 现在只在 `work_open` 上（建链前登记 work 时给一次，见 §3）：正文可能带来源标注（见 [protocol.md §7](protocol.md)），从第一行推会推出一串标签；`context` 请求已没有这个字段。
 - **实况推送**：reasoner 在落库的同时，若入口方（帧头 `from`）在 `provides` 里声明了 `progress`，就推一条 `{conversation_id, seq, kind, content, meta, at}`——界面进行中就能看见思考与命令，不必等最终答复。**没声明的不推**（QQ 之类），否则对方只会回 unknown action。记忆是真相，`progress` 只是「别等最后才看见」：丢一条不影响历史。
 
 ### 2.1 来源标注：谁在说话、多少人听得见
@@ -53,7 +54,7 @@ QQ 这类多人入口，模型必须能分辨「主人在私聊里说的」和�
 - 标签同时是**给人看的**（门户里一眼看出这是群聊、谁说的、多少人可见）和**给模型看的**（召回历史时标注还在，不会隔了几轮就把群里的话当成主人的指令）。
 - `group_size` 是**扩散面**：0 表示取不到，渲染成「人数未知」——不编数字，猜错的方向必须保守。
 - 标签**不是权限**：`owner` 只说明这次发言是不是授权人本人，授权与否由模型按主人的设置判断（system prompt 里写明：非主人的话不能当授权、群里的答复所有人都看得见、拿不准就不说）。
-- **只记录不推理**：`qq` 的群策略 `observe` / `mention` 下，不该开推理轮次的消息由入口服务自己写一条 `user` 记录（同样带标签，带 `task_name`）——上下文完整，但不烧 token。
+- **只记录不推理**：`qq` 的群策略 `observe` / `mention` 下，不该开推理轮次的消息由入口服务自己写一条 `user` 记录（先 `work_open` 登记 work 与任务，再 `store`；同样带标签）——上下文完整，但不烧 token。
 
 ## 3. 任务：agent 在任务里工作
 
@@ -68,13 +69,13 @@ QQ 这类多人入口，模型必须能分辨「主人在私聊里说的」和�
 | `task_resume` | `{task_id}` | `{task, messages[]}`（把未完结任务顶成当前，记录一并带走） |
 | `task_list` | `{conversation_id, limit?}` | `{tasks[]}`（最近活跃在前） |
 
-- **没有任务必须创建**：`context` 里先 `EnsureTask`——当前没有 active 任务就以这次用户消息命名建一个，随 reply 同步带回 reasoner。拿不到任务，这一轮不该开工。
+- **没有任务必须创建**：建链前先 `work_open`（`{work, conversation_id?, task_name?, boss?}`）——登记 work 并解析当前任务（`EnsureTask` 在这里）：没有 active 任务就以这次用户消息命名建一个，`task_id` 随同步 reply 带回 reasoner；拿不到任务，这一轮不该开工。`context` 只读已登记的 work 与它关联的任务：work 没挂任务就显式 `not_found`，不静默新建。
 - **一个会话最多一个 active 任务**：靠 SQLite 部分唯一索引 `CREATE UNIQUE INDEX ... ON tasks(conversation_id) WHERE status='active'` 保证；并发下建不上的那一方回头读现有的那个（任务不会分叉）。
 - **完成判定权在 reasoner**：内置工具 `task_status{status: done|continue, title?, note?, silent?}`，收尾门禁要求交付前必须调用一次（没判就催一轮，最多两次；两次都不判按 continue 记账）。`done` → `task_finish`（顺带用 `title` 把任务名改准）；`continue` → `task_rename`（任务保持进行中）。**落库时机是收尾那一刻，不是判定那一刻**：判定之后这一轮可能被拒收尾（还有工具在跑），或者紧接着又派发了新工具（判定当场作废）——提前把任务标成 done，下半程的工作就会挂在一个"已完成"的任务里，而记忆服务不会把 done 的任务重新打开。
 - **静默收尾（`silent: true`）**：这一轮**不发出去**（群里判断不该插话、或没什么可说）。文字仍以 `kind=reasoning`（前缀「（静默：这一轮没有对任何人发出去）」）留在记录里——门户能看见它想过什么，人才能判断静默得对不对。静默不粘性：每次判定重设，派发新工具时与「已判定」一起作废。它只影响「说不说」，不影响任务是否完结。
 - **完结 = 不再续**：已完结任务不接受继续（`task_resume` 明确拒绝）。但它的记录还在会话里：门户按**任务分节**连续展示整段会话，侧栏是「会话 → 任务」的目录，点任务只是跳到那一段（不切换视图、不过滤）。**未完结 = 可恢复**：记录都还在（`task_id` 一列），点开就回到那一段继续。
-- **记录归属**：`store` 带 `task_id`；没带时——`user` 记录会触发 `EnsureTask`，其他记录（答复 / 轨迹）挂到**最近一个任务**上，绝不悬空。**连续两条 role+content 完全相同的对话消息只留一条**（防重复交付）：同一个人把同一句话原样再发一遍会被吞掉，事件类记录（思考 / 工具）不去重。
-- **LLM 上下文按任务取**：`context` 只取当前任务的对话消息（`Recent(..., taskID)`），换任务即换上下文。
+- **记录归属**：`store` 带 `work`（`task_id` 可省略，由 work→task 推导）；work 归属哪个任务由 `work_open` 的 `LinkWorkTask` 决定，已挂到别的任务时回 `conflict`——不再有「最近任务」兜底。**连续两条 role+content 完全相同的对话消息只留一条**（旧路径语义保留，回执指向保留那条）：同一个人把同一句话原样再发一遍会被吞掉；事件类记录（思考 / 工具）不去重。
+- **LLM 上下文按 work 组装**：`context` 取本 work 的历史组装基座（`RecentMessagesByWork`），快照只冻结基座（messages / task / work），experience 由门面每次现注入——细则见 [protocol.md §5.4](protocol.md)。
 - **老数据**：迁移时每个会话补一个已完结的「历史记录」任务，旧消息全部挂上去（不丢历史）。
 - 任务现在**只存事实**（名字 / 状态 / 归属），不解释语义。要独立成服务时，把 `tasks` 表与这六个动作整体搬走即可。
 
@@ -89,7 +90,7 @@ QQ 这类多人入口，模型必须能分辨「主人在私聊里说的」和�
 | `conversation_rename` | `{id, title}`（空串 = 清掉名字） | `{conversation}` |
 
 - **只存元信息**：`title` / `entry` / `status` / 两个时间。消息数、任务数、最后一句说什么全部现算——冗余字段迟早和真相打架。
-- **写入即建行**：`store` 落库成功后自动 upsert（`Record` 内部），谁都不用显式建会话。只有落库**成功**才推 `updated_at`，否则列表里会出现「刚活跃过」的空会话。
+- **写入即建行**：`store` 提交成功后自动 upsert（派生记账，失败只记日志、不回滚 ACK），谁都不用显式建会话。只有落库**成功**才推 `updated_at`，否则列表里会出现「刚活跃过」的空会话。
 - **`entry` 取结果归属方（帧头 `from`）**：记录是 reasoner 代写的，真正「从哪扇门进来」的是它替谁办事（`frontend` / `qq`）。只在空时填，后来的不覆盖——第一次从哪进来就是哪。
 - **`title` 为空是真的空**，不造假名字：界面自己回退一个占位。起名是件明确的事（`conversation_rename`），不靠「顺带」。**入口服务例外**：它第一次见到会话时就知道这是谁（qq 会写「QQ 私聊 · 昵称」/「QQ 群「群名」」），用 `conversation_open` 把名字交上来；只在原来为空时填，用户改过的名字不会被顶掉。取不到名字（比如群资料拿不到）就不起名，宁可让界面回退占位。
 - **老库回填**：从 `messages` / `tasks` 里已有的 `conversation_id` 聚合出会话行（首末时间为界），升级后历史记录页立刻能用。
