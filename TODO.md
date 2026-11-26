@@ -74,7 +74,7 @@
 
 ## 文档残差（P2 切换后）
 
-- [ ] `protocol.StorePayload.task_name` **无读者、去留待定** — 任务名 P2 起只走 `work_open`（`WorkOpenPayload.TaskName`），memory 侧没有任何代码读 store 的这个字段，reasoner / qq 仍在发；字段删除属协议破坏性变更（未批），现状已写进 [payloads.go](src/protocol/payloads.go) 的字段注释，去留先定再动。
+- [x] ~~`protocol.StorePayload.task_name` 去留~~ — 已决定：**字段保留并标 deprecated，发送方停发**，任务名只走 `work_open`（`WorkOpenPayload.TaskName`）。不删字段：协议只增不改，删是未获批的破坏性变更。qq 的 `storeQuietly`（只记录路径）已停填；决定写进 [payloads.go](src/protocol/payloads.go) 字段注释，回归断言在 [group_test.go](src/qq/tests/group_test.go)（work_open 带人话任务名、store 不带）。
 
 ## 文档缺口
 
