@@ -93,9 +93,19 @@ func TestUserMessageCarriesSenderLabel(t *testing.T) {
 			t.Fatalf("标注缺 %q: %q", want, saved.Content)
 		}
 	}
-	// 任务名取自正文而不是标签（任务名会显示在界面会话树里）。
-	if saved.TaskName != "今天几点开会" {
-		t.Fatalf("task_name 应为正文首行，实际 %q", saved.TaskName)
+	// 任务名取自正文而不是标签（任务名会显示在界面会话树里），且已改由 work_open 承担。
+	opened := false
+	for _, p := range mem.WorkOpens() {
+		if p.TaskName == "今天几点开会" {
+			opened = true
+		}
+	}
+	if !opened {
+		t.Fatalf("work_open 的 task_name 应为正文首行，实际 %+v", mem.WorkOpens())
+	}
+	// store 不再携带 task_name（字段 deprecated，P2 后由 work_open 承担）。
+	if saved.TaskName != "" {
+		t.Fatalf("store 不应再带 task_name，实际 %q", saved.TaskName)
 	}
 	// 结构化来源跟着记录走，形状与 qq「只记录」路径一致：正文标签给人看，meta 给程序读。
 	var meta struct {

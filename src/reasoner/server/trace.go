@@ -62,17 +62,16 @@ func clampRecord(text string) (string, bool) {
 // meta 只放**给人看**的附加信息（工具名、命令、call_id…），不放正文。
 // 返回 store 回执里的 item_id；落库失败时返回错误（调用方决定是否中断）。
 func (s *Server) record(cid, boss, trace, taskID, kind, role, content string, meta map[string]any) (string, error) {
-	return s.recordNamed(cid, boss, trace, taskID, kind, role, content, meta, "")
+	return s.recordNamed(cid, boss, trace, taskID, kind, role, content, meta)
 }
 
-// recordTask 与 record 相同，但带上**入口服务给的任务名**：正文若是用户消息、
-// 且带着来源标注前缀（见 protocol.Sender.Label），记忆侧从第一行推会推出一串标签。
-// 只有 message 那一条需要它（其余记录都挂在已有任务上）。
-func (s *Server) recordTask(cid, boss, trace, taskID, kind, role, content string, meta map[string]any, taskName string) (string, error) {
-	return s.recordNamed(cid, boss, trace, taskID, kind, role, content, meta, taskName)
+// recordTask 与 record 相同，只为语义命名保留；任务名已由 work_open 承担
+// （StorePayload.task_name 在 P2 后无读者，发送方一律不填）。
+func (s *Server) recordTask(cid, boss, trace, taskID, kind, role, content string, meta map[string]any) (string, error) {
+	return s.recordNamed(cid, boss, trace, taskID, kind, role, content, meta)
 }
 
-func (s *Server) recordNamed(cid, boss, trace, taskID, kind, role, content string, meta map[string]any, taskName string) (string, error) {
+func (s *Server) recordNamed(cid, boss, trace, taskID, kind, role, content string, meta map[string]any) (string, error) {
 	if strings.TrimSpace(content) == "" {
 		return "", nil
 	}
@@ -98,7 +97,7 @@ func (s *Server) recordNamed(cid, boss, trace, taskID, kind, role, content strin
 	data, err := s.Call(ctx, s.memoryName(), "store", protocol.StorePayload{
 		ConversationID: cid, Work: trace, TaskID: taskID, Boss: boss, Role: role,
 		Content: clamped, Kind: kind, Meta: metaJSON, Seq: seq,
-		TaskName: taskName, ClientItemID: s.clientItemID(boss, kind),
+		ClientItemID: s.clientItemID(boss, kind),
 	}, trace)
 	if err != nil {
 		s.logger.Printf("会话 %s：store(%s/%s) 失败: %v", cid, kind, role, err)
