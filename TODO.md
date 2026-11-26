@@ -64,18 +64,14 @@
 
 ## v2 契约层未闭环（#116 移植后）
 
-- [ ] **`context` 的 shared 目录未接** — 基座 + experience 四节已由 facade 组合（R-026-D1=(a)）；共享会话目录仍只经 `shared_sessions` 工具读取，不注入 context。`session` 依 `architecture_test` 不得 import `experience`。
+- [x] ~~**`context` 的 shared 目录未接**~~ — 实际已接：experience 的 inject 第四节 `Others` 由 `otherSessionLines` 读共享会话目录并渲染（`experience/inject.go:59`、`share.go:21-37`），facade 注入 context；原条目陈旧（R-033-D1）。
 - [ ] **`work_context_grants` 死表** — 只建表、无读写路径；已决定（R-031-D2=(a)）：等 spawn 同批做——S-001 §4.6 的 `context_grants[]` 是唯一写入口，spawn 未实现前不建死方法。
 - [ ] **周期 call 对账 · 剩余** — 主体已落地（session 每 30s 只读对账：每 owner 100 条、owner 离线指数退避封顶 60s、`recovery_complete=false` 不判 orphaned、`created` 过期转 `unknown` + `reason=dispatch_unconfirmed`；指标 scanned / updated / owner_offline）。剩下：S-001 §3.5 的「优先 `exec=unknown` 与 ACK 丢失」没有排序（当前按 `created_at`）；`calls.remote_item_id` 没有生产回填入口，线上暂时没有可对账的受理句柄（见下条）。
-- [ ] **owner「从未受理 → 安全关闭」** — owner 侧其余能力已闭环（R-029/#123、R-030/#124、shell 取消 #128、mcp 本地取消 #125、对账 #123）：status/cancel/pause-resume、句柄回填、周期对账。恢复按 R-031-D3=(a)：batch 有 `recovery_complete=false` 窗口；shell/timer 不持久化受理记录，重启即失、不承诺恢复。仍缺：owner 明确回答「从未受理」（S-001 §5.4 的安全关闭），当前只能保守标 orphaned/unknown。
+- [ ] **owner「从未受理 → 安全关闭」· 暂缓（R-033-D3）** — 前置：owner 侧要能区分「从未受理 / 超出保留窗口已忘」（持久受理墓碑或显式 forgotten）；否则要么误关仍在远端跑的调用、要么对账永远收敛不了。现状保守：`recovery_complete=false` 不判 orphaned；完整后缺失只标 `unknown/orphaned`，不写 `cancelled`、不写 `remote_may_continue=false`。
 - [x] ~~**图片索引**~~ — 已决定（R-031-D1=(a)）：图片字节与「首次内联」仍由 reasoner 的 `fetch_full` 负责，memory 不建 `image_index` / `image_note`。重议触发：memory 接管组装（P3）或需要跨服务图片索引时；届时先定「首次建行由谁取字节」。
 - [x] ~~**`origin_session` 留空**~~ — 已按会话 ID 回填：`conversation_id` 是 memory 自己的不透明会话标识，resident 列表的消费者不需要路径脱敏（路径脱敏仍属 `experience`，session 不 import 它）。
 - [ ] **两个版本闸门是 fail-closed** — 会话库 / 共享库 `user_version=0` 且已有表会拒绝启动（错误文案提示手动删 / 改名）；未提供自动迁移，也未提供 `-reset`。
 
 ## 文档残差（P2 切换后）
 
-- [ ] `protocol.StorePayload.task_name` **无读者、去留待定** — 任务名 P2 起只走 `work_open`（`WorkOpenPayload.TaskName`），memory 侧没有任何代码读 store 的这个字段，reasoner / qq 仍在发；字段删除属协议破坏性变更（未批），现状已写进 [payloads.go](src/protocol/payloads.go) 的字段注释，去留先定再动。
-
-## 文档缺口
-
-- [ ] **`docs/index.md` 的链接由 `testing/tests/docs_test.go` 守着**——新增或移动文档后跑一次 `cd testing/tests; go test -run Docs ./...`
+- [x] ~~`protocol.StorePayload.task_name` 去留~~ — 已决定：**字段保留并标 deprecated，发送方停发**，任务名只走 `work_open`（`WorkOpenPayload.TaskName`）。不删字段：协议只增不改，删是未获批的破坏性变更。qq 的 `storeQuietly`（只记录路径）已停填；决定写进 [payloads.go](src/protocol/payloads.go) 字段注释，回归断言在 [group_test.go](src/qq/tests/group_test.go)（work_open 带人话任务名、store 不带）。

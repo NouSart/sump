@@ -771,7 +771,6 @@ func (s *Server) storeQuietly(cid string, sender *protocol.Sender, text string, 
 		Kind:           "user",
 		Content:        content,
 		Meta:           string(meta),
-		TaskName:       taskName,
 	}, work)
 	if err != nil {
 		s.quietStoreFailed(cid, "store", err)

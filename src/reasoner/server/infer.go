@@ -448,7 +448,7 @@ func (s *Server) humanMessage(parent context.Context, boss, trace string, p prot
 	// 任务名显式给：正文可能带着来源标注前缀，记忆侧从第一行推会推出一串标签。
 	// 结构化来源与附件 id 一并落库：与 qq「只记录」路径同一个形状（protocol.MessageMeta）。
 	itemID, err := s.recordTask(cid, boss, trace, opened.TaskID, "user", "user", text,
-		protocol.MessageMeta(p.Sender, p.Images, p.Files), taskName)
+		protocol.MessageMeta(p.Sender, p.Images, p.Files))
 	if err != nil {
 		return nil, fmt.Errorf("记录用户消息失败（本轮不启动）: %w", err)
 	}

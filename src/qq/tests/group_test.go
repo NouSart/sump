@@ -342,8 +342,12 @@ func TestGroupObserveOnlyRecords(t *testing.T) {
 	if !strings.HasPrefix(saved.Payload.Content, "[群聊 · ") || !strings.Contains(saved.Payload.Content, "随便聊聊") {
 		t.Fatalf("正文应带来源标注: %q", saved.Payload.Content)
 	}
-	if saved.Payload.TaskName != "随便聊聊" {
-		t.Fatalf("任务名应是正文而不是标注: %q", saved.Payload.TaskName)
+	// 任务名只走 work_open（store 的 task_name 已 deprecated、发送方停发）：人话而不是标签。
+	if opened := sm.waitWorkOpen(t, 5*time.Second); opened.Payload.TaskName != "随便聊聊" {
+		t.Fatalf("work_open 的任务名应是正文而不是标注: %q", opened.Payload.TaskName)
+	}
+	if saved.Payload.TaskName != "" {
+		t.Fatalf("store 不应再带 task_name（已 deprecated）: %q", saved.Payload.TaskName)
 	}
 	// meta 里留着结构化事实（界面可以直接画成标签，不必解析正文）；没有附件就不写空数组。
 	if _, ok := saved.Meta["sender"].(map[string]any); !ok {
@@ -445,8 +449,11 @@ func TestGroupQuietImageOnlyMessage(t *testing.T) {
 	nc.sendEvent(t, ev)
 
 	saved := sm.waitStore(t, 5*time.Second)
-	if saved.Payload.TaskName != "[图片]" {
-		t.Fatalf("纯图片消息的任务名应兜底成 [图片]，实际 %q", saved.Payload.TaskName)
+	if opened := sm.waitWorkOpen(t, 5*time.Second); opened.Payload.TaskName != "[图片]" {
+		t.Fatalf("纯图片消息的 work_open 任务名应兜底成 [图片]，实际 %q", opened.Payload.TaskName)
+	}
+	if saved.Payload.TaskName != "" {
+		t.Fatalf("store 不应再带 task_name（已 deprecated）: %q", saved.Payload.TaskName)
 	}
 	if !strings.HasPrefix(saved.Payload.Content, "[群聊 · ") {
 		t.Fatalf("正文仍应是来源标注: %q", saved.Payload.Content)
